@@ -1,27 +1,27 @@
-import { NavLink, useParams, useNavigate } from "react-router-dom";
-import { clsx } from "clsx";
-import {
-  LayoutDashboard,
-  Bot,
-  ListTodo,
-  Target,
-  Network,
-  Inbox,
-  BarChart3,
-  Settings,
-  Zap,
-  X,
-  Globe,
-  BookOpen,
-  Plug,
-  FileText,
-  Plus,
-} from "lucide-react";
-import { motion } from "framer-motion";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
-import { useWebSocket } from "@/lib/ws";
 import { useCompanies, useProjects } from "@/lib/hooks";
+import { useWebSocket } from "@/lib/ws";
+import { clsx } from "clsx";
+import { motion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
+import {
+  BarChart3,
+  BookOpen,
+  Bot,
+  FileText,
+  Globe,
+  Inbox,
+  LayoutDashboard,
+  ListTodo,
+  Network,
+  Plug,
+  Plus,
+  Settings,
+  Target,
+  X,
+  Zap,
+} from "lucide-react";
+import { NavLink, useNavigate, useParams } from "react-router-dom";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -287,7 +287,7 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
           <div className="border-t border-white/[0.06] p-3">
             <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5">
               <p className="text-[10px] font-medium uppercase tracking-wider text-text-secondary font-display">
-                Eidolon v0.1.0
+                Eidolon v{import.meta.env.VITE_APP_VERSION}
               </p>
               <StatusIndicator
                 status={status === "connected" ? "connected" : "disconnected"}

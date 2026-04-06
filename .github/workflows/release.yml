@@ -30,6 +30,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: CalVer version for UI build
+        run: |
+          export GITHUB_OUTPUT="$(mktemp)"
+          bash scripts/calver-next-tag.sh
+          TAG="$(grep '^tag=' "$GITHUB_OUTPUT" | cut -d= -f2-)"
+          echo "VITE_APP_VERSION=${TAG}" >> "$GITHUB_ENV"
+
       - run: pnpm run typecheck
 
       - run: pnpm run test:run
