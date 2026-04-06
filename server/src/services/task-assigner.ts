@@ -169,8 +169,9 @@ export class TaskAssigner {
     const { agents, tasks } = this.db.schema;
     const now = new Date();
 
-    // Update the task
-    await this.db.drizzle
+    // Atomic assignment: only assign if the task is not already assigned.
+    // This prevents two concurrent calls from double-assigning the same task.
+    const result = await this.db.drizzle
       .update(tasks)
       .set({
         assigneeAgentId: agentId,
@@ -178,7 +179,13 @@ export class TaskAssigner {
         startedAt: now,
         updatedAt: now,
       })
-      .where(eq(tasks.id, taskId));
+      .where(
+        and(
+          eq(tasks.id, taskId),
+          // Guard: only assign if currently unassigned or re-assigning to same agent
+          sql`(${tasks.assigneeAgentId} IS NULL OR ${tasks.assigneeAgentId} = ${agentId})`,
+        ),
+      );
 
     // Fetch updated task for the event payload
     const [task] = await this.db.drizzle
@@ -187,7 +194,7 @@ export class TaskAssigner {
       .where(eq(tasks.id, taskId))
       .limit(1);
 
-    if (!task) return;
+    if (!task || task.assigneeAgentId !== agentId) return;
 
     // Update agent status to working
     await this.db.drizzle

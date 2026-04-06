@@ -8,6 +8,13 @@
       "when": 1775491266760,
       "tag": "0000_wet_puppet_master",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1775508211222,
+      "tag": "0001_military_kulan_gath",
+      "breakpoints": true
     }
   ]
 }

@@ -3,8 +3,10 @@ import cors from 'cors';
 import pinoHttp from 'pino-http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toNodeHandler } from 'better-auth/node';
 import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
+import { createAuthMiddleware } from './middleware/auth.js';
 import healthRouter from './routes/health.js';
 import { companiesRouter } from './routes/companies.js';
 import { agentsRouter, orgChartRouter } from './routes/agents.js';
@@ -29,11 +31,13 @@ import { collaborationsRouter, agentCollaborationsRouter } from './routes/collab
 import { templatesRouter, companyExportRouter } from './routes/templates.js';
 import { projectsRouter } from './routes/projects.js';
 import type { DbInstance } from './types.js';
+import type { Auth } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp(db: DbInstance): express.Express {
+export function createApp(db: DbInstance, auth: Auth): express.Express {
   const app = express();
+  const { requireAuth, requireOrgMember } = createAuthMiddleware(auth);
 
   // ---------------------------------------------------------------------------
   // Global middleware
@@ -78,60 +82,78 @@ export function createApp(db: DbInstance): express.Express {
   );
 
   // ---------------------------------------------------------------------------
+  // Auth routes (public - handled entirely by BetterAuth)
+  // ---------------------------------------------------------------------------
+
+  app.all('/api/auth/*splat', toNodeHandler(auth));
+
+  // ---------------------------------------------------------------------------
   // API routes
   // ---------------------------------------------------------------------------
 
+  // Public endpoints (no auth required)
   app.use('/api', healthRouter);
-  app.use('/api/companies', companiesRouter(db));
-  app.use('/api/companies/:companyId/agents', agentsRouter(db));
-  app.use('/api/companies/:companyId/org-chart', orgChartRouter(db));
-  app.use('/api/companies/:companyId/projects', projectsRouter(db));
-  app.use('/api/companies/:companyId/tasks', tasksRouter(db));
-  app.use('/api/companies/:companyId/goals', goalsRouter(db));
-  app.use('/api/companies/:companyId/messages', messagesRouter(db));
-  app.use('/api/companies/:companyId', budgetsRouter(db));
-  app.use('/api/companies/:companyId/analytics', analyticsRouter(db));
-  app.use('/api/companies/:companyId/workflows', workflowsRouter(db));
-  app.use('/api/companies/:companyId/activity', activityRouter(db));
-  app.use('/api/companies/:companyId/secrets', secretsRouter(db));
-  app.use('/api/companies/:companyId/chat', chatRouter(db));
-
-  // Knowledge base
-  app.use('/api/companies/:companyId/knowledge', knowledgeRouter(db));
-
-  // File manager
-  app.use('/api/companies/:companyId/files', filesRouter(db));
-  app.use('/api/companies/:companyId/agents/:agentId/files', agentFilesRouter(db));
-
-  // Integrations
-  app.use('/api/companies/:companyId/integrations', integrationsRouter(db));
-
-  // Agent memories
-  app.use('/api/companies/:companyId/agents/:agentId/memories', memoriesRouter(db));
-
-  // Prompt Studio
-  app.use('/api/prompts', globalPromptsRouter(db));
-  app.use('/api/companies/:companyId/prompts', companyPromptsRouter(db));
-
-  // Agent evaluations & performance
-  app.use('/api/companies/:companyId/evaluations', evaluationsRouter(db));
-
-  // MCP (Model Context Protocol) servers and tools
-  app.use('/api/companies/:companyId/mcp', mcpRouter(db));
-
-  // Webhook management (authenticated, scoped to company)
-  app.use('/api/companies/:companyId/webhooks', webhookManagementRouter(db));
-
-  // Agent Collaboration Protocol
-  app.use('/api/companies/:companyId/collaborations', collaborationsRouter(db));
-  app.use('/api/companies/:companyId/agents/:agentId/collaborations', agentCollaborationsRouter(db));
-
-  // Company Templates (App Store for AI Companies)
-  app.use('/api/templates', templatesRouter(db));
-  app.use('/api/companies/:companyId/export', companyExportRouter(db));
 
   // Inbound webhook trigger (public endpoint - validated via webhook secret)
   app.use('/api/webhooks', webhookTriggerRouter(db));
+
+  // Company Templates (public read, auth for write)
+  app.use('/api/templates', templatesRouter(db));
+
+  // Global prompts (public read)
+  app.use('/api/prompts', globalPromptsRouter(db));
+
+  // ---------------------------------------------------------------------------
+  // Authenticated routes
+  // ---------------------------------------------------------------------------
+
+  app.use('/api/companies', requireAuth, companiesRouter(db));
+
+  // Company-scoped routes (require auth + org membership)
+  app.use('/api/companies/:companyId/agents', requireAuth, requireOrgMember(), agentsRouter(db));
+  app.use('/api/companies/:companyId/org-chart', requireAuth, requireOrgMember(), orgChartRouter(db));
+  app.use('/api/companies/:companyId/projects', requireAuth, requireOrgMember(), projectsRouter(db));
+  app.use('/api/companies/:companyId/tasks', requireAuth, requireOrgMember(), tasksRouter(db));
+  app.use('/api/companies/:companyId/goals', requireAuth, requireOrgMember(), goalsRouter(db));
+  app.use('/api/companies/:companyId/messages', requireAuth, requireOrgMember(), messagesRouter(db));
+  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), budgetsRouter(db));
+  app.use('/api/companies/:companyId/analytics', requireAuth, requireOrgMember(), analyticsRouter(db));
+  app.use('/api/companies/:companyId/workflows', requireAuth, requireOrgMember(), workflowsRouter(db));
+  app.use('/api/companies/:companyId/activity', requireAuth, requireOrgMember(), activityRouter(db));
+  app.use('/api/companies/:companyId/secrets', requireAuth, requireOrgMember('admin'), secretsRouter(db));
+  app.use('/api/companies/:companyId/chat', requireAuth, requireOrgMember(), chatRouter(db));
+
+  // Knowledge base
+  app.use('/api/companies/:companyId/knowledge', requireAuth, requireOrgMember(), knowledgeRouter(db));
+
+  // File manager
+  app.use('/api/companies/:companyId/files', requireAuth, requireOrgMember(), filesRouter(db));
+  app.use('/api/companies/:companyId/agents/:agentId/files', requireAuth, requireOrgMember(), agentFilesRouter(db));
+
+  // Integrations
+  app.use('/api/companies/:companyId/integrations', requireAuth, requireOrgMember('admin'), integrationsRouter(db));
+
+  // Agent memories
+  app.use('/api/companies/:companyId/agents/:agentId/memories', requireAuth, requireOrgMember(), memoriesRouter(db));
+
+  // Prompt Studio (company-scoped)
+  app.use('/api/companies/:companyId/prompts', requireAuth, requireOrgMember(), companyPromptsRouter(db));
+
+  // Agent evaluations & performance
+  app.use('/api/companies/:companyId/evaluations', requireAuth, requireOrgMember(), evaluationsRouter(db));
+
+  // MCP (Model Context Protocol) servers and tools
+  app.use('/api/companies/:companyId/mcp', requireAuth, requireOrgMember('admin'), mcpRouter(db));
+
+  // Webhook management (admin only)
+  app.use('/api/companies/:companyId/webhooks', requireAuth, requireOrgMember('admin'), webhookManagementRouter(db));
+
+  // Agent Collaboration Protocol
+  app.use('/api/companies/:companyId/collaborations', requireAuth, requireOrgMember(), collaborationsRouter(db));
+  app.use('/api/companies/:companyId/agents/:agentId/collaborations', requireAuth, requireOrgMember(), agentCollaborationsRouter(db));
+
+  // Company export (admin only)
+  app.use('/api/companies/:companyId/export', requireAuth, requireOrgMember('admin'), companyExportRouter(db));
 
   // ---------------------------------------------------------------------------
   // Static file serving for production UI

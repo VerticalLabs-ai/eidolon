@@ -43,7 +43,8 @@ export interface TaskEvent extends ServerEvent {
     | 'task.assigned'
     | 'task.status_changed'
     | 'task.commented'
-    | 'task.cancelled';
+    | 'task.cancelled'
+    | 'task.timed_out';
 }
 
 export interface ProjectEvent extends ServerEvent {

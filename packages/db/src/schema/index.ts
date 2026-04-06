@@ -22,3 +22,13 @@ export { agentCollaborations } from './agent_collaborations';
 export { companyTemplates } from './company_templates';
 export { agentEvaluations } from './agent_evaluations';
 export { mcpServers } from './mcp_servers';
+export {
+  users,
+  sessions,
+  accounts,
+  verifications,
+  organizations,
+  members,
+  invitations,
+  apikeys,
+} from './auth';

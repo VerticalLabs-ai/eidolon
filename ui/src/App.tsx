@@ -1,6 +1,9 @@
 import { Component, type ReactNode } from "react";
 import { Routes, Route } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
+import { AuthGuard } from "@/components/auth/AuthGuard";
+import { Login } from "@/pages/Login";
+import { Register } from "@/pages/Register";
 import { CompanyList } from "@/pages/CompanyList";
 import { CompanyDashboard } from "@/pages/CompanyDashboard";
 import { Inbox } from "@/pages/Inbox";
@@ -61,9 +64,35 @@ export function App() {
   return (
     <ErrorBoundary>
       <Routes>
-        <Route path="/" element={<CompanyList />} />
-        <Route path="/templates" element={<Templates />} />
-        <Route path="/company/:companyId" element={<AppShell />}>
+        {/* Public routes */}
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+
+        {/* Protected routes */}
+        <Route
+          path="/"
+          element={
+            <AuthGuard>
+              <CompanyList />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="/templates"
+          element={
+            <AuthGuard>
+              <Templates />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="/company/:companyId"
+          element={
+            <AuthGuard>
+              <AppShell />
+            </AuthGuard>
+          }
+        >
           <Route index element={<CompanyDashboard />} />
           <Route path="inbox" element={<Inbox />} />
           <Route path="projects" element={<ProjectList />} />

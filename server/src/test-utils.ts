@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '@eidolon/db';
 import type { DbInstance } from './types.js';
 import { createApp } from './app.js';
+import { createAuth } from './auth.js';
 
 /**
  * Create an in-memory SQLite database for testing.
@@ -58,6 +59,7 @@ export function createTestDb(): DbInstance {
       allowed_domains TEXT NOT NULL DEFAULT '[]',
       max_concurrent_tasks INTEGER NOT NULL DEFAULT 1,
       heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
+      execution_timeout_seconds INTEGER NOT NULL DEFAULT 600,
       auto_assign_tasks INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
@@ -251,5 +253,8 @@ export function createTestDb(): DbInstance {
  * Create an Express app wired to the given test database instance.
  */
 export function createTestApp(db: DbInstance) {
-  return createApp(db);
+  // In tests, use local_trusted auth mode so no real auth is needed
+  process.env.AUTH_MODE = 'local_trusted';
+  const auth = createAuth(db.drizzle);
+  return createApp(db, auth);
 }

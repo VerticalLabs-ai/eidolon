@@ -13,7 +13,7 @@ function getAppVersion(): string {
   const fromEnv = process.env.VITE_APP_VERSION?.trim();
   if (fromEnv) return fromEnv;
   try {
-    const tag = execSync("git tag --sort=-creatordate | head -1", {
+    const tag = execSync("git describe --tags --abbrev=0", {
       encoding: "utf8",
       cwd: repoRoot,
     }).trim();

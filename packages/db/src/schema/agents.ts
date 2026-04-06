@@ -49,6 +49,7 @@ export const agents = sqliteTable(
       .default([]),
     maxConcurrentTasks: integer('max_concurrent_tasks').notNull().default(1),
     heartbeatIntervalSeconds: integer('heartbeat_interval_seconds').notNull().default(300),
+    executionTimeoutSeconds: integer('execution_timeout_seconds').notNull().default(600),
     autoAssignTasks: integer('auto_assign_tasks').notNull().default(0),
     budgetMonthlyCents: integer('budget_monthly_cents').notNull().default(0),
     spentMonthlyCents: integer('spent_monthly_cents').notNull().default(0),

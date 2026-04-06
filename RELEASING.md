@@ -6,7 +6,8 @@ Releases are automated; see the **Releases** section in [README.md](README.md) f
 
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) runs on every push to `main` (and on manual `workflow_dispatch`).
 - The `verify` job must pass (`npm run typecheck`, `npm run test:run`, `npm run build`) or no tag or release is created.
-- The `release` job runs [`scripts/calver-next-tag.sh`](scripts/calver-next-tag.sh), pushes the new tag, then creates a GitHub Release with generated notes.
+- The `verify` job computes the next CalVer tag once via [`scripts/calver-next-tag.sh`](scripts/calver-next-tag.sh), uses it for the UI build, and exposes it to `release` as a job output.
+- The `release` job consumes that verified tag, pushes it, then creates a GitHub Release with generated notes.
 
 ## Retries
 

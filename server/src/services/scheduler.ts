@@ -79,9 +79,12 @@ export class HeartbeatScheduler {
 
     try {
       const { agents, tasks } = this.db.schema;
+      const now = Date.now();
+
+      // --- Check for timed-out tasks ---
+      await this.checkTimeouts(agents, tasks, now);
 
       // Find agents due for a heartbeat
-      const now = Date.now();
       const idleAgents = await this.db.drizzle
         .select()
         .from(agents)
@@ -113,6 +116,79 @@ export class HeartbeatScheduler {
   }
 
   // ---------------------------------------------------------------------------
+  // Timeout enforcement
+  // ---------------------------------------------------------------------------
+
+  private async checkTimeouts(
+    agents: typeof this.db.schema.agents,
+    tasks: typeof this.db.schema.tasks,
+    nowMs: number,
+  ): Promise<void> {
+    // Find in-progress tasks whose assigned agent has a timeout configured
+    const inProgressTasks = await this.db.drizzle
+      .select({
+        taskId: tasks.id,
+        companyId: tasks.companyId,
+        title: tasks.title,
+        startedAt: tasks.startedAt,
+        agentId: tasks.assigneeAgentId,
+        timeoutSeconds: agents.executionTimeoutSeconds,
+      })
+      .from(tasks)
+      .innerJoin(agents, eq(tasks.assigneeAgentId, agents.id))
+      .where(eq(tasks.status, 'in_progress'));
+
+    const now = new Date(nowMs);
+
+    for (const row of inProgressTasks) {
+      if (!row.startedAt || !row.timeoutSeconds) continue;
+
+      const startedMs = new Date(row.startedAt).getTime();
+      const timeoutMs = row.timeoutSeconds * 1000;
+
+      if (nowMs - startedMs > timeoutMs) {
+        // Task has exceeded its timeout -- transition to timed_out
+        await this.db.drizzle
+          .update(tasks)
+          .set({
+            status: 'timed_out',
+            updatedAt: now,
+          })
+          .where(eq(tasks.id, row.taskId));
+
+        // Set agent back to idle
+        if (row.agentId) {
+          await this.db.drizzle
+            .update(agents)
+            .set({ status: 'idle', updatedAt: now })
+            .where(eq(agents.id, row.agentId));
+        }
+
+        eventBus.emitEvent({
+          type: 'task.timed_out',
+          companyId: row.companyId,
+          payload: {
+            taskId: row.taskId,
+            agentId: row.agentId,
+            timeoutSeconds: row.timeoutSeconds,
+          },
+          timestamp: now.toISOString(),
+        });
+
+        logger.warn(
+          {
+            taskId: row.taskId,
+            taskTitle: row.title,
+            agentId: row.agentId,
+            timeoutSeconds: row.timeoutSeconds,
+          },
+          'Heartbeat: task timed out',
+        );
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Task assignment helper
   // ---------------------------------------------------------------------------
 
@@ -121,49 +197,62 @@ export class HeartbeatScheduler {
     agents: typeof this.db.schema.agents,
     tasks: typeof this.db.schema.tasks,
   ): Promise<{ assigned: boolean; taskId?: string }> {
-    // Find unassigned task for this company, ordered by priority
-    const [nextTask] = await this.db.drizzle
-      .select()
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.companyId, agent.companyId),
-          inArray(tasks.status, ['todo', 'backlog']),
-          isNull(tasks.assigneeAgentId),
-        ),
-      )
-      .orderBy(
-        sql`CASE ${tasks.priority}
+    const now = new Date();
+
+    // Atomic assignment: UPDATE with a sub-select to prevent race conditions.
+    // If two agents race for the same task, only one UPDATE will match because
+    // the WHERE clause requires assignee_agent_id IS NULL.
+    const result = await this.db.drizzle.run(sql`
+      UPDATE ${tasks}
+      SET
+        ${tasks.assigneeAgentId} = ${agent.id},
+        ${tasks.status} = 'in_progress',
+        ${tasks.startedAt} = ${now.getTime()},
+        ${tasks.updatedAt} = ${now.getTime()}
+      WHERE ${tasks.id} = (
+        SELECT ${tasks.id} FROM ${tasks}
+        WHERE ${tasks.companyId} = ${agent.companyId}
+          AND ${tasks.status} IN ('todo', 'backlog')
+          AND ${tasks.assigneeAgentId} IS NULL
+        ORDER BY CASE ${tasks.priority}
           WHEN 'critical' THEN 0
           WHEN 'high' THEN 1
           WHEN 'medium' THEN 2
           WHEN 'low' THEN 3
           ELSE 4
-        END`,
+        END
+        LIMIT 1
       )
-      .limit(1);
+      AND ${tasks.assigneeAgentId} IS NULL
+    `);
 
-    if (!nextTask) {
-      // No tasks available -- just update heartbeat timestamp
+    // Check if any row was actually updated
+    if (!result.changes || result.changes === 0) {
+      // No tasks available or another agent won the race
       await this.db.drizzle
         .update(agents)
-        .set({ lastHeartbeatAt: new Date() })
+        .set({ lastHeartbeatAt: now })
         .where(eq(agents.id, agent.id));
       return { assigned: false };
     }
 
-    // Assign task to agent
-    const now = new Date();
+    // Fetch the task that was just assigned to get its details
+    const [assignedTask] = await this.db.drizzle
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.assigneeAgentId, agent.id),
+          eq(tasks.status, 'in_progress'),
+          eq(tasks.companyId, agent.companyId),
+        ),
+      )
+      .orderBy(sql`${tasks.updatedAt} DESC`)
+      .limit(1);
 
-    await this.db.drizzle
-      .update(tasks)
-      .set({
-        assigneeAgentId: agent.id,
-        status: 'in_progress',
-        startedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(tasks.id, nextTask.id));
+    if (!assignedTask) {
+      return { assigned: false };
+    }
 
     // Update agent status
     await this.db.drizzle
@@ -179,7 +268,7 @@ export class HeartbeatScheduler {
     eventBus.emitEvent({
       type: 'agent.status_changed',
       companyId: agent.companyId,
-      payload: { agentId: agent.id, status: 'working', taskId: nextTask.id },
+      payload: { agentId: agent.id, status: 'working', taskId: assignedTask.id },
       timestamp: now.toISOString(),
     });
 
@@ -187,7 +276,7 @@ export class HeartbeatScheduler {
       type: 'task.updated',
       companyId: agent.companyId,
       payload: {
-        taskId: nextTask.id,
+        taskId: assignedTask.id,
         status: 'in_progress',
         assigneeAgentId: agent.id,
       },
@@ -198,16 +287,12 @@ export class HeartbeatScheduler {
       {
         agentId: agent.id,
         agentName: agent.name,
-        taskId: nextTask.id,
-        taskTitle: nextTask.title,
+        taskId: assignedTask.id,
+        taskTitle: assignedTask.title,
       },
       'Heartbeat: assigned task to agent',
     );
 
-    // NOTE: Actual AI execution would be triggered here via AgentExecutor.
-    // For now we just assign the task. The execution runtime (built separately)
-    // will handle calling the AI API.
-
-    return { assigned: true, taskId: nextTask.id };
+    return { assigned: true, taskId: assignedTask.id };
   }
 }

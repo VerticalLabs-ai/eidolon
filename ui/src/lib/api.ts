@@ -18,12 +18,19 @@ async function request<T>(
 ): Promise<T> {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...options.headers,
     },
     ...options,
   });
+
+  // Redirect to login on 401
+  if (res.status === 401 && !path.startsWith("/auth/")) {
+    window.location.href = "/login";
+    throw new ApiError(401, "Session expired");
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);

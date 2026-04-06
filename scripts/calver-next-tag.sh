@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Compute next CalVer tag (YYYY.M.D, same UTC day: -2, -3, ...). Writes to GITHUB_OUTPUT.
+# Compute next CalVer tag (YYYY.M.D, same UTC day: -2, -3, ...).
+# Emits stable `tag` and `skip` outputs via GITHUB_OUTPUT for GitHub Actions steps/jobs.
 set -euo pipefail
 
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT must be set}"
