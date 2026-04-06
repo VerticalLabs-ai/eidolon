@@ -9,8 +9,10 @@ import {
   ListChecks,
   DollarSign,
   Package,
+  Archive,
+  Trash2,
 } from "lucide-react";
-import { useCompanies } from "@/lib/hooks";
+import { useCompanies, useDeleteCompany } from "@/lib/hooks";
 import type { Company, DashboardData } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -29,6 +31,8 @@ export function CompanyList() {
   // Direct fetch as fallback since React Query may have caching issues in dev
   const [companies, setCompanies] = useState<CompanyWithStats[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const deleteCompany = useDeleteCompany();
 
   useEffect(() => {
     async function fetchData() {
@@ -67,7 +71,7 @@ export function CompanyList() {
       }
     }
     fetchData();
-  }, [modalOpen]); // refetch when modal closes (after creating)
+  }, [modalOpen, refreshKey]); // refetch when modal closes or after delete
 
   const totalAgents = companies.reduce(
     (sum, c) => sum + (c.agentCount ?? 0),
@@ -219,17 +223,47 @@ export function CompanyList() {
                         }}
                       />
                     </div>
-                    <Badge
-                      variant={
-                        company.status === "active"
-                          ? "success"
-                          : company.status === "paused"
-                            ? "warning"
-                            : "default"
-                      }
-                    >
-                      {company.status}
-                    </Badge>
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        variant={
+                          company.status === "active"
+                            ? "success"
+                            : company.status === "paused"
+                              ? "warning"
+                              : "default"
+                        }
+                      >
+                        {company.status}
+                      </Badge>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Archive "${company.name}"? This can be undone.`)) {
+                            deleteCompany.mutate({ id: company.id }, {
+                              onSuccess: () => setRefreshKey((k) => k + 1),
+                            });
+                          }
+                        }}
+                        title="Archive company"
+                        className="rounded-md p-1 text-text-secondary opacity-0 group-hover:opacity-100 hover:text-warning hover:bg-warning/10 transition-all duration-200 cursor-pointer"
+                      >
+                        <Archive className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Permanently delete "${company.name}" and ALL its data? This cannot be undone.`)) {
+                            deleteCompany.mutate({ id: company.id, hard: true }, {
+                              onSuccess: () => setRefreshKey((k) => k + 1),
+                            });
+                          }
+                        }}
+                        title="Permanently delete company"
+                        className="rounded-md p-1 text-text-secondary opacity-0 group-hover:opacity-100 hover:text-error hover:bg-error/10 transition-all duration-200 cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <h3 className="font-display text-base font-semibold text-text-primary group-hover:text-accent transition-colors duration-200">
                     {company.name}

@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ListTodo } from "lucide-react";
 import { clsx } from "clsx";
 import type { Task } from "@/lib/api";
+import { PageTransition } from "@/components/ui/PageTransition";
 
 const columns: { id: string; label: string; dotColor: string }[] = [
   { id: "backlog", label: "Backlog", dotColor: "bg-text-secondary/40" },
@@ -54,6 +55,7 @@ export function TaskBoard() {
   };
 
   return (
+    <PageTransition>
     <div className="p-6 lg:p-8 space-y-6 h-full flex flex-col">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between shrink-0">
         <div>
@@ -183,5 +185,6 @@ export function TaskBoard() {
         companyId={companyId!}
       />
     </div>
+    </PageTransition>
   );
 }

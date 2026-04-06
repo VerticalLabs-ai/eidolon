@@ -23,13 +23,13 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 ## Quickstart
 
 ```bash
-git clone https://github.com/VerticalLabs-ai/eldolon.git
-cd eldolon
-npm install
-npm run db:generate  # Generate migration SQL from schema
-npm run db:migrate
-npm run db:seed      # Optional: load demo data
-npm run dev
+git clone https://github.com/verticallabs-ai/eidolon.git
+cd eidolon
+pnpm install
+pnpm run db:generate  # Generate migration SQL from schema
+pnpm run db:migrate
+pnpm run db:seed      # Optional: load demo data
+pnpm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) for the dashboard.
@@ -65,15 +65,15 @@ eidolon/
 ## Development
 
 ```bash
-npm run dev           # Start server + UI in dev mode
-npm run dev:server    # Server only
-npm run dev:ui        # UI only
-npm run build         # Build everything
-npm run typecheck     # Type check all packages
-npm run test          # Run tests
-npm run db:generate   # Generate migration SQL from schema
-npm run db:migrate    # Run database migrations
-npm run db:seed       # Seed demo data
+pnpm run dev           # Start server + UI in dev mode
+pnpm run dev:server    # Server only
+pnpm run dev:ui        # UI only
+pnpm run build         # Build everything
+pnpm run typecheck     # Type check all packages
+pnpm run test          # Run tests
+pnpm run db:generate   # Generate migration SQL from schema
+pnpm run db:migrate    # Run database migrations
+pnpm run db:seed       # Seed demo data
 ```
 
 ## How It Works

@@ -121,32 +121,101 @@ export function companiesRouter(db: DbInstance): Router {
     res.json({ data: updated });
   });
 
-  // DELETE /api/companies/:id - soft delete (archive)
+  // DELETE /api/companies/:id - soft delete (archive) or hard delete with ?hard=true
   router.delete('/:id', async (req, res) => {
+    const companyId = routeParams(req).id;
+    const hard = req.query.hard === 'true';
+
     const [existing] = await db.drizzle
       .select()
       .from(companies)
-      .where(eq(companies.id, routeParams(req).id))
+      .where(eq(companies.id, companyId))
       .limit(1);
 
     if (!existing) {
-      throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${routeParams(req).id} not found`);
+      throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${companyId} not found`);
     }
 
-    const [archived] = await db.drizzle
-      .update(companies)
-      .set({ status: 'archived', updatedAt: new Date() })
-      .where(eq(companies.id, routeParams(req).id))
-      .returning();
+    if (hard) {
+      // Hard delete: remove all related data then the company
+      // Order matters due to foreign key constraints
+      const tables = [
+        db.schema.agentCollaborations,
+        db.schema.agentEvaluations,
+        db.schema.agentMemories,
+        db.schema.agentExecutions,
+        db.schema.agentConfigRevisions,
+        db.schema.agentFiles,
+        db.schema.costEvents,
+        db.schema.budgetAlerts,
+        db.schema.heartbeats,
+        db.schema.messages,
+        db.schema.tasks,
+        db.schema.goals,
+        db.schema.workflows,
+        db.schema.projects,
+        db.schema.webhooks,
+        db.schema.secrets,
+        db.schema.integrations,
+        db.schema.mcpServers,
+        db.schema.activityLog,
+      ];
 
-    eventBus.emitEvent({
-      type: 'company.archived',
-      companyId: archived.id,
-      payload: { company: archived },
-      timestamp: new Date().toISOString(),
-    });
+      for (const table of tables) {
+        await db.drizzle.delete(table).where(eq((table as any).companyId, companyId));
+      }
 
-    res.json({ data: archived });
+      // Delete knowledge (chunks reference documents, not company directly)
+      const docs = await db.drizzle
+        .select({ id: db.schema.knowledgeDocuments.id })
+        .from(db.schema.knowledgeDocuments)
+        .where(eq(db.schema.knowledgeDocuments.companyId, companyId));
+      for (const doc of docs) {
+        await db.drizzle.delete(db.schema.knowledgeChunks).where(eq(db.schema.knowledgeChunks.documentId, doc.id));
+      }
+      await db.drizzle.delete(db.schema.knowledgeDocuments).where(eq(db.schema.knowledgeDocuments.companyId, companyId));
+
+      // Delete prompt versions (reference templates, not company)
+      const templates = await db.drizzle
+        .select({ id: db.schema.promptTemplates.id })
+        .from(db.schema.promptTemplates)
+        .where(eq(db.schema.promptTemplates.companyId, companyId));
+      for (const tmpl of templates) {
+        await db.drizzle.delete(db.schema.promptVersions).where(eq(db.schema.promptVersions.templateId, tmpl.id));
+      }
+      await db.drizzle.delete(db.schema.promptTemplates).where(eq(db.schema.promptTemplates.companyId, companyId));
+
+      // Delete agents (after all agent-referencing tables)
+      await db.drizzle.delete(db.schema.agents).where(eq(db.schema.agents.companyId, companyId));
+
+      // Finally delete the company
+      await db.drizzle.delete(companies).where(eq(companies.id, companyId));
+
+      eventBus.emitEvent({
+        type: 'company.deleted',
+        companyId,
+        payload: { company: existing },
+        timestamp: new Date().toISOString(),
+      });
+
+      res.status(204).end();
+    } else {
+      // Soft delete (archive)
+      const [archived] = await db.drizzle
+        .update(companies)
+        .set({ status: 'archived', updatedAt: new Date() })
+        .where(eq(companies.id, companyId))
+        .returning();
+
+      eventBus.emitEvent({
+        type: 'company.archived',
+        companyId: archived.id,
+        payload: { company: archived },
+        timestamp: new Date().toISOString(),
+      });
+
+      res.json({ data: archived });
+    }
   });
 
   // GET /api/companies/:id/dashboard - aggregated dashboard

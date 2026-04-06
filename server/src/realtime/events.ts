@@ -16,7 +16,8 @@ export interface CompanyEvent extends ServerEvent {
   type:
     | 'company.created'
     | 'company.updated'
-    | 'company.archived';
+    | 'company.archived'
+    | 'company.deleted';
 }
 
 export interface AgentEvent extends ServerEvent {
@@ -43,6 +44,13 @@ export interface TaskEvent extends ServerEvent {
     | 'task.status_changed'
     | 'task.commented'
     | 'task.cancelled';
+}
+
+export interface ProjectEvent extends ServerEvent {
+  type:
+    | 'project.created'
+    | 'project.updated'
+    | 'project.deleted';
 }
 
 export interface GoalEvent extends ServerEvent {
@@ -80,6 +88,7 @@ export interface ActivityEvent extends ServerEvent {
 export type EidolonEvent =
   | CompanyEvent
   | AgentEvent
+  | ProjectEvent
   | TaskEvent
   | GoalEvent
   | MessageEvent

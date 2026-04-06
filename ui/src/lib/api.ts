@@ -180,6 +180,24 @@ export const updateCompany = (
   data: Partial<Pick<Company, "name" | "description" | "mission" | "status" | "budgetMonthlyCents">>,
 ) => request<Company>(`/companies/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 
+export const deleteCompany = (id: string, hard = false) =>
+  request<void>(`/companies/${id}${hard ? "?hard=true" : ""}`, { method: "DELETE" });
+
+// ── Projects ────────────────────────────────────────────────────────────
+
+export interface Project {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const getProjects = (companyId: string) =>
+  request<Project[]>(`/companies/${companyId}/projects`);
+
 // ── Agents ───────────────────────────────────────────────────────────────
 
 export const getAgents = (companyId: string) =>

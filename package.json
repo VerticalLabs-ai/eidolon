@@ -2,22 +2,17 @@
   "name": "eidolon",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "packages/*",
-    "server",
-    "ui"
-  ],
   "scripts": {
-    "dev": "concurrently -n server,ui -c blue,green \"npm run dev:server\" \"npm run dev:ui\"",
-    "dev:server": "npm -w server run dev",
-    "dev:ui": "npm -w ui run dev",
-    "build": "npm -w @eidolon/shared run build && npm -w server run build && npm -w ui run build",
+    "dev": "concurrently -n server,ui -c blue,green \"pnpm run dev:server\" \"pnpm run dev:ui\"",
+    "dev:server": "pnpm --filter server dev",
+    "dev:ui": "pnpm --filter ui dev",
+    "build": "pnpm --filter @eidolon/shared build && pnpm --filter server build && pnpm --filter ui build",
     "typecheck": "tsc -b",
     "test": "vitest",
     "test:run": "vitest run",
-    "db:generate": "npm -w @eidolon/db run generate",
-    "db:migrate": "npm -w @eidolon/db run migrate",
-    "db:seed": "npm -w @eidolon/db run seed",
+    "db:generate": "pnpm --filter @eidolon/db generate",
+    "db:migrate": "pnpm --filter @eidolon/db migrate",
+    "db:seed": "pnpm --filter @eidolon/db seed",
     "lint": "eslint . --ext .ts,.tsx",
     "clean": "rm -rf node_modules packages/*/node_modules server/node_modules ui/node_modules"
   },
@@ -31,5 +26,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
   }
 }

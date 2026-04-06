@@ -7,6 +7,7 @@ import { Select } from "@/components/ui/Input";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { AgentCard } from "@/components/agents/AgentCard";
 import { CreateAgentModal } from "@/components/agents/CreateAgentModal";
+import { PageTransition } from "@/components/ui/PageTransition";
 
 const roleOptions = [
   { value: "", label: "All Roles" },
@@ -40,6 +41,7 @@ export function AgentList() {
   });
 
   return (
+    <PageTransition>
     <div className="mx-auto max-w-7xl p-6 lg:p-8 space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -130,5 +132,6 @@ export function AgentList() {
         companyId={companyId!}
       />
     </div>
+    </PageTransition>
   );
 }

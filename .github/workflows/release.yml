@@ -21,18 +21,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
-      - run: npm run typecheck
+      - run: pnpm run typecheck
 
-      - run: npm run test:run
+      - run: pnpm run test:run
 
-      - run: npm run build
+      - run: pnpm run build
 
   release:
     needs: verify

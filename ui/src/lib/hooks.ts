@@ -1,3 +1,4 @@
+// Eidolon hooks — v2 with projects, delete, toasts
 import {
   useQuery,
   useMutation,
@@ -66,6 +67,27 @@ export function useUpdateCompany() {
       qc.invalidateQueries({ queryKey: ["companies", vars.id] });
       qc.invalidateQueries({ queryKey: ["dashboard", vars.id] });
     },
+  });
+}
+
+export function useDeleteCompany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, hard = false }: { id: string; hard?: boolean }) =>
+      api.deleteCompany(id, hard),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["companies"] });
+    },
+  });
+}
+
+// ── Projects ────────────────────────────────────────────────────────────
+
+export function useProjects(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["projects", companyId],
+    queryFn: async () => unwrap<api.Project[]>(await api.getProjects(companyId!)),
+    enabled: !!companyId,
   });
 }
 

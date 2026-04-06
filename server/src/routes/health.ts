@@ -1,7 +1,7 @@
-import { Router } from 'express';
+import { Router, type Router as RouterType } from 'express';
 import { getConnectedClientCount } from '../realtime/ws-server.js';
 
-const router = Router();
+const router: RouterType = Router();
 
 router.get('/health', (_req, res) => {
   res.json({

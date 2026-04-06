@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Card } from "@/components/ui/Card";
 import { clsx } from "clsx";
 import type { Goal } from "@/lib/api";
+import { PageTransition } from "@/components/ui/PageTransition";
 
 const statusColors: Record<string, string> = {
   on_track: "text-success",
@@ -140,6 +141,7 @@ export function GoalTree() {
   const tree = buildTree(goals ?? []);
 
   return (
+    <PageTransition>
     <div className="mx-auto max-w-4xl p-6 lg:p-8 space-y-8">
       <div>
         <h2 className="font-display text-2xl font-bold text-text-primary tracking-tight">
@@ -173,5 +175,6 @@ export function GoalTree() {
         </div>
       )}
     </div>
+    </PageTransition>
   );
 }

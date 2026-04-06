@@ -27,6 +27,7 @@ import { mcpRouter } from './routes/mcp.js';
 import { evaluationsRouter } from './routes/evaluations.js';
 import { collaborationsRouter, agentCollaborationsRouter } from './routes/collaborations.js';
 import { templatesRouter, companyExportRouter } from './routes/templates.js';
+import { projectsRouter } from './routes/projects.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -84,6 +85,7 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies', companiesRouter(db));
   app.use('/api/companies/:companyId/agents', agentsRouter(db));
   app.use('/api/companies/:companyId/org-chart', orgChartRouter(db));
+  app.use('/api/companies/:companyId/projects', projectsRouter(db));
   app.use('/api/companies/:companyId/tasks', tasksRouter(db));
   app.use('/api/companies/:companyId/goals', goalsRouter(db));
   app.use('/api/companies/:companyId/messages', messagesRouter(db));

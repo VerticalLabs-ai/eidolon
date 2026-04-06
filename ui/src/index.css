@@ -339,3 +339,21 @@ h1, h2, h3, .font-display {
 .animate-screen-flicker {
   animation: screen-flicker 2s ease-in-out infinite;
 }
+
+/* ── Skeleton Shimmer ────────────────────────────────────────────────── */
+
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    #0a0a0a 0%,
+    #111111 40%,
+    #0a0a0a 80%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}

@@ -12,6 +12,7 @@ import { BudgetGauge } from "@/components/dashboard/BudgetGauge";
 import { Card } from "@/components/ui/Card";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { Badge } from "@/components/ui/Badge";
+import { PageTransition } from "@/components/ui/PageTransition";
 
 export function CompanyDashboard() {
   const { companyId } = useParams();
@@ -37,6 +38,7 @@ export function CompanyDashboard() {
   }));
 
   return (
+    <PageTransition>
     <div className="mx-auto max-w-7xl p-6 lg:p-8 space-y-8">
       {/* Stats row */}
       <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
@@ -195,5 +197,6 @@ export function CompanyDashboard() {
         </div>
       </div>
     </div>
+    </PageTransition>
   );
 }

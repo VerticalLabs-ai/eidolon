@@ -9,15 +9,18 @@ import {
   Settings,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { Toaster } from "sonner";
 import { Sidebar } from "./Sidebar";
 import { useCompany } from "@/lib/hooks";
 import { useWebSocket } from "@/lib/ws";
+import { useEventToasts } from "@/lib/toasts";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
+import { CommandPalette } from "@/components/ui/CommandPalette";
 
 const mobileNavItems = [
   { to: "", icon: LayoutDashboard, label: "Home", end: true },
   { to: "/agents", icon: Bot, label: "Agents" },
-  { to: "/tasks", icon: ListTodo, label: "Tasks" },
+  { to: "/issues", icon: ListTodo, label: "Issues" },
   { to: "/analytics", icon: BarChart3, label: "Stats" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
@@ -29,8 +32,23 @@ export function AppShell() {
   const { status } = useWebSocket(companyId);
   const base = `/company/${companyId}`;
 
+  // Wire WebSocket events to toast notifications
+  useEventToasts(companyId);
+
   return (
     <div className="flex h-dvh bg-surface">
+      <CommandPalette />
+      <Toaster
+        position="bottom-right"
+        toastOptions={{
+          style: {
+            background: "#111111",
+            border: "1px solid rgba(255,255,255,0.08)",
+            color: "#e8eaed",
+            fontSize: "13px",
+          },
+        }}
+      />
       <Sidebar
         companyName={company?.name}
         open={sidebarOpen}

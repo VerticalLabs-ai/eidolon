@@ -25,6 +25,7 @@ import { Input, Textarea, Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
+import { PageTransition } from "@/components/ui/PageTransition";
 
 const PROVIDER_OPTIONS = [
   { value: "anthropic", label: "Anthropic" },
@@ -159,6 +160,7 @@ export function CompanySettings() {
   };
 
   return (
+    <PageTransition>
     <div className="mx-auto max-w-2xl p-6 lg:p-8 space-y-8">
       <div>
         <h2 className="font-display text-2xl font-bold text-text-primary tracking-tight">
@@ -520,5 +522,6 @@ export function CompanySettings() {
         </div>
       </div>
     </div>
+    </PageTransition>
   );
 }

@@ -3,22 +3,21 @@ import { Routes, Route } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { CompanyList } from "@/pages/CompanyList";
 import { CompanyDashboard } from "@/pages/CompanyDashboard";
-import { AgentList } from "@/pages/AgentList";
-import { AgentDetail } from "@/pages/AgentDetail";
+import { Inbox } from "@/pages/Inbox";
+import { ProjectList } from "@/pages/ProjectList";
+import { ProjectDetail } from "@/pages/ProjectDetail";
 import { TaskBoard } from "@/pages/TaskBoard";
 import { TaskDetail } from "@/pages/TaskDetail";
 import { GoalTree } from "@/pages/GoalTree";
+import { AgentList } from "@/pages/AgentList";
+import { AgentDetail } from "@/pages/AgentDetail";
 import { OrgChart } from "@/pages/OrgChart";
-import { MessageCenter } from "@/pages/MessageCenter";
-import { AnalyticsDashboard } from "@/pages/AnalyticsDashboard";
-import { CompanySettings } from "@/pages/CompanySettings";
 import { VirtualWorkspace } from "@/pages/VirtualWorkspace";
-import { BoardChat } from "@/pages/BoardChat";
-import { KnowledgeBase } from "@/pages/KnowledgeBase";
-import { FileManager } from "@/pages/FileManager";
-import { Integrations } from "@/pages/Integrations";
+import { Documents } from "@/pages/Documents";
 import { PromptStudio } from "@/pages/PromptStudio";
-import { AgentPerformance } from "@/pages/AgentPerformance";
+import { Analytics } from "@/pages/Analytics";
+import { Integrations } from "@/pages/Integrations";
+import { CompanySettings } from "@/pages/CompanySettings";
 import { Templates } from "@/pages/Templates";
 
 class ErrorBoundary extends Component<
@@ -66,21 +65,20 @@ export function App() {
         <Route path="/templates" element={<Templates />} />
         <Route path="/company/:companyId" element={<AppShell />}>
           <Route index element={<CompanyDashboard />} />
-          <Route path="agents" element={<AgentList />} />
-          <Route path="agents/:agentId" element={<AgentDetail />} />
-          <Route path="tasks" element={<TaskBoard />} />
+          <Route path="inbox" element={<Inbox />} />
+          <Route path="projects" element={<ProjectList />} />
+          <Route path="projects/:projectId" element={<ProjectDetail />} />
+          <Route path="issues" element={<TaskBoard />} />
           <Route path="tasks/:taskId" element={<TaskDetail />} />
           <Route path="goals" element={<GoalTree />} />
+          <Route path="agents" element={<AgentList />} />
+          <Route path="agents/:agentId" element={<AgentDetail />} />
           <Route path="org-chart" element={<OrgChart />} />
-          <Route path="chat" element={<BoardChat />} />
-          <Route path="messages" element={<MessageCenter />} />
-          <Route path="analytics" element={<AnalyticsDashboard />} />
-          <Route path="knowledge" element={<KnowledgeBase />} />
-          <Route path="files" element={<FileManager />} />
-          <Route path="integrations" element={<Integrations />} />
-          <Route path="prompts" element={<PromptStudio />} />
-          <Route path="performance" element={<AgentPerformance />} />
           <Route path="workspace" element={<VirtualWorkspace />} />
+          <Route path="documents" element={<Documents />} />
+          <Route path="prompts" element={<PromptStudio />} />
+          <Route path="analytics" element={<Analytics />} />
+          <Route path="integrations" element={<Integrations />} />
           <Route path="settings" element={<CompanySettings />} />
         </Route>
       </Routes>
