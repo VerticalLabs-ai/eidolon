@@ -1,0 +1,35 @@
+{
+  "name": "eidolon",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "server",
+    "ui"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,ui -c blue,green \"npm run dev:server\" \"npm run dev:ui\"",
+    "dev:server": "npm -w server run dev",
+    "dev:ui": "npm -w ui run dev",
+    "build": "npm -w @eidolon/shared run build && npm -w server run build && npm -w ui run build",
+    "typecheck": "tsc -b",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "db:generate": "npm -w @eidolon/db run generate",
+    "db:migrate": "npm -w @eidolon/db run migrate",
+    "db:seed": "npm -w @eidolon/db run seed",
+    "lint": "eslint . --ext .ts,.tsx",
+    "clean": "rm -rf node_modules packages/*/node_modules server/node_modules ui/node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/supertest": "^7.2.0",
+    "concurrently": "^9.1.2",
+    "supertest": "^7.2.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
