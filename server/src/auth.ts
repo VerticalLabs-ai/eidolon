@@ -1,23 +1,84 @@
 import { betterAuth } from 'better-auth';
+import type {
+  Auth as BetterAuthInstance,
+  BetterAuthOptions,
+  Session as BetterAuthSession,
+  User as BetterAuthUser,
+} from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { organization } from 'better-auth/plugins/organization';
 import { bearer } from 'better-auth/plugins/bearer';
 import { admin } from 'better-auth/plugins/admin';
+import { eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { users } from '@eidolon/db';
 import logger from './utils/logger.js';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type Auth = any;
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 
-/**
- * Create a BetterAuth instance wired to our Drizzle/SQLite database.
- *
- * Plugins: organization, bearer, admin
- * Social providers: Google (when GOOGLE_CLIENT_ID is set)
- */
-export function createAuth(drizzleDb: BetterSQLite3Database): Auth {
+type AuthOptions = BetterAuthOptions & {
+  session: {
+    expiresIn: number;
+    updateAge: number;
+    cookieCache: {
+      enabled: true;
+      maxAge: number;
+    };
+  };
+  user: {
+    additionalFields: {
+      role: {
+        type: 'string';
+        defaultValue: 'user';
+        input: false;
+      };
+    };
+  };
+  plugins: [ReturnType<typeof organization>, ReturnType<typeof bearer>, ReturnType<typeof admin>];
+};
+
+type AuthOrganizationMember = {
+  id: string;
+  organizationId: string;
+  role: string;
+  userId: string;
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    image?: string | null;
+  };
+};
+
+type BaseAuth = BetterAuthInstance<AuthOptions>;
+type AuthApi = BaseAuth['api'] & {
+  listMembers: (input: {
+    headers: Headers;
+    query: {
+      organizationId: string;
+      limit?: number;
+      filterField?: string;
+      filterOperator?:
+        | 'eq'
+        | 'ne'
+        | 'gt'
+        | 'gte'
+        | 'lt'
+        | 'lte'
+        | 'in'
+        | 'not_in'
+        | 'contains'
+        | 'starts_with'
+        | 'ends_with';
+      filterValue?: string | number | boolean | string[] | number[];
+    };
+  }) => Promise<{
+    members: AuthOrganizationMember[];
+    total: number;
+  }>;
+};
+
+function buildAuthOptions(drizzleDb: BetterSQLite3Database): AuthOptions {
   // Build social providers dynamically based on env vars
   const socialProviders: Record<string, any> = {};
 
@@ -29,7 +90,7 @@ export function createAuth(drizzleDb: BetterSQLite3Database): Auth {
     logger.info('Google OAuth provider enabled');
   }
 
-  const auth = betterAuth({
+  return {
     database: drizzleAdapter(drizzleDb, { provider: 'sqlite' }),
 
     basePath: '/api/auth',
@@ -63,12 +124,16 @@ export function createAuth(drizzleDb: BetterSQLite3Database): Auth {
     databaseHooks: {
       user: {
         create: {
-          after: async (user: any) => {
-            if (ADMIN_EMAIL && user.email === ADMIN_EMAIL) {
+          after: async (user: { id: string; email?: string | null }) => {
+            const normalizedAdminEmail = ADMIN_EMAIL?.toLowerCase();
+            const normalizedUserEmail = user.email?.toLowerCase();
+
+            if (normalizedAdminEmail && normalizedUserEmail === normalizedAdminEmail) {
               // Promote to admin role
-              await drizzleDb.run(
-                { sql: `UPDATE users SET role = 'admin' WHERE id = ?`, params: [user.id] } as any,
-              );
+              await drizzleDb
+                .update(users)
+                .set({ role: 'admin' })
+                .where(eq(users.id, user.id));
               logger.info({ email: user.email }, 'Auto-promoted user to admin');
             }
           },
@@ -85,7 +150,28 @@ export function createAuth(drizzleDb: BetterSQLite3Database): Auth {
     ],
 
     trustedOrigins: process.env.CORS_ORIGIN?.split(',') ?? ['http://localhost:5173', 'http://localhost:3000'],
-  });
+  };
+}
 
-  return auth;
+export type Auth = Omit<BaseAuth, 'api'> & { api: AuthApi };
+type BaseAuthSession = NonNullable<Awaited<ReturnType<Auth['api']['getSession']>>>;
+export type AuthUser = BaseAuthSession['user'] & BetterAuthUser & { role?: string | null };
+export type AuthSessionData = BaseAuthSession['session'] & BetterAuthSession & {
+  activeOrganizationId?: string | null;
+};
+export interface AuthSession {
+  user: AuthUser;
+  session: AuthSessionData;
+}
+
+/**
+ * Create a BetterAuth instance wired to our Drizzle/SQLite database.
+ *
+ * Plugins: organization, bearer, admin
+ * Social providers: Google (when GOOGLE_CLIENT_ID is set)
+ */
+export function createAuth(drizzleDb: BetterSQLite3Database): Auth {
+  const auth = betterAuth(buildAuthOptions(drizzleDb));
+
+  return auth as Auth;
 }

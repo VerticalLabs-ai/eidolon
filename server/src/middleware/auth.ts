@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { Auth } from '../auth.js';
+import type { Auth, AuthSession, AuthSessionData, AuthUser } from '../auth.js';
 import { AppError } from './error-handler.js';
 import logger from '../utils/logger.js';
 
@@ -8,15 +8,15 @@ declare global {
   namespace Express {
     interface Request {
       user?: {
-        id: string;
-        name: string;
-        email: string;
-        role?: string;
+        id: AuthUser['id'];
+        name: AuthUser['name'];
+        email: AuthUser['email'];
+        role?: AuthUser['role'];
       };
       session?: {
-        id: string;
-        userId: string;
-        activeOrganizationId?: string | null;
+        id: AuthSessionData['id'];
+        userId: AuthSessionData['userId'];
+        activeOrganizationId?: AuthSessionData['activeOrganizationId'];
       };
       organizationMembership?: {
         id: string;
@@ -67,7 +67,7 @@ export function createAuthMiddleware(auth: Auth) {
       for (const [key, value] of Object.entries(req.headers)) {
         if (value) headers.set(key, Array.isArray(value) ? value[0] : value);
       }
-      const session = await auth.api.getSession({ headers });
+      const session: AuthSession | null = await auth.api.getSession({ headers });
 
       if (!session?.user) {
         throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');
@@ -77,12 +77,12 @@ export function createAuthMiddleware(auth: Auth) {
         id: session.user.id,
         name: session.user.name,
         email: session.user.email,
-        role: (session.user as any).role,
+        role: session.user.role,
       };
       req.session = {
         id: session.session.id,
         userId: session.session.userId,
-        activeOrganizationId: (session.session as any).activeOrganizationId,
+        activeOrganizationId: session.session.activeOrganizationId,
       };
 
       next();
@@ -130,8 +130,18 @@ export function createAuthMiddleware(auth: Auth) {
       }
 
       try {
-        // Check if user is a global admin (bypass org check)
+        // Admins receive owner-level access through this bypass; each use is captured in the audit log below for traceability.
         if (req.user.role === 'admin') {
+          const timestamp = new Date().toISOString();
+          logger.info(
+            {
+              action: 'admin_bypass_owner_access',
+              actingUserId: req.user.id,
+              targetOrganizationId: companyId,
+              timestamp,
+            },
+            'Admin bypass granted owner-level organization access',
+          );
           req.organizationMembership = {
             id: 'admin-bypass',
             role: 'owner',
@@ -146,22 +156,22 @@ export function createAuthMiddleware(auth: Auth) {
         for (const [key, value] of Object.entries(req.headers)) {
           if (value) headers.set(key, Array.isArray(value) ? value[0] : value);
         }
-        const membership = await auth.api.getFullOrganization({
+        const membership = await auth.api.listMembers({
           headers,
-          query: { organizationId: companyId },
+          query: {
+            organizationId: companyId,
+            limit: 1,
+            filterField: 'userId',
+            filterOperator: 'eq',
+            filterValue: req.user.id,
+          },
         });
 
-        if (!membership) {
+        if (!membership?.members?.length) {
           throw new AppError(403, 'FORBIDDEN', 'You are not a member of this organization');
         }
 
-        const userMember = membership.members?.find(
-          (m: any) => m.userId === req.user!.id,
-        );
-
-        if (!userMember) {
-          throw new AppError(403, 'FORBIDDEN', 'You are not a member of this organization');
-        }
+        const [userMember] = membership.members;
 
         // Check minimum role if specified
         if (minimumRole) {

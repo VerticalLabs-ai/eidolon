@@ -148,21 +148,22 @@ export class HeartbeatScheduler {
 
       if (nowMs - startedMs > timeoutMs) {
         // Task has exceeded its timeout -- transition to timed_out
-        await this.db.drizzle
-          .update(tasks)
-          .set({
-            status: 'timed_out',
-            updatedAt: now,
-          })
-          .where(eq(tasks.id, row.taskId));
+        await this.db.drizzle.transaction(async (tx) => {
+          await tx
+            .update(tasks)
+            .set({
+              status: 'timed_out',
+              updatedAt: now,
+            })
+            .where(eq(tasks.id, row.taskId));
 
-        // Set agent back to idle
-        if (row.agentId) {
-          await this.db.drizzle
-            .update(agents)
-            .set({ status: 'idle', updatedAt: now })
-            .where(eq(agents.id, row.agentId));
-        }
+          if (row.agentId) {
+            await tx
+              .update(agents)
+              .set({ status: 'idle', updatedAt: now })
+              .where(eq(agents.id, row.agentId));
+          }
+        });
 
         eventBus.emitEvent({
           type: 'task.timed_out',
@@ -199,58 +200,46 @@ export class HeartbeatScheduler {
   ): Promise<{ assigned: boolean; taskId?: string }> {
     const now = new Date();
 
-    // Atomic assignment: UPDATE with a sub-select to prevent race conditions.
-    // If two agents race for the same task, only one UPDATE will match because
-    // the WHERE clause requires assignee_agent_id IS NULL.
-    const result = await this.db.drizzle.run(sql`
-      UPDATE ${tasks}
-      SET
-        ${tasks.assigneeAgentId} = ${agent.id},
-        ${tasks.status} = 'in_progress',
-        ${tasks.startedAt} = ${now.getTime()},
-        ${tasks.updatedAt} = ${now.getTime()}
-      WHERE ${tasks.id} = (
-        SELECT ${tasks.id} FROM ${tasks}
-        WHERE ${tasks.companyId} = ${agent.companyId}
-          AND ${tasks.status} IN ('todo', 'backlog')
-          AND ${tasks.assigneeAgentId} IS NULL
-        ORDER BY CASE ${tasks.priority}
-          WHEN 'critical' THEN 0
-          WHEN 'high' THEN 1
-          WHEN 'medium' THEN 2
-          WHEN 'low' THEN 3
-          ELSE 4
-        END
-        LIMIT 1
+    const nextTaskId = this.db.drizzle
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.companyId, agent.companyId),
+          inArray(tasks.status, ['todo', 'backlog']),
+          isNull(tasks.assigneeAgentId),
+        ),
       )
-      AND ${tasks.assigneeAgentId} IS NULL
-    `);
+      .orderBy(sql`CASE ${tasks.priority}
+        WHEN 'critical' THEN 0
+        WHEN 'high' THEN 1
+        WHEN 'medium' THEN 2
+        WHEN 'low' THEN 3
+        ELSE 4
+      END`)
+      .limit(1);
 
-    // Check if any row was actually updated
-    if (!result.changes || result.changes === 0) {
-      // No tasks available or another agent won the race
+    const [assignedTask] = await this.db.drizzle
+      .update(tasks)
+      .set({
+        assigneeAgentId: agent.id,
+        status: 'in_progress',
+        startedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          inArray(tasks.id, nextTaskId),
+          isNull(tasks.assigneeAgentId),
+        ),
+      )
+      .returning();
+
+    if (!assignedTask) {
       await this.db.drizzle
         .update(agents)
         .set({ lastHeartbeatAt: now })
         .where(eq(agents.id, agent.id));
-      return { assigned: false };
-    }
-
-    // Fetch the task that was just assigned to get its details
-    const [assignedTask] = await this.db.drizzle
-      .select()
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.assigneeAgentId, agent.id),
-          eq(tasks.status, 'in_progress'),
-          eq(tasks.companyId, agent.companyId),
-        ),
-      )
-      .orderBy(sql`${tasks.updatedAt} DESC`)
-      .limit(1);
-
-    if (!assignedTask) {
       return { assigned: false };
     }
 

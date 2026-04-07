@@ -18,6 +18,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
             className="h-8 w-8 animate-spin text-accent"
             viewBox="0 0 24 24"
             fill="none"
+            aria-hidden="true"
           >
             <circle
               cx="12"

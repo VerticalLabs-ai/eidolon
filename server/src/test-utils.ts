@@ -252,9 +252,18 @@ export function createTestDb(): DbInstance {
 /**
  * Create an Express app wired to the given test database instance.
  */
-export function createTestApp(db: DbInstance) {
-  // In tests, use local_trusted auth mode so no real auth is needed
-  process.env.AUTH_MODE = 'local_trusted';
-  const auth = createAuth(db.drizzle);
-  return createApp(db, auth);
+export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
+  const previousAuthMode = process.env.AUTH_MODE;
+
+  try {
+    process.env.AUTH_MODE = authMode;
+    const auth = createAuth(db.drizzle);
+    return createApp(db, auth);
+  } finally {
+    if (previousAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = previousAuthMode;
+    }
+  }
 }

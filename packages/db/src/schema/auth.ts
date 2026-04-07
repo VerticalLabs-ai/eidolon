@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // ---------------------------------------------------------------------------
 // BetterAuth core tables
@@ -108,6 +108,7 @@ export const members = sqliteTable(
   (table) => [
     index('idx_members_org').on(table.organizationId),
     index('idx_members_user').on(table.userId),
+    uniqueIndex('uq_members_user_org').on(table.userId, table.organizationId),
   ],
 );
 
