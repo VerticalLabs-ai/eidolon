@@ -20,13 +20,24 @@ const candidates = [
   path.resolve(process.cwd(), '../.env'),  // cwd is server/, parent is root
 ];
 
+let envLoaded = false;
+
 for (const envPath of candidates) {
   if (existsSync(envPath)) {
     const result = dotenv.config({ path: envPath, override: true });
     if (!result.error) {
+      envLoaded = true;
       // eslint-disable-next-line no-console
       console.log(`[env] Loaded ${Object.keys(result.parsed ?? {}).length} vars from ${envPath}`);
       break;
     }
   }
+}
+
+if (!envLoaded) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[env] No .env file was loaded. Checked candidates: ${JSON.stringify(candidates)}. ` +
+      'Set environment variables another way or add a .env file in one of those locations.',
+  );
 }

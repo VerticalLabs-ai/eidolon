@@ -27,7 +27,7 @@ export function signInWithGoogle(callbackURL = "/") {
   // Ensure the callback is a full URL pointing at the UI origin
   const fullCallbackURL = callbackURL.startsWith("http")
     ? callbackURL
-    : `${window.location.origin}${callbackURL}`;
+    : new URL(callbackURL, window.location.origin).toString();
 
   return authClient.signIn.social({
     provider: "google",

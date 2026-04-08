@@ -60,22 +60,28 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
   // ---------------------------------------------------------------------------
 
   const authHandler = toNodeHandler(auth);
-  app.all('/api/auth/*splat', (req, res, next) => {
+  app.all('/api/auth/*splat', (req, res) => {
     try {
-      const result = authHandler(req, res, next);
+      const result = authHandler(req, res);
       // Catch async errors from the handler
       if (result && typeof (result as any).catch === 'function') {
         (result as any).catch((err: unknown) => {
           logger.error({ err, url: req.url, method: req.method }, 'BetterAuth handler error');
           if (!res.headersSent) {
-            res.status(500).json({ error: 'Auth error', message: String(err) });
+            res.status(500).json({
+              error: 'Auth error',
+              message: isDev ? String(err) : 'Internal server error',
+            });
           }
         });
       }
     } catch (err) {
       logger.error({ err, url: req.url, method: req.method }, 'BetterAuth handler sync error');
       if (!res.headersSent) {
-        res.status(500).json({ error: 'Auth error', message: String(err) });
+        res.status(500).json({
+          error: 'Auth error',
+          message: isDev ? String(err) : 'Internal server error',
+        });
       }
     }
   });

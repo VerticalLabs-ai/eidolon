@@ -182,6 +182,13 @@ server.listen(PORT, HOST, () => {
 
 // Graceful shutdown
 let shuttingDown = false;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
+const parsedShutdownTimeoutMs = Number.parseInt(process.env.SHUTDOWN_TIMEOUT_MS ?? '', 10);
+const shutdownTimeoutMs =
+  Number.isFinite(parsedShutdownTimeoutMs) && parsedShutdownTimeoutMs > 0
+    ? parsedShutdownTimeoutMs
+    : DEFAULT_SHUTDOWN_TIMEOUT_MS;
+
 const shutdown = (signal: string) => {
   if (shuttingDown) {
     // Second signal = force exit immediately
@@ -202,11 +209,11 @@ const shutdown = (signal: string) => {
     process.exit(0);
   });
 
-  // Force exit after 3 seconds if something hangs
+  // Force exit after the configured timeout if something hangs
   setTimeout(() => {
     logger.error('Forced shutdown after timeout');
     process.exit(1);
-  }, 3_000).unref();
+  }, shutdownTimeoutMs).unref();
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

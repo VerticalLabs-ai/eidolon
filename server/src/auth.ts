@@ -24,6 +24,11 @@ import {
 import logger from './utils/logger.js';
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
+const DEFAULT_TRUSTED_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:5173',
+];
 
 type AuthOptions = BetterAuthOptions & {
   session: {
@@ -112,6 +117,9 @@ function buildAuthOptions(drizzleDb: BetterSQLite3Database): AuthOptions {
   }
 
   const baseURL = process.env.BETTER_AUTH_URL ?? `http://localhost:${process.env.PORT ?? '3100'}`;
+  const trustedOrigins = process.env.CORS_ORIGIN?.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
   return {
     baseURL,
@@ -186,11 +194,7 @@ function buildAuthOptions(drizzleDb: BetterSQLite3Database): AuthOptions {
       admin(),
     ],
 
-    trustedOrigins: process.env.CORS_ORIGIN?.split(',') ?? [
-      'http://localhost:3000',
-      'http://localhost:3001',
-      'http://localhost:5173',
-    ],
+    trustedOrigins: trustedOrigins && trustedOrigins.length > 0 ? trustedOrigins : DEFAULT_TRUSTED_ORIGINS,
   };
 }
 
