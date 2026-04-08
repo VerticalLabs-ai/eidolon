@@ -19,10 +19,18 @@ export const useListOrganizations = authClient.useListOrganizations;
 /**
  * Sign in with Google OAuth.
  * Redirects to Google's consent screen, then back to callbackURL.
+ *
+ * In dev the UI and API run on different ports, so we need to pass
+ * the full UI origin so BetterAuth redirects back to the SPA.
  */
 export function signInWithGoogle(callbackURL = "/") {
+  // Ensure the callback is a full URL pointing at the UI origin
+  const fullCallbackURL = callbackURL.startsWith("http")
+    ? callbackURL
+    : `${window.location.origin}${callbackURL}`;
+
   return authClient.signIn.social({
     provider: "google",
-    callbackURL,
+    callbackURL: fullCallbackURL,
   });
 }

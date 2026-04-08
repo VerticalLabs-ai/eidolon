@@ -11,7 +11,16 @@ import { bearer } from 'better-auth/plugins/bearer';
 import { admin } from 'better-auth/plugins/admin';
 import { eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { users } from '@eidolon/db';
+import {
+  users,
+  sessions,
+  accounts,
+  verifications,
+  organizations,
+  members,
+  invitations,
+  apikeys,
+} from '@eidolon/db';
 import logger from './utils/logger.js';
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
@@ -82,16 +91,44 @@ function buildAuthOptions(drizzleDb: BetterSQLite3Database): AuthOptions {
   // Build social providers dynamically based on env vars
   const socialProviders: Record<string, any> = {};
 
-  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  const googleClientId = process.env.GOOGLE_CLIENT_ID;
+  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+  logger.info(
+    { hasClientId: !!googleClientId, hasClientSecret: !!googleClientSecret },
+    'Checking Google OAuth env vars',
+  );
+
+  if (googleClientId && googleClientSecret) {
     socialProviders.google = {
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      clientId: googleClientId,
+      clientSecret: googleClientSecret,
+      // Only request basic profile info — no Drive, Calendar, etc.
+      scope: ['openid', 'email', 'profile'],
     };
     logger.info('Google OAuth provider enabled');
+  } else {
+    logger.warn('Google OAuth disabled — GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET missing');
   }
 
+  const baseURL = process.env.BETTER_AUTH_URL ?? `http://localhost:${process.env.PORT ?? '3100'}`;
+
   return {
-    database: drizzleAdapter(drizzleDb, { provider: 'sqlite' }),
+    baseURL,
+
+    database: drizzleAdapter(drizzleDb, {
+      provider: 'sqlite',
+      schema: {
+        user: users,
+        session: sessions,
+        account: accounts,
+        verification: verifications,
+        organization: organizations,
+        member: members,
+        invitation: invitations,
+        apikey: apikeys,
+      },
+    }),
 
     basePath: '/api/auth',
 
@@ -99,7 +136,7 @@ function buildAuthOptions(drizzleDb: BetterSQLite3Database): AuthOptions {
       enabled: true,
     },
 
-    socialProviders,
+    socialProviders: Object.keys(socialProviders).length > 0 ? socialProviders : undefined,
 
     session: {
       expiresIn: 60 * 60 * 24 * 30,
@@ -149,7 +186,11 @@ function buildAuthOptions(drizzleDb: BetterSQLite3Database): AuthOptions {
       admin(),
     ],
 
-    trustedOrigins: process.env.CORS_ORIGIN?.split(',') ?? ['http://localhost:5173', 'http://localhost:3000'],
+    trustedOrigins: process.env.CORS_ORIGIN?.split(',') ?? [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://localhost:5173',
+    ],
   };
 }
 

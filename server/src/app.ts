@@ -40,13 +40,9 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
   const { requireAuth, requireOrgMember } = createAuthMiddleware(auth);
 
   // ---------------------------------------------------------------------------
-  // Global middleware
+  // CORS (must come before everything so preflight OPTIONS work)
   // ---------------------------------------------------------------------------
 
-  // Parse JSON bodies (Express 5 built-in)
-  app.use(express.json({ limit: '2mb' }));
-
-  // CORS - allow all in development
   const isDev = process.env.NODE_ENV !== 'production';
   app.use(
     cors(
@@ -58,6 +54,38 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
           },
     ),
   );
+
+  // ---------------------------------------------------------------------------
+  // Auth routes (BEFORE express.json — BetterAuth reads the raw body stream)
+  // ---------------------------------------------------------------------------
+
+  const authHandler = toNodeHandler(auth);
+  app.all('/api/auth/*splat', (req, res, next) => {
+    try {
+      const result = authHandler(req, res, next);
+      // Catch async errors from the handler
+      if (result && typeof (result as any).catch === 'function') {
+        (result as any).catch((err: unknown) => {
+          logger.error({ err, url: req.url, method: req.method }, 'BetterAuth handler error');
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Auth error', message: String(err) });
+          }
+        });
+      }
+    } catch (err) {
+      logger.error({ err, url: req.url, method: req.method }, 'BetterAuth handler sync error');
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Auth error', message: String(err) });
+      }
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Global middleware (for all non-auth routes)
+  // ---------------------------------------------------------------------------
+
+  // Parse JSON bodies (Express 5 built-in)
+  app.use(express.json({ limit: '2mb' }));
 
   // Request logging
   app.use(
@@ -80,12 +108,6 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
       },
     }),
   );
-
-  // ---------------------------------------------------------------------------
-  // Auth routes (public - handled entirely by BetterAuth)
-  // ---------------------------------------------------------------------------
-
-  app.all('/api/auth/*splat', toNodeHandler(auth));
 
   // ---------------------------------------------------------------------------
   // API routes

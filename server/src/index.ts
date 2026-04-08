@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './env.js'; // must be first — loads .env from monorepo root
 import { createServer } from 'node:http';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -181,19 +181,32 @@ server.listen(PORT, HOST, () => {
 });
 
 // Graceful shutdown
+let shuttingDown = false;
 const shutdown = (signal: string) => {
+  if (shuttingDown) {
+    // Second signal = force exit immediately
+    logger.warn('Forced shutdown (second signal)');
+    process.exit(1);
+  }
+  shuttingDown = true;
   logger.info({ signal }, 'Shutdown signal received');
+
   scheduler.stop();
+
+  // Close all WebSocket connections so server.close() can finish
+  server.closeAllConnections();
+
   server.close(() => {
     sqlite.close();
     logger.info('Server stopped');
     process.exit(0);
   });
-  // Force exit after 10 seconds
+
+  // Force exit after 3 seconds if something hangs
   setTimeout(() => {
     logger.error('Forced shutdown after timeout');
     process.exit(1);
-  }, 10_000);
+  }, 3_000).unref();
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
