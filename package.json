@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n server,ui -c blue,green \"pnpm run dev:server\" \"pnpm run dev:ui\"",
+    "dev": "node scripts/dev.mjs",
     "dev:server": "pnpm --filter server dev",
     "dev:ui": "pnpm --filter ui dev",
     "build": "pnpm --filter @eidolon/shared build && pnpm --filter server build && pnpm --filter ui build",
@@ -29,6 +29,9 @@
   },
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
   }
 }
