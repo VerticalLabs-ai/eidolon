@@ -1,4 +1,4 @@
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   Bot,
   ListTodo,
@@ -6,10 +6,8 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import { useAgents, useTasks, useDashboard, useActivity } from "@/lib/hooks";
-import { StatCard } from "@/components/dashboard/StatCard";
 import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import { BudgetGauge } from "@/components/dashboard/BudgetGauge";
-import { Card } from "@/components/ui/Card";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { Badge } from "@/components/ui/Badge";
 import { PageTransition } from "@/components/ui/PageTransition";
@@ -136,9 +134,10 @@ export function CompanyDashboard() {
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {agents.map((agent: any) => (
-                <div
+                <Link
                   key={agent.id}
-                  className="flex items-center gap-3 rounded-xl glass-raised p-4 transition-all duration-200 hover:glass-hover"
+                  to={`/company/${companyId}/agents/${agent.id}`}
+                  className="flex items-center gap-3 rounded-xl glass-raised p-4 transition-all duration-200 hover:glass-hover focus:outline-none focus:ring-2 focus:ring-neon-cyan/40"
                 >
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-neon-cyan/10">
                     <Bot className="h-5 w-5 text-neon-cyan" />
@@ -155,7 +154,7 @@ export function CompanyDashboard() {
                     </p>
                   </div>
                   <Badge variant="info">{agent.role}</Badge>
-                </div>
+                </Link>
               ))}
             </div>
           )}

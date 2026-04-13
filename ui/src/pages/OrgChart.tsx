@@ -4,7 +4,7 @@ import { useOrgChart } from "@/lib/hooks";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { clsx } from "clsx";
-import type { Agent } from "@/lib/api";
+import type { OrgChartNode } from "@/lib/api";
 
 const roleAccent: Record<string, { bg: string; text: string; glow: string }> = {
   engineering: { bg: "bg-neon-cyan/10", text: "text-neon-cyan", glow: "0 0 12px rgba(0,243,255,0.15)" },
@@ -17,40 +17,15 @@ const roleAccent: Record<string, { bg: string; text: string; glow: string }> = {
 
 const defaultAccent = { bg: "bg-neon-cyan/10", text: "text-neon-cyan", glow: "0 0 12px rgba(0,243,255,0.15)" };
 
-interface OrgTreeNode {
-  agent: Agent;
-  children: OrgTreeNode[];
-}
-
-function buildOrgTree(agents: Agent[]): OrgTreeNode[] {
-  const map = new Map<string, OrgTreeNode>();
-  const roots: OrgTreeNode[] = [];
-
-  for (const agent of agents) {
-    map.set(agent.id, { agent, children: [] });
-  }
-
-  for (const agent of agents) {
-    const node = map.get(agent.id)!;
-    if (agent.reportsTo && map.has(agent.reportsTo)) {
-      map.get(agent.reportsTo)!.children.push(node);
-    } else {
-      roots.push(node);
-    }
-  }
-
-  return roots;
-}
-
 function OrgNodeCard({
   node,
   companyId,
 }: {
-  node: OrgTreeNode;
+  node: OrgChartNode;
   companyId: string;
 }) {
   const navigate = useNavigate();
-  const agent = node.agent;
+  const agent = node;
   const accent = roleAccent[agent.role?.toLowerCase()] ?? defaultAccent;
 
   return (
@@ -113,7 +88,7 @@ function OrgNodeCard({
             )}
 
             {node.children.map((child) => (
-              <div key={child.agent.id} className="flex flex-col items-center">
+              <div key={child.id} className="flex flex-col items-center">
                 <div
                   className="h-8 w-px"
                   style={{
@@ -132,9 +107,8 @@ function OrgNodeCard({
 
 export function OrgChart() {
   const { companyId } = useParams();
-  const { data: agents, isLoading } = useOrgChart(companyId);
-
-  const tree = buildOrgTree(agents ?? []);
+  const { data, isLoading } = useOrgChart(companyId);
+  const tree = data ?? [];
 
   return (
     <div className="p-6 lg:p-8 space-y-8">
@@ -161,7 +135,7 @@ export function OrgChart() {
         <div className="overflow-x-auto pb-8 grid-bg rounded-xl">
           <div className="flex justify-center min-w-max py-8 gap-10">
             {tree.map((root) => (
-              <OrgNodeCard key={root.agent.id} node={root} companyId={companyId!} />
+              <OrgNodeCard key={root.id} node={root} companyId={companyId!} />
             ))}
           </div>
         </div>

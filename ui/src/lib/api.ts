@@ -83,6 +83,10 @@ export interface Agent {
   updatedAt: string;
 }
 
+export interface OrgChartNode extends Agent {
+  children: OrgChartNode[];
+}
+
 export interface Task {
   id: string;
   companyId: string;
@@ -333,7 +337,7 @@ export const getActivity = (companyId: string) =>
 // ── Org Chart ────────────────────────────────────────────────────────────
 
 export const getOrgChart = (companyId: string) =>
-  request<Agent[]>(`/companies/${companyId}/org-chart`);
+  request<OrgChartNode[]>(`/companies/${companyId}/org-chart`);
 
 // ── Secrets ─────────────────────────────────────────────────────────────
 

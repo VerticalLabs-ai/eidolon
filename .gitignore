@@ -79,3 +79,4 @@ eidolon-data/
 /ui/vite.config.d.ts
 /ui/vite.config.d.ts.map
 /ui/src/**/*.js
+.gitnexus

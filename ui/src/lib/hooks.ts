@@ -269,7 +269,8 @@ export function useActivity(companyId: string | undefined) {
 export function useOrgChart(companyId: string | undefined) {
   return useQuery({
     queryKey: ["org-chart", companyId],
-    queryFn: async () => unwrap<api.Agent[]>(await api.getOrgChart(companyId!)),
+    queryFn: async () =>
+      unwrap<api.OrgChartNode[]>(await api.getOrgChart(companyId!)),
     enabled: !!companyId,
   });
 }
