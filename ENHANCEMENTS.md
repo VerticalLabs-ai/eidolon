@@ -1,7 +1,7 @@
 # Eidolon Enhancement Roadmap
 
 **Competitive Analysis vs. Paperclip + Independent Recommendations**
-*Generated April 6, 2026*
+_Generated April 6, 2026_
 
 ---
 
@@ -16,9 +16,11 @@ After a thorough review of the Eidolon codebase and a deep-dive into Paperclip's
 Eidolon currently has **zero authentication**. Every API endpoint is open. This is the single biggest gap in the platform and blocks any real-world deployment.
 
 ### 1.1 Authentication System `[P0] [Paperclip Gap]` -- IMPLEMENTED
+
 Paperclip uses **better-auth** with session-based authentication, OAuth/OpenID support, and two deployment modes: `local_trusted` (no auth, localhost only) and `authenticated` (full session management).
 
 **Done:**
+
 - BetterAuth with Drizzle/SQLite adapter
 - Email/password authentication
 - Google OAuth ("Continue with Google")
@@ -27,7 +29,22 @@ Paperclip uses **better-auth** with session-based authentication, OAuth/OpenID s
 - Admin auto-promotion via `ADMIN_EMAIL` env var
 - Bearer token plugin for API access
 
+#### Rollout / Deployment (for `1.1 Authentication System`)
+
+- Required env review for `1.1 Authentication System`: set `AUTH_MODE` to either `authenticated` or `local_trusted`, set `ADMIN_EMAIL` for the initial admin promotion path, and set `GOOGLE_CLIENT_ID` plus `GOOGLE_CLIENT_SECRET` whenever Google OAuth should be enabled.
+- Deployment warning: never run `AUTH_MODE=local_trusted` in production or on any network-accessible host. `server/src/middleware/auth.ts` treats that mode as a full auth bypass and injects a local admin user.
+- Admin email handling: `server/src/auth.ts` lowercases both `ADMIN_EMAIL` and the user email before comparison, so promotion is effectively case-insensitive. Use one canonical admin address and verify the intended account logs in first.
+- Migration note: apply the BetterAuth schema migration before enabling `authenticated` mode on an existing database. The current Drizzle schema adds `users`, `sessions`, `accounts`, `verifications`, `organizations`, `members`, `invitations`, and `apikeys`.
+- Migration note: keep SQLite foreign keys enabled during runtime and migration. The auth tables rely on `ON DELETE CASCADE` relationships, and `packages/db/src/index.ts` explicitly turns `foreign_keys = ON`.
+- Migration note: the same migration train also adds `agents.execution_timeout_seconds` with a default of `600`, so older databases need the updated agent schema as well as the BetterAuth tables.
+- Security caution: keep BetterAuth routes mounted before `express.json()`. `server/src/app.ts` documents that BetterAuth reads the raw body stream first, and changing that order can break cookie/session handling.
+- Security caution: authenticated browser requests depend on cookies and `credentials: "include"` in `ui/src/lib/api.ts`. Verify that frontend fetches, `CORS_ORIGIN`, and BetterAuth trusted origins stay aligned whenever the UI and API are served from different origins.
+- Security caution: session behavior still deserves concurrency-focused regression testing. The auth config enables cookie-backed session caching for five minutes, so concurrent login, logout, and org-switch flows can hide stale-cookie or race-style behavior if they are only tested manually.
+- Test gap: there are no dedicated integration tests covering `createAuthMiddleware`, `requireAuth`, or `requireOrgMember`.
+- Test gap: there are no dedicated tests covering the concurrent task-assignment guard in `server/src/services/task-assigner.ts`, so the section `3.1 Issue Checkout Semantics` race-condition fix still needs regression coverage.
+
 ### 1.1b OAuth & SSO Connectors `[P1] [Independent]`
+
 Expand authentication beyond Google to support additional identity providers:
 
 - **GitHub OAuth** — Common for developer-facing deployments
@@ -39,6 +56,7 @@ Expand authentication beyond Google to support additional identity providers:
 - **Provider management UI** — Admin page to enable/disable providers and configure credentials
 
 ### 1.2 Role-Based Access Control `[P0] [Paperclip Gap]`
+
 Paperclip implements company-scoped permissions and user invitations. Eidolon needs:
 
 - User roles (Owner, Admin, Member, Viewer) per company
@@ -47,6 +65,7 @@ Paperclip implements company-scoped permissions and user invitations. Eidolon ne
 - Agent API key management with scoped permissions
 
 ### 1.3 Board Governance Model `[P0] [Paperclip Gap]`
+
 Paperclip's "Board" concept gives human operators unrestricted override authority. Eidolon should implement:
 
 - A "Board" role with elevated privileges (pause agents, override decisions, set budgets)
@@ -58,6 +77,7 @@ Paperclip's "Board" concept gives human operators unrestricted override authorit
 ## 2. Agent Execution & Adapters (P0–P1)
 
 ### 2.1 Adapter Architecture `[P0] [Paperclip Gap]`
+
 Paperclip's adapter system is its most architecturally mature feature — an unopinionated plugin layer that supports any "callable" entity. Eidolon's provider integration is tightly coupled. Needed:
 
 - A formal `ServerAdapter` interface/contract that all providers implement
@@ -69,6 +89,7 @@ Paperclip's adapter system is its most architecturally mature feature — an uno
 - Per-adapter configuration stored as JSON blobs on the agent record
 
 ### 2.2 Heartbeat Execution Model `[P1] [Paperclip Gap]`
+
 Paperclip's heartbeat model is more sophisticated than Eidolon's 30-second polling:
 
 - **On-demand wakeups**: `POST /api/agents/:id/wakeup` for manual triggering
@@ -79,6 +100,7 @@ Paperclip's heartbeat model is more sophisticated than Eidolon's 30-second polli
 - **Timeout enforcement**: Configurable per-agent execution time limits
 
 ### 2.3 Session Persistence `[P1] [Paperclip Gap]`
+
 Paperclip maintains `AgentTaskSession` entities that persist context across multiple heartbeats. Eidolon needs:
 
 - Session objects that survive across execution windows
@@ -86,6 +108,7 @@ Paperclip maintains `AgentTaskSession` entities that persist context across mult
 - Session state stored in the database, not just in-memory
 
 ### 2.4 Agent Skills System `[P2] [Paperclip Gap]`
+
 Paperclip has a formal skills framework with trust levels:
 
 - **Skill definitions** with metadata, entry points, and documentation
@@ -99,6 +122,7 @@ Paperclip has a formal skills framework with trust levels:
 ## 3. Task Management & Concurrency (P0–P1)
 
 ### 3.1 Issue Checkout Semantics `[P0] [Paperclip Gap]`
+
 Eidolon has a **race condition vulnerability** in task assignment — two agents can simultaneously claim the same task. Paperclip prevents this with checkout semantics:
 
 - Atomic checkout: Tasks are "checked out" to an agent in a transaction, preventing double-assignment
@@ -107,6 +131,7 @@ Eidolon has a **race condition vulnerability** in task assignment — two agents
 - Conflict detection and resolution when concurrent claims occur
 
 ### 3.2 Cron-Like Scheduling `[P1] [Paperclip Gap]`
+
 Eidolon's scheduler is a simple 30-second poll. Paperclip supports routines and scheduled jobs:
 
 - Per-agent cron expressions (e.g., "run daily at 9am")
@@ -115,6 +140,7 @@ Eidolon's scheduler is a simple 30-second poll. Paperclip supports routines and 
 - Scheduled maintenance windows
 
 ### 3.3 Approval Workflows `[P1] [Paperclip Gap]`
+
 Paperclip has a multi-stage approval system for high-impact decisions. Eidolon has a `review` task status but no enforcement:
 
 - Approval entity type with status tracking (pending, approved, rejected)
@@ -128,6 +154,7 @@ Paperclip has a multi-stage approval system for high-impact decisions. Eidolon h
 ## 4. Developer Experience & Tooling (P1)
 
 ### 4.1 CLI Tool `[P1] [Paperclip Gap]`
+
 Paperclip has a comprehensive CLI with 15+ commands. Eidolon has none beyond dev/build scripts:
 
 - `eidolon onboard` — Interactive first-run setup wizard
@@ -141,6 +168,7 @@ Paperclip has a comprehensive CLI with 15+ commands. Eidolon has none beyond dev
 - `--json` flag on all commands for scriptability
 
 ### 4.2 Worktree Isolation `[P1] [Paperclip Gap]`
+
 Paperclip enables isolated development environments per Git branch:
 
 - `eidolon worktree:make <branch>` — Create isolated instance with its own database and port
@@ -149,6 +177,7 @@ Paperclip enables isolated development environments per Git branch:
 - Automatic cleanup when branches are deleted
 
 ### 4.3 API Documentation `[P1] [Independent]`
+
 Neither platform has great docs, but Eidolon has zero API documentation:
 
 - OpenAPI/Swagger spec auto-generated from Zod schemas
@@ -157,6 +186,7 @@ Neither platform has great docs, but Eidolon has zero API documentation:
 - Architecture decision records (ADRs) for key design choices
 
 ### 4.4 Dev Server Health Banner `[P2] [Paperclip Gap]`
+
 Paperclip shows a `DevRestartBanner` when the backend has unapplied changes or pending migrations:
 
 - Visual indicator in the UI when the server needs restart
@@ -168,6 +198,7 @@ Paperclip shows a `DevRestartBanner` when the backend has unapplied changes or p
 ## 5. Database & Scalability (P1)
 
 ### 5.1 PostgreSQL Support `[P1] [Paperclip Gap]`
+
 Eidolon is SQLite-only. Paperclip uses PostgreSQL (with an embedded option for local dev):
 
 - Add PostgreSQL driver alongside SQLite
@@ -177,6 +208,7 @@ Eidolon is SQLite-only. Paperclip uses PostgreSQL (with an embedded option for l
 - Migration path documentation from SQLite → PostgreSQL
 
 ### 5.2 Company Data Export/Import `[P1] [Paperclip Gap]`
+
 Paperclip supports complete organizational portability:
 
 - Export a company with all agents, projects, tasks, goals, and history
@@ -185,6 +217,7 @@ Paperclip supports complete organizational portability:
 - JSON-based portable format
 
 ### 5.3 Database Backups `[P2] [Paperclip Gap]`
+
 - Automated backup scheduling with configurable retention windows
 - Point-in-time recovery support
 - Backup verification and integrity checks
@@ -195,6 +228,7 @@ Paperclip supports complete organizational portability:
 ## 6. Reliability & Error Handling (P1)
 
 ### 6.1 Retry Logic & Circuit Breaker `[P1] [Independent]`
+
 Eidolon has no retry logic or failure isolation:
 
 - Configurable retry policies per agent/adapter (count, backoff strategy)
@@ -203,6 +237,7 @@ Eidolon has no retry logic or failure isolation:
 - Dead letter queue for permanently failed tasks
 
 ### 6.2 Execution Timeouts `[P1] [Paperclip Gap]`
+
 Paperclip enforces time limits with a `timed_out` status. Eidolon has none:
 
 - Per-agent configurable execution timeout
@@ -211,6 +246,7 @@ Paperclip enforces time limits with a `timed_out` status. Eidolon has none:
 - Alert/notification when timeouts occur
 
 ### 6.3 Health Check Improvements `[P2] [Independent]`
+
 The existing `/api/health` endpoint only reports uptime and memory:
 
 - Add database connectivity check
@@ -224,6 +260,7 @@ The existing `/api/health` endpoint only reports uptime and memory:
 ## 7. UI & Design Improvements (P1–P2)
 
 ### 7.1 Onboarding Wizard `[P1] [Paperclip Gap]`
+
 Paperclip has an interactive onboarding flow. Eidolon drops users into a blank dashboard:
 
 - Step-by-step setup: Create company → Configure LLM keys → Hire first agent → Create first task
@@ -232,6 +269,7 @@ Paperclip has an interactive onboarding flow. Eidolon drops users into a blank d
 - Skip option for experienced users
 
 ### 7.2 Run Transcript Display `[P1] [Paperclip Gap]`
+
 Paperclip shows live execution transcripts with streaming output:
 
 - Real-time log streaming during agent execution
@@ -241,6 +279,7 @@ Paperclip shows live execution transcripts with streaming output:
 - Copy-to-clipboard for outputs
 
 ### 7.3 Live Execution Monitoring `[P1] [Paperclip Gap]`
+
 Beyond the existing WebSocket updates, Paperclip provides richer monitoring:
 
 - Agent status indicators (idle, running, error, paused) visible at a glance on all views
@@ -249,12 +288,14 @@ Beyond the existing WebSocket updates, Paperclip provides richer monitoring:
 - "Stop" button to cancel running executions
 
 ### 7.4 Approvals UI `[P2] [Paperclip Gap]`
+
 - Dedicated approvals queue page
 - Inline approve/reject with comment
 - Approval request notifications
 - Approval history per agent and per company
 
 ### 7.5 Instance Settings Page `[P2] [Paperclip Gap]`
+
 Paperclip has a dedicated settings UI for system-level configuration:
 
 - LLM provider configuration and API key management (currently env-var only)
@@ -264,6 +305,7 @@ Paperclip has a dedicated settings UI for system-level configuration:
 - Database connection status
 
 ### 7.6 Markdown Editor `[P3] [Paperclip Gap]`
+
 Paperclip includes rich markdown editing and rendering:
 
 - WYSIWYG markdown editor for task descriptions and documents
@@ -272,6 +314,7 @@ Paperclip includes rich markdown editing and rendering:
 - @-mention support for agents
 
 ### 7.7 Dashboard Polish `[P2] [Independent]`
+
 General UI quality improvements:
 
 - Loading skeletons instead of spinners
@@ -286,6 +329,7 @@ General UI quality improvements:
 ## 8. Platform Extensibility (P2)
 
 ### 8.1 Plugin System `[P2] [Paperclip Gap]`
+
 Paperclip has a formal plugin architecture with SDK, UI slots, and runtime:
 
 - Plugin SDK for third-party extensions
@@ -295,6 +339,7 @@ Paperclip has a formal plugin architecture with SDK, UI slots, and runtime:
 - Plugin configuration UI
 
 ### 8.2 Webhook Improvements `[P2] [Independent]`
+
 Eidolon has webhook subscriptions but they could be more robust:
 
 - Webhook delivery retry with exponential backoff
@@ -304,6 +349,7 @@ Eidolon has webhook subscriptions but they could be more robust:
 - Filtering: Subscribe to specific event types per webhook
 
 ### 8.3 Docker & Deployment `[P2] [Paperclip Gap]`
+
 Paperclip has Docker support and deployment tooling. Eidolon has neither:
 
 - Official Dockerfile and docker-compose.yml
@@ -317,6 +363,7 @@ Paperclip has Docker support and deployment tooling. Eidolon has neither:
 ## 9. Testing & Quality (P1)
 
 ### 9.1 Test Coverage Expansion `[P1] [Independent]`
+
 Eidolon has basic tests but critical gaps:
 
 - **Race condition tests**: Concurrent task assignment must be tested
@@ -326,6 +373,7 @@ Eidolon has basic tests but critical gaps:
 - **Migration tests**: Verify schema changes don't break existing data
 
 ### 9.2 Agent Behavior Evals `[P2] [Paperclip Gap]`
+
 Paperclip includes evaluation tooling for agent quality:
 
 - Evaluation framework for measuring agent task completion quality
@@ -337,12 +385,12 @@ Paperclip includes evaluation tooling for agent quality:
 
 ## Priority Summary
 
-| Priority | Count | Focus |
-|----------|-------|-------|
-| P0 (Critical) | 5 | Auth, race conditions, governance |
-| P1 (High) | 16 | Adapters, CLI, PostgreSQL, reliability, UI |
-| P2 (Medium) | 14 | Plugins, backups, polish, extensibility |
-| P3 (Nice-to-have) | 2 | Markdown editor, minor UX |
+| Priority          | Count | Focus                                      |
+| ----------------- | ----- | ------------------------------------------ |
+| P0 (Critical)     | 5     | Auth, race conditions, governance          |
+| P1 (High)         | 16    | Adapters, CLI, PostgreSQL, reliability, UI |
+| P2 (Medium)       | 14    | Plugins, backups, polish, extensibility    |
+| P3 (Nice-to-have) | 2     | Markdown editor, minor UX                  |
 
 ---
 
