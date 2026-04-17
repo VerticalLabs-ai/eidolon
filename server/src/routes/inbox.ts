@@ -165,7 +165,7 @@ export function inboxRouter(db: DbInstance): Router {
           row.description ??
           row.action
             .split('.')
-            .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+            .map((s: string) => s.charAt(0).toUpperCase() + s.slice(1))
             .join(' '),
         subtitle: `${row.actorType} · ${row.entityType}`,
         actorId: row.actorId ?? undefined,
