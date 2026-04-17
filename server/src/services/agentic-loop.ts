@@ -406,7 +406,13 @@ export class AgenticLoop {
         log: steps.map((s, idx) => ({
           timestamp: s.timestamp,
           level: s.phase === 'reflect' && status === 'failed' ? 'error' : 'info',
+          // Short line for terminal-style scroll views
           message: `[${s.phase}] Iteration ${idx + 1}: ${s.content.slice(0, 200)}`,
+          // Full structured fields for the transcript view
+          phase: s.phase,
+          iteration: idx + 1,
+          content: s.content,
+          toolCalls: s.toolCalls,
         })),
       })
       .where(eq(agentExecutions.id, execId));

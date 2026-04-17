@@ -32,7 +32,25 @@ export const agentExecutions = sqliteTable(
     error: text('error'),
     log: text('log', { mode: 'json' })
       .notNull()
-      .$type<Array<{ timestamp: string; level: string; message: string }>>()
+      .$type<
+        Array<{
+          timestamp: string;
+          level: string;
+          message: string;
+          // Optional structured fields used by the Observe/Think/Act/Reflect
+          // transcript view. Older entries without these still render as a
+          // flat log line.
+          phase?: 'observe' | 'think' | 'act' | 'reflect';
+          iteration?: number;
+          content?: string;
+          toolCalls?: Array<{
+            tool: string;
+            serverId?: string;
+            args: Record<string, unknown>;
+            result: string;
+          }>;
+        }>
+      >()
       .default([]),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()

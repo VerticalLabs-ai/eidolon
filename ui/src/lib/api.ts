@@ -433,7 +433,20 @@ export interface Execution {
   inputTokens?: number | null;
   outputTokens?: number | null;
   costCents?: number | null;
-  log?: Array<{ timestamp: string; level: string; message: string }>;
+  log?: Array<{
+    timestamp: string;
+    level: string;
+    message: string;
+    phase?: "observe" | "think" | "act" | "reflect";
+    iteration?: number;
+    content?: string;
+    toolCalls?: Array<{
+      tool: string;
+      serverId?: string;
+      args: Record<string, unknown>;
+      result: string;
+    }>;
+  }>;
   tokensUsed: number | null;
   durationMs: number | null;
   error: string | null;

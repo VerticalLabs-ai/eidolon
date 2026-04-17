@@ -132,6 +132,20 @@ const UpdateExecutionBody = z.object({
     .object({
       level: z.string().max(20),
       message: z.string().max(5000),
+      // Optional structured transcript fields
+      phase: z.enum(["observe", "think", "act", "reflect"]).optional(),
+      iteration: z.number().int().positive().optional(),
+      content: z.string().max(50_000).optional(),
+      toolCalls: z
+        .array(
+          z.object({
+            tool: z.string().max(255),
+            serverId: z.string().max(255).optional(),
+            args: z.record(z.unknown()),
+            result: z.string().max(50_000),
+          }),
+        )
+        .optional(),
     })
     .optional(),
 });
@@ -1047,15 +1061,21 @@ export function agentsRouter(db: DbInstance): Router {
 
       // Handle log entry append
       if (body.logEntry) {
-        const currentLog = (existing.log ?? []) as Array<{
-          timestamp: string;
-          level: string;
-          message: string;
-        }>;
+        const currentLog = (existing.log ?? []) as Array<
+          Record<string, unknown>
+        >;
         const newEntry = {
           timestamp: new Date().toISOString(),
           level: body.logEntry.level,
           message: body.logEntry.message,
+          ...(body.logEntry.phase && { phase: body.logEntry.phase }),
+          ...(body.logEntry.iteration != null && {
+            iteration: body.logEntry.iteration,
+          }),
+          ...(body.logEntry.content && { content: body.logEntry.content }),
+          ...(body.logEntry.toolCalls && {
+            toolCalls: body.logEntry.toolCalls,
+          }),
         };
         updates.log = [...currentLog, newEntry];
 

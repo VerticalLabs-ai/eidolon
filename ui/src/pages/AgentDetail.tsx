@@ -44,6 +44,7 @@ import {
   getModelOptions,
   normalizeProvider,
 } from "@/lib/ai-catalog";
+import { TranscriptView } from "@/components/agents/TranscriptView";
 import { clsx } from "clsx";
 
 const INSTRUCTION_TEMPLATES: Record<string, string> = {
@@ -1122,61 +1123,105 @@ function ExecutionsTab({
   return (
     <div className="space-y-3">
       {executions.map((exec) => (
-        <div
+        <ExecutionRow
           key={exec.id}
-          className="glass-raised rounded-xl p-5 transition-all duration-200 hover:glass-hover"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <span
+          exec={exec}
+          companyId={companyId}
+          defaultOpen={exec.status === "running"}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Execution Row (expandable transcript) ───────────────────────────────
+
+function ExecutionRow({
+  exec,
+  companyId,
+  defaultOpen,
+}: {
+  exec: ReturnType<typeof useAgentExecutions>["data"] extends
+    | Array<infer T>
+    | undefined
+    ? T
+    : never;
+  companyId: string;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const hasTranscript =
+    exec.status === "running" || (exec.log?.length ?? 0) > 0;
+
+  return (
+    <div className="glass-raised rounded-xl transition-all duration-200 hover:glass-hover overflow-hidden">
+      <button
+        type="button"
+        onClick={() => hasTranscript && setOpen((prev) => !prev)}
+        className={clsx(
+          "w-full p-5 text-left",
+          hasTranscript ? "cursor-pointer" : "cursor-default",
+        )}
+        disabled={!hasTranscript}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <span
+              className={clsx(
+                "inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs",
+                exec.status === "completed"
+                  ? "bg-success/10 text-success"
+                  : exec.status === "running"
+                    ? "bg-neon-cyan/10 text-neon-cyan"
+                    : exec.status === "failed"
+                      ? "bg-error/10 text-error"
+                      : "bg-surface-overlay text-text-secondary",
+              )}
+            >
+              {exec.status === "completed" ? (
+                <CheckCircle2 className="h-3.5 w-3.5" />
+              ) : exec.status === "running" ? (
+                <Play className="h-3.5 w-3.5" />
+              ) : exec.status === "failed" ? (
+                <AlertCircle className="h-3.5 w-3.5" />
+              ) : (
+                <Clock className="h-3.5 w-3.5" />
+              )}
+            </span>
+            {hasTranscript && (
+              <ChevronRight
                 className={clsx(
-                  "inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs",
-                  exec.status === "completed"
-                    ? "bg-success/10 text-success"
-                    : exec.status === "running"
-                      ? "bg-neon-cyan/10 text-neon-cyan"
-                      : exec.status === "failed"
-                        ? "bg-error/10 text-error"
-                        : "bg-surface-overlay text-text-secondary",
+                  "h-3.5 w-3.5 shrink-0 text-text-secondary transition-transform duration-200",
+                  open && "rotate-90",
                 )}
-              >
-                {exec.status === "completed" ? (
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                ) : exec.status === "running" ? (
-                  <Play className="h-3.5 w-3.5" />
-                ) : exec.status === "failed" ? (
-                  <AlertCircle className="h-3.5 w-3.5" />
-                ) : (
-                  <Clock className="h-3.5 w-3.5" />
-                )}
-              </span>
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-text-primary truncate">
-                  {exec.action}
+              />
+            )}
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-text-primary truncate">
+                {exec.action}
+              </p>
+              {exec.error && (
+                <p className="text-xs text-error mt-0.5 truncate">
+                  {exec.error}
                 </p>
-                {exec.error && (
-                  <p className="text-xs text-error mt-0.5 truncate">
-                    {exec.error}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-4 shrink-0 text-xs text-text-secondary font-display tabular-nums">
-              {exec.durationMs != null && (
-                <span>{exec.durationMs}ms</span>
               )}
-              {exec.tokensUsed != null && (
-                <span>
-                  {exec.tokensUsed.toLocaleString()} tok
-                </span>
-              )}
-              <span>
-                {new Date(exec.startedAt).toLocaleTimeString()}
-              </span>
             </div>
           </div>
+          <div className="flex items-center gap-4 shrink-0 text-xs text-text-secondary font-display tabular-nums">
+            {exec.durationMs != null && <span>{exec.durationMs}ms</span>}
+            {exec.tokensUsed != null && (
+              <span>{exec.tokensUsed.toLocaleString()} tok</span>
+            )}
+            <span>{new Date(exec.startedAt).toLocaleTimeString()}</span>
+          </div>
         </div>
-      ))}
+      </button>
+
+      {open && hasTranscript && (
+        <div className="border-t border-white/[0.06] bg-black/15 p-4">
+          <TranscriptView companyId={companyId} execution={exec} />
+        </div>
+      )}
     </div>
   );
 }

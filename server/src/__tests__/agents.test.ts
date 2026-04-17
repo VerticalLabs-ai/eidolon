@@ -602,5 +602,63 @@ describe('Agents API', () => {
       expect(res.body.data.log[0].level).toBe('info');
       expect(res.body.data.log[0].message).toBe('Processing started');
     });
+
+    it('should persist structured transcript fields on log entries', async () => {
+      const execRes = await request(app)
+        .post(`${agentUrl(agentId)}/executions`)
+        .send({});
+      const execId = execRes.body.data.id;
+
+      const res = await request(app)
+        .patch(`${agentUrl(agentId)}/executions/${execId}`)
+        .send({
+          logEntry: {
+            level: 'info',
+            message: '[act] iteration 2: called search tool',
+            phase: 'act',
+            iteration: 2,
+            content: 'Calling web_search to find the current time.',
+            toolCalls: [
+              {
+                tool: 'web_search',
+                serverId: 'srv-1',
+                args: { query: 'current time in SF' },
+                result: '2026-04-17T14:00:00Z',
+              },
+            ],
+          },
+        })
+        .expect(200);
+
+      const entry = res.body.data.log[0];
+      expect(entry.phase).toBe('act');
+      expect(entry.iteration).toBe(2);
+      expect(entry.content).toBe(
+        'Calling web_search to find the current time.',
+      );
+      expect(entry.toolCalls).toHaveLength(1);
+      expect(entry.toolCalls[0].tool).toBe('web_search');
+      expect(entry.toolCalls[0].args).toEqual({
+        query: 'current time in SF',
+      });
+    });
+
+    it('should reject log entries with an invalid phase', async () => {
+      const execRes = await request(app)
+        .post(`${agentUrl(agentId)}/executions`)
+        .send({});
+      const execId = execRes.body.data.id;
+
+      await request(app)
+        .patch(`${agentUrl(agentId)}/executions/${execId}`)
+        .send({
+          logEntry: {
+            level: 'info',
+            message: 'bogus phase',
+            phase: 'meditate',
+          },
+        })
+        .expect(400);
+    });
   });
 });

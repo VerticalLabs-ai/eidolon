@@ -294,11 +294,17 @@ export class AgentExecutor {
             timestamp: now.toISOString(),
             level: 'info',
             message: `Execution started with model ${completion.model}`,
+            phase: 'observe',
+            iteration: 1,
+            content: `Starting single-shot completion with ${completion.model}.`,
           },
           {
             timestamp: completedAt.toISOString(),
             level: 'info',
             message: `Completed in ${completion.latencyMs}ms. Tokens: ${completion.inputTokens} in / ${completion.outputTokens} out. Cost: ${completion.costCents}c`,
+            phase: 'act',
+            iteration: 1,
+            content: completion.content,
           },
         ],
       })
