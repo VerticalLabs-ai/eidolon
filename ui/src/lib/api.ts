@@ -1201,6 +1201,38 @@ export const exportCompany = (
     { method: "POST", body: JSON.stringify(data ?? {}) },
   );
 
+// ── Inbox (unified feed) ────────────────────────────────────────────────
+
+export type InboxItemKind = "approval" | "collaboration" | "activity";
+
+export interface InboxItem {
+  id: string;
+  kind: InboxItemKind;
+  title: string;
+  subtitle?: string;
+  priority?: "critical" | "high" | "medium" | "low";
+  status?: string;
+  actorId?: string;
+  entityType?: string;
+  entityId?: string;
+  link: string;
+  createdAt: string;
+}
+
+export interface InboxResponse {
+  data: InboxItem[];
+  meta: {
+    pendingApprovals: number;
+    pendingCollaborations: number;
+    total: number;
+  };
+}
+
+export const listInbox = (companyId: string, limit = 100) =>
+  request<InboxResponse>(
+    `/companies/${companyId}/inbox?limit=${limit}`,
+  );
+
 // ── Approvals ───────────────────────────────────────────────────────────
 
 export type ApprovalKind =

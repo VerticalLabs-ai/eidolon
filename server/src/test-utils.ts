@@ -240,6 +240,23 @@ export function createTestDb(): DbInstance {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE agent_collaborations (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'delegation',
+      from_agent_id TEXT NOT NULL REFERENCES agents(id),
+      to_agent_id TEXT NOT NULL REFERENCES agents(id),
+      task_id TEXT REFERENCES tasks(id),
+      parent_collaboration_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      request_content TEXT NOT NULL,
+      response_content TEXT,
+      priority TEXT NOT NULL DEFAULT 'medium',
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX idx_agent_collabs_company ON agent_collaborations(company_id);
+
     CREATE TABLE approvals (
       id TEXT PRIMARY KEY,
       company_id TEXT NOT NULL REFERENCES companies(id),

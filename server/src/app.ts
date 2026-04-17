@@ -33,6 +33,7 @@ import { templatesRouter, companyExportRouter } from './routes/templates.js';
 import { projectsRouter } from './routes/projects.js';
 import { adaptersRouter } from './routes/adapters.js';
 import { approvalsRouter } from './routes/approvals.js';
+import { inboxRouter } from './routes/inbox.js';
 import type { DbInstance } from './types.js';
 import type { Auth } from './auth.js';
 
@@ -194,6 +195,9 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
 
   // Approvals (any org member can create/comment; decide requires admin+)
   app.use('/api/companies/:companyId/approvals', requireAuth, requireOrgMember(), approvalsRouter(db));
+
+  // Unified inbox feed
+  app.use('/api/companies/:companyId/inbox', requireAuth, requireOrgMember(), inboxRouter(db));
 
   // ---------------------------------------------------------------------------
   // Static file serving for production UI

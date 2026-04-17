@@ -985,6 +985,21 @@ export function useExportCompany(companyId: string) {
   });
 }
 
+// ── Inbox ───────────────────────────────────────────────────────────────
+
+export function useInbox(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["inbox", companyId],
+    queryFn: async () => {
+      const res = await api.listInbox(companyId!);
+      // listInbox returns the full envelope {data, meta}; don't unwrap
+      return res as unknown as api.InboxResponse;
+    },
+    enabled: !!companyId,
+    refetchInterval: 15_000,
+  });
+}
+
 // ── Approvals ───────────────────────────────────────────────────────────
 
 export function useApprovals(

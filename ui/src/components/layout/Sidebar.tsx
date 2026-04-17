@@ -1,6 +1,7 @@
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
-import { useCompanies, useProjects } from "@/lib/hooks";
+import { useCompanies, useInbox, useProjects } from "@/lib/hooks";
 import { useWebSocket } from "@/lib/ws";
+import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { motion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
@@ -37,6 +38,8 @@ interface NavItem {
   icon: LucideIcon;
   label: string;
   end?: boolean;
+  /** Optional key that lets an ambient badge count attach to this item. */
+  badgeKey?: "inbox";
 }
 
 interface NavSection {
@@ -51,7 +54,7 @@ const navSections: NavSection[] = [
     label: "Main",
     items: [
       { to: "", icon: LayoutDashboard, label: "Dashboard", end: true },
-      { to: "/inbox", icon: Inbox, label: "Inbox" },
+      { to: "/inbox", icon: Inbox, label: "Inbox", badgeKey: "inbox" },
     ],
   },
   {
@@ -215,10 +218,72 @@ function ProjectsSection({ base, onClose }: { base: string; onClose: () => void 
 
 // ── Main Sidebar ────────────────────────────────────────────────────────
 
+// ── Hook: unread-count lookup per badgeKey ──────────────────────────────
+//
+// Reads the inbox feed plus the same localStorage read-state key Inbox.tsx
+// writes to, so the sidebar dot updates without any shared state service.
+
+function useInboxUnreadCount(companyId: string | undefined): number {
+  const { data } = useInbox(companyId);
+  const [readSet, setReadSet] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    if (!companyId) return;
+    // Match the key layout in Inbox.tsx — anon user is a fallback since
+    // better-auth session may not be resolved yet on first render.
+    const load = () => {
+      try {
+        const keys = Object.keys(localStorage).filter(
+          (k) =>
+            k.startsWith("eidolon:inbox:read:") &&
+            k.endsWith(`:${companyId}`),
+        );
+        const merged = new Set<string>();
+        for (const k of keys) {
+          const raw = localStorage.getItem(k);
+          if (!raw) continue;
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              for (const id of parsed) {
+                if (typeof id === "string") merged.add(id);
+              }
+            }
+          } catch {
+            // skip
+          }
+        }
+        setReadSet(merged);
+      } catch {
+        // skip
+      }
+    };
+
+    load();
+    const handler = (e: StorageEvent) => {
+      if (e.key?.startsWith("eidolon:inbox:read:")) load();
+    };
+    window.addEventListener("storage", handler);
+    // Also poll occasionally — localStorage "storage" only fires cross-tab.
+    const interval = window.setInterval(load, 5000);
+    return () => {
+      window.removeEventListener("storage", handler);
+      window.clearInterval(interval);
+    };
+  }, [companyId]);
+
+  if (!data?.data) return 0;
+  return data.data.filter((item) => !readSet.has(item.id)).length;
+}
+
 export function Sidebar({ companyName, open, onClose }: SidebarProps) {
   const { companyId } = useParams();
   const base = `/company/${companyId}`;
   const { status } = useWebSocket(companyId);
+  const inboxUnread = useInboxUnreadCount(companyId);
+  const badges: Record<NonNullable<NavItem["badgeKey"]>, number> = {
+    inbox: inboxUnread,
+  };
 
   return (
     <>
@@ -268,6 +333,7 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
                 section={section}
                 base={base}
                 onClose={onClose}
+                badges={badges}
               />
             ))}
 
@@ -281,6 +347,7 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
                 section={section}
                 base={base}
                 onClose={onClose}
+                badges={badges}
               />
             ))}
           </nav>
@@ -325,10 +392,12 @@ function NavSectionGroup({
   section,
   base,
   onClose,
+  badges,
 }: {
   section: NavSection;
   base: string;
   onClose: () => void;
+  badges?: Record<NonNullable<NavItem["badgeKey"]>, number>;
 }) {
   return (
     <div>
@@ -341,38 +410,49 @@ function NavSectionGroup({
         initial="hidden"
         animate="visible"
       >
-        {section.items.map((item) => (
-          <motion.div key={item.to} variants={navItemVariants}>
-            <NavLink
-              to={`${base}${item.to}`}
-              end={item.end}
-              onClick={onClose}
-              className={({ isActive }) =>
-                clsx(
-                  "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-300",
-                  isActive
-                    ? "text-accent bg-accent/[0.08]"
-                    : "text-text-secondary hover:text-text-primary hover:bg-white/[0.04]",
-                )
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  {isActive && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[2px] rounded-r-full bg-accent" />
-                  )}
-                  <item.icon
-                    className={clsx(
-                      "h-4 w-4 shrink-0 transition-colors duration-200",
-                      isActive && "text-accent",
+        {section.items.map((item) => {
+          const count = item.badgeKey ? badges?.[item.badgeKey] ?? 0 : 0;
+          return (
+            <motion.div key={item.to} variants={navItemVariants}>
+              <NavLink
+                to={`${base}${item.to}`}
+                end={item.end}
+                onClick={onClose}
+                className={({ isActive }) =>
+                  clsx(
+                    "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-300",
+                    isActive
+                      ? "text-accent bg-accent/[0.08]"
+                      : "text-text-secondary hover:text-text-primary hover:bg-white/[0.04]",
+                  )
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[2px] rounded-r-full bg-accent" />
                     )}
-                  />
-                  {item.label}
-                </>
-              )}
-            </NavLink>
-          </motion.div>
-        ))}
+                    <item.icon
+                      className={clsx(
+                        "h-4 w-4 shrink-0 transition-colors duration-200",
+                        isActive && "text-accent",
+                      )}
+                    />
+                    <span className="flex-1">{item.label}</span>
+                    {count > 0 && (
+                      <span
+                        className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-accent/90 px-1 text-[10px] font-semibold text-surface"
+                        aria-label={`${count} unread`}
+                      >
+                        {count > 99 ? "99+" : count}
+                      </span>
+                    )}
+                  </>
+                )}
+              </NavLink>
+            </motion.div>
+          );
+        })}
       </motion.div>
     </div>
   );
