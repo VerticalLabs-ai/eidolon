@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { agents } from './agents';
 
-export const agentEvaluations = sqliteTable(
+export const agentEvaluations = pgTable(
   'agent_evaluations',
   {
     id: text('id')
@@ -20,11 +20,11 @@ export const agentEvaluations = sqliteTable(
     overallScore: integer('overall_score'),
     evaluator: text('evaluator').notNull().default('system'),
     feedback: text('feedback'),
-    metrics: text('metrics', { mode: 'json' })
+    metrics: jsonb('metrics')
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

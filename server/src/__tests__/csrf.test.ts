@@ -4,7 +4,7 @@ import { createTestApp, createTestDb } from '../test-utils.js';
 
 describe('Origin-based CSRF defense', () => {
   let app: ReturnType<typeof createTestApp>;
-  let db: ReturnType<typeof createTestDb>;
+  let db: Awaited<ReturnType<typeof createTestDb>>;
   const originalNodeEnv = process.env.NODE_ENV;
   const originalVitest = process.env.VITEST;
   const originalWorker = process.env.VITEST_WORKER_ID;
@@ -19,7 +19,7 @@ describe('Origin-based CSRF defense', () => {
     delete process.env.VITEST_WORKER_ID;
     process.env.CORS_ORIGIN = 'https://app.example.com';
 
-    db = createTestDb();
+    db = await createTestDb();
     app = createTestApp(db, 'authenticated');
   });
 

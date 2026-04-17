@@ -4,11 +4,11 @@ import { createTestApp, createTestDb } from '../test-utils.js';
 
 describe('Approvals API', () => {
   let app: ReturnType<typeof createTestApp>;
-  let db: ReturnType<typeof createTestDb>;
+  let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
 
   beforeEach(async () => {
-    db = createTestDb();
+    db = await createTestDb();
     app = createTestApp(db);
 
     const res = await request(app)

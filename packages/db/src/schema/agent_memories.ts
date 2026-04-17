@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { agents } from './agents';
 
-export const agentMemories = sqliteTable(
+export const agentMemories = pgTable(
   'agent_memories',
   {
     id: text('id')
@@ -21,12 +21,12 @@ export const agentMemories = sqliteTable(
     importance: integer('importance').notNull().default(5),
     sourceTaskId: text('source_task_id'),
     sourceExecutionId: text('source_execution_id'),
-    tags: text('tags', { mode: 'json' })
+    tags: jsonb('tags')
       .notNull()
       .$type<string[]>()
       .default([]),
-    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    expiresAt: timestamp('expires_at', { mode: 'date', precision: 3 }),
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

@@ -1,10 +1,10 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 import { agents } from './agents';
 import { tasks } from './tasks';
 
-export const costEvents = sqliteTable('cost_events', {
+export const costEvents = pgTable('cost_events', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => randomUUID()),
@@ -20,7 +20,7 @@ export const costEvents = sqliteTable('cost_events', {
   inputTokens: integer('input_tokens').notNull().default(0),
   outputTokens: integer('output_tokens').notNull().default(0),
   costCents: integer('cost_cents').notNull().default(0),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+  createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
 });

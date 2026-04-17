@@ -1,8 +1,16 @@
-import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core';
+import {
+  pgTable,
+  text,
+  integer,
+  doublePrecision,
+  jsonb,
+  timestamp,
+  index,
+} from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
-export const agents = sqliteTable(
+export const agents = pgTable(
   'agents',
   {
     id: text('id')
@@ -22,9 +30,8 @@ export const agents = sqliteTable(
       .notNull()
       .default('anthropic'),
     // Schema default is intentionally lagging behind the app-level default set
-    // in agents route (CreateAgentBody.model). SQLite can't ALTER a column
-    // default without rewriting the whole table, so we keep this stable and
-    // rely on Zod at the API boundary to apply the current preferred model.
+    // in agents route (CreateAgentBody.model). We keep this stable and rely on
+    // Zod at the API boundary to apply the current preferred model.
     model: text('model').notNull().default('claude-sonnet-4-6'),
     status: text('status', {
       enum: ['idle', 'working', 'paused', 'error', 'offline'],
@@ -32,7 +39,7 @@ export const agents = sqliteTable(
       .notNull()
       .default('idle'),
     reportsTo: text('reports_to').references((): any => agents.id),
-    capabilities: text('capabilities', { mode: 'json' })
+    capabilities: jsonb('capabilities')
       .notNull()
       .$type<string[]>()
       .default([]),
@@ -41,39 +48,40 @@ export const agents = sqliteTable(
     apiKeyProvider: text('api_key_provider'),
     instructions: text('instructions'),
     instructionsFormat: text('instructions_format').default('markdown'),
-    temperature: real('temperature').default(0.7),
+    temperature: doublePrecision('temperature').default(0.7),
     maxTokens: integer('max_tokens').default(4096),
-    toolsEnabled: text('tools_enabled', { mode: 'json' })
+    toolsEnabled: jsonb('tools_enabled')
       .notNull()
       .$type<string[]>()
       .default([]),
-    allowedDomains: text('allowed_domains', { mode: 'json' })
+    allowedDomains: jsonb('allowed_domains')
       .notNull()
       .$type<string[]>()
       .default([]),
     maxConcurrentTasks: integer('max_concurrent_tasks').notNull().default(1),
     heartbeatIntervalSeconds: integer('heartbeat_interval_seconds').notNull().default(300),
     executionTimeoutSeconds: integer('execution_timeout_seconds').notNull().default(600),
+    // 0/1 integer: route handlers and scheduler literally check `=== 1`.
     autoAssignTasks: integer('auto_assign_tasks').notNull().default(0),
     budgetMonthlyCents: integer('budget_monthly_cents').notNull().default(0),
     spentMonthlyCents: integer('spent_monthly_cents').notNull().default(0),
-    lastHeartbeatAt: integer('last_heartbeat_at', { mode: 'timestamp_ms' }),
-    config: text('config', { mode: 'json' })
+    lastHeartbeatAt: timestamp('last_heartbeat_at', { mode: 'date', precision: 3 }),
+    config: jsonb('config')
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
-    metadata: text('metadata', { mode: 'json' })
+    metadata: jsonb('metadata')
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
-    permissions: text('permissions', { mode: 'json' })
+    permissions: jsonb('permissions')
       .notNull()
       .$type<string[]>()
       .default([]),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

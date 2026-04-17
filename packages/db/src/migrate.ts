@@ -1,15 +1,27 @@
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import postgres from 'postgres';
 import { resolve } from 'node:path';
-import { createDb } from './index.js';
 
-const { db, connection } = createDb();
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error(
+    'DATABASE_URL is required. Start Supabase locally with `pnpm run db:start` ' +
+      'and export DATABASE_URL before running migrations.',
+  );
+}
+
+// `max: 1` keeps migrations single-threaded; required by drizzle's migrator
+// because it acquires an advisory lock on a single connection.
+const client = postgres(connectionString, { max: 1 });
+const db = drizzle(client);
 
 console.log('Running migrations...');
 
-migrate(db, {
+await migrate(db, {
   migrationsFolder: resolve(import.meta.dirname ?? '.', '..', 'drizzle'),
 });
 
 console.log('Migrations complete.');
 
-connection.close();
+await client.end();

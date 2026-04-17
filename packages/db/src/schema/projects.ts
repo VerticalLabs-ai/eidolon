@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
-export const projects = sqliteTable('projects', {
+export const projects = pgTable('projects', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => randomUUID()),
@@ -17,10 +17,10 @@ export const projects = sqliteTable('projects', {
     .notNull()
     .default('planning'),
   repoUrl: text('repo_url'),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+  createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+  updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
 });

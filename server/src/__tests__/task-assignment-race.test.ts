@@ -102,7 +102,7 @@ describe('Task assignment concurrency', () => {
   }
 
   beforeEach(async () => {
-    db = createTestDb();
+    db = await createTestDb();
     companyId = await insertCompany();
   });
 

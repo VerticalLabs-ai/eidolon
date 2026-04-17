@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 import { agents } from './agents';
 
-export const tasks = sqliteTable(
+export const tasks = pgTable(
   'tasks',
   {
     id: text('id')
@@ -37,23 +37,23 @@ export const tasks = sqliteTable(
     createdByUserId: text('created_by_user_id'),
     taskNumber: integer('task_number'),
     identifier: text('identifier'),
-    dependencies: text('dependencies', { mode: 'json' })
+    dependencies: jsonb('dependencies')
       .notNull()
       .$type<string[]>()
       .default([]),
     estimatedTokens: integer('estimated_tokens'),
     actualTokens: integer('actual_tokens'),
-    tags: text('tags', { mode: 'json' })
+    tags: jsonb('tags')
       .notNull()
       .$type<string[]>()
       .default([]),
-    dueAt: integer('due_at', { mode: 'timestamp_ms' }),
-    startedAt: integer('started_at', { mode: 'timestamp_ms' }),
-    completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    dueAt: timestamp('due_at', { mode: 'date', precision: 3 }),
+    startedAt: timestamp('started_at', { mode: 'date', precision: 3 }),
+    completedAt: timestamp('completed_at', { mode: 'date', precision: 3 }),
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

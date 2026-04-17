@@ -44,7 +44,7 @@ describe('Adapter registry', () => {
 
 describe('GET /api/adapters', () => {
   it('returns adapter capabilities and supported models', async () => {
-    const db = createTestDb();
+    const db = await createTestDb();
     const app = createTestApp(db);
 
     const res = await request(app).get('/api/adapters').expect(200);

@@ -1,7 +1,7 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 
-export const companyTemplates = sqliteTable(
+export const companyTemplates = pgTable(
   'company_templates',
   {
     id: text('id')
@@ -16,22 +16,23 @@ export const companyTemplates = sqliteTable(
       .default('general'),
     author: text('author'),
     version: text('version').notNull().default('1.0.0'),
-    config: text('config', { mode: 'json' })
+    config: jsonb('config')
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
     agentCount: integer('agent_count').notNull().default(0),
+    // 0/1 integer: callers assign `1` / `0` literally.
     isPublic: integer('is_public').notNull().default(0),
     downloadCount: integer('download_count').notNull().default(0),
-    tags: text('tags', { mode: 'json' })
+    tags: jsonb('tags')
       .notNull()
       .$type<string[]>()
       .default([]),
     previewImage: text('preview_image'),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

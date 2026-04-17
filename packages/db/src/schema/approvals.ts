@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 import { agents } from './agents';
@@ -13,7 +13,7 @@ import { tasks } from './tasks';
  * "review this work product" request. Multi-task links will move to an
  * issue_approvals join table if/when that pattern emerges.
  */
-export const approvals = sqliteTable(
+export const approvals = pgTable(
   'approvals',
   {
     id: text('id')
@@ -43,18 +43,18 @@ export const approvals = sqliteTable(
     requestedByAgentId: text('requested_by_agent_id').references(() => agents.id),
     resolvedByUserId: text('resolved_by_user_id'),
     resolutionNote: text('resolution_note'),
-    payload: text('payload', { mode: 'json' })
+    payload: jsonb('payload')
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
     taskId: text('task_id').references(() => tasks.id),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
+    resolvedAt: timestamp('resolved_at', { mode: 'date', precision: 3 }),
   },
   (table) => [
     index('idx_approvals_company_status').on(table.companyId, table.status),
@@ -62,7 +62,7 @@ export const approvals = sqliteTable(
   ],
 );
 
-export const approvalComments = sqliteTable(
+export const approvalComments = pgTable(
   'approval_comments',
   {
     id: text('id')
@@ -74,7 +74,7 @@ export const approvalComments = sqliteTable(
     authorUserId: text('author_user_id'),
     authorAgentId: text('author_agent_id').references(() => agents.id),
     content: text('content').notNull(),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

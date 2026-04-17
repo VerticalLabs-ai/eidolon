@@ -4,11 +4,11 @@ import { createTestDb, createTestApp } from '../test-utils.js';
 
 describe('Secrets API', () => {
   let app: ReturnType<typeof createTestApp>;
-  let db: ReturnType<typeof createTestDb>;
+  let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
 
   beforeEach(async () => {
-    db = createTestDb();
+    db = await createTestDb();
     app = createTestApp(db);
 
     const res = await request(app)
@@ -67,10 +67,9 @@ describe('Secrets API', () => {
         .expect(201);
 
       // Directly query the database to verify encryption
-      const rows = db.drizzle
+      const rows = await db.drizzle
         .select()
-        .from(db.schema.secrets)
-        .all();
+        .from(db.schema.secrets);
 
       expect(rows).toHaveLength(1);
       const row = rows[0] as any;

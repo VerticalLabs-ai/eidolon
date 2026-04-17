@@ -1,10 +1,10 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, jsonb, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { agents } from './agents';
 import { companies } from './companies';
 import { tasks } from './tasks';
 
-export const heartbeats = sqliteTable('heartbeats', {
+export const heartbeats = pgTable('heartbeats', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => randomUUID()),
@@ -18,16 +18,16 @@ export const heartbeats = sqliteTable('heartbeats', {
     enum: ['running', 'completed', 'failed'],
   }).notNull(),
   taskId: text('task_id').references(() => tasks.id),
-  startedAt: integer('started_at', { mode: 'timestamp_ms' })
+  startedAt: timestamp('started_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
-  completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
-  tokenUsage: text('token_usage', { mode: 'json' })
+  completedAt: timestamp('completed_at', { mode: 'date', precision: 3 }),
+  tokenUsage: jsonb('token_usage')
     .notNull()
     .$type<Record<string, unknown>>()
     .default({}),
   error: text('error'),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+  createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
 });

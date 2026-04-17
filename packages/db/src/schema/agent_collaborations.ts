@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { agents } from './agents';
 import { tasks } from './tasks';
 
-export const agentCollaborations = sqliteTable(
+export const agentCollaborations = pgTable(
   'agent_collaborations',
   {
     id: text('id')
@@ -35,10 +35,10 @@ export const agentCollaborations = sqliteTable(
     })
       .notNull()
       .default('medium'),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+    completedAt: timestamp('completed_at', { mode: 'date', precision: 3 }),
   },
   (table) => [
     index('idx_agent_collabs_company').on(table.companyId),

@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { agents } from './agents';
 import { tasks } from './tasks';
 
-export const agentExecutions = sqliteTable(
+export const agentExecutions = pgTable(
   'agent_executions',
   {
     id: text('id')
@@ -19,10 +19,10 @@ export const agentExecutions = sqliteTable(
     })
       .notNull()
       .default('running'),
-    startedAt: integer('started_at', { mode: 'timestamp_ms' })
+    startedAt: timestamp('started_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+    completedAt: timestamp('completed_at', { mode: 'date', precision: 3 }),
     inputTokens: integer('input_tokens').notNull().default(0),
     outputTokens: integer('output_tokens').notNull().default(0),
     costCents: integer('cost_cents').notNull().default(0),
@@ -30,7 +30,7 @@ export const agentExecutions = sqliteTable(
     provider: text('provider'),
     summary: text('summary'),
     error: text('error'),
-    log: text('log', { mode: 'json' })
+    log: jsonb('log')
       .notNull()
       .$type<
         Array<{
@@ -52,7 +52,7 @@ export const agentExecutions = sqliteTable(
         }>
       >()
       .default([]),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

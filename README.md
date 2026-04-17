@@ -30,14 +30,14 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 git clone https://github.com/verticallabs-ai/eidolon.git
 cd eidolon
 pnpm install
-pnpm run db:generate   # Generate migration SQL from schema
-pnpm run db:migrate    # Apply migrations
+pnpm run db:start      # Boot local Supabase (Postgres on :54322, Studio on :54323)
+pnpm run db:migrate    # Apply Drizzle migrations
 pnpm run dev           # Start server (:3100) + UI (:3000)
 ```
 
 The database starts empty — create your first company from the UI. There is no demo/mock data.
 
-**Requirements:** Node.js 20+. Auth is handled by Clerk via the Vercel Marketplace integration (see [Deployment](#deployment)).
+**Requirements:** Node.js 20+, `pnpm`, Docker, and the [Supabase CLI](https://supabase.com/docs/guides/cli) (`brew install supabase/tap/supabase` on macOS). Auth is handled by Clerk via the Vercel Marketplace integration (see [Deployment](#deployment)).
 
 ## Architecture
 
@@ -45,7 +45,7 @@ The database starts empty — create your first company from the UI. There is no
 eidolon/
 ├── packages/
 │   ├── shared/      # Types, Zod schemas, constants
-│   ├── db/          # Drizzle ORM, SQLite, migrations
+│   ├── db/          # Drizzle ORM, Postgres, migrations
 │   └── mcp-server/  # @eidolon/mcp-server — MCP wrapper over the REST API
 ├── server/          # Express API + WebSocket server
 │   ├── routes/      # REST endpoints (agents, tasks, approvals, inbox, mcp…)
@@ -62,7 +62,7 @@ eidolon/
 ## Tech stack
 
 - **Backend:** Node.js 20+, Express 5, TypeScript
-- **Database:** SQLite via Drizzle ORM (embedded, zero-config). Migrations live in `packages/db/drizzle/`.
+- **Database:** Postgres via Drizzle ORM + `postgres.js`. Locally provisioned by the Supabase CLI (`supabase/config.toml`); migrations live in `packages/db/drizzle/`. Tests run against PGlite (in-memory Postgres) with the same migrations.
 - **Frontend:** React 19, Vite, Tailwind CSS v4, TanStack React Query, Framer Motion
 - **Auth:** Clerk (production) / `local_trusted` bypass (dev loopback)
 - **Real-time:** WebSocket (`ws`) with typed events and an in-process event bus
@@ -79,6 +79,9 @@ pnpm run build         # Build shared → server → UI
 pnpm run typecheck     # tsc -b across all projects
 pnpm run test          # vitest watch mode
 pnpm run test:run      # One-shot test run
+pnpm run db:start      # Start local Supabase (Postgres + Studio)
+pnpm run db:stop       # Stop local Supabase
+pnpm run db:reset      # Drop the DB and re-apply Drizzle migrations
 pnpm run db:generate   # Regenerate migration SQL from schema
 pnpm run db:migrate    # Apply outstanding migrations
 ```

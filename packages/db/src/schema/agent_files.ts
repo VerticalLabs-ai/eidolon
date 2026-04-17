@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, boolean, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 import { agents } from './agents';
 
-export const agentFiles = sqliteTable(
+export const agentFiles = pgTable(
   'agent_files',
   {
     id: text('id')
@@ -20,13 +20,13 @@ export const agentFiles = sqliteTable(
     content: text('content'),
     storageType: text('storage_type').notNull().default('inline'),
     parentId: text('parent_id'),
-    isDirectory: integer('is_directory', { mode: 'boolean' }).notNull().default(false),
+    isDirectory: boolean('is_directory').notNull().default(false),
     taskId: text('task_id'),
     executionId: text('execution_id'),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

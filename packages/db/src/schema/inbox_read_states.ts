@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
@@ -10,7 +10,7 @@ import { companies } from './companies';
  * a particular company. The `(userId, companyId, itemId)` uniqueness lets
  * the /inbox route left-join this table and expose `readAt` per item.
  */
-export const inboxReadStates = sqliteTable(
+export const inboxReadStates = pgTable(
   'inbox_read_states',
   {
     id: text('id')
@@ -21,10 +21,10 @@ export const inboxReadStates = sqliteTable(
       .notNull()
       .references(() => companies.id),
     itemId: text('item_id').notNull(),
-    readAt: integer('read_at', { mode: 'timestamp_ms' })
+    readAt: timestamp('read_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

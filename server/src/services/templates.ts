@@ -60,8 +60,7 @@ export class TemplateService {
     const agentRows = await this.db.drizzle
       .select()
       .from(agents)
-      .where(eq(agents.companyId, companyId))
-      .all();
+      .where(eq(agents.companyId, companyId));
 
     // Build agent ID -> role map for resolving reportsTo
     const idToRole = new Map<string, string>();
@@ -87,8 +86,7 @@ export class TemplateService {
     const goalRows = await this.db.drizzle
       .select()
       .from(goals)
-      .where(eq(goals.companyId, companyId))
-      .all();
+      .where(eq(goals.companyId, companyId));
 
     const templateGoals: TemplateGoalConfig[] = goalRows.map((g) => ({
       title: g.title,
@@ -100,8 +98,7 @@ export class TemplateService {
     const promptRows = await this.db.drizzle
       .select()
       .from(promptTemplates)
-      .where(eq(promptTemplates.companyId, companyId))
-      .all();
+      .where(eq(promptTemplates.companyId, companyId));
 
     const templatePrompts: TemplatePromptConfig[] = promptRows.map((p) => ({
       name: p.name,
@@ -260,11 +257,10 @@ export class TemplateService {
       return this.db.drizzle
         .select()
         .from(companyTemplates)
-        .where(eq(companyTemplates.category, cat))
-        .all();
+        .where(eq(companyTemplates.category, cat));
     }
 
-    return this.db.drizzle.select().from(companyTemplates).all();
+    return this.db.drizzle.select().from(companyTemplates);
   }
 
   /**

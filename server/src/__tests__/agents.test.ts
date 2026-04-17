@@ -5,11 +5,11 @@ import { decrypt } from '../services/crypto.js';
 
 describe('Agents API', () => {
   let app: ReturnType<typeof createTestApp>;
-  let db: ReturnType<typeof createTestDb>;
+  let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
 
   beforeEach(async () => {
-    db = createTestDb();
+    db = await createTestDb();
     app = createTestApp(db);
 
     // Every test needs a company to attach agents to

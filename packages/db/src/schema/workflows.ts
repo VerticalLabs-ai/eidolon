@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, jsonb, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
-export const workflows = sqliteTable('workflows', {
+export const workflows = pgTable('workflows', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => randomUUID()),
@@ -11,7 +11,7 @@ export const workflows = sqliteTable('workflows', {
     .references(() => companies.id),
   name: text('name').notNull(),
   description: text('description'),
-  nodes: text('nodes', { mode: 'json' })
+  nodes: jsonb('nodes')
     .notNull()
     .$type<Record<string, unknown>[]>()
     .default([]),
@@ -20,10 +20,10 @@ export const workflows = sqliteTable('workflows', {
   })
     .notNull()
     .default('draft'),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+  createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+  updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
 });

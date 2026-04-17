@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, boolean, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 import { agents } from './agents';
 
-export const budgetAlerts = sqliteTable('budget_alerts', {
+export const budgetAlerts = pgTable('budget_alerts', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => randomUUID()),
@@ -12,9 +12,9 @@ export const budgetAlerts = sqliteTable('budget_alerts', {
     .references(() => companies.id),
   agentId: text('agent_id').references(() => agents.id),
   thresholdPercent: integer('threshold_percent').notNull(),
-  triggered: integer('triggered', { mode: 'boolean' }).notNull().default(false),
-  triggeredAt: integer('triggered_at', { mode: 'timestamp_ms' }),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+  triggered: boolean('triggered').notNull().default(false),
+  triggeredAt: timestamp('triggered_at', { mode: 'date', precision: 3 }),
+  createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
 });

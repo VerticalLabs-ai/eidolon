@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 import { agents } from './agents';
 
-export const goals = sqliteTable('goals', {
+export const goals = pgTable('goals', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => randomUUID()),
@@ -25,15 +25,15 @@ export const goals = sqliteTable('goals', {
   parentId: text('parent_id').references((): any => goals.id),
   ownerAgentId: text('owner_agent_id').references(() => agents.id),
   progress: integer('progress').notNull().default(0),
-  targetDate: integer('target_date', { mode: 'timestamp_ms' }),
-  metrics: text('metrics', { mode: 'json' })
+  targetDate: timestamp('target_date', { mode: 'date', precision: 3 }),
+  metrics: jsonb('metrics')
     .notNull()
     .$type<Record<string, unknown>>()
     .default({}),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+  createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+  updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
 });

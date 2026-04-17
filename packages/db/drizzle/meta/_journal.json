@@ -1,47 +1,12 @@
 {
   "version": "7",
-  "dialect": "sqlite",
+  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
-      "version": "6",
-      "when": 1775491266760,
-      "tag": "0000_wet_puppet_master",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1775508211222,
-      "tag": "0001_military_kulan_gath",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1775567871573,
-      "tag": "0002_simple_zarda",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1776437522408,
-      "tag": "0003_medical_cannonball",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1776443792561,
-      "tag": "0004_magical_raza",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "6",
-      "when": 1776448754589,
-      "tag": "0005_misty_riptide",
+      "version": "7",
+      "when": 1776453292761,
+      "tag": "0000_living_tana_nile",
       "breakpoints": true
     }
   ]

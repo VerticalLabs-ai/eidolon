@@ -4,10 +4,10 @@ import { createTestDb, createTestApp } from '../test-utils.js';
 
 describe('Companies API', () => {
   let app: ReturnType<typeof createTestApp>;
-  let db: ReturnType<typeof createTestDb>;
+  let db: Awaited<ReturnType<typeof createTestDb>>;
 
-  beforeEach(() => {
-    db = createTestDb();
+  beforeEach(async () => {
+    db = await createTestDb();
     app = createTestApp(db);
   });
 

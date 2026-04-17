@@ -1,41 +1,33 @@
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import postgres, { type Sql } from 'postgres';
 
 import * as schema from './schema/index.js';
 
 export * from './schema/index.js';
 
 export interface DbInstance {
-  db: ReturnType<typeof drizzle<typeof schema>>;
-  connection: Database.Database;
+  db: PostgresJsDatabase<typeof schema>;
+  client: Sql;
 }
 
 /**
- * Create a database instance backed by SQLite via better-sqlite3.
+ * Create a database instance backed by Postgres via postgres.js.
  *
- * @param filePath - Absolute or relative path to the SQLite file.
- *   Defaults to `eidolon-data/eidolon.db` resolved from `process.cwd()`.
- * @returns The Drizzle ORM `db` handle and the raw `better-sqlite3` connection.
+ * @param url - Postgres connection string. Defaults to `process.env.DATABASE_URL`.
+ *   Must be provided one way or the other — there is no file fallback.
+ * @returns The Drizzle ORM `db` handle and the raw postgres.js client.
  */
-export function createDb(filePath?: string): DbInstance {
-  // Default to <project-root>/data/eidolon.db regardless of CWD
-  const resolved = filePath
-    ? resolve(filePath)
-    : resolve(import.meta.dirname ?? '.', '../../..', 'data', 'eidolon.db');
+export function createDb(url?: string): DbInstance {
+  const connectionString = url ?? process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error(
+      'DATABASE_URL is required. Start Supabase locally with `pnpm run db:start` ' +
+        'and set DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres.',
+    );
+  }
 
-  // Ensure the parent directory exists
-  mkdirSync(dirname(resolved), { recursive: true });
+  const client = postgres(connectionString);
+  const db = drizzle(client, { schema });
 
-  const connection = new Database(resolved);
-
-  // Enable WAL mode for better concurrent read performance
-  connection.pragma('journal_mode = WAL');
-  // Enable foreign key enforcement (off by default in SQLite)
-  connection.pragma('foreign_keys = ON');
-
-  const db = drizzle(connection, { schema });
-
-  return { db, connection };
+  return { db, client };
 }

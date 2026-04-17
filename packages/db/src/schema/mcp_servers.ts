@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
-export const mcpServers = sqliteTable(
+export const mcpServers = pgTable(
   'mcp_servers',
   {
     id: text('id')
@@ -18,11 +18,11 @@ export const mcpServers = sqliteTable(
       .notNull()
       .default('stdio'),
     command: text('command'),
-    args: text('args', { mode: 'json' })
+    args: jsonb('args')
       .notNull()
       .$type<string[]>()
       .default([]),
-    env: text('env', { mode: 'json' })
+    env: jsonb('env')
       .notNull()
       .$type<Record<string, string>>()
       .default({}),
@@ -32,19 +32,19 @@ export const mcpServers = sqliteTable(
     })
       .notNull()
       .default('disconnected'),
-    availableTools: text('available_tools', { mode: 'json' })
+    availableTools: jsonb('available_tools')
       .notNull()
       .$type<Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>>()
       .default([]),
-    availableResources: text('available_resources', { mode: 'json' })
+    availableResources: jsonb('available_resources')
       .notNull()
       .$type<Array<{ uri: string; name: string; description?: string; mimeType?: string }>>()
       .default([]),
-    lastConnectedAt: integer('last_connected_at', { mode: 'timestamp_ms' }),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    lastConnectedAt: timestamp('last_connected_at', { mode: 'date', precision: 3 }),
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

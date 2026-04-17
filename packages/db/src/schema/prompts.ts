@@ -1,7 +1,7 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 
-export const promptTemplates = sqliteTable(
+export const promptTemplates = pgTable(
   'prompt_templates',
   {
     id: text('id')
@@ -16,18 +16,19 @@ export const promptTemplates = sqliteTable(
       .notNull()
       .default('general'),
     content: text('content').notNull(),
-    variables: text('variables', { mode: 'json' })
+    variables: jsonb('variables')
       .notNull()
       .$type<string[]>()
       .default([]),
     version: integer('version').notNull().default(1),
+    // 0/1 integer: route handlers compare with `eq(..., 1)` and assign 1/0.
     isGlobal: integer('is_global').notNull().default(0),
     usageCount: integer('usage_count').notNull().default(0),
     createdBy: text('created_by'),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },
@@ -36,7 +37,7 @@ export const promptTemplates = sqliteTable(
   ],
 );
 
-export const promptVersions = sqliteTable(
+export const promptVersions = pgTable(
   'prompt_versions',
   {
     id: text('id')
@@ -49,7 +50,7 @@ export const promptVersions = sqliteTable(
     content: text('content').notNull(),
     changeNote: text('change_note'),
     createdBy: text('created_by'),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

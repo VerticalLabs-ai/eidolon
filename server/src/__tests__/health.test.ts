@@ -5,8 +5,8 @@ import { createTestDb, createTestApp } from '../test-utils.js';
 describe('Health API', () => {
   let app: ReturnType<typeof createTestApp>;
 
-  beforeEach(() => {
-    const db = createTestDb();
+  beforeEach(async () => {
+    const db = await createTestDb();
     app = createTestApp(db);
   });
 

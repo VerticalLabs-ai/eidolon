@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
-export const secrets = sqliteTable(
+export const secrets = pgTable(
   'secrets',
   {
     id: text('id')
@@ -16,10 +16,10 @@ export const secrets = sqliteTable(
     provider: text('provider').notNull().default('local'),
     description: text('description'),
     createdBy: text('created_by'),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

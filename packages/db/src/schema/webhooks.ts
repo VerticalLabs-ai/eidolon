@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, boolean, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 import { agents } from './agents';
 
-export const webhooks = sqliteTable(
+export const webhooks = pgTable(
   'webhooks',
   {
     id: text('id')
@@ -16,13 +16,13 @@ export const webhooks = sqliteTable(
     secret: text('secret').notNull(),
     targetAgentId: text('target_agent_id').references(() => agents.id),
     eventType: text('event_type').notNull().default('task.create'),
-    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
-    lastTriggeredAt: integer('last_triggered_at', { mode: 'timestamp_ms' }),
+    enabled: boolean('enabled').notNull().default(true),
+    lastTriggeredAt: timestamp('last_triggered_at', { mode: 'date', precision: 3 }),
     triggerCount: integer('trigger_count').notNull().default(0),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

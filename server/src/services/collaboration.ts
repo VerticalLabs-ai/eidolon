@@ -236,8 +236,7 @@ export class CollaborationService {
           eq(agentCollaborations.status, 'pending'),
         ),
       )
-      .orderBy(desc(agentCollaborations.createdAt))
-      .all();
+      .orderBy(desc(agentCollaborations.createdAt));
   }
 
   /**
@@ -251,8 +250,7 @@ export class CollaborationService {
       .from(agentCollaborations)
       .where(eq(agentCollaborations.companyId, companyId))
       .orderBy(desc(agentCollaborations.createdAt))
-      .limit(limit)
-      .all();
+      .limit(limit);
   }
 
   /**
@@ -289,7 +287,6 @@ export class CollaborationService {
           ),
         ),
       )
-      .orderBy(desc(agentCollaborations.createdAt))
-      .all();
+      .orderBy(desc(agentCollaborations.createdAt));
   }
 }

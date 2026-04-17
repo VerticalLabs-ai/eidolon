@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
-export const integrations = sqliteTable(
+export const integrations = pgTable(
   'integrations',
   {
     id: text('id')
@@ -17,12 +17,12 @@ export const integrations = sqliteTable(
     config: text('config').notNull().default('{}'),
     credentialsEncrypted: text('credentials_encrypted'),
     status: text('status').notNull().default('active'),
-    lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+    lastUsedAt: timestamp('last_used_at', { mode: 'date', precision: 3 }),
     usageCount: integer('usage_count').notNull().default(0),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },

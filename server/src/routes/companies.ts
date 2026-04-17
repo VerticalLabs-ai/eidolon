@@ -42,7 +42,7 @@ export function companiesRouter(db: DbInstance): Router {
 
   // GET /api/companies - list all
   router.get('/', async (_req, res) => {
-    const rows = await db.drizzle.select().from(companies).all();
+    const rows = await db.drizzle.select().from(companies);
     res.json({ data: rows });
   });
 

@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX `uq_members_user_org` ON `members` (`user_id`,`organization_id`);

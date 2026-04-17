@@ -143,9 +143,10 @@ export function analyticsRouter(db: DbInstance): Router {
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     // Daily cost totals
+    const costDay = sql<string>`to_char(${costEvents.createdAt}, 'YYYY-MM-DD')`;
     const dailyCosts = await db.drizzle
       .select({
-        day: sql<string>`date(${costEvents.createdAt} / 1000, 'unixepoch')`,
+        day: costDay,
         totalCents: sql<number>`sum(${costEvents.costCents})`,
         eventCount: sql<number>`count(*)`,
       })
@@ -156,8 +157,8 @@ export function analyticsRouter(db: DbInstance): Router {
           gte(costEvents.createdAt, thirtyDaysAgo),
         ),
       )
-      .groupBy(sql`date(${costEvents.createdAt} / 1000, 'unixepoch')`)
-      .orderBy(sql`date(${costEvents.createdAt} / 1000, 'unixepoch')`);
+      .groupBy(costDay)
+      .orderBy(costDay);
 
     // By provider
     const byProvider = await db.drizzle
@@ -220,9 +221,10 @@ export function analyticsRouter(db: DbInstance): Router {
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     // Completed tasks per day
+    const taskDay = sql<string>`to_char(${tasks.completedAt}, 'YYYY-MM-DD')`;
     const completedByDay = await db.drizzle
       .select({
-        day: sql<string>`date(${tasks.completedAt} / 1000, 'unixepoch')`,
+        day: taskDay,
         count: sql<number>`count(*)`,
       })
       .from(tasks)
@@ -233,8 +235,8 @@ export function analyticsRouter(db: DbInstance): Router {
           gte(tasks.completedAt, thirtyDaysAgo),
         ),
       )
-      .groupBy(sql`date(${tasks.completedAt} / 1000, 'unixepoch')`)
-      .orderBy(sql`date(${tasks.completedAt} / 1000, 'unixepoch')`);
+      .groupBy(taskDay)
+      .orderBy(taskDay);
 
     // By priority
     const byPriority = await db.drizzle

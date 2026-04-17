@@ -1,7 +1,7 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, jsonb, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 
-export const activityLog = sqliteTable('activity_log', {
+export const activityLog = pgTable('activity_log', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => randomUUID()),
@@ -14,11 +14,11 @@ export const activityLog = sqliteTable('activity_log', {
   entityType: text('entity_type').notNull(),
   entityId: text('entity_id'),
   description: text('description'),
-  metadata: text('metadata', { mode: 'json' })
+  metadata: jsonb('metadata')
     .notNull()
     .$type<Record<string, unknown>>()
     .default({}),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+  createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),
 });

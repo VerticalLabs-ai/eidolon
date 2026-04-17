@@ -11,6 +11,9 @@
     "typecheck": "tsc -b",
     "test": "vitest",
     "test:run": "vitest run",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset --no-seed && pnpm --filter @eidolon/db migrate",
     "db:generate": "pnpm --filter @eidolon/db generate",
     "db:migrate": "pnpm --filter @eidolon/db migrate",
     "lint": "eslint . --ext .ts,.tsx",
@@ -30,7 +33,6 @@
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3",
       "esbuild"
     ]
   }

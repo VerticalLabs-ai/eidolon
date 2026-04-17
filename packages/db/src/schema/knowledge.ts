@@ -1,8 +1,8 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies';
 
-export const knowledgeDocuments = sqliteTable(
+export const knowledgeDocuments = pgTable(
   'knowledge_documents',
   {
     id: text('id')
@@ -16,15 +16,15 @@ export const knowledgeDocuments = sqliteTable(
     contentType: text('content_type').notNull().default('markdown'),
     source: text('source').default('manual'),
     sourceUrl: text('source_url'),
-    tags: text('tags', { mode: 'json' }).notNull().$type<string[]>().default([]),
-    metadata: text('metadata', { mode: 'json' }).notNull().$type<Record<string, unknown>>().default({}),
+    tags: jsonb('tags').notNull().$type<string[]>().default([]),
+    metadata: jsonb('metadata').notNull().$type<Record<string, unknown>>().default({}),
     chunkCount: integer('chunk_count').notNull().default(0),
     embeddingStatus: text('embedding_status').notNull().default('pending'),
     createdBy: text('created_by'),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },
@@ -33,7 +33,7 @@ export const knowledgeDocuments = sqliteTable(
   ],
 );
 
-export const knowledgeChunks = sqliteTable(
+export const knowledgeChunks = pgTable(
   'knowledge_chunks',
   {
     id: text('id')
@@ -46,8 +46,8 @@ export const knowledgeChunks = sqliteTable(
     chunkIndex: integer('chunk_index').notNull(),
     content: text('content').notNull(),
     tokenCount: integer('token_count').notNull().default(0),
-    metadata: text('metadata', { mode: 'json' }).notNull().$type<Record<string, unknown>>().default({}),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    metadata: jsonb('metadata').notNull().$type<Record<string, unknown>>().default({}),
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
   },
