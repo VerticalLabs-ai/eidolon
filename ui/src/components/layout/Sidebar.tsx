@@ -1,7 +1,6 @@
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { useCompanies, useInbox, useProjects } from "@/lib/hooks";
 import { useWebSocket } from "@/lib/ws";
-import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { motion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
@@ -218,62 +217,13 @@ function ProjectsSection({ base, onClose }: { base: string; onClose: () => void 
 
 // ── Main Sidebar ────────────────────────────────────────────────────────
 
-// ── Hook: unread-count lookup per badgeKey ──────────────────────────────
-//
-// Reads the inbox feed plus the same localStorage read-state key Inbox.tsx
-// writes to, so the sidebar dot updates without any shared state service.
+// ── Hook: server-sourced unread count ───────────────────────────────────
 
 function useInboxUnreadCount(companyId: string | undefined): number {
   const { data } = useInbox(companyId);
-  const [readSet, setReadSet] = useState<Set<string>>(() => new Set());
-
-  useEffect(() => {
-    if (!companyId) return;
-    // Match the key layout in Inbox.tsx — anon user is a fallback since
-    // better-auth session may not be resolved yet on first render.
-    const load = () => {
-      try {
-        const keys = Object.keys(localStorage).filter(
-          (k) =>
-            k.startsWith("eidolon:inbox:read:") &&
-            k.endsWith(`:${companyId}`),
-        );
-        const merged = new Set<string>();
-        for (const k of keys) {
-          const raw = localStorage.getItem(k);
-          if (!raw) continue;
-          try {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) {
-              for (const id of parsed) {
-                if (typeof id === "string") merged.add(id);
-              }
-            }
-          } catch {
-            // skip
-          }
-        }
-        setReadSet(merged);
-      } catch {
-        // skip
-      }
-    };
-
-    load();
-    const handler = (e: StorageEvent) => {
-      if (e.key?.startsWith("eidolon:inbox:read:")) load();
-    };
-    window.addEventListener("storage", handler);
-    // Also poll occasionally — localStorage "storage" only fires cross-tab.
-    const interval = window.setInterval(load, 5000);
-    return () => {
-      window.removeEventListener("storage", handler);
-      window.clearInterval(interval);
-    };
-  }, [companyId]);
-
-  if (!data?.data) return 0;
-  return data.data.filter((item) => !readSet.has(item.id)).length;
+  // Server computes meta.unread; the query already refetches every 15s and
+  // gets invalidated after every markRead / markUnread mutation.
+  return data?.meta?.unread ?? 0;
 }
 
 export function Sidebar({ companyName, open, onClose }: SidebarProps) {

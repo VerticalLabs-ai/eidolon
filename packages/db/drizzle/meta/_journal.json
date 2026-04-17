@@ -36,6 +36,13 @@
       "when": 1776443792561,
       "tag": "0004_magical_raza",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1776448754589,
+      "tag": "0005_misty_riptide",
+      "breakpoints": true
     }
   ]
 }

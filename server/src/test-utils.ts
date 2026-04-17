@@ -285,6 +285,17 @@ export function createTestDb(): DbInstance {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX idx_approval_comments_approval ON approval_comments(approval_id, created_at);
+
+    CREATE TABLE inbox_read_states (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      company_id TEXT NOT NULL REFERENCES companies(id),
+      item_id TEXT NOT NULL,
+      read_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, company_id, item_id)
+    );
+    CREATE INDEX idx_inbox_read_states_user_company ON inbox_read_states(user_id, company_id);
   `);
 
   const drizzleDb = drizzle(sqlite);
@@ -300,6 +311,15 @@ export function createTestDb(): DbInstance {
  */
 export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
   const previousAuthMode = process.env.AUTH_MODE;
+  // CSRF middleware re-reads env per-request; set a dedicated disable flag
+  // that outlives createApp's finally block so test supertest calls (which
+  // never include an Origin header) aren't rejected as CSRF violations.
+  // The CSRF test file overrides this explicitly when it needs enforcement.
+  if (authMode === 'local_trusted') {
+    process.env.EIDOLON_DISABLE_CSRF = '1';
+  } else {
+    delete process.env.EIDOLON_DISABLE_CSRF;
+  }
 
   try {
     process.env.AUTH_MODE = authMode;

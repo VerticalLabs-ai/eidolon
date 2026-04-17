@@ -9,16 +9,21 @@ import {
   ArrowRight,
   MessageCircle,
   Keyboard,
+  Archive,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { motion, type PanInfo } from "framer-motion";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Tabs, type Tab } from "@/components/ui/Tabs";
 import { PageTransition } from "@/components/ui/PageTransition";
-import { useInbox } from "@/lib/hooks";
-import { useSession } from "@/lib/auth";
+import {
+  useInbox,
+  useMarkInboxRead,
+  useMarkInboxUnread,
+} from "@/lib/hooks";
 import { BoardChat } from "@/pages/BoardChat";
 import { MessageCenter } from "@/pages/MessageCenter";
 import type { InboxItem, InboxItemKind } from "@/lib/api";
@@ -49,36 +54,6 @@ const priorityVariant: Record<string, "info" | "warning" | "error"> = {
 };
 
 // ---------------------------------------------------------------------------
-// Read-state — localStorage per user
-// ---------------------------------------------------------------------------
-
-const READ_KEY_PREFIX = "eidolon:inbox:read:";
-
-function readStateKey(userId: string | undefined | null, companyId: string) {
-  return `${READ_KEY_PREFIX}${userId ?? "anon"}:${companyId}`;
-}
-
-function loadReadSet(key: string): Set<string> {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((x) => typeof x === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
-function persistReadSet(key: string, set: Set<string>) {
-  try {
-    localStorage.setItem(key, JSON.stringify([...set]));
-  } catch {
-    // ignore quota / access errors
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Day bucketing — "Today" vs "Earlier"
 // ---------------------------------------------------------------------------
 
@@ -107,59 +82,46 @@ function formatRelative(iso: string): string {
 // ---------------------------------------------------------------------------
 
 function InboxFeed({ companyId }: { companyId: string }) {
-  const { data: session } = useSession();
-  const userId = session?.user?.id;
   const navigate = useNavigate();
   const { data, isLoading } = useInbox(companyId);
+  const markRead = useMarkInboxRead(companyId);
+  const markUnread = useMarkInboxUnread(companyId);
 
-  const storageKey = useMemo(
-    () => readStateKey(userId, companyId),
-    [userId, companyId],
-  );
-
-  const [readSet, setReadSet] = useState<Set<string>>(() =>
-    loadReadSet(storageKey),
-  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
-  // Reload read set when user / company context changes
-  useEffect(() => {
-    setReadSet(loadReadSet(storageKey));
-  }, [storageKey]);
-
-  const items = data?.data ?? [];
+  const items = useMemo(() => data?.data ?? [], [data?.data]);
 
   // Default selection = first unread, else first item
   useEffect(() => {
     if (selectedId && items.some((i) => i.id === selectedId)) return;
-    const firstUnread = items.find((i) => !readSet.has(i.id));
+    const firstUnread = items.find((i) => !i.readAt);
     setSelectedId((firstUnread ?? items[0])?.id ?? null);
-  }, [items, readSet, selectedId]);
+  }, [items, selectedId]);
 
-  const markRead = useCallback(
+  const doMarkRead = useCallback(
     (id: string) => {
-      setReadSet((prev) => {
-        if (prev.has(id)) return prev;
-        const next = new Set(prev);
-        next.add(id);
-        persistReadSet(storageKey, next);
-        return next;
-      });
+      const item = items.find((i) => i.id === id);
+      if (!item || item.readAt) return; // already read — no-op
+      markRead.mutate([id]);
     },
-    [storageKey],
+    [items, markRead],
   );
 
-  const markAllRead = useCallback(() => {
-    setReadSet((prev) => {
-      const next = new Set(prev);
-      for (const item of items) next.add(item.id);
-      persistReadSet(storageKey, next);
-      return next;
-    });
-  }, [items, storageKey]);
+  const markAllVisible = useCallback(() => {
+    const unreadIds = items.filter((i) => !i.readAt).map((i) => i.id);
+    if (unreadIds.length === 0) return;
+    markRead.mutate(unreadIds);
+  }, [items, markRead]);
 
-  // j / k / a / o / enter keyboard navigation
+  const markSelectedUnread = useCallback(
+    (id: string) => {
+      markUnread.mutate([id]);
+    },
+    [markUnread],
+  );
+
+  // j / k / a / y / o / enter / u / ? keyboard navigation
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -186,18 +148,24 @@ function InboxFeed({ companyId }: { companyId: string }) {
         ev.preventDefault();
         const prev = items[Math.max(currentIdx - 1, 0)];
         if (prev) setSelectedId(prev.id);
-      } else if (ev.key === "a") {
+      } else if (ev.key === "a" || ev.key === "y") {
+        // Gmail-style: `y` archives the current conversation. We keep `a`
+        // as an alias for discoverability.
         ev.preventDefault();
         if (selectedId) {
-          markRead(selectedId);
+          doMarkRead(selectedId);
           const next = items[Math.min(currentIdx + 1, items.length - 1)];
           if (next && next.id !== selectedId) setSelectedId(next.id);
         }
+      } else if (ev.key === "u") {
+        // Gmail-style: `u` marks unread.
+        ev.preventDefault();
+        if (selectedId) markSelectedUnread(selectedId);
       } else if (ev.key === "o" || ev.key === "Enter") {
         ev.preventDefault();
         const selected = items.find((i) => i.id === selectedId);
         if (selected) {
-          markRead(selected.id);
+          doMarkRead(selected.id);
           navigate(selected.link);
         }
       } else if (ev.key === "?") {
@@ -208,7 +176,13 @@ function InboxFeed({ companyId }: { companyId: string }) {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [items, selectedId, markRead, navigate]);
+  }, [
+    items,
+    selectedId,
+    doMarkRead,
+    markSelectedUnread,
+    navigate,
+  ]);
 
   const { todayItems, earlierItems } = useMemo(() => {
     const today: InboxItem[] = [];
@@ -219,8 +193,7 @@ function InboxFeed({ companyId }: { companyId: string }) {
     return { todayItems: today, earlierItems: earlier };
   }, [items]);
 
-  const unreadCount = items.filter((i) => !readSet.has(i.id)).length;
-
+  const unreadCount = data?.meta?.unread ?? items.filter((i) => !i.readAt).length;
   const selected = items.find((i) => i.id === selectedId) ?? null;
 
   if (isLoading) {
@@ -258,7 +231,13 @@ function InboxFeed({ companyId }: { companyId: string }) {
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={markAllRead}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={markAllVisible}
+            disabled={markRead.isPending || unreadCount === 0}
+            title="Mark everything in this view read"
+          >
             <Check className="mr-1.5 h-3.5 w-3.5" />
             Mark all read
           </Button>
@@ -283,7 +262,11 @@ function InboxFeed({ companyId }: { companyId: string }) {
               <kbd className="kbd">k</kbd> / <kbd className="kbd">↑</kbd> prev
             </span>
             <span>
-              <kbd className="kbd">a</kbd> archive (mark read)
+              <kbd className="kbd">y</kbd> / <kbd className="kbd">a</kbd> archive
+              (mark read)
+            </span>
+            <span>
+              <kbd className="kbd">u</kbd> mark unread
             </span>
             <span>
               <kbd className="kbd">o</kbd> / <kbd className="kbd">Enter</kbd> open
@@ -292,10 +275,13 @@ function InboxFeed({ companyId }: { companyId: string }) {
               <kbd className="kbd">?</kbd> toggle this help
             </span>
           </div>
+          <p className="mt-2 text-[11px] text-text-secondary/80">
+            Tip: on touch devices, swipe a row left to archive.
+          </p>
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,340px)_1fr] gap-4 p-5">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-5 md:grid-cols-[minmax(0,340px)_1fr]">
         <div
           ref={listRef}
           className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1"
@@ -304,32 +290,30 @@ function InboxFeed({ companyId }: { companyId: string }) {
             <DayGroup
               label="Today"
               items={todayItems}
-              readSet={readSet}
               selectedId={selectedId}
               onSelect={setSelectedId}
-              onMarkRead={markRead}
+              onMarkRead={doMarkRead}
             />
           )}
           {earlierItems.length > 0 && (
             <DayGroup
               label="Earlier"
               items={earlierItems}
-              readSet={readSet}
               selectedId={selectedId}
               onSelect={setSelectedId}
-              onMarkRead={markRead}
+              onMarkRead={doMarkRead}
             />
           )}
         </div>
 
-        <div className="min-h-0">
+        <div className="min-h-0 hidden md:block">
           {selected ? (
             <DetailPane
               item={selected}
-              isRead={readSet.has(selected.id)}
-              onMarkRead={() => markRead(selected.id)}
+              onMarkRead={() => doMarkRead(selected.id)}
+              onMarkUnread={() => markSelectedUnread(selected.id)}
               onOpen={() => {
-                markRead(selected.id);
+                doMarkRead(selected.id);
                 navigate(selected.link);
               }}
             />
@@ -347,14 +331,12 @@ function InboxFeed({ companyId }: { companyId: string }) {
 function DayGroup({
   label,
   items,
-  readSet,
   selectedId,
   onSelect,
   onMarkRead,
 }: {
   label: string;
   items: InboxItem[];
-  readSet: Set<string>;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onMarkRead: (id: string) => void;
@@ -366,10 +348,9 @@ function DayGroup({
       </div>
       <div className="space-y-1.5">
         {items.map((item) => (
-          <InboxRow
+          <SwipeableInboxRow
             key={item.id}
             item={item}
-            isRead={readSet.has(item.id)}
             isSelected={selectedId === item.id}
             onSelect={() => onSelect(item.id)}
             onMarkRead={() => onMarkRead(item.id)}
@@ -380,87 +361,137 @@ function DayGroup({
   );
 }
 
-function InboxRow({
+// ---------------------------------------------------------------------------
+// SwipeableInboxRow — mouse-click + mobile-swipe both archive.
+// Drag left ≥ 80px reveals the Archive affordance, release to commit.
+// ---------------------------------------------------------------------------
+
+function SwipeableInboxRow({
   item,
-  isRead,
   isSelected,
   onSelect,
   onMarkRead,
 }: {
   item: InboxItem;
-  isRead: boolean;
   isSelected: boolean;
   onSelect: () => void;
   onMarkRead: () => void;
 }) {
-  const Icon = kindIcon[item.kind];
+  const [dragX, setDragX] = useState(0);
+  const isRead = !!item.readAt;
+
+  const handleDragEnd = (_: unknown, info: PanInfo) => {
+    // Swipe ≥ 80px OR velocity ≥ 500 → archive. Otherwise snap back.
+    if (info.offset.x < -80 || info.velocity.x < -500) {
+      onMarkRead();
+    }
+    setDragX(0);
+  };
+
+  const revealed = Math.max(0, Math.min(120, -dragX));
+
   return (
-    <div
-      className={clsx(
-        "group relative flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-all duration-200",
-        isSelected
-          ? "border-accent/40 bg-accent/[0.07]"
-          : "border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.02]",
-      )}
-      onClick={onSelect}
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        onMarkRead();
-      }}
-    >
-      <span
-        className={clsx(
-          "mt-0.5 flex h-2 w-2 shrink-0 rounded-full transition-all",
-          isRead ? "bg-transparent" : "bg-accent shadow-[0_0_6px_rgba(0,243,255,0.6)]",
-        )}
-      />
-      <span
-        className={clsx(
-          "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-          kindTint[item.kind],
-        )}
+    <div className="relative overflow-hidden rounded-lg">
+      {/* Archive affordance behind the row, revealed as the row drags left */}
+      <div
+        className="pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end pr-4 text-[11px] font-medium text-success"
+        style={{ width: revealed }}
       >
-        <Icon className="h-3 w-3" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p
-            className={clsx(
-              "truncate text-xs",
-              isRead ? "font-normal text-text-secondary" : "font-medium text-text-primary",
+        <Archive className="mr-1.5 h-3.5 w-3.5" />
+        Archive
+      </div>
+
+      <motion.div
+        drag="x"
+        dragConstraints={{ left: -140, right: 0 }}
+        dragElastic={0.2}
+        onDrag={(_, info) => setDragX(info.offset.x)}
+        onDragEnd={handleDragEnd}
+        animate={{ x: 0 }}
+        transition={{ type: "spring", stiffness: 400, damping: 30 }}
+        className={clsx(
+          "group relative flex cursor-pointer items-start gap-3 border px-3 py-2.5 backdrop-blur-sm transition-colors duration-150",
+          // Keep rounded corners via inner content, not the drag transform.
+          "rounded-lg",
+          isSelected
+            ? "border-accent/40 bg-accent/[0.07]"
+            : "border-white/[0.06] bg-surface hover:border-white/[0.12] hover:bg-white/[0.02]",
+        )}
+        onClick={() => {
+          // Ignore clicks that actually came from a drag
+          if (Math.abs(dragX) > 4) return;
+          onSelect();
+        }}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          onMarkRead();
+        }}
+      >
+        <span
+          className={clsx(
+            "mt-0.5 flex h-2 w-2 shrink-0 rounded-full transition-all",
+            isRead
+              ? "bg-transparent"
+              : "bg-accent shadow-[0_0_6px_rgba(0,243,255,0.6)]",
+          )}
+        />
+        <span
+          className={clsx(
+            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+            kindTint[item.kind],
+          )}
+        >
+          {(() => {
+            const Icon = kindIcon[item.kind];
+            return <Icon className="h-3 w-3" />;
+          })()}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p
+              className={clsx(
+                "truncate text-xs",
+                isRead
+                  ? "font-normal text-text-secondary"
+                  : "font-medium text-text-primary",
+              )}
+            >
+              {item.title}
+            </p>
+            {item.priority && priorityVariant[item.priority] && (
+              <Badge variant={priorityVariant[item.priority]}>
+                {item.priority}
+              </Badge>
             )}
-          >
-            {item.title}
-          </p>
-          {item.priority && priorityVariant[item.priority] && (
-            <Badge variant={priorityVariant[item.priority]}>{item.priority}</Badge>
+          </div>
+          {item.subtitle && (
+            <p className="mt-0.5 truncate text-[11px] text-text-secondary">
+              {item.subtitle}
+            </p>
           )}
         </div>
-        {item.subtitle && (
-          <p className="mt-0.5 truncate text-[11px] text-text-secondary">
-            {item.subtitle}
-          </p>
-        )}
-      </div>
-      <span className="text-[10px] text-text-secondary tabular-nums">
-        {formatRelative(item.createdAt)}
-      </span>
+        <span className="text-[10px] text-text-secondary tabular-nums">
+          {formatRelative(item.createdAt)}
+        </span>
+      </motion.div>
     </div>
   );
 }
 
 function DetailPane({
   item,
-  isRead,
   onMarkRead,
+  onMarkUnread,
   onOpen,
 }: {
   item: InboxItem;
-  isRead: boolean;
   onMarkRead: () => void;
+  onMarkUnread: () => void;
   onOpen: () => void;
 }) {
   const Icon = kindIcon[item.kind];
+  const isRead = !!item.readAt;
+
   return (
     <Card className="flex h-full flex-col overflow-hidden">
       <div className="flex items-start gap-3 border-b border-white/[0.06] p-5">
@@ -494,6 +525,12 @@ function DetailPane({
             <span title={item.createdAt}>
               {formatRelative(item.createdAt)} ago
             </span>
+            {isRead && item.readAt && (
+              <>
+                <span>·</span>
+                <span title={item.readAt}>read {formatRelative(item.readAt)} ago</span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -512,7 +549,11 @@ function DetailPane({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-white/[0.06] bg-black/15 p-3">
-        {!isRead && (
+        {isRead ? (
+          <Button variant="ghost" size="sm" onClick={onMarkUnread}>
+            Mark unread
+          </Button>
+        ) : (
           <Button variant="ghost" size="sm" onClick={onMarkRead}>
             <Check className="mr-1.5 h-3.5 w-3.5" />
             Mark read

@@ -1214,6 +1214,7 @@ export interface InboxItem {
   entityId?: string;
   link: string;
   createdAt: string;
+  readAt: string | null;
 }
 
 export interface InboxResponse {
@@ -1222,12 +1223,25 @@ export interface InboxResponse {
     pendingApprovals: number;
     pendingCollaborations: number;
     total: number;
+    unread: number;
   };
 }
 
 export const listInbox = (companyId: string, limit = 100) =>
   request<InboxResponse>(
     `/companies/${companyId}/inbox?limit=${limit}`,
+  );
+
+export const markInboxRead = (companyId: string, itemIds: string[]) =>
+  request<{ marked: number; readAt: string }>(
+    `/companies/${companyId}/inbox/read`,
+    { method: "POST", body: JSON.stringify({ itemIds }) },
+  );
+
+export const markInboxUnread = (companyId: string, itemIds: string[]) =>
+  request<{ cleared: number }>(
+    `/companies/${companyId}/inbox/unread`,
+    { method: "POST", body: JSON.stringify({ itemIds }) },
   );
 
 // ── Approvals ───────────────────────────────────────────────────────────

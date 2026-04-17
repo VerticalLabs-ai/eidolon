@@ -27,6 +27,7 @@ describe('Inbox unified feed', () => {
       pendingApprovals: 0,
       pendingCollaborations: 0,
       total: 0,
+      unread: 0,
     });
   });
 
@@ -95,5 +96,88 @@ describe('Inbox unified feed', () => {
     const res = await request(app).get(url('?limit=2')).expect(200);
     expect(res.body.data).toHaveLength(2);
     expect(res.body.meta.pendingApprovals).toBe(5);
+  });
+
+  describe('per-user read state', () => {
+    it('marks items as read and surfaces readAt on subsequent GETs', async () => {
+      const a = await request(app)
+        .post(`/api/companies/${companyId}/approvals`)
+        .send({ title: 'First' });
+      const b = await request(app)
+        .post(`/api/companies/${companyId}/approvals`)
+        .send({ title: 'Second' });
+
+      const before = await request(app).get(url()).expect(200);
+      expect(before.body.meta.unread).toBe(2);
+      expect(before.body.data.every((i: any) => i.readAt === null)).toBe(true);
+
+      await request(app)
+        .post(url('/read'))
+        .send({
+          itemIds: [
+            `approval:${a.body.data.id}`,
+            `approval:${b.body.data.id}`,
+          ],
+        })
+        .expect(200);
+
+      const after = await request(app).get(url()).expect(200);
+      expect(after.body.meta.unread).toBe(0);
+      expect(after.body.data.every((i: any) => typeof i.readAt === 'string')).toBe(
+        true,
+      );
+    });
+
+    it('POST /read is idempotent — marking twice is a no-op', async () => {
+      const a = await request(app)
+        .post(`/api/companies/${companyId}/approvals`)
+        .send({ title: 'Once is enough' });
+      const payload = { itemIds: [`approval:${a.body.data.id}`] };
+
+      await request(app).post(url('/read')).send(payload).expect(200);
+      await request(app).post(url('/read')).send(payload).expect(200);
+
+      const res = await request(app).get(url()).expect(200);
+      expect(res.body.meta.unread).toBe(0);
+    });
+
+    it('POST /unread clears read state', async () => {
+      const a = await request(app)
+        .post(`/api/companies/${companyId}/approvals`)
+        .send({ title: 'Flip flop' });
+      const id = `approval:${a.body.data.id}`;
+
+      await request(app).post(url('/read')).send({ itemIds: [id] }).expect(200);
+      let feed = await request(app).get(url());
+      expect(feed.body.data[0].readAt).not.toBeNull();
+
+      await request(app)
+        .post(url('/unread'))
+        .send({ itemIds: [id] })
+        .expect(200);
+      feed = await request(app).get(url());
+      expect(feed.body.data[0].readAt).toBeNull();
+      expect(feed.body.meta.unread).toBe(1);
+    });
+
+    it('rejects empty itemIds array', async () => {
+      await request(app)
+        .post(url('/read'))
+        .send({ itemIds: [] })
+        .expect(400);
+    });
+
+    it('dedupes duplicate ids in the same payload', async () => {
+      const a = await request(app)
+        .post(`/api/companies/${companyId}/approvals`)
+        .send({ title: 'Dedupe me' });
+      const id = `approval:${a.body.data.id}`;
+
+      const res = await request(app)
+        .post(url('/read'))
+        .send({ itemIds: [id, id, id] })
+        .expect(200);
+      expect(res.body.data.marked).toBe(1);
+    });
   });
 });

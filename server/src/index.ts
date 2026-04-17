@@ -43,6 +43,7 @@ import {
   mcpServers,
   approvals,
   approvalComments,
+  inboxReadStates,
 } from '@eidolon/db';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -117,6 +118,7 @@ const db: DbInstance = {
     mcpServers,
     approvals,
     approvalComments,
+    inboxReadStates,
   },
 };
 

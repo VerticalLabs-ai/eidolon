@@ -990,6 +990,53 @@ export function useInbox(companyId: string | undefined) {
   });
 }
 
+export function useMarkInboxRead(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (itemIds: string[]) => api.markInboxRead(companyId, itemIds),
+    // Optimistically flip readAt so the UI stays responsive while the server
+    // round-trips. On error we roll back from the cache snapshot.
+    onMutate: async (itemIds: string[]) => {
+      await qc.cancelQueries({ queryKey: ["inbox", companyId] });
+      const prev = qc.getQueryData<api.InboxResponse>(["inbox", companyId]);
+      if (prev) {
+        const now = new Date().toISOString();
+        const ids = new Set(itemIds);
+        const next: api.InboxResponse = {
+          ...prev,
+          data: prev.data.map((i) =>
+            ids.has(i.id) ? { ...i, readAt: i.readAt ?? now } : i,
+          ),
+          meta: {
+            ...prev.meta,
+            unread: prev.data.filter(
+              (i) => !(ids.has(i.id) || i.readAt),
+            ).length,
+          },
+        };
+        qc.setQueryData(["inbox", companyId], next);
+      }
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["inbox", companyId], ctx.prev);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["inbox", companyId] });
+    },
+  });
+}
+
+export function useMarkInboxUnread(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (itemIds: string[]) => api.markInboxUnread(companyId, itemIds),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["inbox", companyId] });
+    },
+  });
+}
+
 // ── Approvals ───────────────────────────────────────────────────────────
 
 export function useApprovals(

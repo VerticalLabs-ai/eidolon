@@ -74,6 +74,7 @@ export function originCsrf(
 ): void {
   if (SAFE_METHODS.has(req.method)) return next();
   if (shouldBypass(req.originalUrl)) return next();
+  if (process.env.EIDOLON_DISABLE_CSRF === '1') return next();
   if (process.env.AUTH_MODE === 'local_trusted') return next();
   if (process.env.NODE_ENV === 'test') return next();
   if (process.env.VITEST === 'true' || process.env.VITEST_WORKER_ID) return next();
