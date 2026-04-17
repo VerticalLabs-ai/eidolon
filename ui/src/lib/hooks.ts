@@ -964,16 +964,6 @@ export function useImportTemplate() {
   });
 }
 
-export function useSeedTemplates() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.seedTemplates(),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["templates"] });
-    },
-  });
-}
-
 export function useExportCompany(companyId: string) {
   const qc = useQueryClient();
   return useMutation({

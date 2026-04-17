@@ -10,12 +10,10 @@
     "build": "tsc",
     "generate": "drizzle-kit generate",
     "migrate": "tsx src/migrate.ts",
-    "seed": "tsx src/seed.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@eidolon/shared": "workspace:*",
-    "better-auth": "^1.6.0",
     "better-sqlite3": "^12.8.0",
     "drizzle-orm": "^0.45.2"
   },

@@ -3,11 +3,11 @@ import cors from 'cors';
 import pinoHttp from 'pino-http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { toNodeHandler } from 'better-auth/node';
 import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
-import { authRateLimit, apiRateLimit } from './middleware/rate-limit.js';
+import { apiRateLimit } from './middleware/rate-limit.js';
+import { originCsrf } from './middleware/csrf.js';
 import healthRouter from './routes/health.js';
 import { companiesRouter } from './routes/companies.js';
 import { agentsRouter, orgChartRouter } from './routes/agents.js';
@@ -35,13 +35,12 @@ import { adaptersRouter } from './routes/adapters.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { inboxRouter } from './routes/inbox.js';
 import type { DbInstance } from './types.js';
-import type { Auth } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp(db: DbInstance, auth: Auth): express.Express {
+export function createApp(db: DbInstance): express.Express {
   const app = express();
-  const { requireAuth, requireOrgMember } = createAuthMiddleware(auth);
+  const { requireAuth, requireOrgMember } = createAuthMiddleware();
 
   // ---------------------------------------------------------------------------
   // CORS (must come before everything so preflight OPTIONS work)
@@ -60,38 +59,7 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
   );
 
   // ---------------------------------------------------------------------------
-  // Auth routes (BEFORE express.json — BetterAuth reads the raw body stream)
-  // ---------------------------------------------------------------------------
-
-  const authHandler = toNodeHandler(auth);
-  app.all('/api/auth/*splat', authRateLimit, (req, res) => {
-    try {
-      const result = authHandler(req, res);
-      // Catch async errors from the handler
-      if (result && typeof (result as any).catch === 'function') {
-        (result as any).catch((err: unknown) => {
-          logger.error({ err, url: req.url, method: req.method }, 'BetterAuth handler error');
-          if (!res.headersSent) {
-            res.status(500).json({
-              error: 'Auth error',
-              message: isDev ? String(err) : 'Internal server error',
-            });
-          }
-        });
-      }
-    } catch (err) {
-      logger.error({ err, url: req.url, method: req.method }, 'BetterAuth handler sync error');
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: 'Auth error',
-          message: isDev ? String(err) : 'Internal server error',
-        });
-      }
-    }
-  });
-
-  // ---------------------------------------------------------------------------
-  // Global middleware (for all non-auth routes)
+  // Global middleware (auth sessions are Clerk cookies; no handshake to mount)
   // ---------------------------------------------------------------------------
 
   // Parse JSON bodies (Express 5 built-in)
@@ -99,6 +67,11 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
 
   // Broad rate-limit for everything under /api (skipped in test + local_trusted)
   app.use('/api', apiRateLimit);
+
+  // Origin-based CSRF defense on state-changing requests (skipped in test,
+  // local_trusted, and on auth/webhook/health paths that authenticate
+  // independently).
+  app.use('/api', originCsrf);
 
   // Request logging
   app.use(

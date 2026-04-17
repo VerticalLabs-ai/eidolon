@@ -96,13 +96,6 @@ export function templatesRouter(db: DbInstance): Router {
     res.status(201).json({ data: result });
   });
 
-  // POST /api/templates/seed - seed built-in templates
-  router.post('/seed', async (_req, res) => {
-    await service.seedBuiltInTemplates();
-    const templates = await service.listTemplates();
-    res.json({ data: templates });
-  });
-
   return router;
 }
 

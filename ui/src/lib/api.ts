@@ -1189,9 +1189,6 @@ export const importTemplate = (
     body: JSON.stringify(overrides ?? {}),
   });
 
-export const seedTemplates = () =>
-  request<CompanyTemplate[]>("/templates/seed", { method: "POST" });
-
 export const exportCompany = (
   companyId: string,
   data?: { name?: string; description?: string; category?: string; tags?: string[] },

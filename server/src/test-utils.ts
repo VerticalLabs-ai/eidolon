@@ -3,7 +3,6 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '@eidolon/db';
 import type { DbInstance } from './types.js';
 import { createApp } from './app.js';
-import { createAuth } from './auth.js';
 
 /**
  * Create an in-memory SQLite database for testing.
@@ -304,8 +303,7 @@ export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
 
   try {
     process.env.AUTH_MODE = authMode;
-    const auth = createAuth(db.drizzle);
-    return createApp(db, auth);
+    return createApp(db);
   } finally {
     if (previousAuthMode === undefined) {
       delete process.env.AUTH_MODE;

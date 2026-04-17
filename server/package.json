@@ -11,9 +11,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
+    "@clerk/backend": "^3.2.12",
     "@eidolon/db": "workspace:*",
     "@eidolon/shared": "workspace:*",
-    "better-auth": "^1.6.0",
     "better-sqlite3": "^12.8.0",
     "cors": "^2.8.5",
     "dotenv": "^17.0.1",

@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 
 import logger from './utils/logger.js';
 import { createApp } from './app.js';
-import { createAuth } from './auth.js';
 import { setupWebSocketServer } from './realtime/ws-server.js';
 import { setupActivityLogger } from './routes/activity.js';
 import { HeartbeatScheduler } from './services/scheduler.js';
@@ -44,14 +43,6 @@ import {
   mcpServers,
   approvals,
   approvalComments,
-  users,
-  sessions,
-  accounts,
-  verifications,
-  organizations,
-  members,
-  invitations,
-  apikeys,
 } from '@eidolon/db';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -126,14 +117,6 @@ const db: DbInstance = {
     mcpServers,
     approvals,
     approvalComments,
-    users,
-    sessions,
-    accounts,
-    verifications,
-    organizations,
-    members,
-    invitations,
-    apikeys,
   },
 };
 
@@ -141,13 +124,7 @@ const db: DbInstance = {
 // Application & server
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Auth setup
-// ---------------------------------------------------------------------------
-
-const auth = createAuth(drizzleDb);
-
-const app = createApp(db, auth);
+const app = createApp(db);
 const server = createServer(app);
 
 // Setup WebSocket on the same HTTP server

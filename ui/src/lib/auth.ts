@@ -1,36 +1,44 @@
-import { createAuthClient } from "better-auth/react";
-import { organizationClient, adminClient } from "better-auth/client/plugins";
-
-export const authClient = createAuthClient({
-  baseURL: window.location.origin,
-  plugins: [
-    organizationClient(),
-    adminClient(),
-  ],
-});
-
-export const useSession = authClient.useSession;
-export const signIn = authClient.signIn;
-export const signUp = authClient.signUp;
-export const signOut = authClient.signOut;
-export const useActiveOrganization = authClient.useActiveOrganization;
-export const useListOrganizations = authClient.useListOrganizations;
+import { useAuth, useUser } from "@clerk/clerk-react";
 
 /**
- * Sign in with Google OAuth.
- * Redirects to Google's consent screen, then back to callbackURL.
- *
- * In dev the UI and API run on different ports, so we need to pass
- * the full UI origin so BetterAuth redirects back to the SPA.
+ * useSession — thin compatibility shim over Clerk's hooks. Returns an object
+ * shaped roughly like BetterAuth's session so existing AuthGuard / nav code
+ * keeps working after the migration.
  */
-export function signInWithGoogle(callbackURL = "/") {
-  // Ensure the callback is a full URL pointing at the UI origin
-  const fullCallbackURL = callbackURL.startsWith("http")
-    ? callbackURL
-    : new URL(callbackURL, window.location.origin).toString();
+export function useSession() {
+  const { isLoaded: userLoaded, user } = useUser();
+  const { isLoaded: authLoaded, sessionId, orgId, orgRole } = useAuth();
 
-  return authClient.signIn.social({
-    provider: "google",
-    callbackURL: fullCallbackURL,
-  });
+  const isPending = !(userLoaded && authLoaded);
+
+  if (isPending || !user) {
+    return { data: null, isPending };
+  }
+
+  return {
+    isPending: false,
+    data: {
+      user: {
+        id: user.id,
+        name:
+          [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+          user.username ||
+          user.primaryEmailAddress?.emailAddress ||
+          user.id,
+        email: user.primaryEmailAddress?.emailAddress ?? "",
+        image: user.imageUrl,
+        role:
+          (user.publicMetadata as { role?: string } | null)?.role ?? null,
+      },
+      session: {
+        id: sessionId ?? `sess:${user.id}`,
+        userId: user.id,
+        activeOrganizationId: orgId ?? null,
+        activeOrganizationRole: orgRole ?? null,
+      },
+    },
+  };
 }
+
+export const CLERK_PUBLISHABLE_KEY =
+  (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? "";

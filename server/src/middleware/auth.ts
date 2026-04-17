@@ -1,7 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { Auth, AuthSession, AuthSessionData, AuthUser } from '../auth.js';
 import { AppError } from './error-handler.js';
 import logger from '../utils/logger.js';
+import type { AuthSession, AuthSessionData, AuthUser } from '../auth.js';
+import { authenticateRequest } from '../auth.js';
 
 // Extend Express Request to carry user/session info
 declare global {
@@ -17,6 +18,7 @@ declare global {
         id: AuthSessionData['id'];
         userId: AuthSessionData['userId'];
         activeOrganizationId?: AuthSessionData['activeOrganizationId'];
+        activeOrganizationRole?: AuthSessionData['activeOrganizationRole'];
       };
       organizationMembership?: {
         id: string;
@@ -42,20 +44,36 @@ const DEV_USER = {
 const DEV_SESSION = {
   id: 'dev-session-000',
   userId: 'dev-user-000',
-  activeOrganizationId: null,
+  activeOrganizationId: null as string | null,
+  activeOrganizationRole: null as string | null,
 };
 
-/**
- * Creates auth middleware using the provided BetterAuth instance.
- */
-export function createAuthMiddleware(auth: Auth) {
-  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+const ROLE_HIERARCHY: Record<string, number> = {
+  owner: 4,
+  admin: 3,
+  member: 2,
+  viewer: 1,
+};
 
-  /**
-   * Validates the session and attaches user info to the request.
-   * In local_trusted mode, injects a dev user without validation.
-   */
-  async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+// ---------------------------------------------------------------------------
+// Middleware factory (kept as a factory so tests can swap the verifier).
+// ---------------------------------------------------------------------------
+
+export interface AuthMiddlewareDeps {
+  /** Verifier that returns an AuthSession or null. Defaults to the real
+   *  Clerk-backed implementation. Overridden in tests. */
+  verify?: (req: Request) => Promise<AuthSession | null>;
+}
+
+export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
+  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+  const verify = deps.verify ?? ((req: Request) => authenticateRequest(req));
+
+  async function requireAuth(
+    req: Request,
+    _res: Response,
+    next: NextFunction,
+  ): Promise<void> {
     if (isLocalTrusted) {
       req.user = DEV_USER;
       req.session = DEV_SESSION;
@@ -63,16 +81,10 @@ export function createAuthMiddleware(auth: Auth) {
     }
 
     try {
-      const headers = new Headers();
-      for (const [key, value] of Object.entries(req.headers)) {
-        if (value) headers.set(key, Array.isArray(value) ? value[0] : value);
-      }
-      const session: AuthSession | null = await auth.api.getSession({ headers });
-
+      const session = await verify(req);
       if (!session?.user) {
         throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');
       }
-
       req.user = {
         id: session.user.id,
         name: session.user.name,
@@ -83,8 +95,8 @@ export function createAuthMiddleware(auth: Auth) {
         id: session.session.id,
         userId: session.session.userId,
         activeOrganizationId: session.session.activeOrganizationId,
+        activeOrganizationRole: session.session.activeOrganizationRole,
       };
-
       next();
     } catch (err) {
       if (err instanceof AppError) return next(err);
@@ -94,21 +106,21 @@ export function createAuthMiddleware(auth: Auth) {
   }
 
   /**
-   * Validates that the authenticated user is a member of the organization
-   * specified by :companyId in the route params.
+   * Require the authenticated user to have access to the :companyId route
+   * parameter. Accepts any of these proofs of membership:
    *
-   * Optionally requires a minimum role level.
-   * Role hierarchy: owner > admin > member > viewer
+   *   1. AUTH_MODE=local_trusted (grants owner-tier implicitly)
+   *   2. user.role === 'admin' (platform admin bypass; audit-logged)
+   *   3. session.activeOrganizationId === companyId (Clerk organization
+   *      membership, which is how multi-tenant access is granted today)
+   *
+   * A `minimumRole` argument additionally requires the org role to clear a
+   * hierarchy threshold (owner > admin > member > viewer).
    */
-  function requireOrgMember(minimumRole?: 'owner' | 'admin' | 'member' | 'viewer') {
-    const roleHierarchy: Record<string, number> = {
-      owner: 4,
-      admin: 3,
-      member: 2,
-      viewer: 1,
-    };
-
-    return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+  function requireOrgMember(
+    minimumRole?: 'owner' | 'admin' | 'member' | 'viewer',
+  ) {
+    return (req: Request, _res: Response, next: NextFunction): void => {
       const companyId = String(req.params.companyId ?? '');
 
       if (isLocalTrusted) {
@@ -129,76 +141,57 @@ export function createAuthMiddleware(auth: Auth) {
         return next(new AppError(401, 'UNAUTHORIZED', 'Authentication required'));
       }
 
-      try {
-        // Admins receive owner-level access through this bypass; each use is captured in the audit log below for traceability.
-        if (req.user.role === 'admin') {
-          const timestamp = new Date().toISOString();
-          logger.info(
-            {
-              action: 'admin_bypass_owner_access',
-              actingUserId: req.user.id,
-              targetOrganizationId: companyId,
-              timestamp,
-            },
-            'Admin bypass granted owner-level organization access',
-          );
-          req.organizationMembership = {
-            id: 'admin-bypass',
-            role: 'owner',
-            organizationId: companyId,
-            userId: req.user.id,
-          };
-          return next();
-        }
-
-        // Use BetterAuth to check organization membership
-        const headers = new Headers();
-        for (const [key, value] of Object.entries(req.headers)) {
-          if (value) headers.set(key, Array.isArray(value) ? value[0] : value);
-        }
-        const membership = await auth.api.listMembers({
-          headers,
-          query: {
-            organizationId: companyId,
-            limit: 1,
-            filterField: 'userId',
-            filterOperator: 'eq',
-            filterValue: req.user.id,
+      // Admin bypass (audit-logged).
+      if (req.user.role === 'admin') {
+        logger.info(
+          {
+            action: 'admin_bypass_owner_access',
+            actingUserId: req.user.id,
+            targetOrganizationId: companyId,
+            timestamp: new Date().toISOString(),
           },
-        });
-
-        if (!membership?.members?.length) {
-          throw new AppError(403, 'FORBIDDEN', 'You are not a member of this organization');
-        }
-
-        const [userMember] = membership.members;
-
-        // Check minimum role if specified
-        if (minimumRole) {
-          const userLevel = roleHierarchy[userMember.role] ?? 0;
-          const requiredLevel = roleHierarchy[minimumRole] ?? 0;
-          if (userLevel < requiredLevel) {
-            throw new AppError(
-              403,
-              'INSUFFICIENT_ROLE',
-              `This action requires at least '${minimumRole}' role`,
-            );
-          }
-        }
-
+          'Admin bypass granted owner-level organization access',
+        );
         req.organizationMembership = {
-          id: userMember.id,
-          role: userMember.role,
+          id: 'admin-bypass',
+          role: 'owner',
           organizationId: companyId,
           userId: req.user.id,
         };
-
-        next();
-      } catch (err) {
-        if (err instanceof AppError) return next(err);
-        logger.debug({ err, companyId }, 'Auth: org membership check failed');
-        next(new AppError(403, 'FORBIDDEN', 'You are not a member of this organization'));
+        return next();
       }
+
+      const activeOrgId = req.session?.activeOrganizationId ?? null;
+      const activeOrgRole = req.session?.activeOrganizationRole ?? 'member';
+
+      if (activeOrgId !== companyId) {
+        return next(
+          new AppError(403, 'FORBIDDEN', 'You are not a member of this organization'),
+        );
+      }
+
+      if (minimumRole) {
+        const userLevel = ROLE_HIERARCHY[activeOrgRole] ?? 0;
+        const requiredLevel = ROLE_HIERARCHY[minimumRole] ?? 0;
+        if (userLevel < requiredLevel) {
+          return next(
+            new AppError(
+              403,
+              'INSUFFICIENT_ROLE',
+              `This action requires at least '${minimumRole}' role`,
+            ),
+          );
+        }
+      }
+
+      req.organizationMembership = {
+        id: `clerk:${req.user.id}:${companyId}`,
+        role: activeOrgRole,
+        organizationId: companyId,
+        userId: req.user.id,
+      };
+
+      next();
     };
   }
 

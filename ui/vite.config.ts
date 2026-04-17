@@ -25,9 +25,20 @@ function getAppVersion(): string {
   return `${d.getUTCFullYear()}.${d.getUTCMonth() + 1}.${d.getUTCDate()}`;
 }
 
+// Clerk ships the publishable key as NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY via the
+// Vercel Marketplace integration. Re-expose it to Vite as VITE_CLERK_PUBLISHABLE_KEY
+// so the browser bundle can read it via import.meta.env (Vite only inlines
+// vars prefixed with VITE_).
+const clerkPublishableKey =
+  process.env.VITE_CLERK_PUBLISHABLE_KEY ??
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
+  "";
+
 export default defineConfig({
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(getAppVersion()),
+    "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY":
+      JSON.stringify(clerkPublishableKey),
   },
   plugins: [react(), tailwindcss()],
   resolve: {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -17,7 +17,7 @@ import {
   Loader2,
   Check,
 } from "lucide-react";
-import { useTemplates, useImportTemplate, useSeedTemplates } from "@/lib/hooks";
+import { useTemplates, useImportTemplate } from "@/lib/hooks";
 import type { CompanyTemplate } from "@/lib/api";
 
 const CATEGORIES = [
@@ -48,15 +48,6 @@ export function Templates() {
 
   const { data: templates, isLoading } = useTemplates(activeCategory);
   const importMutation = useImportTemplate();
-  const seedMutation = useSeedTemplates();
-
-  // Auto-seed templates if none exist
-  useEffect(() => {
-    if (!isLoading && templates && templates.length === 0) {
-      seedMutation.mutate();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, templates]);
 
   const handleImport = async () => {
     if (!selectedTemplate) return;
@@ -152,11 +143,11 @@ export function Templates() {
 
       {/* Template grid */}
       <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-        {isLoading || seedMutation.isPending ? (
+        {isLoading ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="h-8 w-8 text-amber-500 animate-spin" />
             <span className="ml-3 text-text-secondary">
-              {seedMutation.isPending ? "Seeding templates..." : "Loading templates..."}
+              Loading templates...
             </span>
           </div>
         ) : importSuccess ? (

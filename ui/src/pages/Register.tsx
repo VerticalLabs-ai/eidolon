@@ -1,60 +1,6 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
-import { signUp, signInWithGoogle } from "@/lib/auth";
-import { GoogleIcon } from "@/components/icons/GoogleIcon";
-import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
+import { SignUp } from "@clerk/clerk-react";
 
 export function Register() {
-  const navigate = useNavigate();
-
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const result = await signUp.email({ name, email, password });
-      if (result.error) {
-        setError(result.error.message || "Sign up failed");
-      } else {
-        navigate("/", { replace: true });
-      }
-    } catch {
-      setError("An unexpected error occurred");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleGoogleSignIn() {
-    if (loading) {
-      return;
-    }
-
-    setError("");
-    setGoogleLoading(true);
-    try {
-      await signInWithGoogle("/");
-    } catch {
-      setError("Google sign in failed");
-      setGoogleLoading(false);
-    }
-  }
-
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
@@ -66,87 +12,18 @@ export function Register() {
             Create your account
           </p>
         </div>
-
-        {/* Google OAuth */}
-        <Button
-          variant="secondary"
-          size="lg"
-          className="w-full mb-6"
-          onClick={handleGoogleSignIn}
-          disabled={loading}
-          loading={googleLoading || loading}
-          icon={<GoogleIcon />}
-        >
-          Continue with Google
-        </Button>
-
-        <div className="relative mb-6">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-white/[0.08]" />
-          </div>
-          <div className="relative flex justify-center text-xs">
-            <span className="bg-background px-3 text-text-secondary/60">or</span>
-          </div>
-        </div>
-
-        {/* Email/password */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            label="Name"
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            required
-            autoComplete="name"
-          />
-
-          <Input
-            label="Email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            required
-            autoComplete="email"
-          />
-
-          <Input
-            label="Password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="At least 8 characters"
-            required
-            autoComplete="new-password"
-            minLength={8}
-          />
-
-          {error && (
-            <p className="text-xs text-error bg-error/10 border border-error/20 rounded-md px-3 py-2">
-              {error}
-            </p>
-          )}
-
-          <Button
-            type="submit"
-            size="lg"
-            loading={loading}
-            className="w-full"
-          >
-            Create account
-          </Button>
-        </form>
-
-        <p className="mt-6 text-center text-sm text-text-secondary">
-          Already have an account?{" "}
-          <Link
-            to="/login"
-            className="text-accent hover:text-accent/80 transition-colors"
-          >
-            Sign in
-          </Link>
-        </p>
+        <SignUp
+          routing="path"
+          path="/register"
+          signInUrl="/login"
+          fallbackRedirectUrl="/"
+          appearance={{
+            elements: {
+              card: "bg-surface-raised border border-white/[0.06]",
+              formButtonPrimary: "bg-accent text-surface hover:brightness-110",
+            },
+          }}
+        />
       </div>
     </div>
   );

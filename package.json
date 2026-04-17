@@ -12,7 +12,6 @@
     "test:run": "vitest run",
     "db:generate": "pnpm --filter @eidolon/db generate",
     "db:migrate": "pnpm --filter @eidolon/db migrate",
-    "db:seed": "pnpm --filter @eidolon/db seed",
     "lint": "eslint . --ext .ts,.tsx",
     "clean": "rm -rf node_modules packages/*/node_modules server/node_modules ui/node_modules"
   },
