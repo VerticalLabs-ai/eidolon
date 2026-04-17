@@ -77,6 +77,18 @@ export interface Agent {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   lastHeartbeatAt: string | null;
+  apiKeyEncrypted?: string | null;
+  apiKeyProvider?: string | null;
+  apiKeySet?: boolean;
+  instructions?: string | null;
+  instructionsFormat?: string | null;
+  temperature?: number | null;
+  maxTokens?: number | null;
+  toolsEnabled?: string[];
+  allowedDomains?: string[];
+  maxConcurrentTasks?: number | null;
+  heartbeatIntervalSeconds?: number | null;
+  autoAssignTasks?: number | boolean | null;
   config: Record<string, unknown>;
   metadata: Record<string, unknown>;
   createdAt: string;
@@ -229,6 +241,8 @@ export const createAgent = (
     capabilities?: string[];
     systemPrompt?: string;
     budgetMonthlyCents?: number;
+    temperature?: number;
+    maxTokens?: number;
   },
 ) =>
   request<Agent>(`/companies/${companyId}/agents`, {
@@ -413,6 +427,13 @@ export interface Execution {
   status: string;
   input: Record<string, unknown> | null;
   output: Record<string, unknown> | null;
+  summary?: string | null;
+  provider?: string | null;
+  modelUsed?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  costCents?: number | null;
+  log?: Array<{ timestamp: string; level: string; message: string }>;
   tokensUsed: number | null;
   durationMs: number | null;
   error: string | null;

@@ -4,6 +4,12 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useCreateAgent, useAgents } from "@/lib/hooks";
+import {
+  MODELS_BY_PROVIDER,
+  PROVIDER_ICONS,
+  PROVIDER_OPTIONS,
+  normalizeProvider,
+} from "@/lib/ai-catalog";
 import { clsx } from "clsx";
 
 interface CreateAgentModalProps {
@@ -21,51 +27,6 @@ const roleOptions = [
   { value: "research", label: "Research" },
   { value: "finance", label: "Finance" },
 ];
-
-const providerOptions = [
-  { value: "anthropic", label: "Anthropic" },
-  { value: "openai", label: "OpenAI" },
-  { value: "google", label: "Google" },
-  { value: "mistral", label: "Mistral" },
-  { value: "ollama", label: "Ollama" },
-  { value: "custom", label: "Custom" },
-];
-
-const MODELS_BY_PROVIDER: Record<string, { value: string; label: string }[]> = {
-  anthropic: [
-    { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
-    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { value: "gpt-5.4", label: "GPT-5.4" },
-    { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
-    { value: "gpt-5.4-nano", label: "GPT-5.4 Nano" },
-    { value: "o3", label: "o3" },
-    { value: "o4-mini", label: "o4-mini" },
-  ],
-  google: [
-    { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
-    { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash" },
-    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  ],
-  mistral: [
-    { value: "mistral-large-latest", label: "Mistral Large" },
-    { value: "mistral-medium-latest", label: "Mistral Medium" },
-    { value: "mistral-small-latest", label: "Mistral Small" },
-  ],
-  ollama: [
-    { value: "gemma4", label: "Gemma 4" },
-    { value: "gemma4:26b", label: "Gemma 4 26B" },
-    { value: "llama3.2", label: "Llama 3.2" },
-    { value: "deepseek-r1", label: "DeepSeek R1" },
-    { value: "qwen3", label: "Qwen 3" },
-    { value: "mistral", label: "Mistral (local)" },
-    { value: "phi4", label: "Phi 4" },
-  ],
-  custom: [{ value: "custom", label: "Custom Model" }],
-};
 
 const ROLE_DEFAULTS: Record<
   string,
@@ -127,12 +88,14 @@ const ROLE_DEFAULTS: Record<
   },
 };
 
-const PROVIDER_ICONS: Record<string, string> = {
-  anthropic: "A",
-  openai: "O",
-  google: "G",
-  mistral: "M",
-  custom: "C",
+const ROLE_TO_AGENT_ROLE: Record<string, string> = {
+  engineering: "engineer",
+  marketing: "marketer",
+  sales: "sales",
+  operations: "custom",
+  design: "designer",
+  research: "custom",
+  finance: "cfo",
 };
 
 export function CreateAgentModal({
@@ -144,7 +107,7 @@ export function CreateAgentModal({
   const [role, setRole] = useState("engineering");
   const [title, setTitle] = useState("");
   const [provider, setProvider] = useState("anthropic");
-  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [model, setModel] = useState("claude-opus-4-7");
   const [budgetDollars, setBudgetDollars] = useState("100");
   const [capabilities, setCapabilities] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -156,7 +119,7 @@ export function CreateAgentModal({
   const { data: agents } = useAgents(companyId);
   const mutation = useCreateAgent(companyId);
 
-  const modelOptions = MODELS_BY_PROVIDER[provider] ?? [];
+  const modelOptions = MODELS_BY_PROVIDER[normalizeProvider(provider)] ?? [];
 
   // When role changes, apply defaults
   useEffect(() => {
@@ -175,7 +138,7 @@ export function CreateAgentModal({
 
   // When provider changes, reset model to first option
   useEffect(() => {
-    const opts = MODELS_BY_PROVIDER[provider];
+    const opts = MODELS_BY_PROVIDER[normalizeProvider(provider)];
     if (opts && opts.length > 0 && !opts.find((m) => m.value === model)) {
       setModel(opts[0].value);
     }
@@ -195,9 +158,9 @@ export function CreateAgentModal({
     mutation.mutate(
       {
         name,
-        role,
+        role: ROLE_TO_AGENT_ROLE[role] ?? "custom",
         title,
-        provider,
+        provider: normalizeProvider(provider),
         model,
         reportsTo: reportsTo || undefined,
         systemPrompt: systemPrompt || undefined,
@@ -208,6 +171,8 @@ export function CreateAgentModal({
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean),
+        temperature: parseFloat(temperature),
+        maxTokens: parseInt(maxTokens, 10),
       },
       {
         onSuccess: () => {
@@ -223,7 +188,7 @@ export function CreateAgentModal({
     setRole("engineering");
     setTitle("");
     setProvider("anthropic");
-    setModel("claude-sonnet-4-6");
+    setModel("claude-opus-4-7");
     setBudgetDollars("100");
     setCapabilities("");
     setSystemPrompt("");
@@ -273,7 +238,7 @@ export function CreateAgentModal({
             Provider
           </label>
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-            {providerOptions.map((p) => (
+            {PROVIDER_OPTIONS.map((p) => (
               <button
                 key={p.value}
                 type="button"

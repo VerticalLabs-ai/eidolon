@@ -26,14 +26,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { PageTransition } from "@/components/ui/PageTransition";
-
-const PROVIDER_OPTIONS = [
-  { value: "anthropic", label: "Anthropic" },
-  { value: "openai", label: "OpenAI" },
-  { value: "google", label: "Google" },
-  { value: "mistral", label: "Mistral" },
-  { value: "custom", label: "Custom" },
-];
+import { SECRET_PROVIDER_OPTIONS } from "@/lib/ai-catalog";
 
 export function CompanySettings() {
   const { companyId } = useParams();
@@ -366,7 +359,7 @@ export function CompanySettings() {
                 />
                 <Select
                   label="Provider"
-                  options={PROVIDER_OPTIONS}
+                  options={SECRET_PROVIDER_OPTIONS}
                   value={newKeyProvider}
                   onChange={(e) => setNewKeyProvider(e.target.value)}
                 />

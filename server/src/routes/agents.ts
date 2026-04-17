@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AppError } from "../middleware/error-handler.js";
 import { validate } from "../middleware/validate.js";
 import eventBus from "../realtime/events.js";
+import { encrypt } from "../services/crypto.js";
 import { AgentExecutor } from "../services/agent-executor.js";
 import { AgenticLoop } from "../services/agentic-loop.js";
 import { HeartbeatScheduler } from "../services/scheduler.js";
@@ -35,13 +36,11 @@ const CreateAgentBody = z.object({
       "anthropic",
       "openai",
       "google",
-      "mistral",
-      "ollama",
       "local",
-      "custom",
+      "ollama",
     ])
     .default("anthropic"),
-  model: z.string().min(1).max(255).default("claude-sonnet-4-6"),
+  model: z.string().min(1).max(255).default("claude-opus-4-7"),
   status: z
     .enum(["idle", "working", "paused", "error", "offline"])
     .default("idle"),
@@ -83,7 +82,9 @@ const UpdateAgentBody = z.object({
     ])
     .optional(),
   title: z.string().min(1).max(255).nullable().optional(),
-  provider: z.enum(["anthropic", "openai", "google", "local"]).optional(),
+  provider: z
+    .enum(["anthropic", "openai", "google", "local", "ollama"])
+    .optional(),
   model: z.string().min(1).max(255).optional(),
   status: z.enum(["idle", "working", "paused", "error", "offline"]).optional(),
   reportsTo: z.string().uuid().nullable().optional(),
@@ -181,6 +182,89 @@ function snapshotConfig(
   return snapshot;
 }
 
+function normalizeAgentProvider(
+  provider: "anthropic" | "openai" | "google" | "local" | "ollama",
+): "anthropic" | "openai" | "google" | "local" {
+  return provider === "ollama" ? "local" : provider;
+}
+
+function isEncryptedValue(value: string): boolean {
+  const parts = value.split(":");
+  return parts.length === 3 && parts.every((part) => part.length > 0);
+}
+
+function normalizeApiKeyForStorage(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null || value.length === 0) {
+    return null;
+  }
+
+  return isEncryptedValue(value) ? value : encrypt(value);
+}
+
+type ExecutionRow = {
+  id: string;
+  agentId: string;
+  taskId: string | null;
+  status: "running" | "completed" | "failed" | "cancelled";
+  startedAt: Date;
+  completedAt: Date | null;
+  inputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  modelUsed: string | null;
+  provider: string | null;
+  summary: string | null;
+  error: string | null;
+  log: Array<{ timestamp: string; level: string; message: string }>;
+};
+
+function serializeExecution(
+  row: ExecutionRow,
+): Record<string, unknown> {
+  const log = Array.isArray(row.log) ? row.log : [];
+  const latestLog = log.at(-1);
+  const startedAt = new Date(row.startedAt);
+  const completedAt = row.completedAt ? new Date(row.completedAt) : null;
+  const durationMs = completedAt
+    ? completedAt.getTime() - startedAt.getTime()
+    : row.status === "running"
+      ? Date.now() - startedAt.getTime()
+      : null;
+  const tokensUsed = (row.inputTokens ?? 0) + (row.outputTokens ?? 0);
+  const action =
+    row.summary ??
+    latestLog?.message ??
+    ([row.provider, row.modelUsed].filter(Boolean).join(" / ") || "Execution");
+
+  return {
+    id: row.id,
+    agentId: row.agentId,
+    taskId: row.taskId ?? null,
+    action,
+    status: row.status,
+    input: null,
+    output: null,
+    summary: row.summary ?? null,
+    provider: row.provider ?? null,
+    modelUsed: row.modelUsed ?? null,
+    inputTokens: row.inputTokens ?? 0,
+    outputTokens: row.outputTokens ?? 0,
+    costCents: row.costCents ?? 0,
+    log,
+    tokensUsed,
+    durationMs,
+    error: row.error ?? null,
+    startedAt: startedAt.toISOString(),
+    completedAt: completedAt?.toISOString() ?? null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -203,6 +287,8 @@ export function agentsRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof CreateAgentBody>;
     const companyId = routeParams(req).companyId;
     const now = new Date();
+    const provider = normalizeAgentProvider(body.provider);
+    const apiKeyEncrypted = normalizeApiKeyForStorage(body.apiKeyEncrypted);
 
     const [row] = await db.drizzle
       .insert(agents)
@@ -211,7 +297,7 @@ export function agentsRouter(db: DbInstance): Router {
         name: body.name,
         role: body.role,
         title: body.title ?? null,
-        provider: body.provider as "anthropic" | "openai" | "google" | "local",
+        provider,
         model: body.model,
         status: body.status,
         reportsTo: body.reportsTo,
@@ -223,8 +309,8 @@ export function agentsRouter(db: DbInstance): Router {
         metadata: body.metadata,
         permissions: body.permissions,
         // New fields
-        apiKeyEncrypted: body.apiKeyEncrypted ?? null,
-        apiKeyProvider: body.apiKeyProvider ?? null,
+        apiKeyEncrypted: apiKeyEncrypted ?? null,
+        apiKeyProvider: apiKeyEncrypted ? body.apiKeyProvider ?? provider : body.apiKeyProvider ?? null,
         instructions: body.instructions ?? null,
         instructionsFormat: body.instructionsFormat,
         temperature: body.temperature,
@@ -293,10 +379,30 @@ export function agentsRouter(db: DbInstance): Router {
     );
 
     const statusChanged = body.status && body.status !== existing.status;
+    const updates: Record<string, unknown> = {
+      ...body,
+      updatedAt: new Date(),
+    };
+
+    if (body.provider !== undefined) {
+      updates.provider = normalizeAgentProvider(body.provider);
+    }
+
+    if (body.apiKeyEncrypted !== undefined) {
+      const apiKeyEncrypted = normalizeApiKeyForStorage(body.apiKeyEncrypted);
+      updates.apiKeyEncrypted = apiKeyEncrypted;
+      updates.apiKeyProvider = apiKeyEncrypted
+        ? body.apiKeyProvider ??
+          (updates.provider as string | undefined) ??
+          existing.provider
+        : null;
+    } else if (body.apiKeyProvider !== undefined) {
+      updates.apiKeyProvider = body.apiKeyProvider;
+    }
 
     const [updated] = await db.drizzle
       .update(agents)
-      .set({ ...body, updatedAt: new Date() })
+      .set(updates)
       .where(eq(agents.id, id))
       .returning();
 
@@ -844,7 +950,7 @@ export function agentsRouter(db: DbInstance): Router {
       .orderBy(desc(agentExecutions.createdAt))
       .limit(50);
 
-    res.json({ data: rows });
+    res.json({ data: rows.map(serializeExecution) });
   });
 
   // POST /api/companies/:companyId/agents/:id/executions - start execution

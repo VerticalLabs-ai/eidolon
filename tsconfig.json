@@ -19,5 +19,6 @@
     { "path": "packages/db" },
     { "path": "server" },
     { "path": "ui" }
-  ]
+  ],
+  "exclude": ["**/dist", "**/node_modules", "vitest.config.*"]
 }

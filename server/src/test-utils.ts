@@ -38,7 +38,7 @@ export function createTestDb(): DbInstance {
       role TEXT NOT NULL,
       title TEXT,
       provider TEXT NOT NULL DEFAULT 'anthropic',
-      model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+      model TEXT NOT NULL DEFAULT 'claude-opus-4-7',
       status TEXT NOT NULL DEFAULT 'idle',
       reports_to TEXT,
       capabilities TEXT NOT NULL DEFAULT '[]',

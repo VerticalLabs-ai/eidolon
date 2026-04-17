@@ -39,55 +39,12 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { BudgetGauge } from "@/components/dashboard/BudgetGauge";
 import { TaskCard } from "@/components/tasks/TaskCard";
+import {
+  PROVIDER_OPTIONS,
+  getModelOptions,
+  normalizeProvider,
+} from "@/lib/ai-catalog";
 import { clsx } from "clsx";
-
-// ── Provider / Model maps ───────────────────────────────────────────────
-
-const PROVIDERS = [
-  { value: "anthropic", label: "Anthropic" },
-  { value: "openai", label: "OpenAI" },
-  { value: "google", label: "Google" },
-  { value: "mistral", label: "Mistral" },
-  { value: "ollama", label: "Ollama (Local)" },
-  { value: "custom", label: "Custom" },
-] as const;
-
-const MODELS_BY_PROVIDER: Record<string, { value: string; label: string }[]> = {
-  anthropic: [
-    { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
-    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { value: "gpt-5.4", label: "GPT-5.4" },
-    { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
-    { value: "gpt-5.4-nano", label: "GPT-5.4 Nano" },
-    { value: "o3", label: "o3" },
-    { value: "o4-mini", label: "o4-mini" },
-  ],
-  google: [
-    { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
-    { value: "gemini-3-flash-preview", label: "Gemini 3.0 Flash" },
-    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  ],
-  mistral: [
-    { value: "mistral-large-latest", label: "Mistral Large" },
-    { value: "mistral-medium-latest", label: "Mistral Medium" },
-    { value: "mistral-small-latest", label: "Mistral Small" },
-  ],
-  ollama: [
-    { value: "gemma4", label: "Gemma 4" },
-    { value: "gemma4:26b", label: "Gemma 4 26B" },
-    { value: "gemma4:e2b", label: "Gemma 4 Edge 2B" },
-    { value: "llama3.2", label: "Llama 3.2" },
-    { value: "deepseek-r1", label: "DeepSeek R1" },
-    { value: "qwen3", label: "Qwen 3" },
-    { value: "mistral", label: "Mistral (local)" },
-    { value: "phi4", label: "Phi 4" },
-  ],
-  custom: [{ value: "custom", label: "Custom Model" }],
-};
 
 const INSTRUCTION_TEMPLATES: Record<string, string> = {
   engineering: `# Engineering Agent Instructions
@@ -552,25 +509,27 @@ function ConfigTab({
   updateAgent: ReturnType<typeof useUpdateAgent>;
   agents: ReturnType<typeof useAgents>["data"];
 }) {
-  const [provider, setProvider] = useState(agent.provider ?? "anthropic");
+  const [provider, setProvider] = useState(
+    normalizeProvider(agent.provider),
+  );
   const [model, setModel] = useState(agent.model ?? "");
   const [temperature, setTemperature] = useState<number>(
-    (agent.config?.temperature as number) ?? 0.7,
+    agent.temperature ?? 0.7,
   );
   const [maxTokens, setMaxTokens] = useState<string>(
-    String((agent.config?.maxTokens as number) ?? 4096),
+    String(agent.maxTokens ?? 4096),
   );
   const [maxConcurrentTasks, setMaxConcurrentTasks] = useState<string>(
-    String((agent.config?.maxConcurrentTasks as number) ?? 1),
+    String(agent.maxConcurrentTasks ?? 1),
   );
   const [heartbeatInterval, setHeartbeatInterval] = useState<string>(
-    String((agent.config?.heartbeatInterval as number) ?? 30),
+    String(agent.heartbeatIntervalSeconds ?? 300),
   );
   const [autoAssign, setAutoAssign] = useState<boolean>(
-    (agent.config?.autoAssignTasks as boolean) ?? false,
+    agent.autoAssignTasks === true || agent.autoAssignTasks === 1,
   );
   const [apiKeySet, setApiKeySet] = useState<boolean>(
-    !!(agent.config?.apiKeySet as boolean),
+    agent.apiKeySet === true || Boolean(agent.apiKeyEncrypted),
   );
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
   const [apiKey, setApiKey] = useState("");
@@ -579,28 +538,31 @@ function ConfigTab({
   );
   const [saved, setSaved] = useState(false);
 
-  const modelOptions = MODELS_BY_PROVIDER[provider] ?? [];
+  const modelOptions = getModelOptions(provider);
 
   useEffect(() => {
     // When provider changes, reset model to first option for that provider
-    const opts = MODELS_BY_PROVIDER[provider];
+    const opts = getModelOptions(provider);
     if (opts && opts.length > 0 && !opts.find((m) => m.value === model)) {
       setModel(opts[0].value);
     }
   }, [provider]);
 
   const handleSave = () => {
-    const config: Record<string, unknown> = {
-      ...agent.config,
+    const data: Record<string, unknown> = {
+      provider: normalizeProvider(provider),
+      model,
       temperature,
       maxTokens: parseInt(maxTokens, 10),
       maxConcurrentTasks: parseInt(maxConcurrentTasks, 10),
-      heartbeatInterval: parseInt(heartbeatInterval, 10),
-      autoAssignTasks: autoAssign,
+      heartbeatIntervalSeconds: parseInt(heartbeatInterval, 10),
+      autoAssignTasks: autoAssign ? 1 : 0,
+      budgetMonthlyCents: Math.round(parseFloat(budgetDollars || "0") * 100),
     };
+
     if (showApiKeyInput && apiKey) {
-      config.apiKey = apiKey;
-      config.apiKeySet = true;
+      data.apiKeyEncrypted = apiKey;
+      data.apiKeyProvider = normalizeProvider(provider);
       setApiKeySet(true);
       setShowApiKeyInput(false);
       setApiKey("");
@@ -609,12 +571,7 @@ function ConfigTab({
     updateAgent.mutate(
       {
         agentId: agent.id,
-        data: {
-          provider,
-          model,
-          budgetMonthlyCents: Math.round(parseFloat(budgetDollars || "0") * 100),
-          config,
-        },
+        data,
       },
       {
         onSuccess: () => {
@@ -639,7 +596,7 @@ function ConfigTab({
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Select
               label="Provider"
-              options={[...PROVIDERS]}
+              options={[...PROVIDER_OPTIONS]}
               value={provider}
               onChange={(e) => setProvider(e.target.value)}
             />

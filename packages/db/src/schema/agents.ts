@@ -21,7 +21,7 @@ export const agents = sqliteTable(
     })
       .notNull()
       .default('anthropic'),
-    model: text('model').notNull().default('claude-sonnet-4-6'),
+    model: text('model').notNull().default('claude-opus-4-7'),
     status: text('status', {
       enum: ['idle', 'working', 'paused', 'error', 'offline'],
     })

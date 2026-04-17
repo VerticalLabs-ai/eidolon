@@ -22,7 +22,7 @@ const SaveTemplateBody = z.object({
       role: z.string(),
       title: z.string(),
       provider: z.string().default('anthropic'),
-      model: z.string().default('claude-sonnet-4-6'),
+      model: z.string().default('claude-opus-4-7'),
       systemPrompt: z.string().nullable().optional(),
       capabilities: z.array(z.string()).default([]),
       budgetMonthlyCents: z.number().int().nonnegative().default(0),

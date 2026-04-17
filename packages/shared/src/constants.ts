@@ -90,6 +90,8 @@ export const MAX_MESSAGE_SUBJECT_LENGTH = 500;
 
 export const TOKEN_COSTS_PER_MILLION = {
   // Anthropic
+  'anthropic/claude-opus-4-7': { input: 1500, output: 7500 },
+  'anthropic/claude-opus-4-7-1m': { input: 3000, output: 15000 },
   'anthropic/claude-opus-4-6': { input: 1500, output: 7500 },
   'anthropic/claude-sonnet-4-6': { input: 300, output: 1500 },
   'anthropic/claude-haiku-4-5-20251001': { input: 80, output: 400 },
@@ -157,12 +159,11 @@ export const MS_PER_WEEK = 7 * MS_PER_DAY;
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_MODELS = {
-  anthropic: 'claude-sonnet-4-6',
+  anthropic: 'claude-opus-4-7',
   openai: 'gpt-5.4',
   google: 'gemini-3.1-pro-preview',
-  mistral: 'mistral-large-latest',
   ollama: 'gemma4',
-  custom: 'custom',
+  local: 'gemma4',
 } as const;
 
 // ---------------------------------------------------------------------------

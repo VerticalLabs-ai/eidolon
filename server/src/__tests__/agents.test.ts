@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { createTestDb, createTestApp } from '../test-utils.js';
+import { decrypt } from '../services/crypto.js';
 
 describe('Agents API', () => {
   let app: ReturnType<typeof createTestApp>;
@@ -38,7 +39,7 @@ describe('Agents API', () => {
       expect(res.body.data.companyId).toBe(companyId);
       expect(res.body.data.status).toBe('idle');
       expect(res.body.data.provider).toBe('anthropic');
-      expect(res.body.data.model).toBe('claude-sonnet-4-6');
+      expect(res.body.data.model).toBe('claude-opus-4-7');
       expect(res.body.data.temperature).toBeCloseTo(0.7);
       expect(res.body.data.maxTokens).toBe(4096);
     });
@@ -82,6 +83,21 @@ describe('Agents API', () => {
       expect(res.body.data.instructions).toBe('# Instructions\nReview all PRs.');
       expect(res.body.data.maxConcurrentTasks).toBe(3);
       expect(res.body.data.autoAssignTasks).toBe(1);
+    });
+
+    it('should normalize the ollama provider alias to local', async () => {
+      const res = await request(app)
+        .post(agentsUrl())
+        .send({
+          name: 'Local Agent',
+          role: 'engineer',
+          provider: 'ollama',
+          model: 'gemma4',
+        })
+        .expect(201);
+
+      expect(res.body.data.provider).toBe('local');
+      expect(res.body.data.model).toBe('gemma4');
     });
 
     it('should reject invalid role', async () => {
@@ -208,6 +224,21 @@ describe('Agents API', () => {
         .expect(200);
 
       expect(res.body.data.status).toBe('working');
+    });
+
+    it('should encrypt plaintext API keys before storing them', async () => {
+      const created = await request(app)
+        .post(agentsUrl())
+        .send({ name: 'Key Agent', role: 'engineer' });
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .patch(agentUrl(id))
+        .send({ apiKeyEncrypted: 'sk-test-123' })
+        .expect(200);
+
+      expect(res.body.data.apiKeyEncrypted).not.toBe('sk-test-123');
+      expect(decrypt(res.body.data.apiKeyEncrypted)).toBe('sk-test-123');
     });
 
     it('should 404 for non-existent agent', async () => {
@@ -500,6 +531,33 @@ describe('Agents API', () => {
         .expect(200);
 
       expect(res.body.data).toHaveLength(2);
+    });
+
+    it('should return executions in the UI-friendly summary shape', async () => {
+      const execRes = await request(app)
+        .post(`${agentUrl(agentId)}/executions`)
+        .send({});
+      const execId = execRes.body.data.id;
+
+      await request(app)
+        .patch(`${agentUrl(agentId)}/executions/${execId}`)
+        .send({
+          status: 'completed',
+          inputTokens: 120,
+          outputTokens: 30,
+          summary: 'Generated homepage plan',
+        })
+        .expect(200);
+
+      const res = await request(app)
+        .get(`${agentUrl(agentId)}/executions`)
+        .expect(200);
+
+      expect(res.body.data[0].action).toBe('Generated homepage plan');
+      expect(res.body.data[0].tokensUsed).toBe(150);
+      expect(res.body.data[0].durationMs).toBeTypeOf('number');
+      expect(res.body.data[0].startedAt).toBeTypeOf('string');
+      expect(res.body.data[0].completedAt).toBeTypeOf('string');
     });
 
     it('should update an execution status to completed', async () => {
