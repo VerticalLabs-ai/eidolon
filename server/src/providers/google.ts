@@ -2,7 +2,15 @@
 // Google Gemini Provider -- Direct fetch to the Generative Language API
 // ---------------------------------------------------------------------------
 
-import type { AIProvider, ChatMessage, CompletionResult, ProviderConfig, StreamChunk } from './types.js';
+import type {
+  AdapterModel,
+  ChatMessage,
+  CompletionResult,
+  ProviderConfig,
+  ServerAdapter,
+  ServerAdapterCapabilities,
+  StreamChunk,
+} from './types.js';
 import { calculateCostCents } from './cost.js';
 
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -27,8 +35,37 @@ interface GeminiResponse {
   modelVersion?: string;
 }
 
-export class GoogleProvider implements AIProvider {
+export class GoogleProvider implements ServerAdapter {
   readonly name = 'google';
+
+  readonly capabilities: ServerAdapterCapabilities = {
+    streaming: true,
+    tools: true,
+    vision: true,
+    reasoning: false,
+    jsonMode: true,
+    systemPrompt: true,
+    costTracking: true,
+    requiresApiKey: true,
+    local: false,
+  };
+
+  readonly models: AdapterModel[] = [
+    {
+      id: 'gemini-3.1-pro-preview',
+      label: 'Gemini 3.1 Pro',
+      maxContextTokens: 2_000_000,
+      maxOutputTokens: 64_000,
+    },
+    {
+      id: 'gemini-3-flash-preview',
+      label: 'Gemini 3.0 Flash',
+      maxContextTokens: 1_000_000,
+      maxOutputTokens: 64_000,
+    },
+    { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', maxContextTokens: 2_000_000, maxOutputTokens: 64_000 },
+    { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', maxContextTokens: 1_000_000, maxOutputTokens: 64_000 },
+  ];
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     if (!config.apiKey) {

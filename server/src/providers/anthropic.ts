@@ -3,12 +3,49 @@
 // ---------------------------------------------------------------------------
 
 import Anthropic from '@anthropic-ai/sdk';
-import type { AIProvider, ChatMessage, CompletionResult, ProviderConfig, StreamChunk } from './types.js';
+import type {
+  AdapterModel,
+  ChatMessage,
+  CompletionResult,
+  ProviderConfig,
+  ServerAdapter,
+  ServerAdapterCapabilities,
+  StreamChunk,
+} from './types.js';
 import { calculateCostCents } from './cost.js';
 import logger from '../utils/logger.js';
 
-export class AnthropicProvider implements AIProvider {
+export class AnthropicProvider implements ServerAdapter {
   readonly name = 'anthropic';
+
+  readonly capabilities: ServerAdapterCapabilities = {
+    streaming: true,
+    tools: true,
+    vision: true,
+    reasoning: true,
+    jsonMode: false,
+    systemPrompt: true,
+    costTracking: true,
+    requiresApiKey: true,
+    local: false,
+  };
+
+  readonly models: AdapterModel[] = [
+    { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', maxContextTokens: 200_000, maxOutputTokens: 32_000 },
+    {
+      id: 'claude-opus-4-7-1m',
+      label: 'Claude Opus 4.7 (1M context)',
+      maxContextTokens: 1_000_000,
+      maxOutputTokens: 32_000,
+    },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', maxContextTokens: 200_000, maxOutputTokens: 32_000 },
+    {
+      id: 'claude-haiku-4-5-20251001',
+      label: 'Claude Haiku 4.5',
+      maxContextTokens: 200_000,
+      maxOutputTokens: 16_000,
+    },
+  ];
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     if (!config.apiKey) {

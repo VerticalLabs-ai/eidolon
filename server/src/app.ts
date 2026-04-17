@@ -7,6 +7,7 @@ import { toNodeHandler } from 'better-auth/node';
 import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
+import { authRateLimit, apiRateLimit } from './middleware/rate-limit.js';
 import healthRouter from './routes/health.js';
 import { companiesRouter } from './routes/companies.js';
 import { agentsRouter, orgChartRouter } from './routes/agents.js';
@@ -30,6 +31,7 @@ import { evaluationsRouter } from './routes/evaluations.js';
 import { collaborationsRouter, agentCollaborationsRouter } from './routes/collaborations.js';
 import { templatesRouter, companyExportRouter } from './routes/templates.js';
 import { projectsRouter } from './routes/projects.js';
+import { adaptersRouter } from './routes/adapters.js';
 import type { DbInstance } from './types.js';
 import type { Auth } from './auth.js';
 
@@ -60,7 +62,7 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
   // ---------------------------------------------------------------------------
 
   const authHandler = toNodeHandler(auth);
-  app.all('/api/auth/*splat', (req, res) => {
+  app.all('/api/auth/*splat', authRateLimit, (req, res) => {
     try {
       const result = authHandler(req, res);
       // Catch async errors from the handler
@@ -93,6 +95,9 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
   // Parse JSON bodies (Express 5 built-in)
   app.use(express.json({ limit: '2mb' }));
 
+  // Broad rate-limit for everything under /api (skipped in test + local_trusted)
+  app.use('/api', apiRateLimit);
+
   // Request logging
   app.use(
     pinoHttp({
@@ -121,6 +126,9 @@ export function createApp(db: DbInstance, auth: Auth): express.Express {
 
   // Public endpoints (no auth required)
   app.use('/api', healthRouter);
+
+  // Adapter registry introspection (public read; no secrets leaked)
+  app.use('/api/adapters', adaptersRouter());
 
   // Inbound webhook trigger (public endpoint - validated via webhook secret)
   app.use('/api/webhooks', webhookTriggerRouter(db));

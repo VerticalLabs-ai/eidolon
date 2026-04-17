@@ -3,11 +3,39 @@
 // ---------------------------------------------------------------------------
 
 import OpenAI from 'openai';
-import type { AIProvider, ChatMessage, CompletionResult, ProviderConfig, StreamChunk } from './types.js';
+import type {
+  AdapterModel,
+  ChatMessage,
+  CompletionResult,
+  ProviderConfig,
+  ServerAdapter,
+  ServerAdapterCapabilities,
+  StreamChunk,
+} from './types.js';
 import { calculateCostCents } from './cost.js';
 
-export class OpenAIProvider implements AIProvider {
+export class OpenAIProvider implements ServerAdapter {
   readonly name = 'openai';
+
+  readonly capabilities: ServerAdapterCapabilities = {
+    streaming: true,
+    tools: true,
+    vision: true,
+    reasoning: true,
+    jsonMode: true,
+    systemPrompt: true,
+    costTracking: true,
+    requiresApiKey: true,
+    local: false,
+  };
+
+  readonly models: AdapterModel[] = [
+    { id: 'gpt-5.4', label: 'GPT-5.4', maxContextTokens: 400_000, maxOutputTokens: 64_000 },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', maxContextTokens: 400_000, maxOutputTokens: 64_000 },
+    { id: 'gpt-5.4-nano', label: 'GPT-5.4 Nano', maxContextTokens: 400_000, maxOutputTokens: 64_000 },
+    { id: 'o3', label: 'o3', maxContextTokens: 200_000, maxOutputTokens: 100_000 },
+    { id: 'o4-mini', label: 'o4-mini', maxContextTokens: 200_000, maxOutputTokens: 65_000 },
+  ];
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     if (!config.apiKey) {

@@ -2,7 +2,15 @@
 // Ollama Provider -- Direct fetch to local Ollama API
 // ---------------------------------------------------------------------------
 
-import type { AIProvider, ChatMessage, CompletionResult, ProviderConfig, StreamChunk } from './types.js';
+import type {
+  AdapterModel,
+  ChatMessage,
+  CompletionResult,
+  ProviderConfig,
+  ServerAdapter,
+  ServerAdapterCapabilities,
+  StreamChunk,
+} from './types.js';
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 
@@ -16,8 +24,32 @@ interface OllamaChatResponse {
   eval_count?: number;
 }
 
-export class OllamaProvider implements AIProvider {
+export class OllamaProvider implements ServerAdapter {
   readonly name = 'ollama';
+
+  readonly capabilities: ServerAdapterCapabilities = {
+    streaming: true,
+    tools: false,
+    vision: false,
+    reasoning: false,
+    jsonMode: false,
+    systemPrompt: true,
+    costTracking: false,
+    requiresApiKey: false,
+    local: true,
+  };
+
+  readonly models: AdapterModel[] = [
+    { id: 'gemma4', label: 'Gemma 4' },
+    { id: 'gemma4:27b', label: 'Gemma 4 27B' },
+    { id: 'gemma4:12b', label: 'Gemma 4 12B' },
+    { id: 'gemma4:4b', label: 'Gemma 4 4B' },
+    { id: 'llama3.2', label: 'Llama 3.2' },
+    { id: 'deepseek-r1', label: 'DeepSeek R1', capabilitiesOverride: { reasoning: true } },
+    { id: 'qwen3', label: 'Qwen 3' },
+    { id: 'mistral', label: 'Mistral (local)' },
+    { id: 'phi4', label: 'Phi 4' },
+  ];
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
