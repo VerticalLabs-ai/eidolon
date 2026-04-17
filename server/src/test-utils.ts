@@ -284,9 +284,6 @@ export function createTestDb(): DbInstance {
  */
 export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
   const previousAuthMode = process.env.AUTH_MODE;
-  // Flag that survives the finally block — consumed by rate-limit middleware
-  // which evaluates shouldSkip() per-request, long after createAuth has run.
-  process.env.EIDOLON_DISABLE_RATE_LIMIT = '1';
 
   try {
     process.env.AUTH_MODE = authMode;
