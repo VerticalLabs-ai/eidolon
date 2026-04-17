@@ -984,3 +984,84 @@ export function useExportCompany(companyId: string) {
     },
   });
 }
+
+// ── Approvals ───────────────────────────────────────────────────────────
+
+export function useApprovals(
+  companyId: string | undefined,
+  status?: api.ApprovalStatus,
+) {
+  return useQuery({
+    queryKey: ["approvals", companyId, status ?? "all"],
+    queryFn: async () =>
+      unwrap<api.Approval[]>(await api.listApprovals(companyId!, status)),
+    enabled: !!companyId,
+  });
+}
+
+export function useApproval(
+  companyId: string | undefined,
+  id: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["approvals", companyId, "detail", id],
+    queryFn: async () =>
+      unwrap<{ approval: api.Approval; comments: api.ApprovalComment[] }>(
+        await api.getApproval(companyId!, id!),
+      ),
+    enabled: !!companyId && !!id,
+  });
+}
+
+export function useCreateApproval(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createApproval>[1]) =>
+      api.createApproval(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+    },
+  });
+}
+
+export function useDecideApproval(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      id: string;
+      decision: "approved" | "rejected";
+      resolutionNote?: string;
+    }) =>
+      api.decideApproval(companyId, args.id, {
+        decision: args.decision,
+        resolutionNote: args.resolutionNote,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+    },
+  });
+}
+
+export function useCancelApproval(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { id: string; resolutionNote?: string }) =>
+      api.cancelApproval(companyId, args.id, args.resolutionNote),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+    },
+  });
+}
+
+export function useAddApprovalComment(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { id: string; content: string }) =>
+      api.addApprovalComment(companyId, args.id, args.content),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({
+        queryKey: ["approvals", companyId, "detail", args.id],
+      });
+    },
+  });
+}

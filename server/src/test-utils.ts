@@ -239,6 +239,36 @@ export function createTestDb(): DbInstance {
       log TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE approvals (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id),
+      kind TEXT NOT NULL DEFAULT 'custom',
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      priority TEXT NOT NULL DEFAULT 'medium',
+      requested_by_user_id TEXT,
+      requested_by_agent_id TEXT REFERENCES agents(id),
+      resolved_by_user_id TEXT,
+      resolution_note TEXT,
+      payload TEXT NOT NULL DEFAULT '{}',
+      task_id TEXT REFERENCES tasks(id),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      resolved_at INTEGER
+    );
+    CREATE INDEX idx_approvals_company_status ON approvals(company_id, status);
+
+    CREATE TABLE approval_comments (
+      id TEXT PRIMARY KEY,
+      approval_id TEXT NOT NULL REFERENCES approvals(id),
+      author_user_id TEXT,
+      author_agent_id TEXT REFERENCES agents(id),
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_approval_comments_approval ON approval_comments(approval_id, created_at);
   `);
 
   const drizzleDb = drizzle(sqlite);
@@ -254,6 +284,9 @@ export function createTestDb(): DbInstance {
  */
 export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
   const previousAuthMode = process.env.AUTH_MODE;
+  // Flag that survives the finally block — consumed by rate-limit middleware
+  // which evaluates shouldSkip() per-request, long after createAuth has run.
+  process.env.EIDOLON_DISABLE_RATE_LIMIT = '1';
 
   try {
     process.env.AUTH_MODE = authMode;

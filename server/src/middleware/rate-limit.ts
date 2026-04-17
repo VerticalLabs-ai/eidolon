@@ -5,15 +5,20 @@ import {
 } from '@eidolon/shared';
 import logger from '../utils/logger.js';
 
-const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-
 /**
- * Skip rate limiting entirely in test environments so unit tests don't get
- * throttled, and in `local_trusted` mode where the server is bound to loopback
- * and exposed to a single human operator.
+ * Skip rate limiting entirely when:
+ *   - `EIDOLON_DISABLE_RATE_LIMIT=1` — test harness or loopback smoke
+ *   - AUTH_MODE=local_trusted — implicit-board single-operator deployment
+ *   - NODE_ENV=test or running under vitest
  */
 function shouldSkip(): boolean {
-  return isTest || process.env.AUTH_MODE === 'local_trusted';
+  return (
+    process.env.EIDOLON_DISABLE_RATE_LIMIT === '1' ||
+    process.env.AUTH_MODE === 'local_trusted' ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.VITEST === 'true' ||
+    !!process.env.VITEST_WORKER_ID
+  );
 }
 
 const commonOptions: Partial<Options> = {

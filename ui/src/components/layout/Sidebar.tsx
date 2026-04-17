@@ -17,6 +17,7 @@ import {
   Plug,
   Plus,
   Settings,
+  ShieldCheck,
   Target,
   X,
   Zap,
@@ -79,6 +80,7 @@ const navSections: NavSection[] = [
     label: "Operations",
     items: [
       { to: "/analytics", icon: BarChart3, label: "Analytics" },
+      { to: "/approvals", icon: ShieldCheck, label: "Approvals" },
       { to: "/integrations", icon: Plug, label: "Integrations" },
       { to: "/settings", icon: Settings, label: "Settings" },
     ],

@@ -21,7 +21,11 @@ export const agents = sqliteTable(
     })
       .notNull()
       .default('anthropic'),
-    model: text('model').notNull().default('claude-opus-4-7'),
+    // Schema default is intentionally lagging behind the app-level default set
+    // in agents route (CreateAgentBody.model). SQLite can't ALTER a column
+    // default without rewriting the whole table, so we keep this stable and
+    // rely on Zod at the API boundary to apply the current preferred model.
+    model: text('model').notNull().default('claude-sonnet-4-6'),
     status: text('status', {
       enum: ['idle', 'working', 'paused', 'error', 'offline'],
     })

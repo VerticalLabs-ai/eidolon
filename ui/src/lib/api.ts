@@ -1187,3 +1187,98 @@ export const exportCompany = (
     `/companies/${companyId}/export`,
     { method: "POST", body: JSON.stringify(data ?? {}) },
   );
+
+// ── Approvals ───────────────────────────────────────────────────────────
+
+export type ApprovalKind =
+  | "budget_change"
+  | "agent_termination"
+  | "task_review"
+  | "custom";
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
+export type ApprovalPriority = "critical" | "high" | "medium" | "low";
+
+export interface Approval {
+  id: string;
+  companyId: string;
+  kind: ApprovalKind;
+  title: string;
+  description: string | null;
+  status: ApprovalStatus;
+  priority: ApprovalPriority;
+  requestedByUserId: string | null;
+  requestedByAgentId: string | null;
+  resolvedByUserId: string | null;
+  resolutionNote: string | null;
+  payload: Record<string, unknown>;
+  taskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface ApprovalComment {
+  id: string;
+  approvalId: string;
+  authorUserId: string | null;
+  authorAgentId: string | null;
+  content: string;
+  createdAt: string;
+}
+
+export const listApprovals = (companyId: string, status?: ApprovalStatus) =>
+  request<Approval[]>(
+    `/companies/${companyId}/approvals${status ? `?status=${status}` : ""}`,
+  );
+
+export const getApproval = (companyId: string, id: string) =>
+  request<{ approval: Approval; comments: ApprovalComment[] }>(
+    `/companies/${companyId}/approvals/${id}`,
+  );
+
+export const createApproval = (
+  companyId: string,
+  data: {
+    title: string;
+    description?: string;
+    kind?: ApprovalKind;
+    priority?: ApprovalPriority;
+    payload?: Record<string, unknown>;
+    taskId?: string;
+    requestedByAgentId?: string;
+  },
+) =>
+  request<Approval>(`/companies/${companyId}/approvals`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const decideApproval = (
+  companyId: string,
+  id: string,
+  data: { decision: "approved" | "rejected"; resolutionNote?: string },
+) =>
+  request<Approval>(`/companies/${companyId}/approvals/${id}/decide`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const cancelApproval = (
+  companyId: string,
+  id: string,
+  resolutionNote?: string,
+) =>
+  request<Approval>(`/companies/${companyId}/approvals/${id}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ resolutionNote }),
+  });
+
+export const addApprovalComment = (
+  companyId: string,
+  id: string,
+  content: string,
+) =>
+  request<ApprovalComment>(
+    `/companies/${companyId}/approvals/${id}/comments`,
+    { method: "POST", body: JSON.stringify({ content }) },
+  );
