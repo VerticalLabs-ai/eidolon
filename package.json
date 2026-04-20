@@ -7,7 +7,7 @@
     "dev:server": "pnpm --filter server dev",
     "dev:ui": "pnpm --filter ui dev",
     "build": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter server build && pnpm --filter ui build",
-    "build:vercel": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter ui build",
+    "build:vercel": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter @eidolon/db migrate && pnpm --filter ui build",
     "typecheck": "tsc -b",
     "test": "vitest",
     "test:run": "vitest run",

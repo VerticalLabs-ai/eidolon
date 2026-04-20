@@ -309,7 +309,13 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
                 Eidolon v{import.meta.env.VITE_APP_VERSION}
               </p>
               <StatusIndicator
-                status={status === "connected" ? "connected" : "disconnected"}
+                status={
+                  status === "connected"
+                    ? "connected"
+                    : status === "disabled"
+                      ? "idle"
+                      : "disconnected"
+                }
                 size="sm"
               />
             </div>

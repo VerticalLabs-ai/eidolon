@@ -72,8 +72,14 @@ export function AppShell() {
           </div>
           <div className="flex items-center gap-3">
             <StatusIndicator
-              status={status === "connected" ? "connected" : "disconnected"}
-              label={status}
+              status={
+                status === "connected"
+                  ? "connected"
+                  : status === "disabled"
+                    ? "idle"
+                    : "disconnected"
+              }
+              label={status === "disabled" ? "polling" : status}
               size="sm"
             />
           </div>

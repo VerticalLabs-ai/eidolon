@@ -1,6 +1,23 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
-type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
+type ConnectionStatus =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "error"
+  | "disabled";
+
+// WebSocket is a dev-only concern. The Vercel production deploy runs the
+// API on Fluid Compute (stateless, request/response) so there is no long-
+// running WS server to connect to. React Query's refetch cadence keeps
+// data reasonably fresh; cross-user realtime moves to Supabase Realtime
+// in a follow-up.
+//
+// Honors an explicit override via VITE_ENABLE_WEBSOCKET=1 so a self-
+// hosted deploy with a long-running Node process can flip it back on.
+const WS_ENABLED =
+  import.meta.env.DEV ||
+  (import.meta.env.VITE_ENABLE_WEBSOCKET as string | undefined) === "1";
 
 interface ServerEvent {
   type: string;
@@ -38,6 +55,14 @@ class WebSocketClient {
   }
 
   connect(companyId: string) {
+    if (!WS_ENABLED) {
+      // Don't attempt a connection in production builds — avoids noisy
+      // console errors on every page load. Status stays "disabled".
+      this.companyId = companyId;
+      this.setStatus("disabled");
+      return;
+    }
+
     if (this.companyId === companyId && this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
