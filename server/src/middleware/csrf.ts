@@ -74,10 +74,15 @@ export function originCsrf(
 ): void {
   if (SAFE_METHODS.has(req.method)) return next();
   if (shouldBypass(req.originalUrl)) return next();
-  if (process.env.EIDOLON_DISABLE_CSRF === '1') return next();
+  // CSRF is OPT-IN — production turns it on either via NODE_ENV=production
+  // or the explicit EIDOLON_ENFORCE_CSRF=1 switch. Every other env (dev,
+  // test, local_trusted) skips so vitest parallel workers can't flake
+  // each other by racing env-var state.
+  const enforced =
+    process.env.EIDOLON_ENFORCE_CSRF === '1' ||
+    process.env.NODE_ENV === 'production';
+  if (!enforced) return next();
   if (process.env.AUTH_MODE === 'local_trusted') return next();
-  if (process.env.NODE_ENV === 'test') return next();
-  if (process.env.VITEST === 'true' || process.env.VITEST_WORKER_ID) return next();
 
   const origin = normalize(req.get('origin')) ?? normalize(req.get('referer'));
 

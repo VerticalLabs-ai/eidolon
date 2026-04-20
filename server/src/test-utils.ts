@@ -32,15 +32,6 @@ export async function createTestDb(): Promise<DbInstance> {
  */
 export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
   const previousAuthMode = process.env.AUTH_MODE;
-  // CSRF middleware re-reads env per-request; set a dedicated disable flag
-  // that outlives createApp's finally block so test supertest calls (which
-  // never include an Origin header) aren't rejected as CSRF violations.
-  // The CSRF test file overrides this explicitly when it needs enforcement.
-  if (authMode === 'local_trusted') {
-    process.env.EIDOLON_DISABLE_CSRF = '1';
-  } else {
-    delete process.env.EIDOLON_DISABLE_CSRF;
-  }
 
   try {
     process.env.AUTH_MODE = authMode;

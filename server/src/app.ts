@@ -173,13 +173,17 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/inbox', requireAuth, requireOrgMember(), inboxRouter(db));
 
   // ---------------------------------------------------------------------------
-  // Static file serving for production UI
+  // Static file serving for production UI (legacy single-host deploys).
+  // Skipped when EIDOLON_SKIP_STATIC=1 (set by the Vercel Function entry —
+  // Vercel serves the built UI from its own static layer, and Express 5's
+  // path-to-regexp rejects the bare '*' wildcard pattern anyway).
   // ---------------------------------------------------------------------------
 
-  if (!isDev) {
+  if (!isDev && process.env.EIDOLON_SKIP_STATIC !== '1') {
     const uiDistPath = path.resolve(__dirname, '../../ui/dist');
     app.use(express.static(uiDistPath));
-    app.get('*', (_req, res) => {
+    // Named splat required by Express 5 / path-to-regexp v8.
+    app.get('/{*splat}', (_req, res) => {
       res.sendFile(path.join(uiDistPath, 'index.html'));
     });
   }

@@ -5,18 +5,13 @@ import { createTestApp, createTestDb } from '../test-utils.js';
 describe('Origin-based CSRF defense', () => {
   let app: ReturnType<typeof createTestApp>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
-  const originalNodeEnv = process.env.NODE_ENV;
-  const originalVitest = process.env.VITEST;
-  const originalWorker = process.env.VITEST_WORKER_ID;
+  const originalEnforce = process.env.EIDOLON_ENFORCE_CSRF;
   const originalCorsOrigin = process.env.CORS_ORIGIN;
 
-  // Opt INTO the CSRF check for these tests by clearing the test bypasses.
-  // The app-level bypass (AUTH_MODE=local_trusted) stays off because
-  // createTestApp sets that too — so we must run in 'authenticated' mode.
+  // Opt INTO CSRF by flipping the explicit switch (default is off, matching
+  // production behavior: NODE_ENV=production OR EIDOLON_ENFORCE_CSRF=1).
   beforeEach(async () => {
-    delete process.env.NODE_ENV;
-    delete process.env.VITEST;
-    delete process.env.VITEST_WORKER_ID;
+    process.env.EIDOLON_ENFORCE_CSRF = '1';
     process.env.CORS_ORIGIN = 'https://app.example.com';
 
     db = await createTestDb();
@@ -24,12 +19,8 @@ describe('Origin-based CSRF defense', () => {
   });
 
   afterEach(() => {
-    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = originalNodeEnv;
-    if (originalVitest === undefined) delete process.env.VITEST;
-    else process.env.VITEST = originalVitest;
-    if (originalWorker === undefined) delete process.env.VITEST_WORKER_ID;
-    else process.env.VITEST_WORKER_ID = originalWorker;
+    if (originalEnforce === undefined) delete process.env.EIDOLON_ENFORCE_CSRF;
+    else process.env.EIDOLON_ENFORCE_CSRF = originalEnforce;
     if (originalCorsOrigin === undefined) delete process.env.CORS_ORIGIN;
     else process.env.CORS_ORIGIN = originalCorsOrigin;
   });

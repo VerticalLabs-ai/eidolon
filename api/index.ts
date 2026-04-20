@@ -21,6 +21,11 @@ export const config = {
   maxDuration: 60,
 };
 
+// Vercel serves the built UI from its own static layer, so the Express
+// app should not register its SPA fallback route when running on Fluid
+// Compute. The createApp() static-serving block honors this flag.
+process.env.EIDOLON_SKIP_STATIC = '1';
+
 export default async function handler(
   req: IncomingMessage,
   res: ServerResponse,
