@@ -1,7 +1,7 @@
 import { pgTable, text, integer, boolean, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { companies } from './companies';
-import { agents } from './agents';
+import { companies } from './companies.js';
+import { agents } from './agents.js';
 
 export const webhooks = pgTable(
   'webhooks',

@@ -1,6 +1,6 @@
 import { pgTable, text, jsonb, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { companies } from './companies';
+import { companies } from './companies.js';
 
 export const workflows = pgTable('workflows', {
   id: text('id')

@@ -1,8 +1,8 @@
 import { pgTable, text, integer, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { companies } from './companies';
-import { agents } from './agents';
-import { tasks } from './tasks';
+import { companies } from './companies.js';
+import { agents } from './agents.js';
+import { tasks } from './tasks.js';
 
 export const costEvents = pgTable('cost_events', {
   id: text('id')

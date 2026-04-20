@@ -1,8 +1,8 @@
 import { pgTable, text, jsonb, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { agents } from './agents';
-import { companies } from './companies';
-import { tasks } from './tasks';
+import { agents } from './agents.js';
+import { companies } from './companies.js';
+import { tasks } from './tasks.js';
 
 export const heartbeats = pgTable('heartbeats', {
   id: text('id')

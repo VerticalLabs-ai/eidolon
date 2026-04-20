@@ -1,8 +1,8 @@
 import { pgTable, text, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { companies } from './companies';
-import { agents } from './agents';
-import { tasks } from './tasks';
+import { companies } from './companies.js';
+import { agents } from './agents.js';
+import { tasks } from './tasks.js';
 
 /**
  * Approvals are first-class governance objects that gate specific mutations

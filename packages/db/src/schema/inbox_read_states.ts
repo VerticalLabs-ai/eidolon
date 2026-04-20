@@ -1,6 +1,6 @@
 import { pgTable, text, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { companies } from './companies';
+import { companies } from './companies.js';
 
 /**
  * Per-user read state for inbox items.

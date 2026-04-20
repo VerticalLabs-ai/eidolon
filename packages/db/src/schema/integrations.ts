@@ -1,6 +1,6 @@
 import { pgTable, text, integer, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { companies } from './companies';
+import { companies } from './companies.js';
 
 export const integrations = pgTable(
   'integrations',

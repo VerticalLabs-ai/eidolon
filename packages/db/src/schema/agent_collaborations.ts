@@ -1,7 +1,7 @@
 import { pgTable, text, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
-import { agents } from './agents';
-import { tasks } from './tasks';
+import { agents } from './agents.js';
+import { tasks } from './tasks.js';
 
 export const agentCollaborations = pgTable(
   'agent_collaborations',
