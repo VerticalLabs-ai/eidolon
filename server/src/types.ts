@@ -1,8 +1,11 @@
 import type * as EidolonDb from "@eidolon/db";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
-/** Table exports from `@eidolon/db` (excludes `createDb` / `DbInstance`). */
-export type EidolonDbSchema = Omit<typeof EidolonDb, "createDb" | "DbInstance">;
+/** Table exports from `@eidolon/db` (excludes non-table helpers). */
+export type EidolonDbSchema = Omit<
+  typeof EidolonDb,
+  "createDb" | "DbInstance" | "schema" | "resolveConnectionString"
+>;
 
 /**
  * Abstraction over the database instance used throughout the server.

@@ -4,7 +4,17 @@
   "installCommand": "pnpm install --frozen-lockfile",
   "outputDirectory": "ui/dist",
   "framework": null,
+  "functions": {
+    "api/**/*.ts": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
+    { "source": "/api/cron/:path*", "destination": "/api/cron/:path*" },
+    { "source": "/api/:path*", "destination": "/api" },
     { "source": "/((?!api|assets|.*\\..*).*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/cron/heartbeat", "schedule": "*/1 * * * *" }
   ]
 }

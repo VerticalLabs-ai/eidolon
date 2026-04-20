@@ -19,7 +19,8 @@
     { "path": "packages/db" },
     { "path": "packages/mcp-server" },
     { "path": "server" },
-    { "path": "ui" }
+    { "path": "ui" },
+    { "path": "api" }
   ],
   "exclude": ["**/dist", "**/node_modules", "vitest.config.*"]
 }

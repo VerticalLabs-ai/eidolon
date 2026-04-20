@@ -69,6 +69,18 @@ export class HeartbeatScheduler {
     return result;
   }
 
+  /**
+   * Run exactly one scheduler tick. Used by the Vercel Cron entry — the
+   * serverless Function can't host `setInterval`, so cron triggers this
+   * method once per invocation. Safe against concurrent invocations: the
+   * `running` guard drops overlapping ticks.
+   */
+  async runOnce(): Promise<{ skipped: boolean }> {
+    if (this.running) return { skipped: true };
+    await this.tick();
+    return { skipped: false };
+  }
+
   // ---------------------------------------------------------------------------
   // Core tick logic
   // ---------------------------------------------------------------------------
