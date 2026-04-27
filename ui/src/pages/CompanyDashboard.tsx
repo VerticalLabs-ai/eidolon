@@ -169,7 +169,7 @@ export function CompanyDashboard() {
           </h3>
         </div>
         <div className="p-6 space-y-4">
-          {(["backlog", "todo", "in_progress", "in_review", "done"] as const).map(
+          {(["backlog", "todo", "in_progress", "review", "done"] as const).map(
             (status) => {
               const count = tasks?.filter((t: any) => t.status === status).length ?? 0;
               const total = tasks?.length || 1;

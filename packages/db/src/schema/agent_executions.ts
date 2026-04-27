@@ -30,6 +30,17 @@ export const agentExecutions = pgTable(
     provider: text('provider'),
     summary: text('summary'),
     error: text('error'),
+    livenessStatus: text('liveness_status', {
+      enum: ['healthy', 'silent', 'stalled', 'recovering', 'recovered'],
+    })
+      .notNull()
+      .default('healthy'),
+    lastUsefulAction: text('last_useful_action'),
+    nextActionHint: text('next_action_hint'),
+    continuationAttempts: integer('continuation_attempts').notNull().default(0),
+    lastContinuationAt: timestamp('last_continuation_at', { mode: 'date', precision: 3 }),
+    watchdogLastCheckedAt: timestamp('watchdog_last_checked_at', { mode: 'date', precision: 3 }),
+    recoveryTaskId: text('recovery_task_id').references(() => tasks.id),
     log: jsonb('log')
       .notNull()
       .$type<

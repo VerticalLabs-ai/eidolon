@@ -40,6 +40,9 @@ import {
   approvals,
   approvalComments,
   inboxReadStates,
+  taskThreadItems,
+  taskHolds,
+  executionEnvironments,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -78,6 +81,9 @@ const SCHEMA_BUNDLE = {
   approvals,
   approvalComments,
   inboxReadStates,
+  taskThreadItems,
+  taskHolds,
+  executionEnvironments,
 } as const;
 
 export interface BootstrapOptions {

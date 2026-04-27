@@ -45,6 +45,7 @@ describe('Task assignment concurrency', () => {
       status: 'idle' | 'working';
       autoAssign: 0 | 1;
       intervalSeconds: number;
+      executionTimeoutSeconds: number;
       budgetMonthlyCents: number;
       spentMonthlyCents: number;
     }> = {},
@@ -67,7 +68,7 @@ describe('Task assignment concurrency', () => {
       allowedDomains: [],
       maxConcurrentTasks: 1,
       heartbeatIntervalSeconds: overrides.intervalSeconds ?? 0,
-      executionTimeoutSeconds: 600,
+      executionTimeoutSeconds: overrides.executionTimeoutSeconds ?? 600,
       autoAssignTasks: overrides.autoAssign ?? 1,
       budgetMonthlyCents: overrides.budgetMonthlyCents ?? 0,
       spentMonthlyCents: overrides.spentMonthlyCents ?? 0,
@@ -82,6 +83,9 @@ describe('Task assignment concurrency', () => {
       title: string;
       status: 'backlog' | 'todo' | 'in_progress' | 'review' | 'done' | 'cancelled' | 'timed_out';
       priority: 'critical' | 'high' | 'medium' | 'low';
+      dependencies: string[];
+      assigneeAgentId: string | null;
+      startedAt: Date | null;
     }> = {},
   ): Promise<string> {
     const id = randomUUID();
@@ -93,8 +97,10 @@ describe('Task assignment concurrency', () => {
       type: 'feature',
       status: overrides.status ?? 'todo',
       priority: overrides.priority ?? 'medium',
-      dependencies: [],
+      assigneeAgentId: overrides.assigneeAgentId ?? null,
+      dependencies: overrides.dependencies ?? [],
       tags: [],
+      startedAt: overrides.startedAt ?? null,
       createdAt: now,
       updatedAt: now,
     } as any);
@@ -190,5 +196,105 @@ describe('Task assignment concurrency', () => {
     ).filter((a) => a.status === 'working');
     expect(workingAgents).toHaveLength(1);
     expect(workingAgents[0].id).toBe(task.assigneeAgentId);
+  });
+
+  it('HeartbeatScheduler.wakeAgent: skips tasks while dependencies remain open', async () => {
+    const blockerId = await insertTask({ title: 'Blocker', status: 'todo' });
+    const dependentId = await insertTask({
+      title: 'Dependent',
+      priority: 'critical',
+      dependencies: [blockerId],
+    });
+    const fallbackId = await insertTask({ title: 'Fallback', priority: 'low' });
+    const agentId = await insertAgent();
+
+    const scheduler = new HeartbeatScheduler(db);
+    const blockedResult = await scheduler.wakeAgent(agentId);
+
+    expect(blockedResult).toEqual({ assigned: true, taskId: blockerId });
+
+    await db.drizzle
+      .update(db.schema.tasks)
+      .set({ status: 'done', assigneeAgentId: null, updatedAt: new Date() } as any)
+      .where(eq(db.schema.tasks.id, blockerId));
+    await db.drizzle
+      .update(db.schema.agents)
+      .set({ status: 'idle', updatedAt: new Date() } as any)
+      .where(eq(db.schema.agents.id, agentId));
+
+    const unblockedResult = await scheduler.wakeAgent(agentId);
+
+    expect(unblockedResult).toEqual({ assigned: true, taskId: dependentId });
+
+    const [fallback] = await db.drizzle
+      .select()
+      .from(db.schema.tasks)
+      .where(eq(db.schema.tasks.id, fallbackId));
+    expect(fallback.status).toBe('todo');
+    expect(fallback.assigneeAgentId).toBeNull();
+  });
+
+  it('HeartbeatScheduler.wakeAgent: skips tasks with active holds', async () => {
+    const heldTaskId = await insertTask({ priority: 'critical' });
+    const fallbackTaskId = await insertTask({ priority: 'low' });
+    const agentId = await insertAgent();
+    const now = new Date();
+
+    await db.drizzle.insert(db.schema.taskHolds).values({
+      id: randomUUID(),
+      companyId,
+      taskId: heldTaskId,
+      action: 'pause',
+      status: 'active',
+      previousStatus: 'todo',
+      reason: 'operator paused',
+      createdAt: now,
+    } as any);
+
+    const scheduler = new HeartbeatScheduler(db);
+    const result = await scheduler.wakeAgent(agentId);
+
+    expect(result).toEqual({ assigned: true, taskId: fallbackTaskId });
+  });
+
+  it('HeartbeatScheduler.runOnce: creates redacted recovery tasks for stalled executions', async () => {
+    const taskId = await insertTask({
+      title: 'Original task',
+      status: 'in_progress',
+      startedAt: new Date(Date.now() - 120_000),
+    });
+    const agentId = await insertAgent({ status: 'working', intervalSeconds: 0, executionTimeoutSeconds: 1 });
+    const executionId = randomUUID();
+    const startedAt = new Date(Date.now() - 120_000);
+
+    await db.drizzle.insert(db.schema.agentExecutions).values({
+      id: executionId,
+      companyId,
+      agentId,
+      taskId,
+      status: 'running',
+      startedAt,
+      error: 'provider secret stack trace should not be copied',
+      livenessStatus: 'healthy',
+      log: [],
+      createdAt: startedAt,
+    } as any);
+
+    await new HeartbeatScheduler(db).runOnce();
+
+    const [execution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.id, executionId));
+    expect(execution.livenessStatus).toBe('recovering');
+    expect(execution.recoveryTaskId).toBeTruthy();
+
+    const [recoveryTask] = await db.drizzle
+      .select()
+      .from(db.schema.tasks)
+      .where(eq(db.schema.tasks.id, execution.recoveryTaskId!));
+    expect(recoveryTask.title).toContain('Recover stalled execution');
+    expect(recoveryTask.description).toContain('Raw provider errors are intentionally redacted');
+    expect(recoveryTask.description).not.toContain('provider secret stack trace');
   });
 });

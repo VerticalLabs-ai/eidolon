@@ -63,6 +63,7 @@ export const agents = pgTable(
     executionTimeoutSeconds: integer('execution_timeout_seconds').notNull().default(600),
     // 0/1 integer: route handlers and scheduler literally check `=== 1`.
     autoAssignTasks: integer('auto_assign_tasks').notNull().default(0),
+    defaultEnvironmentId: text('default_environment_id'),
     budgetMonthlyCents: integer('budget_monthly_cents').notNull().default(0),
     spentMonthlyCents: integer('spent_monthly_cents').notNull().default(0),
     lastHeartbeatAt: timestamp('last_heartbeat_at', { mode: 'date', precision: 3 }),

@@ -144,7 +144,7 @@ export class CollaborationService {
    * Escalate a task up the org chart when an agent is blocked.
    */
   async escalate(agentId: string, taskId: string, companyId: string, reason: string) {
-    const { agents, agentCollaborations, tasks } = this.db.schema;
+    const { agents, agentCollaborations, tasks, taskHolds, taskThreadItems } = this.db.schema;
 
     const [agent] = await this.db.drizzle
       .select()
@@ -154,6 +154,14 @@ export class CollaborationService {
 
     if (!agent) throw new Error(`Agent ${agentId} not found`);
     if (!agent.reportsTo) throw new Error(`Agent ${agentId} has no manager to escalate to`);
+
+    const [task] = await this.db.drizzle
+      .select({ status: tasks.status })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
+      .limit(1);
+
+    if (!task) throw new Error(`Task ${taskId} not found`);
 
     const id = randomUUID();
     const now = new Date();
@@ -175,11 +183,29 @@ export class CollaborationService {
       })
       .returning();
 
-    // Update the task status to blocked
-    await this.db.drizzle
-      .update(tasks)
-      .set({ status: 'blocked' as any, updatedAt: now })
-      .where(eq(tasks.id, taskId));
+    await this.db.drizzle.insert(taskHolds).values({
+      id: randomUUID(),
+      companyId,
+      taskId,
+      action: 'pause',
+      status: 'active',
+      previousStatus: task.status,
+      reason,
+      createdAt: now,
+    } as any).onConflictDoNothing();
+
+    await this.db.drizzle.insert(taskThreadItems).values({
+      id: randomUUID(),
+      companyId,
+      taskId,
+      kind: 'comment',
+      authorAgentId: agentId,
+      content: `Escalated and paused: ${reason}`,
+      payload: { collaborationId: id, reason },
+      status: 'answered',
+      createdAt: now,
+      updatedAt: now,
+    } as any);
 
     eventBus.emitEvent({
       type: 'agent.collaboration' as any,

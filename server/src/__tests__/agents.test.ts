@@ -439,9 +439,9 @@ describe('Agents API', () => {
         .send({ name: 'Multi Rev', role: 'engineer', temperature: 0.5 });
       const id = created.body.data.id;
 
-      await request(app).patch(agentUrl(id)).send({ temperature: 0.6 });
-      await request(app).patch(agentUrl(id)).send({ temperature: 0.7 });
-      await request(app).patch(agentUrl(id)).send({ temperature: 0.8 });
+      await request(app).patch(agentUrl(id)).send({ temperature: 0.6 }).expect(200);
+      await request(app).patch(agentUrl(id)).send({ temperature: 0.7 }).expect(200);
+      await request(app).patch(agentUrl(id)).send({ temperature: 0.8 }).expect(200);
 
       const res = await request(app)
         .get(`${agentUrl(id)}/revisions`)
@@ -519,6 +519,7 @@ describe('Agents API', () => {
       expect(res.body.data.id).toBeDefined();
       expect(res.body.data.agentId).toBe(agentId);
       expect(res.body.data.status).toBe('running');
+      expect(res.body.data.livenessStatus).toBe('healthy');
       expect(res.body.data.startedAt).toBeDefined();
     });
 
@@ -601,6 +602,29 @@ describe('Agents API', () => {
       expect(res.body.data.log).toHaveLength(1);
       expect(res.body.data.log[0].level).toBe('info');
       expect(res.body.data.log[0].message).toBe('Processing started');
+    });
+
+    it('should update liveness and continuation metadata on executions', async () => {
+      const execRes = await request(app)
+        .post(`${agentUrl(agentId)}/executions`)
+        .send({});
+      const execId = execRes.body.data.id;
+
+      const res = await request(app)
+        .patch(`${agentUrl(agentId)}/executions/${execId}`)
+        .send({
+          livenessStatus: 'stalled',
+          lastUsefulAction: 'tool_result_received',
+          nextActionHint: 'continue_after_timeout',
+          continuationAttempted: true,
+        })
+        .expect(200);
+
+      expect(res.body.data.livenessStatus).toBe('stalled');
+      expect(res.body.data.lastUsefulAction).toBe('tool_result_received');
+      expect(res.body.data.nextActionHint).toBe('continue_after_timeout');
+      expect(res.body.data.continuationAttempts).toBe(1);
+      expect(res.body.data.lastContinuationAt).toBeDefined();
     });
 
     it('should persist structured transcript fields on log entries', async () => {

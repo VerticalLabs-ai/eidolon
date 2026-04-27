@@ -44,7 +44,7 @@ const CancelBody = z.object({
 
 export function approvalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { approvals, approvalComments } = db.schema;
+  const { approvals, approvalComments, taskThreadItems } = db.schema;
 
   // GET /api/companies/:companyId/approvals?status=pending
   router.get('/', async (req, res) => {
@@ -100,6 +100,22 @@ export function approvalsRouter(db: DbInstance): Router {
       payload: { approval: row },
       timestamp: now.toISOString(),
     });
+
+    if (row.taskId) {
+      await db.drizzle.insert(taskThreadItems).values({
+        id: randomUUID(),
+        companyId,
+        taskId: row.taskId,
+        kind: 'approval_link',
+        authorUserId: userId,
+        content: row.title,
+        payload: { approvalId: row.id, kind: row.kind, priority: row.priority },
+        status: 'linked',
+        relatedApprovalId: row.id,
+        createdAt: now,
+        updatedAt: now,
+      } as any);
+    }
 
     res.status(201).json({ data: row });
   });
@@ -172,6 +188,24 @@ export function approvalsRouter(db: DbInstance): Router {
       },
       timestamp: now.toISOString(),
     });
+
+    if (row.taskId) {
+      await db.drizzle.insert(taskThreadItems).values({
+        id: randomUUID(),
+        companyId,
+        taskId: row.taskId,
+        kind: 'decision',
+        authorUserId: req.user?.id ?? null,
+        content: body.resolutionNote ?? `Approval ${body.decision}`,
+        payload: { approvalId: row.id, decision: body.decision },
+        status: body.decision === 'approved' ? 'accepted' : 'rejected',
+        relatedApprovalId: row.id,
+        resolvedByUserId: req.user?.id ?? null,
+        resolvedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      } as any);
+    }
 
     res.json({ data: row });
   });

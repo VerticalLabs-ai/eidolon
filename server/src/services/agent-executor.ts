@@ -173,6 +173,9 @@ export class AgentExecutor {
       startedAt: now,
       modelUsed: agent.model,
       provider: providerName,
+      livenessStatus: 'healthy',
+      lastUsefulAction: 'execution_started',
+      nextActionHint: 'await_provider_response',
       createdAt: now,
     });
 
@@ -235,6 +238,9 @@ export class AgentExecutor {
           status: 'failed',
           completedAt: failedAt,
           error: errorMsg,
+          livenessStatus: 'healthy',
+          lastUsefulAction: 'provider_error_recorded',
+          nextActionHint: 'operator_review',
           log: [
             {
               timestamp: failedAt.toISOString(),
@@ -289,6 +295,9 @@ export class AgentExecutor {
         modelUsed: completion.model,
         provider: completion.provider,
         summary,
+        livenessStatus: 'healthy',
+        lastUsefulAction: 'provider_response_recorded',
+        nextActionHint: 'review_task_output',
         log: [
           {
             timestamp: now.toISOString(),

@@ -16,7 +16,7 @@ const columns: { id: string; label: string; dotColor: string }[] = [
   { id: "backlog", label: "Backlog", dotColor: "bg-text-secondary/40" },
   { id: "todo", label: "Todo", dotColor: "bg-neon-cyan" },
   { id: "in_progress", label: "In Progress", dotColor: "bg-warning" },
-  { id: "in_review", label: "In Review", dotColor: "bg-neon-purple" },
+  { id: "review", label: "Review", dotColor: "bg-neon-purple" },
   { id: "done", label: "Done", dotColor: "bg-success" },
 ];
 
@@ -133,7 +133,7 @@ export function TaskBoard() {
                           ? "0 0 8px rgba(0,243,255,0.4)"
                           : col.id === "in_progress"
                             ? "0 0 8px rgba(255,170,0,0.4)"
-                            : col.id === "in_review"
+                            : col.id === "review"
                               ? "0 0 8px rgba(189,0,255,0.4)"
                               : col.id === "done"
                                 ? "0 0 8px rgba(0,230,138,0.4)"

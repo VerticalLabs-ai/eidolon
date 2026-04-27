@@ -1,4 +1,5 @@
 import { eq, and, sql, inArray, isNull } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import logger from '../utils/logger.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
@@ -95,6 +96,7 @@ export class HeartbeatScheduler {
 
       // --- Check for timed-out tasks ---
       await this.checkTimeouts(agents, tasks, now);
+      await this.recoverStalledExecutions(now);
 
       // Find agents due for a heartbeat
       const idleAgents = await this.db.drizzle
@@ -124,6 +126,85 @@ export class HeartbeatScheduler {
       logger.error({ err }, 'Heartbeat tick error');
     } finally {
       this.running = false;
+    }
+  }
+
+  private async recoverStalledExecutions(nowMs: number): Promise<void> {
+    const { agentExecutions, agents, tasks } = this.db.schema;
+    const rows = await this.db.drizzle
+      .select({
+        executionId: agentExecutions.id,
+        companyId: agentExecutions.companyId,
+        agentId: agentExecutions.agentId,
+        taskId: agentExecutions.taskId,
+        startedAt: agentExecutions.startedAt,
+        timeoutSeconds: agents.executionTimeoutSeconds,
+        recoveryTaskId: agentExecutions.recoveryTaskId,
+        livenessStatus: agentExecutions.livenessStatus,
+      })
+      .from(agentExecutions)
+      .innerJoin(agents, eq(agentExecutions.agentId, agents.id))
+      .where(eq(agentExecutions.status, 'running'));
+
+    const now = new Date(nowMs);
+
+    for (const row of rows) {
+      if (row.recoveryTaskId || row.livenessStatus === 'recovering' || !row.startedAt) continue;
+
+      const timeoutSeconds = row.timeoutSeconds ?? 600;
+      const stalledAfterMs = Math.max(timeoutSeconds, 60) * 1000;
+      const startedMs = new Date(row.startedAt).getTime();
+      if (nowMs - startedMs <= stalledAfterMs) continue;
+
+      const [{ maxNum }] = await this.db.drizzle
+        .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
+        .from(tasks)
+        .where(eq(tasks.companyId, row.companyId));
+
+      const taskNumber = Number(maxNum) + 1;
+      const [recoveryTask] = await this.db.drizzle
+        .insert(tasks)
+        .values({
+          id: randomUUID(),
+          companyId: row.companyId,
+          parentId: row.taskId ?? null,
+          title: `Recover stalled execution ${row.executionId.slice(0, 8)}`,
+          description:
+            `Execution ${row.executionId} appears stalled. Review the linked execution evidence before retrying. ` +
+            'Raw provider errors are intentionally redacted from this recovery task.',
+          type: 'chore',
+          status: 'todo',
+          priority: 'high',
+          assigneeAgentId: row.agentId,
+          taskNumber,
+          identifier: `TASK-${taskNumber}`,
+          dependencies: row.taskId ? [row.taskId] : [],
+          tags: ['recovery', 'liveness'],
+          createdAt: now,
+          updatedAt: now,
+        } as any)
+        .returning();
+
+      await this.db.drizzle
+        .update(agentExecutions)
+        .set({
+          livenessStatus: 'recovering',
+          nextActionHint: 'review_recovery_task',
+          watchdogLastCheckedAt: now,
+          recoveryTaskId: recoveryTask.id,
+        } as any)
+        .where(eq(agentExecutions.id, row.executionId));
+
+      eventBus.emitEvent({
+        type: 'execution.recovery_created' as any,
+        companyId: row.companyId,
+        payload: {
+          executionId: row.executionId,
+          recoveryTaskId: recoveryTask.id,
+          agentId: row.agentId,
+        },
+        timestamp: now.toISOString(),
+      });
     }
   }
 
@@ -211,9 +292,10 @@ export class HeartbeatScheduler {
     tasks: typeof this.db.schema.tasks,
   ): Promise<{ assigned: boolean; taskId?: string }> {
     const now = new Date();
+    const { taskHolds } = this.db.schema;
 
-    const nextTaskId = this.db.drizzle
-      .select({ id: tasks.id })
+    const candidateTasks = await this.db.drizzle
+      .select()
       .from(tasks)
       .where(
         and(
@@ -229,7 +311,38 @@ export class HeartbeatScheduler {
         WHEN 'low' THEN 3
         ELSE 4
       END`)
-      .limit(1);
+      .limit(25);
+
+    let nextTaskId: string | null = null;
+    for (const candidate of candidateTasks) {
+      const [activeHold] = await this.db.drizzle
+        .select({ id: taskHolds.id })
+        .from(taskHolds)
+        .where(
+          and(
+            eq(taskHolds.companyId, candidate.companyId),
+            eq(taskHolds.taskId, candidate.id),
+            eq(taskHolds.status, 'active'),
+          ),
+        )
+        .limit(1);
+      if (activeHold) continue;
+
+      const dependencies = Array.isArray(candidate.dependencies) ? candidate.dependencies : [];
+      if (dependencies.length > 0) {
+        const dependencyRows = await this.db.drizzle
+          .select({ id: tasks.id, status: tasks.status })
+          .from(tasks)
+          .where(and(eq(tasks.companyId, candidate.companyId), inArray(tasks.id, dependencies)));
+        const statusById = new Map(dependencyRows.map((task) => [task.id, task.status]));
+        if (!dependencies.every((dependencyId) => statusById.get(dependencyId) === 'done')) {
+          continue;
+        }
+      }
+
+      nextTaskId = candidate.id;
+      break;
+    }
 
     const [assignedTask] = await this.db.drizzle
       .update(tasks)
@@ -241,7 +354,7 @@ export class HeartbeatScheduler {
       })
       .where(
         and(
-          inArray(tasks.id, nextTaskId),
+          nextTaskId ? eq(tasks.id, nextTaskId) : sql`false`,
           isNull(tasks.assigneeAgentId),
         ),
       )

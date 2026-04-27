@@ -121,6 +121,12 @@ const CreateExecutionBody = z.object({
 
 const UpdateExecutionBody = z.object({
   status: z.enum(["running", "completed", "failed", "cancelled"]).optional(),
+  livenessStatus: z
+    .enum(["healthy", "silent", "stalled", "recovering", "recovered"])
+    .optional(),
+  lastUsefulAction: z.string().max(5000).nullable().optional(),
+  nextActionHint: z.string().max(5000).nullable().optional(),
+  continuationAttempted: z.boolean().optional(),
   inputTokens: z.number().int().nonnegative().optional(),
   outputTokens: z.number().int().nonnegative().optional(),
   costCents: z.number().int().nonnegative().optional(),
@@ -235,6 +241,13 @@ type ExecutionRow = {
   provider: string | null;
   summary: string | null;
   error: string | null;
+  livenessStatus: "healthy" | "silent" | "stalled" | "recovering" | "recovered";
+  lastUsefulAction: string | null;
+  nextActionHint: string | null;
+  continuationAttempts: number;
+  lastContinuationAt: Date | null;
+  watchdogLastCheckedAt: Date | null;
+  recoveryTaskId: string | null;
   log: Array<{ timestamp: string; level: string; message: string }>;
 };
 
@@ -274,6 +287,17 @@ function serializeExecution(
     tokensUsed,
     durationMs,
     error: row.error ?? null,
+    livenessStatus: row.livenessStatus,
+    lastUsefulAction: row.lastUsefulAction ?? null,
+    nextActionHint: row.nextActionHint ?? null,
+    continuationAttempts: row.continuationAttempts ?? 0,
+    lastContinuationAt: row.lastContinuationAt
+      ? new Date(row.lastContinuationAt).toISOString()
+      : null,
+    watchdogLastCheckedAt: row.watchdogLastCheckedAt
+      ? new Date(row.watchdogLastCheckedAt).toISOString()
+      : null,
+    recoveryTaskId: row.recoveryTaskId ?? null,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt?.toISOString() ?? null,
   };
@@ -999,6 +1023,9 @@ export function agentsRouter(db: DbInstance): Router {
           startedAt: now,
           modelUsed: body.modelUsed ?? agent.model,
           provider: body.provider ?? agent.provider,
+          livenessStatus: "healthy",
+          lastUsefulAction: "manual_execution_created",
+          nextActionHint: "await_log_or_completion",
           createdAt: now,
         })
         .returning();
@@ -1058,6 +1085,16 @@ export function agentsRouter(db: DbInstance): Router {
       if (body.provider !== undefined) updates.provider = body.provider;
       if (body.summary !== undefined) updates.summary = body.summary;
       if (body.error !== undefined) updates.error = body.error;
+      if (body.livenessStatus !== undefined)
+        updates.livenessStatus = body.livenessStatus;
+      if (body.lastUsefulAction !== undefined)
+        updates.lastUsefulAction = body.lastUsefulAction;
+      if (body.nextActionHint !== undefined)
+        updates.nextActionHint = body.nextActionHint;
+      if (body.continuationAttempted) {
+        updates.continuationAttempts = (existing.continuationAttempts ?? 0) + 1;
+        updates.lastContinuationAt = new Date();
+      }
 
       // Handle log entry append
       if (body.logEntry) {

@@ -8,10 +8,10 @@ export const TaskStatus = {
   Backlog: 'backlog',
   Todo: 'todo',
   InProgress: 'in_progress',
-  InReview: 'in_review',
-  Blocked: 'blocked',
+  Review: 'review',
   Done: 'done',
   Cancelled: 'cancelled',
+  TimedOut: 'timed_out',
 } as const;
 
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
@@ -20,10 +20,10 @@ export const TaskStatusEnum = z.enum([
   'backlog',
   'todo',
   'in_progress',
-  'in_review',
-  'blocked',
+  'review',
   'done',
   'cancelled',
+  'timed_out',
 ]);
 
 export const TaskPriority = {
