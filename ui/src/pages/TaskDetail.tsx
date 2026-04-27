@@ -135,6 +135,10 @@ export function TaskDetail() {
   const showSubtreeToast = (verb: string, affectedTaskIds: string[]) => {
     toast.success(`${verb} ${affectedTaskIds.length} ${affectedTaskIds.length === 1 ? "task" : "tasks"}`);
   };
+  const showApprovalError = (approvalId: string) => (error: unknown) => {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    toast.error(`Approval failed for ${shortId(approvalId)}: ${message}`);
+  };
 
   return (
     <div className="mx-auto max-w-5xl p-6 lg:p-8 space-y-6">
@@ -174,7 +178,7 @@ export function TaskDetail() {
               </h3>
               <div className="flex gap-2">
                 <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary outline-none hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={subtreeControls.isPending}
                   onClick={() =>
                     subtreeControls.mutate(
@@ -193,7 +197,7 @@ export function TaskDetail() {
                     : "Pause subtree"}
                 </button>
                 <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary outline-none hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={subtreeControls.isPending}
                   onClick={() =>
                     subtreeControls.mutate(
@@ -208,7 +212,7 @@ export function TaskDetail() {
                     : "Restore"}
                 </button>
                 <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-error hover:bg-error/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-error outline-none hover:bg-error/[0.08] focus-visible:ring-2 focus-visible:ring-error/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={subtreeControls.isPending}
                   onClick={() =>
                     subtreeControls.mutate(
@@ -232,7 +236,9 @@ export function TaskDetail() {
               {statusFlow.map((status) => (
                 <button
                   key={status}
-                  className={`rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 cursor-pointer ${
+                  className={`rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
+                    updateTask.isPending ? "cursor-not-allowed opacity-50" : "cursor-pointer"
+                  } ${
                     status === task.status
                       ? "bg-accent text-surface shadow-lg shadow-accent/20"
                       : "glass-raised text-text-secondary hover:text-text-primary hover:border-neon-cyan/30"
@@ -300,11 +306,14 @@ export function TaskDetail() {
                                 size="sm"
                                 disabled={decideApproval.isPending}
                                 onClick={() =>
-                                  decideApproval.mutate({
-                                    id: relatedApprovalId,
-                                    decision: "approved",
-                                    resolutionNote: "Approved from task thread",
-                                  })
+                                  decideApproval.mutate(
+                                    {
+                                      id: relatedApprovalId,
+                                      decision: "approved",
+                                      resolutionNote: "Approved from task thread",
+                                    },
+                                    { onError: showApprovalError(relatedApprovalId) },
+                                  )
                                 }
                               >
                                 Approve
@@ -314,11 +323,14 @@ export function TaskDetail() {
                                 variant="secondary"
                                 disabled={decideApproval.isPending}
                                 onClick={() =>
-                                  decideApproval.mutate({
-                                    id: relatedApprovalId,
-                                    decision: "rejected",
-                                    resolutionNote: "Rejected from task thread",
-                                  })
+                                  decideApproval.mutate(
+                                    {
+                                      id: relatedApprovalId,
+                                      decision: "rejected",
+                                      resolutionNote: "Rejected from task thread",
+                                    },
+                                    { onError: showApprovalError(relatedApprovalId) },
+                                  )
                                 }
                               >
                                 Reject

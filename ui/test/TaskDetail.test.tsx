@@ -117,34 +117,34 @@ describe("TaskDetail", () => {
       data: { status: "review" },
     });
 
-	await user.click(screen.getByRole("button", { name: "Pause subtree" }));
-	expect(mocks.subtreeMutate).toHaveBeenCalledWith(
-		{
-			taskId: "task-1",
-			action: "pause",
-			reason: "Paused from task detail",
-		},
-		expect.objectContaining({ onSuccess: expect.any(Function) }),
-	);
+    await user.click(screen.getByRole("button", { name: "Pause subtree" }));
+    expect(mocks.subtreeMutate).toHaveBeenCalledWith(
+      {
+        taskId: "task-1",
+        action: "pause",
+        reason: "Paused from task detail",
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
 
-	await user.click(screen.getByRole("button", { name: "Restore" }));
-	expect(mocks.subtreeMutate).toHaveBeenCalledWith(
-		{
-			taskId: "task-1",
-			action: "restore",
-		},
-		expect.objectContaining({ onSuccess: expect.any(Function) }),
-	);
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+    expect(mocks.subtreeMutate).toHaveBeenCalledWith(
+      {
+        taskId: "task-1",
+        action: "restore",
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
 
-	await user.click(screen.getByRole("button", { name: "Cancel subtree" }));
-	expect(mocks.subtreeMutate).toHaveBeenCalledWith(
-		{
-			taskId: "task-1",
-			action: "cancel",
-			reason: "Cancelled from task detail",
-		},
-		expect.objectContaining({ onSuccess: expect.any(Function) }),
-	);
+    await user.click(screen.getByRole("button", { name: "Cancel subtree" }));
+    expect(mocks.subtreeMutate).toHaveBeenCalledWith(
+      {
+        taskId: "task-1",
+        action: "cancel",
+        reason: "Cancelled from task detail",
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 
   it("handles inline approval, interaction, execution, and comment flows", async () => {
@@ -198,11 +198,14 @@ describe("TaskDetail", () => {
     expect(screen.getByText("Continue from checkpoint?")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Approve" }));
-    expect(mocks.decideApprovalMutate).toHaveBeenCalledWith({
-      id: "approval-1",
-      decision: "approved",
-      resolutionNote: "Approved from task thread",
-    });
+    expect(mocks.decideApprovalMutate).toHaveBeenCalledWith(
+      {
+        id: "approval-1",
+        decision: "approved",
+        resolutionNote: "Approved from task thread",
+      },
+      expect.objectContaining({ onError: expect.any(Function) }),
+    );
 
     await user.click(screen.getByRole("button", { name: "Accept" }));
     expect(mocks.respondInteractionMutate).toHaveBeenCalledWith(

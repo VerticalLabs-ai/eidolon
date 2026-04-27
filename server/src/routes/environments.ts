@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { validate } from '../middleware/validate.js';
@@ -178,7 +178,7 @@ export function environmentsRouter(db: DbInstance): Router {
     ].filter((check): check is NonNullable<typeof check> => Boolean(check));
     // When both owner identifiers are provided, require both to match the active lease.
     const ownerPredicate =
-      ownerPredicates.length > 1 ? and(...ownerPredicates) : or(...ownerPredicates);
+      ownerPredicates.length > 1 ? and(...ownerPredicates) : ownerPredicates[0]!;
 
     const [row] = await db.drizzle
       .update(executionEnvironments)

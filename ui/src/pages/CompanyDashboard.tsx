@@ -21,7 +21,8 @@ export function CompanyDashboard() {
 
   const activeAgents = agents?.filter((a: any) => a.status === "working").length ?? 0;
   const totalAgents = agents?.length ?? 0;
-  const openTasks = tasks?.filter((t: any) => t.status !== "done" && t.status !== "cancelled").length ?? 0;
+  const openTasks =
+    tasks?.filter((t: any) => !["done", "cancelled", "timed_out"].includes(t.status)).length ?? 0;
   const doneTasks = tasks?.filter((t: any) => t.status === "done").length ?? 0;
 
   const budgetCents = dashboard?.costs?.budgetCents ?? 0;

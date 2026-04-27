@@ -4,6 +4,17 @@ import logger from '../utils/logger.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 
+const RECOVERY_TASK_CREATE_RETRIES = 3;
+
+function isTaskNumberUniqueViolation(error: unknown): boolean {
+  const err = error as { code?: string; constraint?: string; message?: string };
+  return (
+    err.code === '23505' &&
+    (err.constraint === 'uq_tasks_company_task_number' ||
+      (typeof err.message === 'string' && err.message.includes('uq_tasks_company_task_number')))
+  );
+}
+
 /**
  * Heartbeat Scheduler
  *
@@ -156,66 +167,76 @@ export class HeartbeatScheduler {
       const startedMs = new Date(row.startedAt).getTime();
       if (nowMs - startedMs <= stalledAfterMs) continue;
 
-      const recoveryTask = await this.db.drizzle.transaction(async (tx) => {
-        const [claimed] = await tx
-          .update(agentExecutions)
-          .set({
-            livenessStatus: 'recovering',
-            nextActionHint: 'review_recovery_task',
-            watchdogLastCheckedAt: now,
-          })
-          .where(
-            and(
-              eq(agentExecutions.id, row.executionId),
-              isNull(agentExecutions.recoveryTaskId),
-              sql`${agentExecutions.livenessStatus} <> 'recovering'`,
-            ),
-          )
-          .returning({ id: agentExecutions.id });
+      let recoveryTask: typeof tasks.$inferSelect | null = null;
+      for (let attempt = 1; attempt <= RECOVERY_TASK_CREATE_RETRIES; attempt += 1) {
+        try {
+          recoveryTask = await this.db.drizzle.transaction(async (tx) => {
+            const [claimed] = await tx
+              .update(agentExecutions)
+              .set({
+                livenessStatus: 'recovering',
+                nextActionHint: 'review_recovery_task',
+                watchdogLastCheckedAt: now,
+              })
+              .where(
+                and(
+                  eq(agentExecutions.id, row.executionId),
+                  isNull(agentExecutions.recoveryTaskId),
+                  sql`${agentExecutions.livenessStatus} <> 'recovering'`,
+                ),
+              )
+              .returning({ id: agentExecutions.id });
 
-        if (!claimed) {
-          return null;
+            if (!claimed) {
+              return null;
+            }
+
+            const [{ maxNum }] = await tx
+              .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
+              .from(tasks)
+              .where(eq(tasks.companyId, row.companyId));
+
+            const taskNumber = Number(maxNum) + 1;
+            const [created] = await tx
+              .insert(tasks)
+              .values({
+                id: randomUUID(),
+                companyId: row.companyId,
+                parentId: row.taskId ?? null,
+                title: `Recover stalled execution ${row.executionId.slice(0, 8)}`,
+                description:
+                  `Execution ${row.executionId} appears stalled. Review the linked execution evidence before retrying. ` +
+                  'Raw provider errors are intentionally redacted from this recovery task.',
+                type: 'chore',
+                status: 'todo',
+                priority: 'high',
+                assigneeAgentId: row.agentId,
+                taskNumber,
+                identifier: `TASK-${taskNumber}`,
+                dependencies: row.taskId ? [row.taskId] : [],
+                tags: ['recovery', 'liveness'],
+                createdAt: now,
+                updatedAt: now,
+              })
+              .returning();
+
+            await tx
+              .update(agentExecutions)
+              .set({
+                watchdogLastCheckedAt: now,
+                recoveryTaskId: created.id,
+              })
+              .where(eq(agentExecutions.id, row.executionId));
+
+            return created;
+          });
+          break;
+        } catch (error) {
+          if (!isTaskNumberUniqueViolation(error) || attempt === RECOVERY_TASK_CREATE_RETRIES) {
+            throw error;
+          }
         }
-
-        const [{ maxNum }] = await tx
-          .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
-          .from(tasks)
-          .where(eq(tasks.companyId, row.companyId));
-
-        const taskNumber = Number(maxNum) + 1;
-        const [created] = await tx
-          .insert(tasks)
-          .values({
-            id: randomUUID(),
-            companyId: row.companyId,
-            parentId: row.taskId ?? null,
-            title: `Recover stalled execution ${row.executionId.slice(0, 8)}`,
-            description:
-              `Execution ${row.executionId} appears stalled. Review the linked execution evidence before retrying. ` +
-              'Raw provider errors are intentionally redacted from this recovery task.',
-            type: 'chore',
-            status: 'todo',
-            priority: 'high',
-            assigneeAgentId: row.agentId,
-            taskNumber,
-            identifier: `TASK-${taskNumber}`,
-            dependencies: row.taskId ? [row.taskId] : [],
-            tags: ['recovery', 'liveness'],
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
-
-        await tx
-          .update(agentExecutions)
-          .set({
-            watchdogLastCheckedAt: now,
-            recoveryTaskId: created.id,
-          })
-          .where(eq(agentExecutions.id, row.executionId));
-
-        return created;
-      });
+      }
 
       if (!recoveryTask) continue;
 

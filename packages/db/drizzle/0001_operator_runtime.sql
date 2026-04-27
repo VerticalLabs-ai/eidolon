@@ -75,10 +75,22 @@ CREATE INDEX "idx_task_thread_items_task" ON "task_thread_items" USING btree ("c
 CREATE INDEX "idx_task_thread_items_status" ON "task_thread_items" USING btree ("company_id","status");--> statement-breakpoint
 CREATE INDEX "idx_task_thread_items_payload" ON "task_thread_items" USING gin ("payload");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_task_thread_items_idempotency" ON "task_thread_items" USING btree ("company_id","task_id","idempotency_key") WHERE "idempotency_key" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_tasks_company_task_number" ON "tasks" USING btree ("company_id","task_number") WHERE "task_number" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_task_holds_company_task" ON "task_holds" USING btree ("company_id","task_id");--> statement-breakpoint
 CREATE INDEX "idx_task_holds_active" ON "task_holds" USING btree ("company_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_task_holds_active_action" ON "task_holds" USING btree ("company_id","task_id","action") WHERE "status" = 'active';--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_company" ON "execution_environments" USING btree ("company_id","status");--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_lease" ON "execution_environments" USING btree ("lease_owner_agent_id");--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_execution" ON "execution_environments" USING btree ("lease_owner_execution_id");--> statement-breakpoint
-CREATE INDEX "idx_agent_executions_liveness" ON "agent_executions" USING btree ("company_id","liveness_status","watchdog_last_checked_at");
+CREATE INDEX "idx_agent_executions_liveness" ON "agent_executions" USING btree ("company_id","liveness_status","watchdog_last_checked_at");--> statement-breakpoint
+CREATE OR REPLACE FUNCTION set_task_holds_updated_at()
+RETURNS trigger AS $$
+BEGIN
+	NEW.updated_at = now();
+	RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER "task_holds_set_updated_at"
+BEFORE UPDATE ON "task_holds"
+FOR EACH ROW
+EXECUTE FUNCTION set_task_holds_updated_at();
