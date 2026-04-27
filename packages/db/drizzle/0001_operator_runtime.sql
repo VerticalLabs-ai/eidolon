@@ -74,7 +74,7 @@ ALTER TABLE "agents" ADD CONSTRAINT "agents_default_environment_id_execution_env
 CREATE INDEX "idx_task_thread_items_task" ON "task_thread_items" USING btree ("company_id","task_id","created_at");--> statement-breakpoint
 CREATE INDEX "idx_task_thread_items_status" ON "task_thread_items" USING btree ("company_id","status");--> statement-breakpoint
 CREATE INDEX "idx_task_thread_items_payload" ON "task_thread_items" USING gin ("payload");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_task_thread_items_idempotency" ON "task_thread_items" USING btree ("company_id","task_id","idempotency_key");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_task_thread_items_idempotency" ON "task_thread_items" USING btree ("company_id","task_id","idempotency_key") WHERE "idempotency_key" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_task_holds_company_task" ON "task_holds" USING btree ("company_id","task_id");--> statement-breakpoint
 CREATE INDEX "idx_task_holds_active" ON "task_holds" USING btree ("company_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_task_holds_active_action" ON "task_holds" USING btree ("company_id","task_id","action") WHERE "status" = 'active';--> statement-breakpoint

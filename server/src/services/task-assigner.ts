@@ -65,6 +65,7 @@ export class TaskAssigner {
             FROM task_holds
             WHERE task_holds.task_id = ${tasks.id}
               AND task_holds.status = 'active'
+              AND task_holds.action = 'pause'
           )`,
         ),
       )
@@ -195,6 +196,7 @@ export class TaskAssigner {
             FROM task_holds
             WHERE task_holds.task_id = ${taskId}
               AND task_holds.status = 'active'
+              AND task_holds.action = 'pause'
           )`,
         ),
       );

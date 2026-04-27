@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { pgTable, text, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
@@ -64,6 +65,6 @@ export const taskThreadItems = pgTable(
       table.companyId,
       table.taskId,
       table.idempotencyKey,
-    ),
+    ).where(sql`${table.idempotencyKey} IS NOT NULL`),
   ],
 );

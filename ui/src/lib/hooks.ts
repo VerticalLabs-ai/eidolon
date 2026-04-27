@@ -208,6 +208,7 @@ export function useRespondTaskInteraction(companyId: string) {
       ),
     onSuccess: (_data, args) => {
       qc.invalidateQueries({ queryKey: ["tasks", companyId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId] });
       qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId, "thread"] });
     },
   });

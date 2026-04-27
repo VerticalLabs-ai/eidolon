@@ -149,6 +149,13 @@ export function environmentsRouter(db: DbInstance): Router {
       throw new AppError(409, 'ENVIRONMENT_NOT_AVAILABLE', `Environment ${id} is not available`);
     }
 
+    eventBus.emitEvent({
+      type: 'environment.leased',
+      companyId,
+      payload: { environment: row },
+      timestamp: now.toISOString(),
+    });
+
     res.json({ data: row });
   });
 
@@ -169,6 +176,7 @@ export function environmentsRouter(db: DbInstance): Router {
       body.agentId ? eq(executionEnvironments.leaseOwnerAgentId, body.agentId) : undefined,
       body.executionId ? eq(executionEnvironments.leaseOwnerExecutionId, body.executionId) : undefined,
     ].filter((check): check is NonNullable<typeof check> => Boolean(check));
+    const ownerPredicate = ownerChecks.length === 2 ? and(...ownerChecks) : or(...ownerChecks);
 
     const [row] = await db.drizzle
       .update(executionEnvironments)
@@ -184,7 +192,7 @@ export function environmentsRouter(db: DbInstance): Router {
           eq(executionEnvironments.id, id),
           eq(executionEnvironments.companyId, companyId),
           eq(executionEnvironments.status, 'leased'),
-          or(...ownerChecks),
+          ownerPredicate,
         ),
       )
       .returning();
@@ -212,12 +220,20 @@ export function environmentsRouter(db: DbInstance): Router {
       );
     }
 
+    eventBus.emitEvent({
+      type: 'environment.released',
+      companyId,
+      payload: { environment: row },
+      timestamp: now.toISOString(),
+    });
+
     res.json({ data: row });
   });
 
   router.post('/:id/assign', validate(AssignEnvironmentBody), async (req, res) => {
     const body = req.body as z.infer<typeof AssignEnvironmentBody>;
     const { id, companyId } = routeParams(req);
+    const now = new Date();
 
     const [environment] = await db.drizzle
       .select({ id: executionEnvironments.id })
@@ -236,13 +252,20 @@ export function environmentsRouter(db: DbInstance): Router {
 
     const [agent] = await db.drizzle
       .update(agents)
-      .set({ defaultEnvironmentId: id, updatedAt: new Date() })
+      .set({ defaultEnvironmentId: id, updatedAt: now })
       .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId)))
       .returning();
 
     if (!agent) {
       throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${body.agentId} not found`);
     }
+
+    eventBus.emitEvent({
+      type: 'environment.assigned',
+      companyId,
+      payload: { agentId: agent.id, environmentId: id },
+      timestamp: now.toISOString(),
+    });
 
     res.json({ data: { agent, environment } });
   });

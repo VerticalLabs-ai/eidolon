@@ -14,7 +14,7 @@ export const executionEnvironments = pgTable(
       .notNull()
       .references(() => companies.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    provider: text('provider', { enum: ['local'] }).notNull().default('local'),
+    provider: text('provider').notNull().default('local'),
     status: text('status', {
       enum: ['available', 'leased', 'offline', 'archived'],
     })

@@ -514,7 +514,11 @@ describe('Tasks API', () => {
         .expect(200);
 
       expect(firstDecision.body.data.status).toBe('accepted');
+      expect(firstDecision.body.data.payload.createdTaskIds).toHaveLength(2);
       expect(secondDecision.body.data.payload.createdTaskIds).toHaveLength(2);
+      expect(secondDecision.body.data.payload.createdTaskIds).toEqual(
+        firstDecision.body.data.payload.createdTaskIds,
+      );
 
       const children = await request(app)
         .get(tasksUrl())

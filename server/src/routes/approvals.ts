@@ -197,7 +197,7 @@ export function approvalsRouter(db: DbInstance): Router {
       }
 
       if (updated.taskId) {
-        await tx.insert(taskThreadItems).values({
+        const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
           companyId,
           taskId: updated.taskId,
@@ -211,7 +211,9 @@ export function approvalsRouter(db: DbInstance): Router {
           resolvedAt: now,
           createdAt: now,
           updatedAt: now,
-        } as any);
+        };
+
+        await tx.insert(taskThreadItems).values(threadValues);
       }
 
       return updated;

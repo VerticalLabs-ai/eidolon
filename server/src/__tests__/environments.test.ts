@@ -19,6 +19,22 @@ describe('Execution Environments API', () => {
   const environmentsUrl = () => `/api/companies/${companyId}/environments`;
   const agentsUrl = () => `/api/companies/${companyId}/agents`;
 
+  async function createAgentAndEnvironment() {
+    const agent = await request(app)
+      .post(agentsUrl())
+      .send({ name: 'Env Agent', role: 'engineer' })
+      .expect(201);
+    const environment = await request(app)
+      .post(environmentsUrl())
+      .send({ name: 'Local Lease Target' })
+      .expect(201);
+
+    return {
+      agentId: agent.body.data.id as string,
+      environmentId: environment.body.data.id as string,
+    };
+  }
+
   it('should create and list a local environment', async () => {
     const created = await request(app)
       .post(environmentsUrl())
@@ -45,60 +61,81 @@ describe('Execution Environments API', () => {
     expect(listed.body.meta).toEqual(expect.objectContaining({ total: 1, limit: 50, offset: 0 }));
   });
 
-  it('should lease, reject double-lease, release, and assign an environment to an agent', async () => {
-    const agent = await request(app)
-      .post(agentsUrl())
-      .send({ name: 'Env Agent', role: 'engineer' })
-      .expect(201);
-    const agentId = agent.body.data.id;
-
-    const environment = await request(app)
-      .post(environmentsUrl())
-      .send({ name: 'Local Lease Target' })
-      .expect(201);
-    const environmentId = environment.body.data.id;
-
+  it('should lease an environment to an agent', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
     const leased = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
       .send({ agentId })
       .expect(200);
+
     expect(leased.body.data.status).toBe('leased');
     expect(leased.body.data.leaseOwnerAgentId).toBe(agentId);
+  });
 
+  it('should reject double-lease with 409', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/lease`)
+      .send({ agentId })
+      .expect(200);
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
       .send({ agentId })
       .expect(409);
+  });
 
+  it('should reject release by non-owner with 409', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/lease`)
+      .send({ agentId })
+      .expect(200);
     const otherAgent = await request(app)
       .post(agentsUrl())
       .send({ name: 'Other Env Agent', role: 'engineer' })
       .expect(201);
-
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
       .send({ agentId: otherAgent.body.data.id })
       .expect(409);
+  });
 
+  it('should assign environment as agent default', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
     const assignedAgent = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/assign`)
       .send({ agentId })
       .expect(200);
+
     expect(assignedAgent.body.data.agent.defaultEnvironmentId).toBe(environmentId);
     expect(assignedAgent.body.data.environment.id).toBe(environmentId);
+  });
 
+  it('should reject release without agentId or executionId', async () => {
+    const { environmentId } = await createAgentAndEnvironment();
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
       .send({})
       .expect(400);
+  });
 
+  it('should release environment successfully', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/lease`)
+      .send({ agentId })
+      .expect(200);
     const released = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
       .send({ agentId })
       .expect(200);
+
     expect(released.body.data.status).toBe('available');
     expect(released.body.data.leaseOwnerAgentId).toBeNull();
+  });
 
+  it('should support execution-based leasing', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
     const execution = await request(app)
       .post(`${agentsUrl()}/${agentId}/executions`)
       .send({})
@@ -109,10 +146,15 @@ describe('Execution Environments API', () => {
       .send({ agentId, executionId: execution.body.data.id })
       .expect(200);
 
-    const releasedByAgentOnly = await request(app)
+    await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
-      .send({ agentId })
+      .send({ agentId, executionId: '00000000-0000-0000-0000-000000000000' })
+      .expect(409);
+
+    const released = await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/release`)
+      .send({ agentId, executionId: execution.body.data.id })
       .expect(200);
-    expect(releasedByAgentOnly.body.data.status).toBe('available');
+    expect(released.body.data.status).toBe('available');
   });
 });
