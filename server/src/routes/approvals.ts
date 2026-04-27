@@ -75,24 +75,50 @@ export function approvalsRouter(db: DbInstance): Router {
     const now = new Date();
     const userId = req.user?.id ?? null;
 
-    const [row] = await db.drizzle
-      .insert(approvals)
-      .values({
-        id: randomUUID(),
-        companyId,
-        kind: body.kind,
-        title: body.title,
-        description: body.description ?? null,
-        status: 'pending',
-        priority: body.priority,
-        requestedByUserId: userId,
-        requestedByAgentId: body.requestedByAgentId ?? null,
-        payload: body.payload,
-        taskId: body.taskId ?? null,
-        createdAt: now,
-        updatedAt: now,
-      } as any)
-      .returning();
+    let row: typeof approvals.$inferSelect | undefined;
+
+    await db.drizzle.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(approvals)
+        .values({
+          id: randomUUID(),
+          companyId,
+          kind: body.kind,
+          title: body.title,
+          description: body.description ?? null,
+          status: 'pending',
+          priority: body.priority,
+          requestedByUserId: userId,
+          requestedByAgentId: body.requestedByAgentId ?? null,
+          payload: body.payload,
+          taskId: body.taskId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        } as any)
+        .returning();
+
+      if (created.taskId) {
+        await tx.insert(taskThreadItems).values({
+          id: randomUUID(),
+          companyId,
+          taskId: created.taskId,
+          kind: 'approval_link',
+          authorUserId: userId,
+          content: created.title,
+          payload: { approvalId: created.id, kind: created.kind, priority: created.priority },
+          status: 'linked',
+          relatedApprovalId: created.id,
+          createdAt: now,
+          updatedAt: now,
+        } as any);
+      }
+
+      row = created;
+    });
+
+    if (!row) {
+      throw new AppError(500, 'APPROVAL_CREATE_FAILED', 'Failed to create approval');
+    }
 
     eventBus.emitEvent({
       type: 'approval.created' as any,
@@ -100,22 +126,6 @@ export function approvalsRouter(db: DbInstance): Router {
       payload: { approval: row },
       timestamp: now.toISOString(),
     });
-
-    if (row.taskId) {
-      await db.drizzle.insert(taskThreadItems).values({
-        id: randomUUID(),
-        companyId,
-        taskId: row.taskId,
-        kind: 'approval_link',
-        authorUserId: userId,
-        content: row.title,
-        payload: { approvalId: row.id, kind: row.kind, priority: row.priority },
-        status: 'linked',
-        relatedApprovalId: row.id,
-        createdAt: now,
-        updatedAt: now,
-      } as any);
-    }
 
     res.status(201).json({ data: row });
   });
@@ -167,17 +177,53 @@ export function approvalsRouter(db: DbInstance): Router {
       );
     }
 
-    const [row] = await db.drizzle
-      .update(approvals)
-      .set({
-        status: body.decision,
-        resolutionNote: body.resolutionNote ?? null,
-        resolvedByUserId: req.user?.id ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(approvals.id, id))
-      .returning();
+    let row: typeof approvals.$inferSelect | undefined;
+
+    await db.drizzle.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(approvals)
+        .set({
+          status: body.decision,
+          resolutionNote: body.resolutionNote ?? null,
+          resolvedByUserId: req.user?.id ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), eq(approvals.status, 'pending')))
+        .returning();
+
+      if (!updated) {
+        throw new AppError(
+          409,
+          'APPROVAL_NOT_PENDING',
+          `Approval ${id} is already ${existing.status}`,
+        );
+      }
+
+      if (updated.taskId) {
+        await tx.insert(taskThreadItems).values({
+          id: randomUUID(),
+          companyId,
+          taskId: updated.taskId,
+          kind: 'decision',
+          authorUserId: req.user?.id ?? null,
+          content: body.resolutionNote ?? `Approval ${body.decision}`,
+          payload: { approvalId: updated.id, decision: body.decision },
+          status: body.decision === 'approved' ? 'accepted' : 'rejected',
+          relatedApprovalId: updated.id,
+          resolvedByUserId: req.user?.id ?? null,
+          resolvedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        } as any);
+      }
+
+      row = updated;
+    });
+
+    if (!row) {
+      throw new AppError(500, 'APPROVAL_DECISION_FAILED', 'Failed to decide approval');
+    }
 
     eventBus.emitEvent({
       type: 'approval.decided' as any,
@@ -188,24 +234,6 @@ export function approvalsRouter(db: DbInstance): Router {
       },
       timestamp: now.toISOString(),
     });
-
-    if (row.taskId) {
-      await db.drizzle.insert(taskThreadItems).values({
-        id: randomUUID(),
-        companyId,
-        taskId: row.taskId,
-        kind: 'decision',
-        authorUserId: req.user?.id ?? null,
-        content: body.resolutionNote ?? `Approval ${body.decision}`,
-        payload: { approvalId: row.id, decision: body.decision },
-        status: body.decision === 'approved' ? 'accepted' : 'rejected',
-        relatedApprovalId: row.id,
-        resolvedByUserId: req.user?.id ?? null,
-        resolvedAt: now,
-        createdAt: now,
-        updatedAt: now,
-      } as any);
-    }
 
     res.json({ data: row });
   });

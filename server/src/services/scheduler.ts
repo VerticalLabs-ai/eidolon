@@ -196,7 +196,7 @@ export class HeartbeatScheduler {
         .where(eq(agentExecutions.id, row.executionId));
 
       eventBus.emitEvent({
-        type: 'execution.recovery_created' as any,
+        type: 'execution.recovery_created',
         companyId: row.companyId,
         payload: {
           executionId: row.executionId,
@@ -313,29 +313,47 @@ export class HeartbeatScheduler {
       END`)
       .limit(25);
 
-    let nextTaskId: string | null = null;
-    for (const candidate of candidateTasks) {
-      const [activeHold] = await this.db.drizzle
-        .select({ id: taskHolds.id })
+    const candidateTaskIds = candidateTasks.map((task) => task.id);
+    const activeHoldIds = new Set<string>();
+    if (candidateTaskIds.length > 0) {
+      const activeHolds = await this.db.drizzle
+        .select({ taskId: taskHolds.taskId })
         .from(taskHolds)
         .where(
           and(
-            eq(taskHolds.companyId, candidate.companyId),
-            eq(taskHolds.taskId, candidate.id),
+            eq(taskHolds.companyId, agent.companyId),
+            inArray(taskHolds.taskId, candidateTaskIds),
             eq(taskHolds.status, 'active'),
           ),
-        )
-        .limit(1);
-      if (activeHold) continue;
+        );
+      for (const hold of activeHolds) activeHoldIds.add(hold.taskId);
+    }
+
+    const dependencyIds = [
+      ...new Set(
+        candidateTasks.flatMap((task) =>
+          Array.isArray(task.dependencies) ? task.dependencies : [],
+        ),
+      ),
+    ];
+    const dependencyStatusById = new Map<string, string>();
+    if (dependencyIds.length > 0) {
+      const dependencyRows = await this.db.drizzle
+        .select({ id: tasks.id, status: tasks.status })
+        .from(tasks)
+        .where(and(eq(tasks.companyId, agent.companyId), inArray(tasks.id, dependencyIds)));
+      for (const dependency of dependencyRows) {
+        dependencyStatusById.set(dependency.id, dependency.status);
+      }
+    }
+
+    let nextTaskId: string | null = null;
+    for (const candidate of candidateTasks) {
+      if (activeHoldIds.has(candidate.id)) continue;
 
       const dependencies = Array.isArray(candidate.dependencies) ? candidate.dependencies : [];
       if (dependencies.length > 0) {
-        const dependencyRows = await this.db.drizzle
-          .select({ id: tasks.id, status: tasks.status })
-          .from(tasks)
-          .where(and(eq(tasks.companyId, candidate.companyId), inArray(tasks.id, dependencies)));
-        const statusById = new Map(dependencyRows.map((task) => [task.id, task.status]));
-        if (!dependencies.every((dependencyId) => statusById.get(dependencyId) === 'done')) {
+        if (!dependencies.every((dependencyId) => dependencyStatusById.get(dependencyId) === 'done')) {
           continue;
         }
       }

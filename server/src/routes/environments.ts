@@ -21,6 +21,11 @@ const LeaseEnvironmentBody = z.object({
   executionId: z.string().uuid().optional(),
 });
 
+const ReleaseEnvironmentBody = z.object({
+  agentId: z.string().uuid().optional(),
+  executionId: z.string().uuid().optional(),
+});
+
 const AssignEnvironmentBody = z.object({
   agentId: z.string().uuid(),
 });
@@ -113,9 +118,39 @@ export function environmentsRouter(db: DbInstance): Router {
     res.json({ data: row });
   });
 
-  router.post('/:id/release', async (req, res) => {
+  router.post('/:id/release', validate(ReleaseEnvironmentBody), async (req, res) => {
+    const body = req.body as z.infer<typeof ReleaseEnvironmentBody>;
     const { id, companyId } = routeParams(req);
     const now = new Date();
+
+    const [environment] = await db.drizzle
+      .select()
+      .from(executionEnvironments)
+      .where(
+        and(
+          eq(executionEnvironments.id, id),
+          eq(executionEnvironments.companyId, companyId),
+        ),
+      )
+      .limit(1);
+
+    if (!environment) {
+      throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
+    }
+
+    const agentMatches =
+      !environment.leaseOwnerAgentId || body.agentId === environment.leaseOwnerAgentId;
+    const executionMatches =
+      !environment.leaseOwnerExecutionId ||
+      body.executionId === environment.leaseOwnerExecutionId;
+
+    if (environment.status === 'leased' && (!agentMatches || !executionMatches)) {
+      throw new AppError(
+        409,
+        'ENVIRONMENT_LEASE_OWNER_MISMATCH',
+        `Environment ${id} can only be released by its lease owner`,
+      );
+    }
 
     const [row] = await db.drizzle
       .update(executionEnvironments)
@@ -133,10 +168,6 @@ export function environmentsRouter(db: DbInstance): Router {
         ),
       )
       .returning();
-
-    if (!row) {
-      throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
-    }
 
     res.json({ data: row });
   });

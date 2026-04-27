@@ -11,10 +11,10 @@ export const taskHolds = pgTable(
       .$defaultFn(() => randomUUID()),
     companyId: text('company_id')
       .notNull()
-      .references(() => companies.id),
+      .references(() => companies.id, { onDelete: 'cascade' }),
     taskId: text('task_id')
       .notNull()
-      .references(() => tasks.id),
+      .references(() => tasks.id, { onDelete: 'cascade' }),
     action: text('action', { enum: ['pause', 'cancel'] }).notNull(),
     status: text('status', { enum: ['active', 'restored'] })
       .notNull()
@@ -23,6 +23,9 @@ export const taskHolds = pgTable(
     reason: text('reason'),
     createdByUserId: text('created_by_user_id'),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
     resolvedAt: timestamp('resolved_at', { mode: 'date', precision: 3 }),

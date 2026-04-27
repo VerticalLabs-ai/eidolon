@@ -36,6 +36,7 @@ CREATE TABLE "task_holds" (
 	"reason" text,
 	"created_by_user_id" text,
 	"created_at" timestamp (3) NOT NULL,
+	"updated_at" timestamp (3) NOT NULL,
 	"resolved_at" timestamp (3)
 );--> statement-breakpoint
 CREATE TABLE "execution_environments" (
@@ -61,11 +62,12 @@ ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_task_id_tasks_
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_author_agent_id_agents_id_fk" FOREIGN KEY ("author_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_related_approval_id_approvals_id_fk" FOREIGN KEY ("related_approval_id") REFERENCES "public"."approvals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_related_execution_id_agent_executions_id_fk" FOREIGN KEY ("related_execution_id") REFERENCES "public"."agent_executions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "task_holds" ADD CONSTRAINT "task_holds_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "task_holds" ADD CONSTRAINT "task_holds_task_id_tasks_id_fk" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_holds" ADD CONSTRAINT "task_holds_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_holds" ADD CONSTRAINT "task_holds_task_id_tasks_id_fk" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_lease_owner_agent_id_agents_id_fk" FOREIGN KEY ("lease_owner_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_lease_owner_execution_id_agent_executions_id_fk" FOREIGN KEY ("lease_owner_execution_id") REFERENCES "public"."agent_executions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_lease_owner_agent_id_agents_id_fk" FOREIGN KEY ("lease_owner_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_lease_owner_execution_id_agent_executions_id_fk" FOREIGN KEY ("lease_owner_execution_id") REFERENCES "public"."agent_executions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agents" ADD CONSTRAINT "agents_default_environment_id_execution_environments_id_fk" FOREIGN KEY ("default_environment_id") REFERENCES "public"."execution_environments"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_task_thread_items_task" ON "task_thread_items" USING btree ("company_id","task_id","created_at");--> statement-breakpoint
 CREATE INDEX "idx_task_thread_items_status" ON "task_thread_items" USING btree ("company_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_task_thread_items_idempotency" ON "task_thread_items" USING btree ("company_id","task_id","idempotency_key");--> statement-breakpoint

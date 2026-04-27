@@ -39,7 +39,9 @@ export const taskThreadItems = pgTable(
       .notNull()
       .default('pending'),
     idempotencyKey: text('idempotency_key'),
+    // No cascade: task thread rows are audit records and should retain linked approval rows.
     relatedApprovalId: text('related_approval_id').references(() => approvals.id),
+    // No cascade: execution evidence should remain available through the thread audit trail.
     relatedExecutionId: text('related_execution_id').references(() => agentExecutions.id),
     resolvedByUserId: text('resolved_by_user_id'),
     resolutionNote: text('resolution_note'),

@@ -238,9 +238,9 @@ export function TaskDetail() {
                         )}
                         {item.kind === "execution_event" && (
                           <p className="mt-2 text-xs text-text-secondary">
-                            Liveness: {(item.payload as any).livenessStatus ?? "unknown"}
-                            {(item.payload as any).nextActionHint
-                              ? ` · ${(item.payload as any).nextActionHint}`
+                            Liveness: {item.payload.livenessStatus ?? "unknown"}
+                            {item.payload.nextActionHint
+                              ? ` · ${item.payload.nextActionHint}`
                               : ""}
                           </p>
                         )}

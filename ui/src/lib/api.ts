@@ -304,6 +304,23 @@ export const updateTask = (
     body: JSON.stringify(data),
   });
 
+export type TaskThreadItemStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "answered"
+  | "linked"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "approved";
+
+export interface TaskThreadPayload extends Record<string, unknown> {
+  livenessStatus?: string | null;
+  nextActionHint?: string | null;
+}
+
 export interface TaskThreadItem {
   id: string;
   companyId: string;
@@ -312,9 +329,9 @@ export interface TaskThreadItem {
   authorUserId?: string | null;
   authorAgentId?: string | null;
   content: string | null;
-  payload: Record<string, unknown>;
+  payload: TaskThreadPayload;
   interactionType?: "suggested_tasks" | "confirmation" | "form" | null;
-  status: string;
+  status: TaskThreadItemStatus;
   idempotencyKey?: string | null;
   relatedApprovalId?: string | null;
   relatedExecutionId?: string | null;
@@ -331,10 +348,11 @@ export const addTaskComment = (
   companyId: string,
   taskId: string,
   content: string,
+  idempotencyKey?: string,
 ) =>
   request<TaskThreadItem>(`/companies/${companyId}/tasks/${taskId}/thread/comments`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, idempotencyKey }),
   });
 
 export const respondTaskInteraction = (
@@ -364,7 +382,7 @@ export const cancelTaskSubtree = (companyId: string, taskId: string, reason?: st
 export const restoreTaskSubtree = (companyId: string, taskId: string) =>
   request<{ rootTaskId: string; affectedTaskIds: string[] }>(
     `/companies/${companyId}/tasks/${taskId}/subtree/restore`,
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify({}) },
   );
 
 // ── Goals ────────────────────────────────────────────────────────────────

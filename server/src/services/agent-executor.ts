@@ -238,7 +238,7 @@ export class AgentExecutor {
           status: 'failed',
           completedAt: failedAt,
           error: errorMsg,
-          livenessStatus: 'healthy',
+          livenessStatus: 'stalled',
           lastUsefulAction: 'provider_error_recorded',
           nextActionHint: 'operator_review',
           log: [

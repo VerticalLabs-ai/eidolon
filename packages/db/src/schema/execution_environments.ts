@@ -23,8 +23,8 @@ export const executionEnvironments = pgTable(
     workspacePath: text('workspace_path'),
     branchName: text('branch_name'),
     runtimeUrl: text('runtime_url'),
-    leaseOwnerAgentId: text('lease_owner_agent_id').references(() => agents.id),
-    leaseOwnerExecutionId: text('lease_owner_execution_id').references(() => agentExecutions.id),
+    leaseOwnerAgentId: text('lease_owner_agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    leaseOwnerExecutionId: text('lease_owner_execution_id').references(() => agentExecutions.id, { onDelete: 'set null' }),
     leasedAt: timestamp('leased_at', { mode: 'date', precision: 3 }),
     releasedAt: timestamp('released_at', { mode: 'date', precision: 3 }),
     metadata: jsonb('metadata')

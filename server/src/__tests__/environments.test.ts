@@ -24,7 +24,7 @@ describe('Execution Environments API', () => {
       .post(environmentsUrl())
       .send({
         name: 'Local Workspace',
-        workspacePath: '/Users/mgunnin/Developer/06_Projects/Eidolon',
+        workspacePath: process.cwd(),
         branchName: 'main',
         runtimeUrl: 'http://localhost:5173',
         metadata: { runtime: 'pnpm' },
@@ -33,7 +33,7 @@ describe('Execution Environments API', () => {
 
     expect(created.body.data.provider).toBe('local');
     expect(created.body.data.status).toBe('available');
-    expect(created.body.data.workspacePath).toContain('/Eidolon');
+    expect(created.body.data.workspacePath).toBe(process.cwd());
 
     const listed = await request(app)
       .get(environmentsUrl())
@@ -69,6 +69,16 @@ describe('Execution Environments API', () => {
       .send({ agentId })
       .expect(409);
 
+    const otherAgent = await request(app)
+      .post(agentsUrl())
+      .send({ name: 'Other Env Agent', role: 'engineer' })
+      .expect(201);
+
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/release`)
+      .send({ agentId: otherAgent.body.data.id })
+      .expect(409);
+
     const assignedAgent = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/assign`)
       .send({ agentId })
@@ -77,6 +87,7 @@ describe('Execution Environments API', () => {
 
     const released = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
+      .send({ agentId })
       .expect(200);
     expect(released.body.data.status).toBe('available');
     expect(released.body.data.leaseOwnerAgentId).toBeNull();

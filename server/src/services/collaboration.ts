@@ -192,7 +192,8 @@ export class CollaborationService {
       previousStatus: task.status,
       reason,
       createdAt: now,
-    } as any).onConflictDoNothing();
+      updatedAt: now,
+    }).onConflictDoNothing();
 
     await this.db.drizzle.insert(taskThreadItems).values({
       id: randomUUID(),
@@ -205,7 +206,7 @@ export class CollaborationService {
       status: 'answered',
       createdAt: now,
       updatedAt: now,
-    } as any);
+    });
 
     eventBus.emitEvent({
       type: 'agent.collaboration' as any,

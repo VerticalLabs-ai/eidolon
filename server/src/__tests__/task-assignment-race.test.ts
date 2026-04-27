@@ -249,6 +249,7 @@ describe('Task assignment concurrency', () => {
       previousStatus: 'todo',
       reason: 'operator paused',
       createdAt: now,
+      updatedAt: now,
     } as any);
 
     const scheduler = new HeartbeatScheduler(db);

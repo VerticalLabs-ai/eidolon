@@ -63,6 +63,9 @@ export const agents = pgTable(
     executionTimeoutSeconds: integer('execution_timeout_seconds').notNull().default(600),
     // 0/1 integer: route handlers and scheduler literally check `=== 1`.
     autoAssignTasks: integer('auto_assign_tasks').notNull().default(0),
+    // FK is created in the migration after execution_environments exists; keeping
+    // this scalar here avoids a circular module import because environments also
+    // reference agents for lease ownership.
     defaultEnvironmentId: text('default_environment_id'),
     budgetMonthlyCents: integer('budget_monthly_cents').notNull().default(0),
     spentMonthlyCents: integer('spent_monthly_cents').notNull().default(0),

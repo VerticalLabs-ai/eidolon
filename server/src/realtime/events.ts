@@ -33,7 +33,8 @@ export interface ExecutionEvent extends ServerEvent {
   type:
     | 'execution.started'
     | 'execution.log'
-    | 'execution.completed';
+    | 'execution.completed'
+    | 'execution.recovery_created';
 }
 
 export interface TaskEvent extends ServerEvent {

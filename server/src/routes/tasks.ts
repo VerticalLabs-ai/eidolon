@@ -58,6 +58,7 @@ const AddCommentBody = z.object({
 const CreateThreadCommentBody = z.object({
   content: z.string().min(1).max(20_000),
   authorAgentId: z.string().uuid().nullable().default(null),
+  idempotencyKey: z.string().min(1).max(255).optional(),
 });
 
 const CreateInteractionBody = z.object({
@@ -304,6 +305,21 @@ export function tasksRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     await getTaskOrThrow(companyId, id);
 
+    if (body.idempotencyKey) {
+      const [existing] = await db.drizzle
+        .select()
+        .from(taskThreadItems)
+        .where(
+          and(
+            eq(taskThreadItems.companyId, companyId),
+            eq(taskThreadItems.taskId, id),
+            eq(taskThreadItems.idempotencyKey, body.idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (existing) return res.json({ data: existing });
+    }
+
     const row = await createThreadItem({
       companyId,
       taskId: id,
@@ -313,6 +329,7 @@ export function tasksRouter(db: DbInstance): Router {
       content: body.content,
       payload: {},
       status: 'answered',
+      idempotencyKey: body.idempotencyKey ?? null,
     });
 
     eventBus.emitEvent({
@@ -671,6 +688,7 @@ export function tasksRouter(db: DbInstance): Router {
           reason: body.reason ?? null,
           createdByUserId: req.user?.id ?? null,
           createdAt: now,
+          updatedAt: now,
         } as any)
         .returning();
       inserted.push(hold);
@@ -708,6 +726,7 @@ export function tasksRouter(db: DbInstance): Router {
           reason: body.reason ?? null,
           createdByUserId: req.user?.id ?? null,
           createdAt: now,
+          updatedAt: now,
         } as any)
         .onConflictDoNothing();
     }
@@ -762,7 +781,7 @@ export function tasksRouter(db: DbInstance): Router {
     if (taskIds.length > 0) {
       await db.drizzle
         .update(taskHolds)
-        .set({ status: 'restored', resolvedAt: now } as any)
+        .set({ status: 'restored', resolvedAt: now, updatedAt: now } as any)
         .where(
           and(
             eq(taskHolds.companyId, companyId),
