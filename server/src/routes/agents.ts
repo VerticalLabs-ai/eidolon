@@ -12,6 +12,10 @@ import { HeartbeatScheduler } from "../services/scheduler.js";
 import type { DbInstance } from "../types.js";
 import { routeParams } from "../utils/route-params.js";
 
+const LIVENESS_STATUS_HEALTHY = "healthy";
+const LAST_USEFUL_ACTION_MANUAL_EXECUTION = "manual_execution_created";
+const NEXT_ACTION_HINT_AWAIT_LOG = "await_log_or_completion";
+
 // ---------------------------------------------------------------------------
 // Validation schemas
 // ---------------------------------------------------------------------------
@@ -1023,9 +1027,9 @@ export function agentsRouter(db: DbInstance): Router {
           startedAt: now,
           modelUsed: body.modelUsed ?? agent.model,
           provider: body.provider ?? agent.provider,
-          livenessStatus: "healthy",
-          lastUsefulAction: "manual_execution_created",
-          nextActionHint: "await_log_or_completion",
+          livenessStatus: LIVENESS_STATUS_HEALTHY,
+          lastUsefulAction: LAST_USEFUL_ACTION_MANUAL_EXECUTION,
+          nextActionHint: NEXT_ACTION_HINT_AWAIT_LOG,
           createdAt: now,
         })
         .returning();

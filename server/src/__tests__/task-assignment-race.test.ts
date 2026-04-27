@@ -215,11 +215,11 @@ describe('Task assignment concurrency', () => {
 
     await db.drizzle
       .update(db.schema.tasks)
-      .set({ status: 'done', assigneeAgentId: null, updatedAt: new Date() } as any)
+      .set({ status: 'done', assigneeAgentId: null, updatedAt: new Date() })
       .where(eq(db.schema.tasks.id, blockerId));
     await db.drizzle
       .update(db.schema.agents)
-      .set({ status: 'idle', updatedAt: new Date() } as any)
+      .set({ status: 'idle', updatedAt: new Date() })
       .where(eq(db.schema.agents.id, agentId));
 
     const unblockedResult = await scheduler.wakeAgent(agentId);

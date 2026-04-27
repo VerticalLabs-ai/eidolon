@@ -42,6 +42,7 @@ describe('Execution Environments API', () => {
     expect(listed.body.data).toEqual([
       expect.objectContaining({ id: created.body.data.id, name: 'Local Workspace' }),
     ]);
+    expect(listed.body.meta).toEqual(expect.objectContaining({ total: 1, limit: 50, offset: 0 }));
   });
 
   it('should lease, reject double-lease, release, and assign an environment to an agent', async () => {
@@ -83,7 +84,13 @@ describe('Execution Environments API', () => {
       .post(`${environmentsUrl()}/${environmentId}/assign`)
       .send({ agentId })
       .expect(200);
-    expect(assignedAgent.body.data.defaultEnvironmentId).toBe(environmentId);
+    expect(assignedAgent.body.data.agent.defaultEnvironmentId).toBe(environmentId);
+    expect(assignedAgent.body.data.environment.id).toBe(environmentId);
+
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/release`)
+      .send({})
+      .expect(400);
 
     const released = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)

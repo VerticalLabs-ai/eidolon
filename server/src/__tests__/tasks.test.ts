@@ -487,6 +487,12 @@ describe('Tasks API', () => {
         .expect(200);
       const childTasks = children.body.data.filter((task: any) => task.parentId === taskId);
       expect(childTasks.map((task: any) => task.title).sort()).toEqual(['Child A', 'Child B']);
+      expect(childTasks.find((task: any) => task.title === 'Child A')).toEqual(
+        expect.objectContaining({ priority: 'high' }),
+      );
+      expect(childTasks.find((task: any) => task.title === 'Child B')).toEqual(
+        expect.objectContaining({ type: 'chore' }),
+      );
     });
 
     it('should link approval decisions back into the task thread', async () => {

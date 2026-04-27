@@ -224,7 +224,7 @@ export function tasksRouter(db: DbInstance): Router {
   // GET /api/companies/:companyId/tasks - list with filters
   router.get('/', validate(TaskListQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
-    const query = req.query as unknown as z.infer<typeof TaskListQuery>;
+    const query = (req as any).validated.query as z.infer<typeof TaskListQuery>;
 
     const conditions = [eq(tasks.companyId, companyId)];
 
@@ -309,8 +309,13 @@ export function tasksRouter(db: DbInstance): Router {
         .orderBy(approvals.createdAt),
     ]);
 
+    const approvalIds = new Set(approvalRows.map((approval) => approval.id));
+    const canonicalThreadRows = threadRows.filter(
+      (item) => item.kind !== 'approval_link' || !item.relatedApprovalId || !approvalIds.has(item.relatedApprovalId),
+    );
+
     const items = [
-      ...threadRows.map((item) => ({ ...item, source: 'thread' })),
+      ...canonicalThreadRows.map((item) => ({ ...item, source: 'thread' })),
       ...executionRows.map((execution) => ({
         id: `execution:${execution.id}`,
         companyId,
@@ -769,57 +774,33 @@ export function tasksRouter(db: DbInstance): Router {
     const now = new Date();
     const taskIds = subtree.map((task) => task.id);
 
-    for (const task of subtree) {
-      const holdValues = {
-        id: randomUUID(),
-        companyId,
-        taskId: task.id,
-        action: 'cancel' as const,
-        status: 'active' as const,
-        previousStatus: task.status,
-        reason: body.reason ?? null,
-        createdByUserId: req.user?.id ?? null,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      const [existingHold] = await db.drizzle
-        .select({ id: taskHolds.id })
-        .from(taskHolds)
-        .where(
-          and(
-            eq(taskHolds.companyId, companyId),
-            eq(taskHolds.taskId, task.id),
-            eq(taskHolds.action, 'cancel'),
-            eq(taskHolds.status, 'active'),
-          ),
-        )
-        .limit(1);
-
-      if (existingHold) {
-        await db.drizzle
-          .update(taskHolds)
-          .set({
-            previousStatus: holdValues.previousStatus,
-            reason: holdValues.reason,
-            createdByUserId: holdValues.createdByUserId,
-            updatedAt: now,
-          })
-          .where(eq(taskHolds.id, existingHold.id));
-      } else {
-        await db.drizzle.insert(taskHolds).values({
+    if (subtree.length > 0) {
+      await db.drizzle
+        .insert(taskHolds)
+        .values(
+          subtree.map((task) => ({
           id: randomUUID(),
           companyId,
           taskId: task.id,
-          action: 'cancel',
-          status: 'active',
+          action: 'cancel' as const,
+          status: 'active' as const,
           previousStatus: task.status,
           reason: body.reason ?? null,
           createdByUserId: req.user?.id ?? null,
           createdAt: now,
           updatedAt: now,
-        } as any);
-      }
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [taskHolds.companyId, taskHolds.taskId, taskHolds.action],
+          targetWhere: sql`${taskHolds.status} = 'active'`,
+          set: {
+            previousStatus: sql`excluded.previous_status`,
+            reason: sql`excluded.reason`,
+            createdByUserId: sql`excluded.created_by_user_id`,
+            updatedAt: now,
+          },
+        });
     }
 
     if (taskIds.length > 0) {

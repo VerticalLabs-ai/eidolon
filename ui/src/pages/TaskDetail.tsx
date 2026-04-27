@@ -17,6 +17,7 @@ import {
   useDecideApproval,
   useRespondTaskInteraction,
   useTask,
+  useTasks,
   useTaskSubtreeControls,
   useTaskThread,
   useUpdateTask,
@@ -75,9 +76,14 @@ function getExecutionPayload(item: TaskThreadItem) {
   };
 }
 
+function shortId(id: string) {
+  return id.slice(0, 8);
+}
+
 export function TaskDetail() {
   const { companyId, taskId } = useParams();
   const { data: task, isLoading } = useTask(companyId, taskId);
+  const { data: allTasks = [] } = useTasks(companyId);
   const { data: thread = [] } = useTaskThread(companyId, taskId);
   const updateTask = useUpdateTask(companyId!);
   const addComment = useAddTaskComment(companyId!);
@@ -120,6 +126,7 @@ export function TaskDetail() {
     );
   };
   const dependencies = task.dependencies ?? [];
+  const tasksById = new Map(allTasks.map((item) => [item.id, item]));
 
   return (
     <div className="mx-auto max-w-5xl p-6 lg:p-8 space-y-6">
@@ -170,7 +177,9 @@ export function TaskDetail() {
                   }
                 >
                   <Pause className="h-3.5 w-3.5" />
-                  {subtreeControls.isPending ? "Working..." : "Pause subtree"}
+                  {subtreeControls.isPending && subtreeControls.variables?.action === "pause"
+                    ? "Working..."
+                    : "Pause subtree"}
                 </button>
                 <button
                   className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
@@ -178,7 +187,9 @@ export function TaskDetail() {
                   onClick={() => subtreeControls.mutate({ taskId: task.id, action: "restore" })}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  {subtreeControls.isPending ? "Working..." : "Restore"}
+                  {subtreeControls.isPending && subtreeControls.variables?.action === "restore"
+                    ? "Working..."
+                    : "Restore"}
                 </button>
                 <button
                   className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-error hover:bg-error/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
@@ -192,7 +203,9 @@ export function TaskDetail() {
                   }
                 >
                   <XCircle className="h-3.5 w-3.5" />
-                  {subtreeControls.isPending ? "Working..." : "Cancel subtree"}
+                  {subtreeControls.isPending && subtreeControls.variables?.action === "cancel"
+                    ? "Working..."
+                    : "Cancel subtree"}
                 </button>
               </div>
             </div>
@@ -265,6 +278,7 @@ export function TaskDetail() {
                             <div className="mt-3 flex flex-wrap gap-2">
                               <Button
                                 size="sm"
+                                disabled={decideApproval.isPending}
                                 onClick={() =>
                                   decideApproval.mutate({
                                     id: item.relatedApprovalId!,
@@ -278,6 +292,7 @@ export function TaskDetail() {
                               <Button
                                 size="sm"
                                 variant="secondary"
+                                disabled={decideApproval.isPending}
                                 onClick={() =>
                                   decideApproval.mutate({
                                     id: item.relatedApprovalId!,
@@ -315,19 +330,22 @@ export function TaskDetail() {
                                       !(formAnswers[item.id] ?? "").trim())
                                   }
                                   onClick={() =>
-                                    respondInteraction.mutate({
-                                      taskId: task.id,
-                                      interactionId: item.id,
-                                      action: item.interactionType === "form" ? "answer" : "accept",
-                                      note:
-                                        item.interactionType === "form"
-                                          ? "Answered from task thread"
-                                          : "Accepted from task thread",
-                                      answers:
-                                        item.interactionType === "form"
-                                          ? { response: formAnswers[item.id]?.trim() }
-                                          : undefined,
-                                    })
+                                    respondInteraction.mutate(
+                                      {
+                                        taskId: task.id,
+                                        interactionId: item.id,
+                                        action: item.interactionType === "form" ? "answer" : "accept",
+                                        note:
+                                          item.interactionType === "form"
+                                            ? "Answered from task thread"
+                                            : "Accepted from task thread",
+                                        answers:
+                                          item.interactionType === "form"
+                                            ? { response: formAnswers[item.id]?.trim() }
+                                            : undefined,
+                                      },
+                                      { onSuccess: () => setFormAnswers({}) },
+                                    )
                                   }
                                 >
                                   {item.interactionType === "form" ? "Submit" : "Accept"}
@@ -337,12 +355,15 @@ export function TaskDetail() {
                                   variant="secondary"
                                   disabled={respondInteraction.isPending}
                                   onClick={() =>
-                                    respondInteraction.mutate({
-                                      taskId: task.id,
-                                      interactionId: item.id,
-                                      action: "reject",
-                                      note: "Rejected from task thread",
-                                    })
+                                    respondInteraction.mutate(
+                                      {
+                                        taskId: task.id,
+                                        interactionId: item.id,
+                                        action: "reject",
+                                        note: "Rejected from task thread",
+                                      },
+                                      { onSuccess: () => setFormAnswers({}) },
+                                    )
                                   }
                                 >
                                   Reject
@@ -416,17 +437,21 @@ export function TaskDetail() {
                 <p className="text-sm text-text-secondary">No blockers.</p>
               ) : (
                 <div className="space-y-3">
-                  {dependencies.map((depId) => (
-                    <div
-                      key={depId}
-                      className="flex items-center gap-3 rounded-lg glass-raised p-3"
-                    >
-                      <GitBranch className="h-4 w-4 text-neon-purple" />
-                      <span className="min-w-0 truncate text-xs text-text-secondary font-mono">
-                        {depId}
-                      </span>
-                    </div>
-                  ))}
+                  {dependencies.map((depId) => {
+                    const dependencyTask = tasksById.get(depId);
+                    return (
+                      <Link
+                        key={depId}
+                        to={`/company/${companyId}/issues/${depId}`}
+                        className="flex items-center gap-3 rounded-lg glass-raised p-3"
+                      >
+                        <GitBranch className="h-4 w-4 text-neon-purple" />
+                        <span className="min-w-0 truncate text-xs text-text-secondary font-mono">
+                          {dependencyTask?.title ?? shortId(depId)}
+                        </span>
+                      </Link>
+                    );
+                  })}
                 </div>
               )}
             </div>

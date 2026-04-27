@@ -6,6 +6,7 @@ import { TaskDetail } from "../src/pages/TaskDetail";
 
 const mocks = vi.hoisted(() => ({
   useTask: vi.fn(),
+  useTasks: vi.fn(),
   useTaskThread: vi.fn(),
   updateTaskMutate: vi.fn(),
   addCommentMutate: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/hooks", () => ({
   useTask: mocks.useTask,
+  useTasks: mocks.useTasks,
   useTaskThread: mocks.useTaskThread,
   useUpdateTask: () => ({
     mutate: mocks.updateTaskMutate,
@@ -80,6 +82,9 @@ describe("TaskDetail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.useTask.mockReturnValue({ data: task, isLoading: false });
+    mocks.useTasks.mockReturnValue({
+      data: [{ id: "dependency-1", title: "Dependency task" }],
+    });
     mocks.useTaskThread.mockReturnValue({ data: [] });
   });
 
@@ -89,7 +94,10 @@ describe("TaskDetail", () => {
 
     expect(screen.getByRole("heading", { name: task.title })).toBeInTheDocument();
     expect(screen.getAllByText("In Progress").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("dependency-1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Dependency task/ })).toHaveAttribute(
+      "href",
+      "/company/company-1/issues/dependency-1",
+    );
 
     await user.click(screen.getByRole("button", { name: "Review" }));
     expect(mocks.updateTaskMutate).toHaveBeenCalledWith({
@@ -176,12 +184,15 @@ describe("TaskDetail", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Accept" }));
-    expect(mocks.respondInteractionMutate).toHaveBeenCalledWith({
-      taskId: "task-1",
-      interactionId: "interaction-1",
-      action: "accept",
-      note: "Accepted from task thread",
-    });
+    expect(mocks.respondInteractionMutate).toHaveBeenCalledWith(
+      {
+        taskId: "task-1",
+        interactionId: "interaction-1",
+        action: "accept",
+        note: "Accepted from task thread",
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
 
     await user.type(screen.getByLabelText("Comment"), "Restart with smaller batch.");
     await user.click(screen.getByRole("button", { name: "Add comment" }));

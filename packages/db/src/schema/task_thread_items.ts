@@ -23,6 +23,7 @@ export const taskThreadItems = pgTable(
     })
       .notNull()
       .default('comment'),
+    // Clerk user ids are external identities; Eidolon does not keep a local users table.
     authorUserId: text('author_user_id'),
     authorAgentId: text('author_agent_id').references(() => agents.id),
     content: text('content'),
@@ -45,17 +46,18 @@ export const taskThreadItems = pgTable(
     relatedExecutionId: text('related_execution_id').references(() => agentExecutions.id),
     resolvedByUserId: text('resolved_by_user_id'),
     resolutionNote: text('resolution_note'),
-    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),
-    resolvedAt: timestamp('resolved_at', { mode: 'date', precision: 3 }),
+    resolvedAt: timestamp('resolved_at', { mode: 'date', precision: 3, withTimezone: true }),
   },
   (table) => [
     index('idx_task_thread_items_task').on(table.companyId, table.taskId, table.createdAt),
     index('idx_task_thread_items_status').on(table.companyId, table.status),
+    index('idx_task_thread_items_payload').using('gin', table.payload),
     uniqueIndex('uq_task_thread_items_idempotency').on(
       table.companyId,
       table.taskId,

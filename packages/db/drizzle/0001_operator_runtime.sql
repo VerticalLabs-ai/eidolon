@@ -22,9 +22,9 @@ CREATE TABLE "task_thread_items" (
 	"related_execution_id" text,
 	"resolved_by_user_id" text,
 	"resolution_note" text,
-	"created_at" timestamp (3) NOT NULL,
-	"updated_at" timestamp (3) NOT NULL,
-	"resolved_at" timestamp (3)
+	"created_at" timestamp (3) with time zone NOT NULL,
+	"updated_at" timestamp (3) with time zone NOT NULL,
+	"resolved_at" timestamp (3) with time zone
 );--> statement-breakpoint
 CREATE TABLE "task_holds" (
 	"id" text PRIMARY KEY NOT NULL,
@@ -35,9 +35,9 @@ CREATE TABLE "task_holds" (
 	"previous_status" text,
 	"reason" text,
 	"created_by_user_id" text,
-	"created_at" timestamp (3) NOT NULL,
-	"updated_at" timestamp (3) NOT NULL,
-	"resolved_at" timestamp (3)
+	"created_at" timestamp (3) with time zone NOT NULL,
+	"updated_at" timestamp (3) with time zone NOT NULL,
+	"resolved_at" timestamp (3) with time zone
 );--> statement-breakpoint
 CREATE TABLE "execution_environments" (
 	"id" text PRIMARY KEY NOT NULL,
@@ -70,6 +70,7 @@ ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_leas
 ALTER TABLE "agents" ADD CONSTRAINT "agents_default_environment_id_execution_environments_id_fk" FOREIGN KEY ("default_environment_id") REFERENCES "public"."execution_environments"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_task_thread_items_task" ON "task_thread_items" USING btree ("company_id","task_id","created_at");--> statement-breakpoint
 CREATE INDEX "idx_task_thread_items_status" ON "task_thread_items" USING btree ("company_id","status");--> statement-breakpoint
+CREATE INDEX "idx_task_thread_items_payload" ON "task_thread_items" USING gin ("payload");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_task_thread_items_idempotency" ON "task_thread_items" USING btree ("company_id","task_id","idempotency_key");--> statement-breakpoint
 CREATE INDEX "idx_task_holds_company_task" ON "task_holds" USING btree ("company_id","task_id");--> statement-breakpoint
 CREATE INDEX "idx_task_holds_active" ON "task_holds" USING btree ("company_id","status");--> statement-breakpoint

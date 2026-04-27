@@ -41,7 +41,7 @@ export function environmentsRouter(db: DbInstance): Router {
 
   router.get('/', validate(EnvironmentListQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
-    const query = req.query as unknown as z.infer<typeof EnvironmentListQuery>;
+    const query = (req as any).validated.query as z.infer<typeof EnvironmentListQuery>;
     const rows = await db.drizzle
       .select()
       .from(executionEnvironments)
@@ -114,7 +114,7 @@ export function environmentsRouter(db: DbInstance): Router {
         leasedAt: now,
         releasedAt: null,
         updatedAt: now,
-      } as any)
+      })
       .where(
         and(
           eq(executionEnvironments.id, id),
@@ -151,6 +151,14 @@ export function environmentsRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     const now = new Date();
 
+    if (!body.agentId && !body.executionId) {
+      throw new AppError(
+        400,
+        'ENVIRONMENT_RELEASE_OWNER_REQUIRED',
+        'Releasing an environment requires an agentId or executionId',
+      );
+    }
+
     const [row] = await db.drizzle
       .update(executionEnvironments)
       .set({
@@ -159,24 +167,19 @@ export function environmentsRouter(db: DbInstance): Router {
         leaseOwnerExecutionId: null,
         releasedAt: now,
         updatedAt: now,
-      } as any)
+      })
       .where(
         and(
           eq(executionEnvironments.id, id),
           eq(executionEnvironments.companyId, companyId),
+          eq(executionEnvironments.status, 'leased'),
           sql`(
-            ${executionEnvironments.status} = 'available'
-            OR (
-              ${executionEnvironments.status} = 'leased'
-              AND (
-                ${executionEnvironments.leaseOwnerAgentId} IS NULL
-                OR ${executionEnvironments.leaseOwnerAgentId} = ${body.agentId ?? null}
-              )
-              AND (
-                ${executionEnvironments.leaseOwnerExecutionId} IS NULL
-                OR ${executionEnvironments.leaseOwnerExecutionId} = ${body.executionId ?? null}
-              )
-            )
+            ${executionEnvironments.leaseOwnerAgentId} IS NULL
+            OR ${executionEnvironments.leaseOwnerAgentId} = ${body.agentId ?? null}
+          )`,
+          sql`(
+            ${executionEnvironments.leaseOwnerExecutionId} IS NULL
+            OR ${executionEnvironments.leaseOwnerExecutionId} = ${body.executionId ?? null}
           )`,
         ),
       )
@@ -237,7 +240,7 @@ export function environmentsRouter(db: DbInstance): Router {
       throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${body.agentId} not found`);
     }
 
-    res.json({ data: agent });
+    res.json({ data: { agent, environment } });
   });
 
   return router;

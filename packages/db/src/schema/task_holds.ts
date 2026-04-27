@@ -23,13 +23,13 @@ export const taskHolds = pgTable(
     previousStatus: text('previous_status'),
     reason: text('reason'),
     createdByUserId: text('created_by_user_id'),
-    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),
-    resolvedAt: timestamp('resolved_at', { mode: 'date', precision: 3 }),
+    resolvedAt: timestamp('resolved_at', { mode: 'date', precision: 3, withTimezone: true }),
   },
   (table) => [
     index('idx_task_holds_company_task').on(table.companyId, table.taskId),
