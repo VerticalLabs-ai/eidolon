@@ -101,9 +101,10 @@ export class Orchestrator {
           isNull(tasks.assigneeAgentId),
           sql`NOT EXISTS (
             SELECT 1
-            FROM task_holds
-            WHERE task_holds.task_id = ${bestTask.id}
-              AND task_holds.status = 'active'
+            FROM ${taskHolds}
+            WHERE ${taskHolds.taskId} = ${bestTask.id}
+              AND ${taskHolds.status} = 'active'
+              AND ${taskHolds.action} = 'pause'
           )`,
         ),
       )

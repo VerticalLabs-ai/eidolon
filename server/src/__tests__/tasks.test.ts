@@ -602,5 +602,57 @@ describe('Tasks API', () => {
       expect(restoredParent.body.data.status).toBe('todo');
       expect(restoredChild.body.data.status).toBe('in_progress');
     });
+
+    it('should treat repeated subtree pause as idempotent', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Parent', status: 'todo' });
+      const parentId = parent.body.data.id;
+
+      const firstPause = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/pause`)
+        .send({ reason: 'Pause once' })
+        .expect(200);
+      expect(firstPause.body.data.affectedTaskIds).toEqual([parentId]);
+      expect(firstPause.body.data.holds).toHaveLength(1);
+
+      const secondPause = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/pause`)
+        .send({ reason: 'Pause twice' })
+        .expect(200);
+      expect(secondPause.body.data.affectedTaskIds).toEqual([parentId]);
+      expect(secondPause.body.data.holds).toHaveLength(0);
+    });
+
+    it('should allow restoring a subtree with no active holds as a no-op', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Unpaused parent', status: 'todo' });
+      const parentId = parent.body.data.id;
+
+      const restored = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/restore`)
+        .expect(200);
+      expect(restored.body.data.affectedTaskIds).toEqual([parentId]);
+
+      const unchangedParent = await request(app).get(taskUrl(parentId)).expect(200);
+      expect(unchangedParent.body.data.status).toBe('todo');
+    });
+
+    it('should cancel only the parent when a subtree has no children', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Solo parent', status: 'todo' });
+      const parentId = parent.body.data.id;
+
+      const cancelled = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/cancel`)
+        .send({ reason: 'Cancel solo' })
+        .expect(200);
+      expect(cancelled.body.data.affectedTaskIds).toEqual([parentId]);
+
+      const cancelledParent = await request(app).get(taskUrl(parentId)).expect(200);
+      expect(cancelledParent.body.data.status).toBe('cancelled');
+    });
   });
 });

@@ -33,10 +33,10 @@ export const executionEnvironments = pgTable(
       .default({}),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
-      .$defaultFn(() => new Date()),
+      .defaultNow(),
     updatedAt: timestamp('updated_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
-      .$defaultFn(() => new Date()),
+      .defaultNow(),
   },
   (table) => [
     index('idx_execution_environments_company').on(table.companyId, table.status),

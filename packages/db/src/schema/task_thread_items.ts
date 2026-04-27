@@ -15,6 +15,8 @@ export const taskThreadItems = pgTable(
     companyId: text('company_id')
       .notNull()
       .references(() => companies.id),
+    // Thread items are audit records. Keep task/company FK deletion as NO ACTION
+    // so operators cannot silently remove task history by deleting a parent row.
     taskId: text('task_id')
       .notNull()
       .references(() => tasks.id),
@@ -48,10 +50,10 @@ export const taskThreadItems = pgTable(
     resolutionNote: text('resolution_note'),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
-      .$defaultFn(() => new Date()),
+      .defaultNow(),
     updatedAt: timestamp('updated_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
-      .$defaultFn(() => new Date()),
+      .defaultNow(),
     resolvedAt: timestamp('resolved_at', { mode: 'date', precision: 3, withTimezone: true }),
   },
   (table) => [

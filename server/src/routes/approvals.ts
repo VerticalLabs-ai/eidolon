@@ -76,27 +76,29 @@ export function approvalsRouter(db: DbInstance): Router {
     const userId = req.user?.id ?? null;
 
     const row = await db.drizzle.transaction(async (tx) => {
+      const approvalValues: typeof approvals.$inferInsert = {
+        id: randomUUID(),
+        companyId,
+        kind: body.kind,
+        title: body.title,
+        description: body.description ?? null,
+        status: 'pending',
+        priority: body.priority,
+        requestedByUserId: userId,
+        requestedByAgentId: body.requestedByAgentId ?? null,
+        payload: body.payload,
+        taskId: body.taskId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
       const [created] = await tx
         .insert(approvals)
-        .values({
-          id: randomUUID(),
-          companyId,
-          kind: body.kind,
-          title: body.title,
-          description: body.description ?? null,
-          status: 'pending',
-          priority: body.priority,
-          requestedByUserId: userId,
-          requestedByAgentId: body.requestedByAgentId ?? null,
-          payload: body.payload,
-          taskId: body.taskId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        } as any)
+        .values(approvalValues)
         .returning();
 
       if (created.taskId) {
-        await tx.insert(taskThreadItems).values({
+        const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
           companyId,
           taskId: created.taskId,
@@ -108,7 +110,9 @@ export function approvalsRouter(db: DbInstance): Router {
           relatedApprovalId: created.id,
           createdAt: now,
           updatedAt: now,
-        } as any);
+        };
+
+        await tx.insert(taskThreadItems).values(threadValues);
       }
 
       return created;

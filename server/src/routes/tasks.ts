@@ -14,6 +14,7 @@ const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'canc
 
 type TaskType = (typeof TASK_TYPES)[number];
 type TaskPriority = (typeof TASK_PRIORITIES)[number];
+type TaskStatus = (typeof TASK_STATUSES)[number];
 
 function normalizeTaskType(value: unknown): TaskType {
   return typeof value === 'string' && TASK_TYPES.includes(value as TaskType)
@@ -210,16 +211,44 @@ export function tasksRouter(db: DbInstance): Router {
     }
   }
 
-  async function createThreadItem(values: Record<string, unknown>) {
+  async function createThreadItem(values: typeof taskThreadItems.$inferInsert) {
     const now = new Date();
+    const insertValues = {
+      id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      ...values,
+    };
+
+    if (insertValues.idempotencyKey) {
+      const [created] = await db.drizzle
+        .insert(taskThreadItems)
+        .values(insertValues)
+        .onConflictDoNothing({
+          target: [taskThreadItems.companyId, taskThreadItems.taskId, taskThreadItems.idempotencyKey],
+        })
+        .returning();
+
+      if (created) return created;
+
+      const [existing] = await db.drizzle
+        .select()
+        .from(taskThreadItems)
+        .where(
+          and(
+            eq(taskThreadItems.companyId, insertValues.companyId),
+            eq(taskThreadItems.taskId, insertValues.taskId),
+            eq(taskThreadItems.idempotencyKey, insertValues.idempotencyKey),
+          ),
+        )
+        .limit(1);
+
+      if (existing) return existing;
+    }
+
     const [row] = await db.drizzle
       .insert(taskThreadItems)
-      .values({
-        id: randomUUID(),
-        createdAt: now,
-        updatedAt: now,
-        ...values,
-      } as any)
+      .values(insertValues)
       .returning();
     return row;
   }
@@ -355,21 +384,6 @@ export function tasksRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof CreateThreadCommentBody>;
     const { id, companyId } = routeParams(req);
     await getTaskOrThrow(companyId, id);
-
-    if (body.idempotencyKey) {
-      const [existing] = await db.drizzle
-        .select()
-        .from(taskThreadItems)
-        .where(
-          and(
-            eq(taskThreadItems.companyId, companyId),
-            eq(taskThreadItems.taskId, id),
-            eq(taskThreadItems.idempotencyKey, body.idempotencyKey),
-          ),
-        )
-        .limit(1);
-      if (existing) return res.json({ data: existing });
-    }
 
     const row = await createThreadItem({
       companyId,
@@ -723,26 +737,25 @@ export function tasksRouter(db: DbInstance): Router {
     await getTaskOrThrow(companyId, id);
     const subtree = await fetchSubtree(companyId, id);
     const now = new Date();
-    const inserted = [];
+    const taskIds = subtree.map((task) => task.id);
+    const inserted = await db.drizzle.transaction(async (tx) => {
+      if (taskIds.length === 0) return [];
 
-    for (const task of subtree) {
-      const [existing] = await db.drizzle
-        .select()
+      const existingHolds = await tx
+        .select({ taskId: taskHolds.taskId })
         .from(taskHolds)
         .where(
           and(
             eq(taskHolds.companyId, companyId),
-            eq(taskHolds.taskId, task.id),
             eq(taskHolds.action, 'pause'),
             eq(taskHolds.status, 'active'),
+            inArray(taskHolds.taskId, taskIds),
           ),
-        )
-        .limit(1);
-      if (existing) continue;
-
-      const [hold] = await db.drizzle
-        .insert(taskHolds)
-        .values({
+        );
+      const existingTaskIds = new Set(existingHolds.map((hold) => hold.taskId));
+      const values: Array<typeof taskHolds.$inferInsert> = subtree
+        .filter((task) => !existingTaskIds.has(task.id))
+        .map((task) => ({
           id: randomUUID(),
           companyId,
           taskId: task.id,
@@ -753,19 +766,19 @@ export function tasksRouter(db: DbInstance): Router {
           createdByUserId: req.user?.id ?? null,
           createdAt: now,
           updatedAt: now,
-        } as any)
-        .returning();
-      inserted.push(hold);
-    }
+        }));
+
+      return values.length ? tx.insert(taskHolds).values(values).returning() : [];
+    });
 
     eventBus.emitEvent({
       type: 'task.subtree_paused',
       companyId,
-      payload: { rootTaskId: id, affectedTaskIds: subtree.map((task) => task.id) },
+      payload: { rootTaskId: id, affectedTaskIds: taskIds },
       timestamp: now.toISOString(),
     });
 
-    res.json({ data: { rootTaskId: id, affectedTaskIds: subtree.map((task) => task.id), holds: inserted } });
+    res.json({ data: { rootTaskId: id, affectedTaskIds: taskIds, holds: inserted } });
   });
 
   // POST /api/companies/:companyId/tasks/:id/subtree/cancel
@@ -809,7 +822,7 @@ export function tasksRouter(db: DbInstance): Router {
     if (taskIds.length > 0) {
       await db.drizzle
         .update(tasks)
-        .set({ status: 'cancelled', updatedAt: now } as any)
+        .set({ status: 'cancelled', updatedAt: now })
         .where(and(eq(tasks.companyId, companyId), inArray(tasks.id, taskIds)));
     }
 
@@ -844,19 +857,32 @@ export function tasksRouter(db: DbInstance): Router {
           )
       : [];
 
+    const restoreIdsByStatus = new Map<TaskStatus, string[]>();
     for (const hold of activeHolds) {
-      if (hold.action === 'cancel' && hold.previousStatus && hold.previousStatus !== 'cancelled') {
-        await db.drizzle
-          .update(tasks)
-          .set({ status: hold.previousStatus as any, updatedAt: now })
-          .where(and(eq(tasks.id, hold.taskId), eq(tasks.companyId, companyId)));
+      if (
+        hold.action === 'cancel' &&
+        hold.previousStatus &&
+        hold.previousStatus !== 'cancelled' &&
+        TASK_STATUSES.includes(hold.previousStatus as TaskStatus)
+      ) {
+        const status = hold.previousStatus as TaskStatus;
+        const ids = restoreIdsByStatus.get(status) ?? [];
+        ids.push(hold.taskId);
+        restoreIdsByStatus.set(status, ids);
       }
+    }
+
+    for (const [status, ids] of restoreIdsByStatus.entries()) {
+      await db.drizzle
+        .update(tasks)
+        .set({ status, updatedAt: now })
+        .where(and(eq(tasks.companyId, companyId), inArray(tasks.id, ids)));
     }
 
     if (taskIds.length > 0) {
       await db.drizzle
         .update(taskHolds)
-        .set({ status: 'restored', resolvedAt: now, updatedAt: now } as any)
+        .set({ status: 'restored', resolvedAt: now, updatedAt: now })
         .where(
           and(
             eq(taskHolds.companyId, companyId),

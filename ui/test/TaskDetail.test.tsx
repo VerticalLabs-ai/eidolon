@@ -82,10 +82,22 @@ describe("TaskDetail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.useTask.mockReturnValue({ data: task, isLoading: false });
-    mocks.useTasks.mockReturnValue({
-      data: [{ id: "dependency-1", title: "Dependency task" }],
-    });
+    mocks.useTasks.mockReturnValue({ data: [] });
     mocks.useTaskThread.mockReturnValue({ data: [] });
+  });
+
+  it("renders loading skeleton when task is loading", () => {
+    mocks.useTask.mockReturnValue({ data: undefined, isLoading: true });
+    const { container } = renderTaskDetail();
+
+    expect(container.querySelector(".animate-pulse")).toBeInTheDocument();
+  });
+
+  it("renders not found message when task is missing", () => {
+    mocks.useTask.mockReturnValue({ data: null, isLoading: false });
+    renderTaskDetail();
+
+    expect(screen.getByText("Task not found")).toBeInTheDocument();
   });
 
   it("renders canonical statuses and sends status/subtree actions", async () => {
@@ -94,7 +106,7 @@ describe("TaskDetail", () => {
 
     expect(screen.getByRole("heading", { name: task.title })).toBeInTheDocument();
     expect(screen.getAllByText("In Progress").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByRole("link", { name: /Dependency task/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /dependen/ })).toHaveAttribute(
       "href",
       "/company/company-1/issues/dependency-1",
     );
@@ -105,25 +117,34 @@ describe("TaskDetail", () => {
       data: { status: "review" },
     });
 
-    await user.click(screen.getByRole("button", { name: "Pause subtree" }));
-    expect(mocks.subtreeMutate).toHaveBeenCalledWith({
-      taskId: "task-1",
-      action: "pause",
-      reason: "Paused from task detail",
-    });
+	await user.click(screen.getByRole("button", { name: "Pause subtree" }));
+	expect(mocks.subtreeMutate).toHaveBeenCalledWith(
+		{
+			taskId: "task-1",
+			action: "pause",
+			reason: "Paused from task detail",
+		},
+		expect.objectContaining({ onSuccess: expect.any(Function) }),
+	);
 
-    await user.click(screen.getByRole("button", { name: "Restore" }));
-    expect(mocks.subtreeMutate).toHaveBeenCalledWith({
-      taskId: "task-1",
-      action: "restore",
-    });
+	await user.click(screen.getByRole("button", { name: "Restore" }));
+	expect(mocks.subtreeMutate).toHaveBeenCalledWith(
+		{
+			taskId: "task-1",
+			action: "restore",
+		},
+		expect.objectContaining({ onSuccess: expect.any(Function) }),
+	);
 
-    await user.click(screen.getByRole("button", { name: "Cancel subtree" }));
-    expect(mocks.subtreeMutate).toHaveBeenCalledWith({
-      taskId: "task-1",
-      action: "cancel",
-      reason: "Cancelled from task detail",
-    });
+	await user.click(screen.getByRole("button", { name: "Cancel subtree" }));
+	expect(mocks.subtreeMutate).toHaveBeenCalledWith(
+		{
+			taskId: "task-1",
+			action: "cancel",
+			reason: "Cancelled from task detail",
+		},
+		expect.objectContaining({ onSuccess: expect.any(Function) }),
+	);
   });
 
   it("handles inline approval, interaction, execution, and comment flows", async () => {

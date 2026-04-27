@@ -12,12 +12,12 @@ import {
   XCircle,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { toast } from "sonner";
 import {
   useAddTaskComment,
   useDecideApproval,
   useRespondTaskInteraction,
   useTask,
-  useTasks,
   useTaskSubtreeControls,
   useTaskThread,
   useUpdateTask,
@@ -83,7 +83,6 @@ function shortId(id: string) {
 export function TaskDetail() {
   const { companyId, taskId } = useParams();
   const { data: task, isLoading } = useTask(companyId, taskId);
-  const { data: allTasks = [] } = useTasks(companyId);
   const { data: thread = [] } = useTaskThread(companyId, taskId);
   const updateTask = useUpdateTask(companyId!);
   const addComment = useAddTaskComment(companyId!);
@@ -133,7 +132,9 @@ export function TaskDetail() {
     });
   };
   const dependencies = task.dependencies ?? [];
-  const tasksById = new Map(allTasks.map((item) => [item.id, item]));
+  const showSubtreeToast = (verb: string, affectedTaskIds: string[]) => {
+    toast.success(`${verb} ${affectedTaskIds.length} ${affectedTaskIds.length === 1 ? "task" : "tasks"}`);
+  };
 
   return (
     <div className="mx-auto max-w-5xl p-6 lg:p-8 space-y-6">
@@ -176,11 +177,14 @@ export function TaskDetail() {
                   className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={subtreeControls.isPending}
                   onClick={() =>
-                    subtreeControls.mutate({
-                      taskId: task.id,
-                      action: "pause",
-                      reason: "Paused from task detail",
-                    })
+                    subtreeControls.mutate(
+                      {
+                        taskId: task.id,
+                        action: "pause",
+                        reason: "Paused from task detail",
+                      },
+                      { onSuccess: (data) => showSubtreeToast("Paused", data.affectedTaskIds) },
+                    )
                   }
                 >
                   <Pause className="h-3.5 w-3.5" />
@@ -191,7 +195,12 @@ export function TaskDetail() {
                 <button
                   className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={subtreeControls.isPending}
-                  onClick={() => subtreeControls.mutate({ taskId: task.id, action: "restore" })}
+                  onClick={() =>
+                    subtreeControls.mutate(
+                      { taskId: task.id, action: "restore" },
+                      { onSuccess: (data) => showSubtreeToast("Restored", data.affectedTaskIds) },
+                    )
+                  }
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   {subtreeControls.isPending && subtreeControls.variables?.action === "restore"
@@ -202,11 +211,14 @@ export function TaskDetail() {
                   className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-error hover:bg-error/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={subtreeControls.isPending}
                   onClick={() =>
-                    subtreeControls.mutate({
-                      taskId: task.id,
-                      action: "cancel",
-                      reason: "Cancelled from task detail",
-                    })
+                    subtreeControls.mutate(
+                      {
+                        taskId: task.id,
+                        action: "cancel",
+                        reason: "Cancelled from task detail",
+                      },
+                      { onSuccess: (data) => showSubtreeToast("Cancelled", data.affectedTaskIds) },
+                    )
                   }
                 >
                   <XCircle className="h-3.5 w-3.5" />
@@ -252,6 +264,7 @@ export function TaskDetail() {
               ) : (
                 sortedThread.map((item) => {
                   const executionPayload = getExecutionPayload(item);
+                  const relatedApprovalId = item.relatedApprovalId;
                   return (
                     <div key={item.id} className="p-5">
                       <div className="flex items-start gap-3">
@@ -281,42 +294,37 @@ export function TaskDetail() {
                                 : ""}
                             </p>
                           )}
-                          {item.kind === "approval_link" && item.status === "pending" && item.relatedApprovalId
-                            ? (() => {
-                                const relatedApprovalId = item.relatedApprovalId;
-                                return (
-                                  <div className="mt-3 flex flex-wrap gap-2">
-                                    <Button
-                                      size="sm"
-                                      disabled={decideApproval.isPending}
-                                      onClick={() =>
-                                        decideApproval.mutate({
-                                          id: relatedApprovalId,
-                                          decision: "approved",
-                                          resolutionNote: "Approved from task thread",
-                                        })
-                                      }
-                                    >
-                                      Approve
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      variant="secondary"
-                                      disabled={decideApproval.isPending}
-                                      onClick={() =>
-                                        decideApproval.mutate({
-                                          id: relatedApprovalId,
-                                          decision: "rejected",
-                                          resolutionNote: "Rejected from task thread",
-                                        })
-                                      }
-                                    >
-                                      Reject
-                                    </Button>
-                                  </div>
-                                );
-                              })()
-                            : null}
+                          {item.kind === "approval_link" && item.status === "pending" && relatedApprovalId && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                disabled={decideApproval.isPending}
+                                onClick={() =>
+                                  decideApproval.mutate({
+                                    id: relatedApprovalId,
+                                    decision: "approved",
+                                    resolutionNote: "Approved from task thread",
+                                  })
+                                }
+                              >
+                                Approve
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={decideApproval.isPending}
+                                onClick={() =>
+                                  decideApproval.mutate({
+                                    id: relatedApprovalId,
+                                    decision: "rejected",
+                                    resolutionNote: "Rejected from task thread",
+                                  })
+                                }
+                              >
+                                Reject
+                              </Button>
+                            </div>
+                          )}
                           {item.kind === "interaction" && item.status === "pending" && (
                             <div className="mt-3 space-y-3">
                               {item.interactionType === "form" && (
@@ -449,21 +457,18 @@ export function TaskDetail() {
                 <p className="text-sm text-text-secondary">No blockers.</p>
               ) : (
                 <div className="space-y-3">
-                  {dependencies.map((depId) => {
-                    const dependencyTask = tasksById.get(depId);
-                    return (
-                      <Link
-                        key={depId}
-                        to={`/company/${companyId}/issues/${depId}`}
-                        className="flex items-center gap-3 rounded-lg glass-raised p-3"
-                      >
-                        <GitBranch className="h-4 w-4 text-neon-purple" />
-                        <span className="min-w-0 truncate text-xs text-text-secondary font-mono">
-                          {dependencyTask?.title ?? shortId(depId)}
-                        </span>
-                      </Link>
-                    );
-                  })}
+                  {dependencies.map((depId) => (
+                    <Link
+                      key={depId}
+                      to={`/company/${companyId}/issues/${depId}`}
+                      className="flex items-center gap-3 rounded-lg glass-raised p-3"
+                    >
+                      <GitBranch className="h-4 w-4 text-neon-purple" />
+                      <span className="min-w-0 truncate text-xs text-text-secondary font-mono">
+                        {shortId(depId)}
+                      </span>
+                    </Link>
+                  ))}
                 </div>
               )}
             </div>

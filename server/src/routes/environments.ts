@@ -95,16 +95,6 @@ export function environmentsRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     const now = new Date();
 
-    const [agent] = await db.drizzle
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId)))
-      .limit(1);
-
-    if (!agent) {
-      throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${body.agentId} not found`);
-    }
-
     const [row] = await db.drizzle
       .update(executionEnvironments)
       .set({
@@ -120,11 +110,27 @@ export function environmentsRouter(db: DbInstance): Router {
           eq(executionEnvironments.id, id),
           eq(executionEnvironments.companyId, companyId),
           eq(executionEnvironments.status, 'available'),
+          sql`EXISTS (
+            SELECT 1
+            FROM agents
+            WHERE agents.id = ${body.agentId}
+              AND agents.company_id = ${companyId}
+          )`,
         ),
       )
       .returning();
 
     if (!row) {
+      const [agent] = await db.drizzle
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId)))
+        .limit(1);
+
+      if (!agent) {
+        throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${body.agentId} not found`);
+      }
+
       const [environment] = await db.drizzle
         .select({ id: executionEnvironments.id })
         .from(executionEnvironments)
@@ -230,7 +236,7 @@ export function environmentsRouter(db: DbInstance): Router {
 
     const [agent] = await db.drizzle
       .update(agents)
-      .set({ defaultEnvironmentId: id, updatedAt: new Date() } as any)
+      .set({ defaultEnvironmentId: id, updatedAt: new Date() })
       .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId)))
       .returning();
 

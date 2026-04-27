@@ -259,12 +259,13 @@ describe('Task assignment concurrency', () => {
   });
 
   it('HeartbeatScheduler.runOnce: creates redacted recovery tasks for stalled executions', async () => {
+    const agentId = await insertAgent({ status: 'working', intervalSeconds: 0, executionTimeoutSeconds: 1 });
     const taskId = await insertTask({
       title: 'Original task',
       status: 'in_progress',
+      assigneeAgentId: agentId,
       startedAt: new Date(Date.now() - 120_000),
     });
-    const agentId = await insertAgent({ status: 'working', intervalSeconds: 0, executionTimeoutSeconds: 1 });
     const executionId = randomUUID();
     const startedAt = new Date(Date.now() - 120_000);
 

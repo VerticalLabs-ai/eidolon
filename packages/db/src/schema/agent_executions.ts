@@ -69,6 +69,6 @@ export const agentExecutions = pgTable(
   },
   (table) => [
     index('idx_agent_executions_company').on(table.companyId, table.agentId, table.createdAt),
-    index('idx_agent_executions_liveness').on(table.livenessStatus, table.watchdogLastCheckedAt),
+    index('idx_agent_executions_liveness').on(table.companyId, table.livenessStatus, table.watchdogLastCheckedAt),
   ],
 );
