@@ -33,7 +33,18 @@ export interface ExecutionEvent extends ServerEvent {
   type:
     | 'execution.started'
     | 'execution.log'
-    | 'execution.completed';
+    | 'execution.completed'
+    | 'execution.recovery_created';
+}
+
+export interface EnvironmentEvent extends ServerEvent {
+  type:
+    | 'environment.created'
+    | 'environment.updated'
+    | 'environment.deleted'
+    | 'environment.assigned'
+    | 'environment.leased'
+    | 'environment.released';
 }
 
 export interface TaskEvent extends ServerEvent {
@@ -43,6 +54,11 @@ export interface TaskEvent extends ServerEvent {
     | 'task.assigned'
     | 'task.status_changed'
     | 'task.commented'
+    | 'task.blocker_resolved'
+    | 'task.thread_item_seen'
+    | 'task.subtree_paused'
+    | 'task.subtree_cancelled'
+    | 'task.subtree_restored'
     | 'task.cancelled'
     | 'task.timed_out';
 }
@@ -96,6 +112,7 @@ export type EidolonEvent =
   | BudgetEvent
   | WorkflowEvent
   | ActivityEvent
+  | EnvironmentEvent
   | ExecutionEvent;
 
 // ---------------------------------------------------------------------------

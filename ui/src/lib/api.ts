@@ -102,6 +102,9 @@ export interface OrgChartNode extends Agent {
 export interface Task {
   id: string;
   companyId: string;
+  projectId: string | null;
+  goalId: string | null;
+  parentId: string | null;
   title: string;
   description: string | null;
   type: string;
@@ -282,6 +285,8 @@ export const createTask = (
     priority?: string;
     type?: string;
     assigneeAgentId?: string;
+    parentId?: string;
+    dependencies?: string[];
   },
 ) =>
   request<Task>(`/companies/${companyId}/tasks`, {
@@ -298,6 +303,87 @@ export const updateTask = (
     method: "PATCH",
     body: JSON.stringify(data),
   });
+
+export type TaskThreadItemStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "answered"
+  | "linked"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "approved";
+
+export interface TaskThreadPayload extends Record<string, unknown> {
+  livenessStatus?: string | null;
+  nextActionHint?: string | null;
+}
+
+export interface TaskThreadItem {
+  id: string;
+  companyId: string;
+  taskId: string;
+  kind: "comment" | "interaction" | "decision" | "approval_link" | "execution_event";
+  authorUserId?: string | null;
+  authorAgentId?: string | null;
+  content: string | null;
+  payload: TaskThreadPayload;
+  interactionType?: "suggested_tasks" | "confirmation" | "form" | null;
+  status: TaskThreadItemStatus;
+  idempotencyKey?: string | null;
+  relatedApprovalId?: string | null;
+  relatedExecutionId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt?: string | null;
+  source?: "thread" | "execution" | "approval";
+}
+
+export const getTaskThread = (companyId: string, taskId: string) =>
+  request<TaskThreadItem[]>(`/companies/${companyId}/tasks/${taskId}/thread`);
+
+export const addTaskComment = (
+  companyId: string,
+  taskId: string,
+  content: string,
+  idempotencyKey?: string,
+) =>
+  request<TaskThreadItem>(`/companies/${companyId}/tasks/${taskId}/thread/comments`, {
+    method: "POST",
+    body: JSON.stringify({ content, idempotencyKey }),
+  });
+
+export const respondTaskInteraction = (
+  companyId: string,
+  taskId: string,
+  interactionId: string,
+  action: "accept" | "reject" | "answer",
+  data?: { note?: string; answers?: Record<string, unknown> },
+) =>
+  request<TaskThreadItem>(
+    `/companies/${companyId}/tasks/${taskId}/thread/interactions/${interactionId}/${action}`,
+    { method: "POST", body: JSON.stringify(data ?? {}) },
+  );
+
+export const pauseTaskSubtree = (companyId: string, taskId: string, reason?: string) =>
+  request<{ rootTaskId: string; affectedTaskIds: string[] }>(
+    `/companies/${companyId}/tasks/${taskId}/subtree/pause`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+
+export const cancelTaskSubtree = (companyId: string, taskId: string, reason?: string) =>
+  request<{ rootTaskId: string; affectedTaskIds: string[] }>(
+    `/companies/${companyId}/tasks/${taskId}/subtree/cancel`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+
+export const restoreTaskSubtree = (companyId: string, taskId: string) =>
+  request<{ rootTaskId: string; affectedTaskIds: string[] }>(
+    `/companies/${companyId}/tasks/${taskId}/subtree/restore`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
 
 // ── Goals ────────────────────────────────────────────────────────────────
 
@@ -450,6 +536,13 @@ export interface Execution {
   tokensUsed: number | null;
   durationMs: number | null;
   error: string | null;
+  livenessStatus: "healthy" | "silent" | "stalled" | "recovering" | "recovered";
+  lastUsefulAction: string | null;
+  nextActionHint: string | null;
+  continuationAttempts: number;
+  lastContinuationAt: string | null;
+  watchdogLastCheckedAt: string | null;
+  recoveryTaskId: string | null;
   startedAt: string;
   completedAt: string | null;
 }

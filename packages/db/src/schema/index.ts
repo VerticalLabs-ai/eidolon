@@ -24,3 +24,6 @@ export { agentEvaluations } from './agent_evaluations.js';
 export { mcpServers } from './mcp_servers.js';
 export { approvals, approvalComments } from './approvals.js';
 export { inboxReadStates } from './inbox_read_states.js';
+export { taskThreadItems } from './task_thread_items.js';
+export { taskHolds } from './task_holds.js';
+export { executionEnvironments } from './execution_environments.js';

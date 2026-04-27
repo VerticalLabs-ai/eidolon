@@ -1,4 +1,5 @@
-import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, text, integer, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 import { agents } from './agents.js';
@@ -60,5 +61,8 @@ export const tasks = pgTable(
   (table) => [
     index('idx_tasks_company_status').on(table.companyId, table.status),
     index('idx_tasks_company_assignee').on(table.companyId, table.assigneeAgentId),
+    uniqueIndex('uq_tasks_company_task_number')
+      .on(table.companyId, table.taskNumber)
+      .where(sql`${table.taskNumber} IS NOT NULL`),
   ],
 );

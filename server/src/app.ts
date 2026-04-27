@@ -34,6 +34,7 @@ import { projectsRouter } from './routes/projects.js';
 import { adaptersRouter } from './routes/adapters.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { inboxRouter } from './routes/inbox.js';
+import { environmentsRouter } from './routes/environments.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -171,6 +172,9 @@ export function createApp(db: DbInstance): express.Express {
 
   // Unified inbox feed
   app.use('/api/companies/:companyId/inbox', requireAuth, requireOrgMember(), inboxRouter(db));
+
+  // Local execution environments
+  app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));
 
   // ---------------------------------------------------------------------------
   // Static file serving for production UI (legacy single-host deploys).

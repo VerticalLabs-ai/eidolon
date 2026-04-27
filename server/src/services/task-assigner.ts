@@ -60,6 +60,13 @@ export class TaskAssigner {
         and(
           eq(tasks.companyId, companyId),
           eq(tasks.status, 'in_progress'),
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM task_holds
+            WHERE task_holds.task_id = ${tasks.id}
+              AND task_holds.status = 'active'
+              AND task_holds.action = 'pause'
+          )`,
         ),
       )
       .groupBy(tasks.assigneeAgentId);
@@ -184,6 +191,13 @@ export class TaskAssigner {
           eq(tasks.id, taskId),
           // Guard: only assign if currently unassigned or re-assigning to same agent
           sql`(${tasks.assigneeAgentId} IS NULL OR ${tasks.assigneeAgentId} = ${agentId})`,
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM task_holds
+            WHERE task_holds.task_id = ${taskId}
+              AND task_holds.status = 'active'
+              AND task_holds.action = 'pause'
+          )`,
         ),
       );
 

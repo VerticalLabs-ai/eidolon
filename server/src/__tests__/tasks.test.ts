@@ -64,6 +64,15 @@ describe('Tasks API', () => {
       expect(res.body.data.estimatedTokens).toBe(5000);
     });
 
+    it('should accept the canonical timed_out status', async () => {
+      const res = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Timed out task', status: 'timed_out' })
+        .expect(201);
+
+      expect(res.body.data.status).toBe('timed_out');
+    });
+
     it('should auto-increment task numbers', async () => {
       const t1 = await request(app)
         .post(tasksUrl())
@@ -268,6 +277,54 @@ describe('Tasks API', () => {
       expect(res.body.data.priority).toBe('critical');
     });
 
+    it('should update status to review', async () => {
+      const created = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Review Me' });
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .patch(taskUrl(id))
+        .send({ status: 'review' })
+        .expect(200);
+
+      expect(res.body.data.status).toBe('review');
+    });
+
+    it('should not wake a working assignee when a blocker resolves', async () => {
+      const agent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: 'Busy assignee', role: 'engineer', status: 'working' })
+        .expect(201);
+      const agentId = agent.body.data.id;
+
+      const blocker = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Blocking task', status: 'todo' })
+        .expect(201);
+      const blockerId = blocker.body.data.id;
+
+      await request(app)
+        .post(tasksUrl())
+        .send({
+          title: 'Blocked task',
+          status: 'todo',
+          dependencies: [blockerId],
+          assigneeAgentId: agentId,
+        })
+        .expect(201);
+
+      await request(app)
+        .patch(taskUrl(blockerId))
+        .send({ status: 'done' })
+        .expect(200);
+
+      const unchangedAgent = await request(app)
+        .get(`/api/companies/${companyId}/agents/${agentId}`)
+        .expect(200);
+      expect(unchangedAgent.body.data.status).toBe('working');
+    });
+
     it('should 404 for non-existent task', async () => {
       await request(app)
         .patch(taskUrl('00000000-0000-0000-0000-000000000000'))
@@ -380,6 +437,226 @@ describe('Tasks API', () => {
       expect(res.body.data.todo).toHaveLength(0);
       expect(res.body.data.review).toHaveLength(0);
       expect(res.body.data.cancelled).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Thread and structured interactions
+  // ---------------------------------------------------------------------------
+
+  describe('Task thread endpoints', () => {
+    it('should persist comments in the task thread', async () => {
+      const taskRes = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Discuss Me' });
+      const taskId = taskRes.body.data.id;
+
+      await request(app)
+        .post(`${taskUrl(taskId)}/thread/comments`)
+        .send({ content: 'Operator context for the agent.' })
+        .expect(201);
+
+      const res = await request(app)
+        .get(`${taskUrl(taskId)}/thread`)
+        .expect(200);
+
+      expect(res.body.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'comment',
+            content: 'Operator context for the agent.',
+          }),
+        ]),
+      );
+    });
+
+    it('should make suggested-task decisions idempotent and create child tasks once', async () => {
+      const taskRes = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Parent Issue' });
+      const taskId = taskRes.body.data.id;
+
+      const interactionRes = await request(app)
+        .post(`${taskUrl(taskId)}/thread/interactions`)
+        .send({
+          interactionType: 'suggested_tasks',
+          content: 'Suggested follow-up work',
+          idempotencyKey: 'suggestion-1',
+          payload: {
+            tasks: [
+              { title: 'Child A', priority: 'high' },
+              { title: 'Child B', type: 'chore' },
+            ],
+          },
+        })
+        .expect(201);
+      const interactionId = interactionRes.body.data.id;
+
+      const duplicate = await request(app)
+        .post(`${taskUrl(taskId)}/thread/interactions`)
+        .send({
+          interactionType: 'suggested_tasks',
+          content: 'Suggested follow-up work',
+          idempotencyKey: 'suggestion-1',
+          payload: { tasks: [{ title: 'Should not appear' }] },
+        })
+        .expect(200);
+      expect(duplicate.body.data.id).toBe(interactionId);
+
+      const firstDecision = await request(app)
+        .post(`${taskUrl(taskId)}/thread/interactions/${interactionId}/accept`)
+        .send({ note: 'Accept the proposal' })
+        .expect(200);
+
+      const secondDecision = await request(app)
+        .post(`${taskUrl(taskId)}/thread/interactions/${interactionId}/accept`)
+        .send({ note: 'Accept again' })
+        .expect(200);
+
+      expect(firstDecision.body.data.status).toBe('accepted');
+      expect(firstDecision.body.data.payload.createdTaskIds).toHaveLength(2);
+      expect(secondDecision.body.data.payload.createdTaskIds).toHaveLength(2);
+      expect(secondDecision.body.data.payload.createdTaskIds).toEqual(
+        firstDecision.body.data.payload.createdTaskIds,
+      );
+
+      const children = await request(app)
+        .get(tasksUrl())
+        .expect(200);
+      const childTasks = children.body.data.filter((task: any) => task.parentId === taskId);
+      expect(childTasks.map((task: any) => task.title).sort()).toEqual(['Child A', 'Child B']);
+      expect(childTasks.find((task: any) => task.title === 'Child A')).toEqual(
+        expect.objectContaining({ priority: 'high' }),
+      );
+      expect(childTasks.find((task: any) => task.title === 'Child B')).toEqual(
+        expect.objectContaining({ type: 'chore' }),
+      );
+    });
+
+    it('should link approval decisions back into the task thread', async () => {
+      const taskRes = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Needs Approval' });
+      const taskId = taskRes.body.data.id;
+
+      const approvalRes = await request(app)
+        .post(`/api/companies/${companyId}/approvals`)
+        .send({
+          kind: 'task_review',
+          title: 'Approve plan',
+          taskId,
+        })
+        .expect(201);
+
+      await request(app)
+        .post(`/api/companies/${companyId}/approvals/${approvalRes.body.data.id}/decide`)
+        .send({ decision: 'approved', resolutionNote: 'Looks good.' })
+        .expect(200);
+
+      const res = await request(app)
+        .get(`${taskUrl(taskId)}/thread`)
+        .expect(200);
+
+      expect(res.body.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'approval_link', content: 'Approve plan' }),
+          expect.objectContaining({ kind: 'decision', content: 'Looks good.' }),
+        ]),
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Subtree controls
+  // ---------------------------------------------------------------------------
+
+  describe('Task subtree controls', () => {
+    it('should pause, cancel, and restore a parent subtree', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Parent', status: 'todo' });
+      const parentId = parent.body.data.id;
+      const child = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Child', parentId, status: 'in_progress' });
+      const childId = child.body.data.id;
+
+      const pause = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/pause`)
+        .send({ reason: 'Operator pause' })
+        .expect(200);
+      expect(pause.body.data.affectedTaskIds.sort()).toEqual([childId, parentId].sort());
+
+      await request(app)
+        .post(`${taskUrl(parentId)}/subtree/cancel`)
+        .send({ reason: 'Stop this branch' })
+        .expect(200);
+
+      const cancelledParent = await request(app).get(taskUrl(parentId)).expect(200);
+      const cancelledChild = await request(app).get(taskUrl(childId)).expect(200);
+      expect(cancelledParent.body.data.status).toBe('cancelled');
+      expect(cancelledChild.body.data.status).toBe('cancelled');
+
+      await request(app)
+        .post(`${taskUrl(parentId)}/subtree/restore`)
+        .expect(200);
+
+      const restoredParent = await request(app).get(taskUrl(parentId)).expect(200);
+      const restoredChild = await request(app).get(taskUrl(childId)).expect(200);
+      expect(restoredParent.body.data.status).toBe('todo');
+      expect(restoredChild.body.data.status).toBe('in_progress');
+    });
+
+    it('should treat repeated subtree pause as idempotent', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Parent', status: 'todo' });
+      const parentId = parent.body.data.id;
+
+      const firstPause = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/pause`)
+        .send({ reason: 'Pause once' })
+        .expect(200);
+      expect(firstPause.body.data.affectedTaskIds).toEqual([parentId]);
+      expect(firstPause.body.data.holds).toHaveLength(1);
+
+      const secondPause = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/pause`)
+        .send({ reason: 'Pause twice' })
+        .expect(200);
+      expect(secondPause.body.data.affectedTaskIds).toEqual([parentId]);
+      expect(secondPause.body.data.holds).toHaveLength(0);
+    });
+
+    it('should allow restoring a subtree with no active holds as a no-op', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Unpaused parent', status: 'todo' });
+      const parentId = parent.body.data.id;
+
+      const restored = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/restore`)
+        .expect(200);
+      expect(restored.body.data.affectedTaskIds).toEqual([parentId]);
+
+      const unchangedParent = await request(app).get(taskUrl(parentId)).expect(200);
+      expect(unchangedParent.body.data.status).toBe('todo');
+    });
+
+    it('should cancel only the parent when a subtree has no children', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Solo parent', status: 'todo' });
+      const parentId = parent.body.data.id;
+
+      const cancelled = await request(app)
+        .post(`${taskUrl(parentId)}/subtree/cancel`)
+        .send({ reason: 'Cancel solo' })
+        .expect(200);
+      expect(cancelled.body.data.affectedTaskIds).toEqual([parentId]);
+
+      const cancelledParent = await request(app).get(taskUrl(parentId)).expect(200);
+      expect(cancelledParent.body.data.status).toBe('cancelled');
     });
   });
 });

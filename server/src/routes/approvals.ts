@@ -44,7 +44,7 @@ const CancelBody = z.object({
 
 export function approvalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { approvals, approvalComments } = db.schema;
+  const { approvals, approvalComments, taskThreadItems } = db.schema;
 
   // GET /api/companies/:companyId/approvals?status=pending
   router.get('/', async (req, res) => {
@@ -75,9 +75,8 @@ export function approvalsRouter(db: DbInstance): Router {
     const now = new Date();
     const userId = req.user?.id ?? null;
 
-    const [row] = await db.drizzle
-      .insert(approvals)
-      .values({
+    const row = await db.drizzle.transaction(async (tx) => {
+      const approvalValues: typeof approvals.$inferInsert = {
         id: randomUUID(),
         companyId,
         kind: body.kind,
@@ -91,8 +90,33 @@ export function approvalsRouter(db: DbInstance): Router {
         taskId: body.taskId ?? null,
         createdAt: now,
         updatedAt: now,
-      } as any)
-      .returning();
+      };
+
+      const [created] = await tx
+        .insert(approvals)
+        .values(approvalValues)
+        .returning();
+
+      if (created.taskId) {
+        const threadValues: typeof taskThreadItems.$inferInsert = {
+          id: randomUUID(),
+          companyId,
+          taskId: created.taskId,
+          kind: 'approval_link',
+          authorUserId: userId,
+          content: created.title,
+          payload: { approvalId: created.id, kind: created.kind, priority: created.priority },
+          status: 'linked',
+          relatedApprovalId: created.id,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        await tx.insert(taskThreadItems).values(threadValues);
+      }
+
+      return created;
+    });
 
     eventBus.emitEvent({
       type: 'approval.created' as any,
@@ -151,17 +175,49 @@ export function approvalsRouter(db: DbInstance): Router {
       );
     }
 
-    const [row] = await db.drizzle
-      .update(approvals)
-      .set({
-        status: body.decision,
-        resolutionNote: body.resolutionNote ?? null,
-        resolvedByUserId: req.user?.id ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(approvals.id, id))
-      .returning();
+    const row = await db.drizzle.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(approvals)
+        .set({
+          status: body.decision,
+          resolutionNote: body.resolutionNote ?? null,
+          resolvedByUserId: req.user?.id ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), eq(approvals.status, 'pending')))
+        .returning();
+
+      if (!updated) {
+        throw new AppError(
+          409,
+          'APPROVAL_NOT_PENDING',
+          `Approval ${id} was resolved by another request`,
+        );
+      }
+
+      if (updated.taskId) {
+        const threadValues: typeof taskThreadItems.$inferInsert = {
+          id: randomUUID(),
+          companyId,
+          taskId: updated.taskId,
+          kind: 'decision',
+          authorUserId: req.user?.id ?? null,
+          content: body.resolutionNote ?? `Approval ${body.decision}`,
+          payload: { approvalId: updated.id, decision: body.decision },
+          status: body.decision === 'approved' ? 'accepted' : 'rejected',
+          relatedApprovalId: updated.id,
+          resolvedByUserId: req.user?.id ?? null,
+          resolvedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        await tx.insert(taskThreadItems).values(threadValues);
+      }
+
+      return updated;
+    });
 
     eventBus.emitEvent({
       type: 'approval.decided' as any,

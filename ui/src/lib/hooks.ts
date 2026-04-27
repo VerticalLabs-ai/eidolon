@@ -156,6 +156,16 @@ export function useTask(companyId: string | undefined, taskId: string | undefine
   });
 }
 
+export function useTaskThread(companyId: string | undefined, taskId: string | undefined) {
+  return useQuery({
+    queryKey: ["tasks", companyId, taskId, "thread"],
+    queryFn: async () =>
+      unwrap<api.TaskThreadItem[]>(await api.getTaskThread(companyId!, taskId!)),
+    enabled: !!companyId && !!taskId,
+    refetchInterval: 10_000,
+  });
+}
+
 export function useCreateTask(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -164,6 +174,67 @@ export function useCreateTask(companyId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks", companyId] });
       qc.invalidateQueries({ queryKey: ["dashboard", companyId] });
+    },
+  });
+}
+
+export function useAddTaskComment(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { taskId: string; content: string }) =>
+      api.addTaskComment(companyId, args.taskId, args.content),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId, "thread"] });
+    },
+  });
+}
+
+export function useRespondTaskInteraction(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      taskId: string;
+      interactionId: string;
+      action: "accept" | "reject" | "answer";
+      note?: string;
+      answers?: Record<string, unknown>;
+    }) =>
+      api.respondTaskInteraction(
+        companyId,
+        args.taskId,
+        args.interactionId,
+        args.action,
+        { note: args.note, answers: args.answers },
+      ),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId, "thread"] });
+    },
+  });
+}
+
+export function useTaskSubtreeControls(companyId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: (args: {
+      taskId: string;
+      action: "pause" | "cancel" | "restore";
+      reason?: string;
+    }) => {
+      if (args.action === "restore") {
+        return api.restoreTaskSubtree(companyId, args.taskId);
+      }
+      if (args.action === "pause") {
+        return api.pauseTaskSubtree(companyId, args.taskId, args.reason);
+      }
+      return api.cancelTaskSubtree(companyId, args.taskId, args.reason);
+    },
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId, "thread"] });
     },
   });
 }
@@ -1070,8 +1141,12 @@ export function useCreateApproval(companyId: string) {
   return useMutation({
     mutationFn: (data: Parameters<typeof api.createApproval>[1]) =>
       api.createApproval(companyId, data),
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+      const approval = unwrap<api.Approval>(data);
+      if (approval.taskId) {
+        qc.invalidateQueries({ queryKey: ["tasks", companyId, approval.taskId, "thread"] });
+      }
     },
   });
 }
@@ -1088,8 +1163,12 @@ export function useDecideApproval(companyId: string) {
         decision: args.decision,
         resolutionNote: args.resolutionNote,
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+      const approval = unwrap<api.Approval>(data);
+      if (approval.taskId) {
+        qc.invalidateQueries({ queryKey: ["tasks", companyId, approval.taskId, "thread"] });
+      }
     },
   });
 }
