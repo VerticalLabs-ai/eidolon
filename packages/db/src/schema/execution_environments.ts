@@ -25,16 +25,16 @@ export const executionEnvironments = pgTable(
     runtimeUrl: text('runtime_url'),
     leaseOwnerAgentId: text('lease_owner_agent_id').references(() => agents.id, { onDelete: 'set null' }),
     leaseOwnerExecutionId: text('lease_owner_execution_id').references(() => agentExecutions.id, { onDelete: 'set null' }),
-    leasedAt: timestamp('leased_at', { mode: 'date', precision: 3 }),
-    releasedAt: timestamp('released_at', { mode: 'date', precision: 3 }),
+    leasedAt: timestamp('leased_at', { mode: 'date', precision: 3, withTimezone: true }),
+    releasedAt: timestamp('released_at', { mode: 'date', precision: 3, withTimezone: true }),
     metadata: jsonb('metadata')
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
-    createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),
-    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3 })
+    updatedAt: timestamp('updated_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),
   },

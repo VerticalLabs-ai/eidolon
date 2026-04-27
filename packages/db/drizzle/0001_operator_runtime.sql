@@ -50,11 +50,11 @@ CREATE TABLE "execution_environments" (
 	"runtime_url" text,
 	"lease_owner_agent_id" text,
 	"lease_owner_execution_id" text,
-	"leased_at" timestamp (3),
-	"released_at" timestamp (3),
+	"leased_at" timestamp (3) with time zone,
+	"released_at" timestamp (3) with time zone,
 	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"created_at" timestamp (3) NOT NULL,
-	"updated_at" timestamp (3) NOT NULL
+	"created_at" timestamp (3) with time zone NOT NULL,
+	"updated_at" timestamp (3) with time zone NOT NULL
 );--> statement-breakpoint
 ALTER TABLE "agent_executions" ADD CONSTRAINT "agent_executions_recovery_task_id_tasks_id_fk" FOREIGN KEY ("recovery_task_id") REFERENCES "public"."tasks"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -77,4 +77,5 @@ CREATE INDEX "idx_task_holds_active" ON "task_holds" USING btree ("company_id","
 CREATE UNIQUE INDEX "uq_task_holds_active_action" ON "task_holds" USING btree ("company_id","task_id","action") WHERE "status" = 'active';--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_company" ON "execution_environments" USING btree ("company_id","status");--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_lease" ON "execution_environments" USING btree ("lease_owner_agent_id");--> statement-breakpoint
-CREATE INDEX "idx_execution_environments_execution" ON "execution_environments" USING btree ("lease_owner_execution_id");
+CREATE INDEX "idx_execution_environments_execution" ON "execution_environments" USING btree ("lease_owner_execution_id");--> statement-breakpoint
+CREATE INDEX "idx_agent_executions_liveness" ON "agent_executions" USING btree ("liveness_status","watchdog_last_checked_at");

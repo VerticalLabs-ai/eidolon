@@ -125,6 +125,13 @@ export function TaskDetail() {
       { onSuccess: () => setComment("") },
     );
   };
+  const clearFormAnswer = (interactionId: string) => {
+    setFormAnswers((current) => {
+      const next = { ...current };
+      delete next[interactionId];
+      return next;
+    });
+  };
   const dependencies = task.dependencies ?? [];
   const tasksById = new Map(allTasks.map((item) => [item.id, item]));
 
@@ -274,37 +281,42 @@ export function TaskDetail() {
                                 : ""}
                             </p>
                           )}
-                          {item.kind === "approval_link" && item.status === "pending" && item.relatedApprovalId && (
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              <Button
-                                size="sm"
-                                disabled={decideApproval.isPending}
-                                onClick={() =>
-                                  decideApproval.mutate({
-                                    id: item.relatedApprovalId!,
-                                    decision: "approved",
-                                    resolutionNote: "Approved from task thread",
-                                  })
-                                }
-                              >
-                                Approve
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                disabled={decideApproval.isPending}
-                                onClick={() =>
-                                  decideApproval.mutate({
-                                    id: item.relatedApprovalId!,
-                                    decision: "rejected",
-                                    resolutionNote: "Rejected from task thread",
-                                  })
-                                }
-                              >
-                                Reject
-                              </Button>
-                            </div>
-                          )}
+                          {item.kind === "approval_link" && item.status === "pending" && item.relatedApprovalId
+                            ? (() => {
+                                const relatedApprovalId = item.relatedApprovalId;
+                                return (
+                                  <div className="mt-3 flex flex-wrap gap-2">
+                                    <Button
+                                      size="sm"
+                                      disabled={decideApproval.isPending}
+                                      onClick={() =>
+                                        decideApproval.mutate({
+                                          id: relatedApprovalId,
+                                          decision: "approved",
+                                          resolutionNote: "Approved from task thread",
+                                        })
+                                      }
+                                    >
+                                      Approve
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      disabled={decideApproval.isPending}
+                                      onClick={() =>
+                                        decideApproval.mutate({
+                                          id: relatedApprovalId,
+                                          decision: "rejected",
+                                          resolutionNote: "Rejected from task thread",
+                                        })
+                                      }
+                                    >
+                                      Reject
+                                    </Button>
+                                  </div>
+                                );
+                              })()
+                            : null}
                           {item.kind === "interaction" && item.status === "pending" && (
                             <div className="mt-3 space-y-3">
                               {item.interactionType === "form" && (
@@ -344,7 +356,7 @@ export function TaskDetail() {
                                             ? { response: formAnswers[item.id]?.trim() }
                                             : undefined,
                                       },
-                                      { onSuccess: () => setFormAnswers({}) },
+                                      { onSuccess: () => clearFormAnswer(item.id) },
                                     )
                                   }
                                 >
@@ -362,7 +374,7 @@ export function TaskDetail() {
                                         action: "reject",
                                         note: "Rejected from task thread",
                                       },
-                                      { onSuccess: () => setFormAnswers({}) },
+                                      { onSuccess: () => clearFormAnswer(item.id) },
                                     )
                                   }
                                 >

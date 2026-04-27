@@ -157,6 +157,26 @@ export class HeartbeatScheduler {
       if (nowMs - startedMs <= stalledAfterMs) continue;
 
       const recoveryTask = await this.db.drizzle.transaction(async (tx) => {
+        const [claimed] = await tx
+          .update(agentExecutions)
+          .set({
+            livenessStatus: 'recovering',
+            nextActionHint: 'review_recovery_task',
+            watchdogLastCheckedAt: now,
+          })
+          .where(
+            and(
+              eq(agentExecutions.id, row.executionId),
+              isNull(agentExecutions.recoveryTaskId),
+              sql`${agentExecutions.livenessStatus} <> 'recovering'`,
+            ),
+          )
+          .returning({ id: agentExecutions.id });
+
+        if (!claimed) {
+          return null;
+        }
+
         const [{ maxNum }] = await tx
           .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
           .from(tasks)
@@ -189,8 +209,6 @@ export class HeartbeatScheduler {
         await tx
           .update(agentExecutions)
           .set({
-            livenessStatus: 'recovering',
-            nextActionHint: 'review_recovery_task',
             watchdogLastCheckedAt: now,
             recoveryTaskId: created.id,
           })
@@ -198,6 +216,8 @@ export class HeartbeatScheduler {
 
         return created;
       });
+
+      if (!recoveryTask) continue;
 
       eventBus.emitEvent({
         type: 'execution.recovery_created',

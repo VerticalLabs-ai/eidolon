@@ -291,6 +291,40 @@ describe('Tasks API', () => {
       expect(res.body.data.status).toBe('review');
     });
 
+    it('should not wake a working assignee when a blocker resolves', async () => {
+      const agent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: 'Busy assignee', role: 'engineer', status: 'working' })
+        .expect(201);
+      const agentId = agent.body.data.id;
+
+      const blocker = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Blocking task', status: 'todo' })
+        .expect(201);
+      const blockerId = blocker.body.data.id;
+
+      await request(app)
+        .post(tasksUrl())
+        .send({
+          title: 'Blocked task',
+          status: 'todo',
+          dependencies: [blockerId],
+          assigneeAgentId: agentId,
+        })
+        .expect(201);
+
+      await request(app)
+        .patch(taskUrl(blockerId))
+        .send({ status: 'done' })
+        .expect(200);
+
+      const unchangedAgent = await request(app)
+        .get(`/api/companies/${companyId}/agents/${agentId}`)
+        .expect(200);
+      expect(unchangedAgent.body.data.status).toBe('working');
+    });
+
     it('should 404 for non-existent task', async () => {
       await request(app)
         .patch(taskUrl('00000000-0000-0000-0000-000000000000'))

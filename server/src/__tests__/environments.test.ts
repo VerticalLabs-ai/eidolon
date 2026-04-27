@@ -98,5 +98,21 @@ describe('Execution Environments API', () => {
       .expect(200);
     expect(released.body.data.status).toBe('available');
     expect(released.body.data.leaseOwnerAgentId).toBeNull();
+
+    const execution = await request(app)
+      .post(`${agentsUrl()}/${agentId}/executions`)
+      .send({})
+      .expect(201);
+
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/lease`)
+      .send({ agentId, executionId: execution.body.data.id })
+      .expect(200);
+
+    const releasedByAgentOnly = await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/release`)
+      .send({ agentId })
+      .expect(200);
+    expect(releasedByAgentOnly.body.data.status).toBe('available');
   });
 });

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { validate } from '../middleware/validate.js';
@@ -159,6 +159,11 @@ export function environmentsRouter(db: DbInstance): Router {
       );
     }
 
+    const ownerChecks = [
+      body.agentId ? eq(executionEnvironments.leaseOwnerAgentId, body.agentId) : undefined,
+      body.executionId ? eq(executionEnvironments.leaseOwnerExecutionId, body.executionId) : undefined,
+    ].filter((check): check is NonNullable<typeof check> => Boolean(check));
+
     const [row] = await db.drizzle
       .update(executionEnvironments)
       .set({
@@ -173,14 +178,7 @@ export function environmentsRouter(db: DbInstance): Router {
           eq(executionEnvironments.id, id),
           eq(executionEnvironments.companyId, companyId),
           eq(executionEnvironments.status, 'leased'),
-          sql`(
-            ${executionEnvironments.leaseOwnerAgentId} IS NULL
-            OR ${executionEnvironments.leaseOwnerAgentId} = ${body.agentId ?? null}
-          )`,
-          sql`(
-            ${executionEnvironments.leaseOwnerExecutionId} IS NULL
-            OR ${executionEnvironments.leaseOwnerExecutionId} = ${body.executionId ?? null}
-          )`,
+          or(...ownerChecks),
         ),
       )
       .returning();

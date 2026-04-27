@@ -193,10 +193,13 @@ export function tasksRouter(db: DbInstance): Router {
       const unblocked = dependencies.every((dependencyId) => statusById.get(dependencyId) === 'done');
       if (!unblocked || !task.assigneeAgentId) continue;
 
-      await db.drizzle
+      const [wokenAgent] = await db.drizzle
         .update(agents)
-        .set({ status: 'idle', lastHeartbeatAt: null, updatedAt: new Date() } as any)
-        .where(eq(agents.id, task.assigneeAgentId));
+        .set({ status: 'idle', lastHeartbeatAt: null, updatedAt: new Date() })
+        .where(and(eq(agents.id, task.assigneeAgentId), eq(agents.status, 'idle')))
+        .returning({ id: agents.id });
+
+      if (!wokenAgent) continue;
 
       eventBus.emitEvent({
         type: 'task.blocker_resolved',
