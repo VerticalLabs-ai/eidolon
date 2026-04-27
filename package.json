@@ -16,7 +16,6 @@
     "db:reset": "supabase db reset --no-seed && pnpm --filter @eidolon/db migrate",
     "db:generate": "pnpm --filter @eidolon/db generate",
     "db:migrate": "pnpm --filter @eidolon/db migrate",
-    "lint": "pnpm typecheck",
     "clean": "rm -rf node_modules packages/*/node_modules server/node_modules ui/node_modules"
   },
   "devDependencies": {

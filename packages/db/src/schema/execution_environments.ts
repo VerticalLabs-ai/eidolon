@@ -41,5 +41,6 @@ export const executionEnvironments = pgTable(
   (table) => [
     index('idx_execution_environments_company').on(table.companyId, table.status),
     index('idx_execution_environments_lease').on(table.leaseOwnerAgentId),
+    index('idx_execution_environments_execution').on(table.leaseOwnerExecutionId),
   ],
 );

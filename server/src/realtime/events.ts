@@ -41,7 +41,9 @@ export interface EnvironmentEvent extends ServerEvent {
   type:
     | 'environment.created'
     | 'environment.updated'
-    | 'environment.deleted';
+    | 'environment.deleted'
+    | 'environment.leased'
+    | 'environment.released';
 }
 
 export interface TaskEvent extends ServerEvent {
@@ -51,6 +53,10 @@ export interface TaskEvent extends ServerEvent {
     | 'task.assigned'
     | 'task.status_changed'
     | 'task.commented'
+    | 'task.blocker_resolved'
+    | 'task.subtree_paused'
+    | 'task.subtree_cancelled'
+    | 'task.subtree_restored'
     | 'task.cancelled'
     | 'task.timed_out';
 }

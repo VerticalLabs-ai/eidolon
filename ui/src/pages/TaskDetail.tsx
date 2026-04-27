@@ -65,6 +65,16 @@ function itemIcon(item: TaskThreadItem) {
   return <MessageSquare className="h-4 w-4" />;
 }
 
+function getExecutionPayload(item: TaskThreadItem) {
+  if (!item.payload || typeof item.payload !== "object") {
+    return {};
+  }
+  return item.payload as {
+    livenessStatus?: string;
+    nextActionHint?: string;
+  };
+}
+
 export function TaskDetail() {
   const { companyId, taskId } = useParams();
   const { data: task, isLoading } = useTask(companyId, taskId);
@@ -220,128 +230,131 @@ export function TaskDetail() {
                   No comments, approvals, or execution events yet.
                 </p>
               ) : (
-                sortedThread.map((item) => (
-                  <div key={item.id} className="p-5">
-                    <div className="flex items-start gap-3">
-                      <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.04] text-neon-cyan">
-                        {itemIcon(item)}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-1 flex flex-wrap items-center gap-2">
-                          <Badge variant={item.kind === "approval_link" ? "warning" : item.kind === "execution_event" ? "info" : "default"}>
-                            {item.kind.replace(/_/g, " ")}
-                          </Badge>
-                          <span className="text-xs text-text-secondary">
-                            {formatRelative(item.createdAt)}
-                          </span>
-                          <span className="text-xs text-text-secondary">status: {item.status}</span>
+                sortedThread.map((item) => {
+                  const executionPayload = getExecutionPayload(item);
+                  return (
+                    <div key={item.id} className="p-5">
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.04] text-neon-cyan">
+                          {itemIcon(item)}
                         </div>
-                        {item.content && (
-                          <p className="whitespace-pre-wrap text-sm leading-relaxed text-text-primary">
-                            {item.content}
-                          </p>
-                        )}
-                        {item.kind === "execution_event" && (
-                          <p className="mt-2 text-xs text-text-secondary">
-                            Liveness: {item.payload.livenessStatus ?? "unknown"}
-                            {item.payload.nextActionHint
-                              ? ` · ${item.payload.nextActionHint}`
-                              : ""}
-                          </p>
-                        )}
-                        {item.kind === "approval_link" && item.status === "pending" && item.relatedApprovalId && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() =>
-                                decideApproval.mutate({
-                                  id: item.relatedApprovalId!,
-                                  decision: "approved",
-                                  resolutionNote: "Approved from task thread",
-                                })
-                              }
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={() =>
-                                decideApproval.mutate({
-                                  id: item.relatedApprovalId!,
-                                  decision: "rejected",
-                                  resolutionNote: "Rejected from task thread",
-                                })
-                              }
-                            >
-                              Reject
-                            </Button>
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
+                            <Badge variant={item.kind === "approval_link" ? "warning" : item.kind === "execution_event" ? "info" : "default"}>
+                              {item.kind.replace(/_/g, " ")}
+                            </Badge>
+                            <span className="text-xs text-text-secondary">
+                              {formatRelative(item.createdAt)}
+                            </span>
+                            <span className="text-xs text-text-secondary">status: {item.status}</span>
                           </div>
-                        )}
-                        {item.kind === "interaction" && item.status === "pending" && (
-                          <div className="mt-3 space-y-3">
-                            {item.interactionType === "form" && (
-                              <Textarea
-                                label="Answer"
-                                rows={3}
-                                value={formAnswers[item.id] ?? ""}
-                                onChange={(event) =>
-                                  setFormAnswers((current) => ({
-                                    ...current,
-                                    [item.id]: event.target.value,
-                                  }))
-                                }
-                                placeholder="Answer the agent's question..."
-                              />
-                            )}
-                            <div className="flex flex-wrap gap-2">
+                          {item.content && (
+                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-text-primary">
+                              {item.content}
+                            </p>
+                          )}
+                          {item.kind === "execution_event" && (
+                            <p className="mt-2 text-xs text-text-secondary">
+                              Liveness: {executionPayload.livenessStatus ?? "unknown"}
+                              {executionPayload.nextActionHint
+                                ? ` · ${executionPayload.nextActionHint}`
+                                : ""}
+                            </p>
+                          )}
+                          {item.kind === "approval_link" && item.status === "pending" && item.relatedApprovalId && (
+                            <div className="mt-3 flex flex-wrap gap-2">
                               <Button
                                 size="sm"
-                                disabled={
-                                  respondInteraction.isPending ||
-                                  (item.interactionType === "form" &&
-                                    !(formAnswers[item.id] ?? "").trim())
-                                }
                                 onClick={() =>
-                                  respondInteraction.mutate({
-                                    taskId: task.id,
-                                    interactionId: item.id,
-                                    action: item.interactionType === "form" ? "answer" : "accept",
-                                    note:
-                                      item.interactionType === "form"
-                                        ? "Answered from task thread"
-                                        : "Accepted from task thread",
-                                    answers:
-                                      item.interactionType === "form"
-                                        ? { response: formAnswers[item.id]?.trim() }
-                                        : undefined,
+                                  decideApproval.mutate({
+                                    id: item.relatedApprovalId!,
+                                    decision: "approved",
+                                    resolutionNote: "Approved from task thread",
                                   })
                                 }
                               >
-                                {item.interactionType === "form" ? "Submit" : "Accept"}
+                                Approve
                               </Button>
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                disabled={respondInteraction.isPending}
                                 onClick={() =>
-                                  respondInteraction.mutate({
-                                    taskId: task.id,
-                                    interactionId: item.id,
-                                    action: "reject",
-                                    note: "Rejected from task thread",
+                                  decideApproval.mutate({
+                                    id: item.relatedApprovalId!,
+                                    decision: "rejected",
+                                    resolutionNote: "Rejected from task thread",
                                   })
                                 }
                               >
                                 Reject
                               </Button>
                             </div>
-                          </div>
-                        )}
+                          )}
+                          {item.kind === "interaction" && item.status === "pending" && (
+                            <div className="mt-3 space-y-3">
+                              {item.interactionType === "form" && (
+                                <Textarea
+                                  label="Answer"
+                                  rows={3}
+                                  value={formAnswers[item.id] ?? ""}
+                                  onChange={(event) =>
+                                    setFormAnswers((current) => ({
+                                      ...current,
+                                      [item.id]: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="Answer the agent's question..."
+                                />
+                              )}
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  size="sm"
+                                  disabled={
+                                    respondInteraction.isPending ||
+                                    (item.interactionType === "form" &&
+                                      !(formAnswers[item.id] ?? "").trim())
+                                  }
+                                  onClick={() =>
+                                    respondInteraction.mutate({
+                                      taskId: task.id,
+                                      interactionId: item.id,
+                                      action: item.interactionType === "form" ? "answer" : "accept",
+                                      note:
+                                        item.interactionType === "form"
+                                          ? "Answered from task thread"
+                                          : "Accepted from task thread",
+                                      answers:
+                                        item.interactionType === "form"
+                                          ? { response: formAnswers[item.id]?.trim() }
+                                          : undefined,
+                                    })
+                                  }
+                                >
+                                  {item.interactionType === "form" ? "Submit" : "Accept"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  disabled={respondInteraction.isPending}
+                                  onClick={() =>
+                                    respondInteraction.mutate({
+                                      taskId: task.id,
+                                      interactionId: item.id,
+                                      action: "reject",
+                                      note: "Rejected from task thread",
+                                    })
+                                  }
+                                >
+                                  Reject
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
             <div className="border-t border-white/[0.06] p-5">

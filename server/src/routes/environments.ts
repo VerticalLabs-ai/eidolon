@@ -30,19 +30,32 @@ const AssignEnvironmentBody = z.object({
   agentId: z.string().uuid(),
 });
 
+const EnvironmentListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export function environmentsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const { executionEnvironments, agents } = db.schema;
 
-  router.get('/', async (req, res) => {
+  router.get('/', validate(EnvironmentListQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
+    const query = req.query as unknown as z.infer<typeof EnvironmentListQuery>;
     const rows = await db.drizzle
       .select()
       .from(executionEnvironments)
       .where(eq(executionEnvironments.companyId, companyId))
-      .orderBy(executionEnvironments.createdAt);
+      .orderBy(executionEnvironments.createdAt)
+      .limit(query.limit)
+      .offset(query.offset);
 
-    res.json({ data: rows });
+    const [{ total }] = await db.drizzle
+      .select({ total: sql<number>`count(*)` })
+      .from(executionEnvironments)
+      .where(eq(executionEnvironments.companyId, companyId));
+
+    res.json({ data: rows, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
   });
 
   router.post('/', validate(CreateEnvironmentBody), async (req, res) => {
@@ -112,6 +125,21 @@ export function environmentsRouter(db: DbInstance): Router {
       .returning();
 
     if (!row) {
+      const [environment] = await db.drizzle
+        .select({ id: executionEnvironments.id })
+        .from(executionEnvironments)
+        .where(
+          and(
+            eq(executionEnvironments.id, id),
+            eq(executionEnvironments.companyId, companyId),
+          ),
+        )
+        .limit(1);
+
+      if (!environment) {
+        throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
+      }
+
       throw new AppError(409, 'ENVIRONMENT_NOT_AVAILABLE', `Environment ${id} is not available`);
     }
 

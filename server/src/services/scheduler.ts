@@ -183,7 +183,7 @@ export class HeartbeatScheduler {
             tags: ['recovery', 'liveness'],
             createdAt: now,
             updatedAt: now,
-          } as any)
+          })
           .returning();
 
         await tx
@@ -193,7 +193,7 @@ export class HeartbeatScheduler {
             nextActionHint: 'review_recovery_task',
             watchdogLastCheckedAt: now,
             recoveryTaskId: created.id,
-          } as any)
+          })
           .where(eq(agentExecutions.id, row.executionId));
 
         return created;

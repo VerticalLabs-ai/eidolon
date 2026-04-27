@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import eventBus from "../realtime/events.js";
 import type { WorkflowNode } from "../routes/workflows.js";
 import type { DbInstance } from "../types.js";
@@ -19,7 +19,7 @@ export class Orchestrator {
   async assignNextTask(
     agentId: string,
   ): Promise<Record<string, unknown> | null> {
-    const { agents, tasks } = this.db.schema;
+    const { agents, tasks, taskHolds } = this.db.schema;
 
     const [agent] = await this.db.drizzle
       .select()
@@ -58,12 +58,27 @@ export class Orchestrator {
 
     if (candidates.length === 0) return null;
 
+    const candidateIds = candidates.map((task) => task.id);
+    const activeHolds = await this.db.drizzle
+      .select({ taskId: taskHolds.taskId })
+      .from(taskHolds)
+      .where(
+        and(
+          eq(taskHolds.companyId, agent.companyId),
+          eq(taskHolds.status, "active"),
+          inArray(taskHolds.taskId, candidateIds),
+        ),
+      );
+    const heldTaskIds = new Set(activeHolds.map((hold) => hold.taskId));
+    const availableCandidates = candidates.filter((task) => !heldTaskIds.has(task.id));
+    if (availableCandidates.length === 0) return null;
+
     // If the agent has capabilities, try to match tags. Otherwise take the first.
     const agentCaps = (agent.capabilities as string[]) ?? [];
-    let bestTask = candidates[0];
+    let bestTask = availableCandidates[0];
 
     if (agentCaps.length > 0) {
-      const matched = candidates.find((t) => {
+      const matched = availableCandidates.find((t) => {
         const tags = (t.tags as string[]) ?? [];
         return tags.some((tag) => agentCaps.includes(tag));
       });
@@ -80,8 +95,21 @@ export class Orchestrator {
         startedAt: now,
         updatedAt: now,
       })
-      .where(eq(tasks.id, bestTask.id))
+      .where(
+        and(
+          eq(tasks.id, bestTask.id),
+          isNull(tasks.assigneeAgentId),
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM task_holds
+            WHERE task_holds.task_id = ${bestTask.id}
+              AND task_holds.status = 'active'
+          )`,
+        ),
+      )
       .returning();
+
+    if (!assigned) return null;
 
     eventBus.emitEvent({
       type: "task.assigned",

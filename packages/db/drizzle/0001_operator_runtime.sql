@@ -75,4 +75,5 @@ CREATE INDEX "idx_task_holds_company_task" ON "task_holds" USING btree ("company
 CREATE INDEX "idx_task_holds_active" ON "task_holds" USING btree ("company_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_task_holds_active_action" ON "task_holds" USING btree ("company_id","task_id","action") WHERE "status" = 'active';--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_company" ON "execution_environments" USING btree ("company_id","status");--> statement-breakpoint
-CREATE INDEX "idx_execution_environments_lease" ON "execution_environments" USING btree ("lease_owner_agent_id");
+CREATE INDEX "idx_execution_environments_lease" ON "execution_environments" USING btree ("lease_owner_agent_id");--> statement-breakpoint
+CREATE INDEX "idx_execution_environments_execution" ON "execution_environments" USING btree ("lease_owner_execution_id");

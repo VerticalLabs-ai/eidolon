@@ -188,7 +188,7 @@ export function approvalsRouter(db: DbInstance): Router {
         throw new AppError(
           409,
           'APPROVAL_NOT_PENDING',
-          `Approval ${id} is already ${existing.status}`,
+          `Approval ${id} was resolved by another request`,
         );
       }
 

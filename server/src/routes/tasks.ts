@@ -8,15 +8,42 @@ import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
+const TASK_TYPES = ['feature', 'bug', 'chore', 'spike', 'epic'] as const;
+const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
+const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'cancelled', 'timed_out'] as const;
+
+type TaskType = (typeof TASK_TYPES)[number];
+type TaskPriority = (typeof TASK_PRIORITIES)[number];
+
+function normalizeTaskType(value: unknown): TaskType {
+  return typeof value === 'string' && TASK_TYPES.includes(value as TaskType)
+    ? (value as TaskType)
+    : 'feature';
+}
+
+function normalizeTaskPriority(value: unknown): TaskPriority {
+  return typeof value === 'string' && TASK_PRIORITIES.includes(value as TaskPriority)
+    ? (value as TaskPriority)
+    : 'medium';
+}
+
+function rowsFromExecute<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
+}
+
 const CreateTaskBody = z.object({
   projectId: z.string().uuid().nullable().default(null),
   goalId: z.string().uuid().nullable().default(null),
   parentId: z.string().uuid().nullable().default(null),
   title: z.string().min(1).max(500),
   description: z.string().max(50_000).optional(),
-  type: z.enum(['feature', 'bug', 'chore', 'spike', 'epic']).default('feature'),
-  status: z.enum(['backlog', 'todo', 'in_progress', 'review', 'done', 'cancelled', 'timed_out']).default('backlog'),
-  priority: z.enum(['critical', 'high', 'medium', 'low']).default('medium'),
+  type: z.enum(TASK_TYPES).default('feature'),
+  status: z.enum(TASK_STATUSES).default('backlog'),
+  priority: z.enum(TASK_PRIORITIES).default('medium'),
   assigneeAgentId: z.string().uuid().nullable().default(null),
   createdByAgentId: z.string().uuid().nullable().default(null),
   createdByUserId: z.string().uuid().nullable().default(null),
@@ -29,9 +56,9 @@ const CreateTaskBody = z.object({
 const UpdateTaskBody = z.object({
   title: z.string().min(1).max(500).optional(),
   description: z.string().max(50_000).nullable().optional(),
-  type: z.enum(['feature', 'bug', 'chore', 'spike', 'epic']).optional(),
-  status: z.enum(['backlog', 'todo', 'in_progress', 'review', 'done', 'cancelled', 'timed_out']).optional(),
-  priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  type: z.enum(TASK_TYPES).optional(),
+  status: z.enum(TASK_STATUSES).optional(),
+  priority: z.enum(TASK_PRIORITIES).optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),
   projectId: z.string().uuid().nullable().optional(),
   goalId: z.string().uuid().nullable().optional(),
@@ -113,37 +140,53 @@ export function tasksRouter(db: DbInstance): Router {
   }
 
   async function fetchSubtree(companyId: string, rootTaskId: string) {
-    const rows = await db.drizzle
+    const result = await db.drizzle.execute(sql`
+      WITH RECURSIVE subtree(id) AS (
+        SELECT id
+        FROM tasks
+        WHERE company_id = ${companyId} AND id = ${rootTaskId}
+        UNION ALL
+        SELECT child.id
+        FROM tasks child
+        INNER JOIN subtree parent ON child.parent_id = parent.id
+        WHERE child.company_id = ${companyId}
+      )
+      SELECT id FROM subtree
+    `);
+    const ids = rowsFromExecute<{ id: string }>(result).map((row) => row.id);
+    if (ids.length === 0) return [];
+
+    return db.drizzle
       .select()
       .from(tasks)
-      .where(eq(tasks.companyId, companyId));
-    const byParent = new Map<string | null, typeof rows>();
-    for (const row of rows) {
-      const key = row.parentId ?? null;
-      const bucket = byParent.get(key) ?? [];
-      bucket.push(row);
-      byParent.set(key, bucket);
-    }
-
-    const result: typeof rows = [];
-    const visit = (id: string) => {
-      const row = rows.find((candidate) => candidate.id === id);
-      if (row) result.push(row);
-      for (const child of byParent.get(id) ?? []) visit(child.id);
-    };
-    visit(rootTaskId);
-    return result;
+      .where(and(eq(tasks.companyId, companyId), inArray(tasks.id, ids)));
   }
 
   async function wakeDependentsIfUnblocked(companyId: string, completedTaskId: string) {
-    const companyTasks = await db.drizzle
+    const dependentTasks = await db.drizzle
       .select()
       .from(tasks)
-      .where(eq(tasks.companyId, companyId));
-    const statusById = new Map(companyTasks.map((task) => [task.id, task.status]));
-    const dependentTasks = companyTasks.filter((task) =>
-      Array.isArray(task.dependencies) && task.dependencies.includes(completedTaskId),
-    );
+      .where(
+        and(
+          eq(tasks.companyId, companyId),
+          sql`${tasks.dependencies} @> ${JSON.stringify([completedTaskId])}::jsonb`,
+        ),
+      );
+
+    const dependencyIds = [
+      ...new Set(
+        dependentTasks.flatMap((task) =>
+          Array.isArray(task.dependencies) ? task.dependencies : [],
+        ),
+      ),
+    ];
+    const dependencyRows = dependencyIds.length
+      ? await db.drizzle
+          .select({ id: tasks.id, status: tasks.status })
+          .from(tasks)
+          .where(and(eq(tasks.companyId, companyId), inArray(tasks.id, dependencyIds)))
+      : [];
+    const statusById = new Map(dependencyRows.map((task) => [task.id, task.status]));
 
     for (const task of dependentTasks) {
       const dependencies = Array.isArray(task.dependencies) ? task.dependencies : [];
@@ -156,7 +199,7 @@ export function tasksRouter(db: DbInstance): Router {
         .where(eq(agents.id, task.assigneeAgentId));
 
       eventBus.emitEvent({
-        type: 'task.blocker_resolved' as any,
+        type: 'task.blocker_resolved',
         companyId,
         payload: { taskId: task.id, resolvedDependencyId: completedTaskId, assigneeAgentId: task.assigneeAgentId },
         timestamp: new Date().toISOString(),
@@ -442,12 +485,9 @@ export function tasksRouter(db: DbInstance): Router {
                   typeof suggestedTask.description === 'string'
                     ? suggestedTask.description
                     : null,
-                type: typeof suggestedTask.type === 'string' ? suggestedTask.type : 'feature',
+                type: normalizeTaskType(suggestedTask.type),
                 status: 'backlog',
-                priority:
-                  typeof suggestedTask.priority === 'string'
-                    ? suggestedTask.priority
-                    : 'medium',
+                priority: normalizeTaskPriority(suggestedTask.priority),
                 dependencies: [],
                 tags: Array.isArray(suggestedTask.tags) ? suggestedTask.tags : [],
                 taskNumber,
@@ -711,7 +751,7 @@ export function tasksRouter(db: DbInstance): Router {
     }
 
     eventBus.emitEvent({
-      type: 'task.subtree_paused' as any,
+      type: 'task.subtree_paused',
       companyId,
       payload: { rootTaskId: id, affectedTaskIds: subtree.map((task) => task.id) },
       timestamp: now.toISOString(),
@@ -790,7 +830,7 @@ export function tasksRouter(db: DbInstance): Router {
     }
 
     eventBus.emitEvent({
-      type: 'task.subtree_cancelled' as any,
+      type: 'task.subtree_cancelled',
       companyId,
       payload: { rootTaskId: id, affectedTaskIds: taskIds },
       timestamp: now.toISOString(),
@@ -843,7 +883,7 @@ export function tasksRouter(db: DbInstance): Router {
     }
 
     eventBus.emitEvent({
-      type: 'task.subtree_restored' as any,
+      type: 'task.subtree_restored',
       companyId,
       payload: { rootTaskId: id, affectedTaskIds: taskIds },
       timestamp: now.toISOString(),
