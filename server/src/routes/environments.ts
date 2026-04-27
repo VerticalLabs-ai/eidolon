@@ -172,11 +172,13 @@ export function environmentsRouter(db: DbInstance): Router {
       );
     }
 
-    const ownerChecks = [
+    const ownerPredicates = [
       body.agentId ? eq(executionEnvironments.leaseOwnerAgentId, body.agentId) : undefined,
       body.executionId ? eq(executionEnvironments.leaseOwnerExecutionId, body.executionId) : undefined,
     ].filter((check): check is NonNullable<typeof check> => Boolean(check));
-    const ownerPredicate = ownerChecks.length === 2 ? and(...ownerChecks) : or(...ownerChecks);
+    // When both owner identifiers are provided, require both to match the active lease.
+    const ownerPredicate =
+      ownerPredicates.length > 1 ? and(...ownerPredicates) : or(...ownerPredicates);
 
     const [row] = await db.drizzle
       .update(executionEnvironments)

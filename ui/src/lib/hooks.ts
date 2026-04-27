@@ -216,11 +216,6 @@ export function useRespondTaskInteraction(companyId: string) {
 
 export function useTaskSubtreeControls(companyId: string) {
   const qc = useQueryClient();
-  const subtreeActions = {
-    pause: api.pauseTaskSubtree,
-    cancel: api.cancelTaskSubtree,
-    restore: api.restoreTaskSubtree,
-  } as const;
 
   return useMutation({
     mutationFn: (args: {
@@ -228,11 +223,13 @@ export function useTaskSubtreeControls(companyId: string) {
       action: "pause" | "cancel" | "restore";
       reason?: string;
     }) => {
-      const action = subtreeActions[args.action];
       if (args.action === "restore") {
-        return action(companyId, args.taskId);
+        return api.restoreTaskSubtree(companyId, args.taskId);
       }
-      return action(companyId, args.taskId, args.reason);
+      if (args.action === "pause") {
+        return api.pauseTaskSubtree(companyId, args.taskId, args.reason);
+      }
+      return api.cancelTaskSubtree(companyId, args.taskId, args.reason);
     },
     onSuccess: (_data, args) => {
       qc.invalidateQueries({ queryKey: ["tasks", companyId] });

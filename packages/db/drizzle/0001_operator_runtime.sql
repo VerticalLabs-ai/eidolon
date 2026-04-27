@@ -2,8 +2,8 @@ ALTER TABLE "agent_executions" ADD COLUMN "liveness_status" text DEFAULT 'health
 ALTER TABLE "agent_executions" ADD COLUMN "last_useful_action" text;--> statement-breakpoint
 ALTER TABLE "agent_executions" ADD COLUMN "next_action_hint" text;--> statement-breakpoint
 ALTER TABLE "agent_executions" ADD COLUMN "continuation_attempts" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "agent_executions" ADD COLUMN "last_continuation_at" timestamp (3);--> statement-breakpoint
-ALTER TABLE "agent_executions" ADD COLUMN "watchdog_last_checked_at" timestamp (3);--> statement-breakpoint
+ALTER TABLE "agent_executions" ADD COLUMN "last_continuation_at" timestamp (3) with time zone;--> statement-breakpoint
+ALTER TABLE "agent_executions" ADD COLUMN "watchdog_last_checked_at" timestamp (3) with time zone;--> statement-breakpoint
 ALTER TABLE "agent_executions" ADD COLUMN "recovery_task_id" text;--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "default_environment_id" text;--> statement-breakpoint
 CREATE TABLE "task_thread_items" (

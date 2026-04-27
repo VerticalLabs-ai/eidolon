@@ -140,8 +140,12 @@ export function tasksRouter(db: DbInstance): Router {
     return row;
   }
 
-  async function fetchSubtree(companyId: string, rootTaskId: string) {
-    const result = await db.drizzle.execute(sql`
+  async function fetchSubtree(
+    companyId: string,
+    rootTaskId: string,
+    executor: Pick<typeof db.drizzle, 'execute' | 'select'> = db.drizzle,
+  ) {
+    const result = await executor.execute(sql`
       WITH RECURSIVE subtree(id) AS (
         SELECT id
         FROM tasks
@@ -157,7 +161,7 @@ export function tasksRouter(db: DbInstance): Router {
     const ids = rowsFromExecute<{ id: string }>(result).map((row) => row.id);
     if (ids.length === 0) return [];
 
-    return db.drizzle
+    return executor
       .select()
       .from(tasks)
       .where(and(eq(tasks.companyId, companyId), inArray(tasks.id, ids)));
@@ -511,27 +515,29 @@ export function tasksRouter(db: DbInstance): Router {
             const title = typeof suggestedTask.title === 'string' ? suggestedTask.title : null;
             if (!title) continue;
             taskNumber += 1;
+            const taskValues: typeof tasks.$inferInsert = {
+              companyId,
+              parentId: id,
+              title,
+              description:
+                typeof suggestedTask.description === 'string'
+                  ? suggestedTask.description
+                  : null,
+              type: normalizeTaskType(suggestedTask.type),
+              status: 'backlog',
+              priority: normalizeTaskPriority(suggestedTask.priority),
+              dependencies: [],
+              tags: Array.isArray(suggestedTask.tags) ? suggestedTask.tags : [],
+              taskNumber,
+              identifier: `TASK-${taskNumber}`,
+              createdByUserId: req.user?.id ?? null,
+              createdAt: now,
+              updatedAt: now,
+            };
+
             const [created] = await tx
               .insert(tasks)
-              .values({
-                companyId,
-                parentId: id,
-                title,
-                description:
-                  typeof suggestedTask.description === 'string'
-                    ? suggestedTask.description
-                    : null,
-                type: normalizeTaskType(suggestedTask.type),
-                status: 'backlog',
-                priority: normalizeTaskPriority(suggestedTask.priority),
-                dependencies: [],
-                tags: Array.isArray(suggestedTask.tags) ? suggestedTask.tags : [],
-                taskNumber,
-                identifier: `TASK-${taskNumber}`,
-                createdByUserId: req.user?.id ?? null,
-                createdAt: now,
-                updatedAt: now,
-              } as any)
+              .values(taskValues)
               .returning();
             ids.push(created.id);
           }
@@ -749,11 +755,11 @@ export function tasksRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof SubtreeControlBody>;
     const { id, companyId } = routeParams(req);
     await getTaskOrThrow(companyId, id);
-    const subtree = await fetchSubtree(companyId, id);
     const now = new Date();
-    const taskIds = subtree.map((task) => task.id);
-    const inserted = await db.drizzle.transaction(async (tx) => {
-      if (taskIds.length === 0) return [];
+    const { inserted, taskIds } = await db.drizzle.transaction(async (tx) => {
+      const subtree = await fetchSubtree(companyId, id, tx);
+      const taskIds = subtree.map((task) => task.id);
+      if (taskIds.length === 0) return { inserted: [], taskIds };
 
       const existingHolds = await tx
         .select({ taskId: taskHolds.taskId })
@@ -782,7 +788,8 @@ export function tasksRouter(db: DbInstance): Router {
           updatedAt: now,
         }));
 
-      return values.length ? tx.insert(taskHolds).values(values).returning() : [];
+      const inserted = values.length ? await tx.insert(taskHolds).values(values).returning() : [];
+      return { inserted, taskIds };
     });
 
     eventBus.emitEvent({
