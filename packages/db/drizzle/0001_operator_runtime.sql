@@ -56,7 +56,7 @@ CREATE TABLE "execution_environments" (
 	"created_at" timestamp (3) NOT NULL,
 	"updated_at" timestamp (3) NOT NULL
 );--> statement-breakpoint
-ALTER TABLE "agent_executions" ADD CONSTRAINT "agent_executions_recovery_task_id_tasks_id_fk" FOREIGN KEY ("recovery_task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_executions" ADD CONSTRAINT "agent_executions_recovery_task_id_tasks_id_fk" FOREIGN KEY ("recovery_task_id") REFERENCES "public"."tasks"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_task_id_tasks_id_fk" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_author_agent_id_agents_id_fk" FOREIGN KEY ("author_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -64,7 +64,7 @@ ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_related_approv
 ALTER TABLE "task_thread_items" ADD CONSTRAINT "task_thread_items_related_execution_id_agent_executions_id_fk" FOREIGN KEY ("related_execution_id") REFERENCES "public"."agent_executions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_holds" ADD CONSTRAINT "task_holds_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_holds" ADD CONSTRAINT "task_holds_task_id_tasks_id_fk" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_lease_owner_agent_id_agents_id_fk" FOREIGN KEY ("lease_owner_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "execution_environments" ADD CONSTRAINT "execution_environments_lease_owner_execution_id_agent_executions_id_fk" FOREIGN KEY ("lease_owner_execution_id") REFERENCES "public"."agent_executions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agents" ADD CONSTRAINT "agents_default_environment_id_execution_environments_id_fk" FOREIGN KEY ("default_environment_id") REFERENCES "public"."execution_environments"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -73,6 +73,6 @@ CREATE INDEX "idx_task_thread_items_status" ON "task_thread_items" USING btree (
 CREATE UNIQUE INDEX "uq_task_thread_items_idempotency" ON "task_thread_items" USING btree ("company_id","task_id","idempotency_key");--> statement-breakpoint
 CREATE INDEX "idx_task_holds_company_task" ON "task_holds" USING btree ("company_id","task_id");--> statement-breakpoint
 CREATE INDEX "idx_task_holds_active" ON "task_holds" USING btree ("company_id","status");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_task_holds_active_action" ON "task_holds" USING btree ("company_id","task_id","action","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_task_holds_active_action" ON "task_holds" USING btree ("company_id","task_id","action") WHERE "status" = 'active';--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_company" ON "execution_environments" USING btree ("company_id","status");--> statement-breakpoint
 CREATE INDEX "idx_execution_environments_lease" ON "execution_environments" USING btree ("lease_owner_agent_id");

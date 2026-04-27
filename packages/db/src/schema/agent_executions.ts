@@ -40,7 +40,7 @@ export const agentExecutions = pgTable(
     continuationAttempts: integer('continuation_attempts').notNull().default(0),
     lastContinuationAt: timestamp('last_continuation_at', { mode: 'date', precision: 3 }),
     watchdogLastCheckedAt: timestamp('watchdog_last_checked_at', { mode: 'date', precision: 3 }),
-    recoveryTaskId: text('recovery_task_id').references(() => tasks.id),
+    recoveryTaskId: text('recovery_task_id').references(() => tasks.id, { onDelete: 'set null' }),
     log: jsonb('log')
       .notNull()
       .$type<

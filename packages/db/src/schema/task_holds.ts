@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { pgTable, text, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
@@ -33,11 +34,8 @@ export const taskHolds = pgTable(
   (table) => [
     index('idx_task_holds_company_task').on(table.companyId, table.taskId),
     index('idx_task_holds_active').on(table.companyId, table.status),
-    uniqueIndex('uq_task_holds_active_action').on(
-      table.companyId,
-      table.taskId,
-      table.action,
-      table.status,
-    ),
+    uniqueIndex('uq_task_holds_active_action')
+      .on(table.companyId, table.taskId, table.action)
+      .where(sql`${table.status} = 'active'`),
   ],
 );

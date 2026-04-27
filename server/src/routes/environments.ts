@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { validate } from '../middleware/validate.js';
@@ -64,11 +64,11 @@ export function environmentsRouter(db: DbInstance): Router {
         metadata: body.metadata,
         createdAt: now,
         updatedAt: now,
-      } as any)
+      })
       .returning();
 
     eventBus.emitEvent({
-      type: 'environment.created' as any,
+      type: 'environment.created',
       companyId,
       payload: { environment: row },
       timestamp: now.toISOString(),
@@ -123,35 +123,6 @@ export function environmentsRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     const now = new Date();
 
-    const [environment] = await db.drizzle
-      .select()
-      .from(executionEnvironments)
-      .where(
-        and(
-          eq(executionEnvironments.id, id),
-          eq(executionEnvironments.companyId, companyId),
-        ),
-      )
-      .limit(1);
-
-    if (!environment) {
-      throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
-    }
-
-    const agentMatches =
-      !environment.leaseOwnerAgentId || body.agentId === environment.leaseOwnerAgentId;
-    const executionMatches =
-      !environment.leaseOwnerExecutionId ||
-      body.executionId === environment.leaseOwnerExecutionId;
-
-    if (environment.status === 'leased' && (!agentMatches || !executionMatches)) {
-      throw new AppError(
-        409,
-        'ENVIRONMENT_LEASE_OWNER_MISMATCH',
-        `Environment ${id} can only be released by its lease owner`,
-      );
-    }
-
     const [row] = await db.drizzle
       .update(executionEnvironments)
       .set({
@@ -165,9 +136,46 @@ export function environmentsRouter(db: DbInstance): Router {
         and(
           eq(executionEnvironments.id, id),
           eq(executionEnvironments.companyId, companyId),
+          sql`(
+            ${executionEnvironments.status} = 'available'
+            OR (
+              ${executionEnvironments.status} = 'leased'
+              AND (
+                ${executionEnvironments.leaseOwnerAgentId} IS NULL
+                OR ${executionEnvironments.leaseOwnerAgentId} = ${body.agentId ?? null}
+              )
+              AND (
+                ${executionEnvironments.leaseOwnerExecutionId} IS NULL
+                OR ${executionEnvironments.leaseOwnerExecutionId} = ${body.executionId ?? null}
+              )
+            )
+          )`,
         ),
       )
       .returning();
+
+    if (!row) {
+      const [environment] = await db.drizzle
+        .select({ id: executionEnvironments.id })
+        .from(executionEnvironments)
+        .where(
+          and(
+            eq(executionEnvironments.id, id),
+            eq(executionEnvironments.companyId, companyId),
+          ),
+        )
+        .limit(1);
+
+      if (!environment) {
+        throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
+      }
+
+      throw new AppError(
+        409,
+        'ENVIRONMENT_LEASE_OWNER_MISMATCH',
+        `Environment ${id} can only be released by its lease owner`,
+      );
+    }
 
     res.json({ data: row });
   });

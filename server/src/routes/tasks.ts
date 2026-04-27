@@ -419,34 +419,50 @@ export function tasksRouter(db: DbInstance): Router {
         ? ((interaction.payload as any).tasks as Array<Record<string, unknown>>)
         : [];
 
-      for (const suggestedTask of suggested) {
-        const title = typeof suggestedTask.title === 'string' ? suggestedTask.title : null;
-        if (!title) continue;
-        const [{ maxNum }] = await db.drizzle
-          .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
-          .from(tasks)
-          .where(eq(tasks.companyId, companyId));
-        const taskNumber = Number(maxNum) + 1;
-        const [created] = await db.drizzle
-          .insert(tasks)
-          .values({
-            companyId,
-            parentId: id,
-            title,
-            description: typeof suggestedTask.description === 'string' ? suggestedTask.description : null,
-            type: typeof suggestedTask.type === 'string' ? suggestedTask.type : 'feature',
-            status: 'backlog',
-            priority: typeof suggestedTask.priority === 'string' ? suggestedTask.priority : 'medium',
-            dependencies: [],
-            tags: Array.isArray(suggestedTask.tags) ? suggestedTask.tags : [],
-            taskNumber,
-            identifier: `TASK-${taskNumber}`,
-            createdByUserId: req.user?.id ?? null,
-            createdAt: now,
-            updatedAt: now,
-          } as any)
-          .returning();
-        createdTaskIds.push(created.id);
+      if (suggested.length > 0) {
+        const newTaskIds = await db.drizzle.transaction(async (tx) => {
+          const [{ maxNum }] = await tx
+            .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
+            .from(tasks)
+            .where(eq(tasks.companyId, companyId));
+          let taskNumber = Number(maxNum);
+          const ids: string[] = [];
+
+          for (const suggestedTask of suggested) {
+            const title = typeof suggestedTask.title === 'string' ? suggestedTask.title : null;
+            if (!title) continue;
+            taskNumber += 1;
+            const [created] = await tx
+              .insert(tasks)
+              .values({
+                companyId,
+                parentId: id,
+                title,
+                description:
+                  typeof suggestedTask.description === 'string'
+                    ? suggestedTask.description
+                    : null,
+                type: typeof suggestedTask.type === 'string' ? suggestedTask.type : 'feature',
+                status: 'backlog',
+                priority:
+                  typeof suggestedTask.priority === 'string'
+                    ? suggestedTask.priority
+                    : 'medium',
+                dependencies: [],
+                tags: Array.isArray(suggestedTask.tags) ? suggestedTask.tags : [],
+                taskNumber,
+                identifier: `TASK-${taskNumber}`,
+                createdByUserId: req.user?.id ?? null,
+                createdAt: now,
+                updatedAt: now,
+              } as any)
+              .returning();
+            ids.push(created.id);
+          }
+
+          return ids;
+        });
+        createdTaskIds.push(...newTaskIds);
       }
       payload.createdTaskIds = createdTaskIds;
     }
@@ -714,9 +730,44 @@ export function tasksRouter(db: DbInstance): Router {
     const taskIds = subtree.map((task) => task.id);
 
     for (const task of subtree) {
-      await db.drizzle
-        .insert(taskHolds)
-        .values({
+      const holdValues = {
+        id: randomUUID(),
+        companyId,
+        taskId: task.id,
+        action: 'cancel' as const,
+        status: 'active' as const,
+        previousStatus: task.status,
+        reason: body.reason ?? null,
+        createdByUserId: req.user?.id ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const [existingHold] = await db.drizzle
+        .select({ id: taskHolds.id })
+        .from(taskHolds)
+        .where(
+          and(
+            eq(taskHolds.companyId, companyId),
+            eq(taskHolds.taskId, task.id),
+            eq(taskHolds.action, 'cancel'),
+            eq(taskHolds.status, 'active'),
+          ),
+        )
+        .limit(1);
+
+      if (existingHold) {
+        await db.drizzle
+          .update(taskHolds)
+          .set({
+            previousStatus: holdValues.previousStatus,
+            reason: holdValues.reason,
+            createdByUserId: holdValues.createdByUserId,
+            updatedAt: now,
+          })
+          .where(eq(taskHolds.id, existingHold.id));
+      } else {
+        await db.drizzle.insert(taskHolds).values({
           id: randomUUID(),
           companyId,
           taskId: task.id,
@@ -727,8 +778,8 @@ export function tasksRouter(db: DbInstance): Router {
           createdByUserId: req.user?.id ?? null,
           createdAt: now,
           updatedAt: now,
-        } as any)
-        .onConflictDoNothing();
+        } as any);
+      }
     }
 
     if (taskIds.length > 0) {

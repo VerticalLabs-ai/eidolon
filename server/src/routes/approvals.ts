@@ -75,9 +75,7 @@ export function approvalsRouter(db: DbInstance): Router {
     const now = new Date();
     const userId = req.user?.id ?? null;
 
-    let row: typeof approvals.$inferSelect | undefined;
-
-    await db.drizzle.transaction(async (tx) => {
+    const row = await db.drizzle.transaction(async (tx) => {
       const [created] = await tx
         .insert(approvals)
         .values({
@@ -113,12 +111,8 @@ export function approvalsRouter(db: DbInstance): Router {
         } as any);
       }
 
-      row = created;
+      return created;
     });
-
-    if (!row) {
-      throw new AppError(500, 'APPROVAL_CREATE_FAILED', 'Failed to create approval');
-    }
 
     eventBus.emitEvent({
       type: 'approval.created' as any,
@@ -177,9 +171,7 @@ export function approvalsRouter(db: DbInstance): Router {
       );
     }
 
-    let row: typeof approvals.$inferSelect | undefined;
-
-    await db.drizzle.transaction(async (tx) => {
+    const row = await db.drizzle.transaction(async (tx) => {
       const [updated] = await tx
         .update(approvals)
         .set({
@@ -218,12 +210,8 @@ export function approvalsRouter(db: DbInstance): Router {
         } as any);
       }
 
-      row = updated;
+      return updated;
     });
-
-    if (!row) {
-      throw new AppError(500, 'APPROVAL_DECISION_FAILED', 'Failed to decide approval');
-    }
 
     eventBus.emitEvent({
       type: 'approval.decided' as any,

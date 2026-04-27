@@ -166,46 +166,70 @@ export class CollaborationService {
     const id = randomUUID();
     const now = new Date();
 
-    // Create the escalation collaboration
-    const [collab] = await this.db.drizzle
-      .insert(agentCollaborations)
-      .values({
-        id,
+    const collab = await this.db.drizzle.transaction(async (tx) => {
+      const [existingHold] = await tx
+        .select({ id: taskHolds.id })
+        .from(taskHolds)
+        .where(
+          and(
+            eq(taskHolds.companyId, companyId),
+            eq(taskHolds.taskId, taskId),
+            eq(taskHolds.action, 'pause'),
+            eq(taskHolds.status, 'active'),
+          ),
+        )
+        .limit(1);
+
+      if (existingHold) {
+        throw new Error(`Task ${taskId} already has an active pause hold`);
+      }
+
+      const [createdCollab] = await tx
+        .insert(agentCollaborations)
+        .values({
+          id,
+          companyId,
+          type: 'escalation',
+          fromAgentId: agentId,
+          toAgentId: agent.reportsTo!,
+          taskId,
+          status: 'pending',
+          requestContent: reason,
+          priority: 'high',
+          createdAt: now,
+        })
+        .returning();
+
+      await tx.insert(taskHolds).values({
+        id: randomUUID(),
         companyId,
-        type: 'escalation',
-        fromAgentId: agentId,
-        toAgentId: agent.reportsTo,
         taskId,
-        status: 'pending',
-        requestContent: reason,
-        priority: 'high',
+        action: 'pause',
+        status: 'active',
+        previousStatus: task.status,
+        reason,
         createdAt: now,
-      })
-      .returning();
+        updatedAt: now,
+      });
 
-    await this.db.drizzle.insert(taskHolds).values({
-      id: randomUUID(),
-      companyId,
-      taskId,
-      action: 'pause',
-      status: 'active',
-      previousStatus: task.status,
-      reason,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoNothing();
+      await tx
+        .insert(taskThreadItems)
+        .values({
+          id: randomUUID(),
+          companyId,
+          taskId,
+          kind: 'comment',
+          authorAgentId: agentId,
+          content: `Escalated and paused: ${reason}`,
+          payload: { collaborationId: id, reason },
+          status: 'answered',
+          idempotencyKey: `escalation:${id}`,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing();
 
-    await this.db.drizzle.insert(taskThreadItems).values({
-      id: randomUUID(),
-      companyId,
-      taskId,
-      kind: 'comment',
-      authorAgentId: agentId,
-      content: `Escalated and paused: ${reason}`,
-      payload: { collaborationId: id, reason },
-      status: 'answered',
-      createdAt: now,
-      updatedAt: now,
+      return createdCollab;
     });
 
     eventBus.emitEvent({

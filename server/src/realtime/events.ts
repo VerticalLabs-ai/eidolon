@@ -37,6 +37,13 @@ export interface ExecutionEvent extends ServerEvent {
     | 'execution.recovery_created';
 }
 
+export interface EnvironmentEvent extends ServerEvent {
+  type:
+    | 'environment.created'
+    | 'environment.updated'
+    | 'environment.deleted';
+}
+
 export interface TaskEvent extends ServerEvent {
   type:
     | 'task.created'
@@ -97,6 +104,7 @@ export type EidolonEvent =
   | BudgetEvent
   | WorkflowEvent
   | ActivityEvent
+  | EnvironmentEvent
   | ExecutionEvent;
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ export const executionEnvironments = pgTable(
       .$defaultFn(() => randomUUID()),
     companyId: text('company_id')
       .notNull()
-      .references(() => companies.id),
+      .references(() => companies.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     provider: text('provider', { enum: ['local'] }).notNull().default('local'),
     status: text('status', {

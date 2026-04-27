@@ -1141,9 +1141,8 @@ export function useCreateApproval(companyId: string) {
       api.createApproval(companyId, data),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["approvals", companyId] });
-      const approval = unwrap<api.Approval>(data);
-      if (approval.taskId) {
-        qc.invalidateQueries({ queryKey: ["tasks", companyId, approval.taskId, "thread"] });
+      if (data.taskId) {
+        qc.invalidateQueries({ queryKey: ["tasks", companyId, data.taskId, "thread"] });
       }
     },
   });

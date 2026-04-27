@@ -156,44 +156,48 @@ export class HeartbeatScheduler {
       const startedMs = new Date(row.startedAt).getTime();
       if (nowMs - startedMs <= stalledAfterMs) continue;
 
-      const [{ maxNum }] = await this.db.drizzle
-        .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
-        .from(tasks)
-        .where(eq(tasks.companyId, row.companyId));
+      const recoveryTask = await this.db.drizzle.transaction(async (tx) => {
+        const [{ maxNum }] = await tx
+          .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
+          .from(tasks)
+          .where(eq(tasks.companyId, row.companyId));
 
-      const taskNumber = Number(maxNum) + 1;
-      const [recoveryTask] = await this.db.drizzle
-        .insert(tasks)
-        .values({
-          id: randomUUID(),
-          companyId: row.companyId,
-          parentId: row.taskId ?? null,
-          title: `Recover stalled execution ${row.executionId.slice(0, 8)}`,
-          description:
-            `Execution ${row.executionId} appears stalled. Review the linked execution evidence before retrying. ` +
-            'Raw provider errors are intentionally redacted from this recovery task.',
-          type: 'chore',
-          status: 'todo',
-          priority: 'high',
-          assigneeAgentId: row.agentId,
-          taskNumber,
-          identifier: `TASK-${taskNumber}`,
-          dependencies: row.taskId ? [row.taskId] : [],
-          tags: ['recovery', 'liveness'],
-          createdAt: now,
-          updatedAt: now,
-        } as any)
-        .returning();
+        const taskNumber = Number(maxNum) + 1;
+        const [created] = await tx
+          .insert(tasks)
+          .values({
+            id: randomUUID(),
+            companyId: row.companyId,
+            parentId: row.taskId ?? null,
+            title: `Recover stalled execution ${row.executionId.slice(0, 8)}`,
+            description:
+              `Execution ${row.executionId} appears stalled. Review the linked execution evidence before retrying. ` +
+              'Raw provider errors are intentionally redacted from this recovery task.',
+            type: 'chore',
+            status: 'todo',
+            priority: 'high',
+            assigneeAgentId: row.agentId,
+            taskNumber,
+            identifier: `TASK-${taskNumber}`,
+            dependencies: row.taskId ? [row.taskId] : [],
+            tags: ['recovery', 'liveness'],
+            createdAt: now,
+            updatedAt: now,
+          } as any)
+          .returning();
 
-      await this.db.drizzle
-        .update(agentExecutions)
-        .set({
-          livenessStatus: 'recovering',
-          nextActionHint: 'review_recovery_task',
-          watchdogLastCheckedAt: now,
-          recoveryTaskId: recoveryTask.id,
-        } as any)
-        .where(eq(agentExecutions.id, row.executionId));
+        await tx
+          .update(agentExecutions)
+          .set({
+            livenessStatus: 'recovering',
+            nextActionHint: 'review_recovery_task',
+            watchdogLastCheckedAt: now,
+            recoveryTaskId: created.id,
+          } as any)
+          .where(eq(agentExecutions.id, row.executionId));
+
+        return created;
+      });
 
       eventBus.emitEvent({
         type: 'execution.recovery_created',

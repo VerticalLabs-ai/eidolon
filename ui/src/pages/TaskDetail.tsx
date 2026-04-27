@@ -75,6 +75,7 @@ export function TaskDetail() {
   const subtreeControls = useTaskSubtreeControls(companyId!);
   const decideApproval = useDecideApproval(companyId!);
   const [comment, setComment] = useState("");
+  const [formAnswers, setFormAnswers] = useState<Record<string, string>>({});
 
   const sortedThread = useMemo(
     () =>
@@ -108,6 +109,7 @@ export function TaskDetail() {
       { onSuccess: () => setComment("") },
     );
   };
+  const dependencies = task.dependencies ?? [];
 
   return (
     <div className="mx-auto max-w-5xl p-6 lg:p-8 space-y-6">
@@ -147,7 +149,8 @@ export function TaskDetail() {
               </h3>
               <div className="flex gap-2">
                 <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05]"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={subtreeControls.isPending}
                   onClick={() =>
                     subtreeControls.mutate({
                       taskId: task.id,
@@ -157,17 +160,19 @@ export function TaskDetail() {
                   }
                 >
                   <Pause className="h-3.5 w-3.5" />
-                  Pause subtree
+                  {subtreeControls.isPending ? "Working..." : "Pause subtree"}
                 </button>
                 <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05]"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-text-secondary hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={subtreeControls.isPending}
                   onClick={() => subtreeControls.mutate({ taskId: task.id, action: "restore" })}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  Restore
+                  {subtreeControls.isPending ? "Working..." : "Restore"}
                 </button>
                 <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-error hover:bg-error/[0.08]"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-error hover:bg-error/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={subtreeControls.isPending}
                   onClick={() =>
                     subtreeControls.mutate({
                       taskId: task.id,
@@ -177,7 +182,7 @@ export function TaskDetail() {
                   }
                 >
                   <XCircle className="h-3.5 w-3.5" />
-                  Cancel subtree
+                  {subtreeControls.isPending ? "Working..." : "Cancel subtree"}
                 </button>
               </div>
             </div>
@@ -274,34 +279,63 @@ export function TaskDetail() {
                           </div>
                         )}
                         {item.kind === "interaction" && item.status === "pending" && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() =>
-                                respondInteraction.mutate({
-                                  taskId: task.id,
-                                  interactionId: item.id,
-                                  action: item.interactionType === "form" ? "answer" : "accept",
-                                  note: "Accepted from task thread",
-                                })
-                              }
-                            >
-                              {item.interactionType === "form" ? "Submit" : "Accept"}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={() =>
-                                respondInteraction.mutate({
-                                  taskId: task.id,
-                                  interactionId: item.id,
-                                  action: "reject",
-                                  note: "Rejected from task thread",
-                                })
-                              }
-                            >
-                              Reject
-                            </Button>
+                          <div className="mt-3 space-y-3">
+                            {item.interactionType === "form" && (
+                              <Textarea
+                                label="Answer"
+                                rows={3}
+                                value={formAnswers[item.id] ?? ""}
+                                onChange={(event) =>
+                                  setFormAnswers((current) => ({
+                                    ...current,
+                                    [item.id]: event.target.value,
+                                  }))
+                                }
+                                placeholder="Answer the agent's question..."
+                              />
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                disabled={
+                                  respondInteraction.isPending ||
+                                  (item.interactionType === "form" &&
+                                    !(formAnswers[item.id] ?? "").trim())
+                                }
+                                onClick={() =>
+                                  respondInteraction.mutate({
+                                    taskId: task.id,
+                                    interactionId: item.id,
+                                    action: item.interactionType === "form" ? "answer" : "accept",
+                                    note:
+                                      item.interactionType === "form"
+                                        ? "Answered from task thread"
+                                        : "Accepted from task thread",
+                                    answers:
+                                      item.interactionType === "form"
+                                        ? { response: formAnswers[item.id]?.trim() }
+                                        : undefined,
+                                  })
+                                }
+                              >
+                                {item.interactionType === "form" ? "Submit" : "Accept"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={respondInteraction.isPending}
+                                onClick={() =>
+                                  respondInteraction.mutate({
+                                    taskId: task.id,
+                                    interactionId: item.id,
+                                    action: "reject",
+                                    note: "Rejected from task thread",
+                                  })
+                                }
+                              >
+                                Reject
+                              </Button>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -365,11 +399,11 @@ export function TaskDetail() {
               </h3>
             </div>
             <div className="p-5">
-              {task.dependencies.length === 0 ? (
+              {dependencies.length === 0 ? (
                 <p className="text-sm text-text-secondary">No blockers.</p>
               ) : (
                 <div className="space-y-3">
-                  {task.dependencies.map((depId) => (
+                  {dependencies.map((depId) => (
                     <div
                       key={depId}
                       className="flex items-center gap-3 rounded-lg glass-raised p-3"
