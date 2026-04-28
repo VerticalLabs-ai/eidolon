@@ -15,6 +15,13 @@
       "when": 1777317600000,
       "tag": "0001_operator_runtime",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777380000000,
+      "tag": "0002_symphony_runtime_hardening",
+      "breakpoints": true
     }
   ]
 }

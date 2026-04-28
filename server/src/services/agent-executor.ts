@@ -10,6 +10,7 @@ import { decrypt } from './crypto.js';
 import { BudgetEnforcer } from './budget-enforcer.js';
 import { KnowledgeService } from './knowledge.js';
 import { MemoryService } from './memory.js';
+import { retryDueAt } from './execution-retry.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
@@ -173,6 +174,8 @@ export class AgentExecutor {
       startedAt: now,
       modelUsed: agent.model,
       provider: providerName,
+      executionMode: 'single',
+      lastEventAt: now,
       livenessStatus: 'healthy',
       lastUsefulAction: 'execution_started',
       nextActionHint: 'await_provider_response',
@@ -231,6 +234,12 @@ export class AgentExecutor {
       // Provider call failed -- record error and return
       const errorMsg = providerError instanceof Error ? providerError.message : String(providerError);
       const failedAt = new Date();
+      const [currentExecution] = await this.db.drizzle
+        .select({ retryAttempt: agentExecutions.retryAttempt })
+        .from(agentExecutions)
+        .where(eq(agentExecutions.id, execId))
+        .limit(1);
+      const nextAttempt = (currentExecution?.retryAttempt ?? 0) + 1;
 
       await this.db.drizzle
         .update(agentExecutions)
@@ -238,6 +247,11 @@ export class AgentExecutor {
           status: 'failed',
           completedAt: failedAt,
           error: errorMsg,
+          retryAttempt: nextAttempt,
+          retryStatus: 'scheduled',
+          retryDueAt: retryDueAt(failedAt, nextAttempt),
+          failureCategory: 'provider_error',
+          lastEventAt: failedAt,
           livenessStatus: 'stalled',
           lastUsefulAction: 'provider_error_recorded',
           nextActionHint: 'operator_review',
@@ -295,6 +309,10 @@ export class AgentExecutor {
         modelUsed: completion.model,
         provider: completion.provider,
         summary,
+        retryStatus: 'none',
+        retryDueAt: null,
+        failureCategory: null,
+        lastEventAt: completedAt,
         livenessStatus: 'healthy',
         lastUsefulAction: 'provider_response_recorded',
         nextActionHint: 'review_task_output',

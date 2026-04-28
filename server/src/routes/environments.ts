@@ -1,7 +1,10 @@
 import { Router } from 'express';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, exists, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
@@ -18,12 +21,12 @@ const CreateEnvironmentBody = z.object({
 
 const LeaseEnvironmentBody = z.object({
   agentId: z.string().uuid(),
-  executionId: z.string().uuid().optional(),
+  executionId: z.string().uuid(),
 });
 
 const ReleaseEnvironmentBody = z.object({
-  agentId: z.string().uuid().optional(),
-  executionId: z.string().uuid().optional(),
+  agentId: z.string().uuid(),
+  executionId: z.string().uuid(),
 });
 
 const AssignEnvironmentBody = z.object({
@@ -35,9 +38,98 @@ const EnvironmentListQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+export function workspaceRootForCompany(companyId: string): string {
+  const configuredRoot = process.env.EIDOLON_WORKSPACE_ROOT ?? path.join(process.cwd(), '.eidolon', 'workspaces');
+  return path.resolve(expandHome(configuredRoot), companyId);
+}
+
+function expandHome(value: string): string {
+  if (value === '~') return os.homedir();
+  if (value.startsWith('~/')) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.stat(targetPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function realpathForContainment(targetPath: string): Promise<string> {
+  let existingPath = targetPath;
+  const missingSegments: string[] = [];
+
+  while (!(await pathExists(existingPath))) {
+    const parentPath = path.dirname(existingPath);
+    if (parentPath === existingPath) break;
+
+    missingSegments.unshift(path.basename(existingPath));
+    existingPath = parentPath;
+  }
+
+  const realExistingPath = await fs.realpath(existingPath);
+  return missingSegments.length > 0
+    ? path.resolve(realExistingPath, ...missingSegments)
+    : realExistingPath;
+}
+
+function assertWorkspacePathInsideRoot(realRoot: string, realWorkspacePath: string): void {
+  const relativeToRoot = path.relative(realRoot, realWorkspacePath);
+
+  if (
+    relativeToRoot === '..' ||
+    relativeToRoot.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeToRoot)
+  ) {
+    throw new AppError(
+      400,
+      'WORKSPACE_PATH_OUTSIDE_ROOT',
+      'workspacePath must be within the workspace root',
+    );
+  }
+}
+
+async function revalidateWorkspacePathContainment(
+  companyId: string,
+  workspacePath: string | null,
+): Promise<string | null> {
+  if (!workspacePath) return null;
+
+  const root = workspaceRootForCompany(companyId);
+  await fs.mkdir(root, { recursive: true });
+
+  const realRoot = await fs.realpath(root);
+  const realWorkspacePath = await realpathForContainment(workspacePath);
+  assertWorkspacePathInsideRoot(realRoot, realWorkspacePath);
+  return realWorkspacePath;
+}
+
+async function normalizeWorkspacePath(companyId: string, workspacePath?: string): Promise<string | null> {
+  if (!workspacePath) return null;
+  if (workspacePath.includes('\0')) {
+    throw new AppError(400, 'INVALID_WORKSPACE_PATH', 'workspacePath cannot contain null bytes');
+  }
+
+  const root = workspaceRootForCompany(companyId);
+  const expanded = expandHome(workspacePath);
+  const absolutePath = path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(root, expanded);
+  await fs.mkdir(root, { recursive: true });
+
+  const realRoot = await fs.realpath(root);
+  const realAbsolutePath = await realpathForContainment(absolutePath);
+  assertWorkspacePathInsideRoot(realRoot, realAbsolutePath);
+  return realAbsolutePath;
+}
+
 export function environmentsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { executionEnvironments, agents } = db.schema;
+  const { executionEnvironments, agents, agentExecutions } = db.schema;
 
   router.get('/', validate(EnvironmentListQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
@@ -71,7 +163,7 @@ export function environmentsRouter(db: DbInstance): Router {
         name: body.name,
         provider: 'local',
         status: 'available',
-        workspacePath: body.workspacePath ?? null,
+        workspacePath: await normalizeWorkspacePath(companyId, body.workspacePath),
         branchName: body.branchName ?? null,
         runtimeUrl: body.runtimeUrl ?? null,
         metadata: body.metadata,
@@ -95,30 +187,59 @@ export function environmentsRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     const now = new Date();
 
-    const [row] = await db.drizzle
-      .update(executionEnvironments)
-      .set({
-        status: 'leased',
-        leaseOwnerAgentId: body.agentId,
-        leaseOwnerExecutionId: body.executionId ?? null,
-        leasedAt: now,
-        releasedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(executionEnvironments.id, id),
-          eq(executionEnvironments.companyId, companyId),
-          eq(executionEnvironments.status, 'available'),
-          sql`EXISTS (
-            SELECT 1
-            FROM agents
-            WHERE agents.id = ${body.agentId}
-              AND agents.company_id = ${companyId}
-          )`,
-        ),
-      )
-      .returning();
+    const row = await db.drizzle.transaction(async (tx) => {
+      const [leased] = await tx
+        .update(executionEnvironments)
+        .set({
+          status: 'leased',
+          leaseOwnerAgentId: body.agentId,
+          leaseOwnerExecutionId: body.executionId,
+          leasedAt: now,
+          releasedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(executionEnvironments.id, id),
+            eq(executionEnvironments.companyId, companyId),
+            eq(executionEnvironments.status, 'available'),
+            exists(
+              tx
+                .select({ id: agents.id })
+                .from(agents)
+                .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId))),
+            ),
+            exists(
+              tx
+                .select({ id: agentExecutions.id })
+                .from(agentExecutions)
+                .where(
+                  and(
+                    eq(agentExecutions.id, body.executionId),
+                    eq(agentExecutions.agentId, body.agentId),
+                    eq(agentExecutions.companyId, companyId),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .returning();
+
+      if (leased) {
+        await tx
+          .update(agentExecutions)
+          .set({ environmentId: leased.id, lastEventAt: now })
+          .where(
+            and(
+              eq(agentExecutions.id, body.executionId),
+              eq(agentExecutions.companyId, companyId),
+              eq(agentExecutions.agentId, body.agentId),
+            ),
+          );
+      }
+
+      return leased ?? null;
+    });
 
     if (!row) {
       const [agent] = await db.drizzle
@@ -146,17 +267,38 @@ export function environmentsRouter(db: DbInstance): Router {
         throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
       }
 
+      const [execution] = await db.drizzle
+        .select({ id: agentExecutions.id })
+        .from(agentExecutions)
+        .where(
+          and(
+            eq(agentExecutions.id, body.executionId),
+            eq(agentExecutions.companyId, companyId),
+            eq(agentExecutions.agentId, body.agentId),
+          ),
+        )
+        .limit(1);
+
+      if (!execution) {
+        throw new AppError(404, 'EXECUTION_NOT_FOUND', `Execution ${body.executionId} not found for agent ${body.agentId}`);
+      }
+
       throw new AppError(409, 'ENVIRONMENT_NOT_AVAILABLE', `Environment ${id} is not available`);
     }
+
+    const safeRow = {
+      ...row,
+      workspacePath: await revalidateWorkspacePathContainment(companyId, row.workspacePath),
+    };
 
     eventBus.emitEvent({
       type: 'environment.leased',
       companyId,
-      payload: { environment: row },
+      payload: { environment: safeRow },
       timestamp: now.toISOString(),
     });
 
-    res.json({ data: row });
+    res.json({ data: safeRow });
   });
 
   router.post('/:id/release', validate(ReleaseEnvironmentBody), async (req, res) => {
@@ -164,40 +306,42 @@ export function environmentsRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     const now = new Date();
 
-    if (!body.agentId && !body.executionId) {
-      throw new AppError(
-        400,
-        'ENVIRONMENT_RELEASE_OWNER_REQUIRED',
-        'Releasing an environment requires an agentId or executionId',
-      );
-    }
+    const row = await db.drizzle.transaction(async (tx) => {
+      const [released] = await tx
+        .update(executionEnvironments)
+        .set({
+          status: 'available',
+          leaseOwnerAgentId: null,
+          leaseOwnerExecutionId: null,
+          releasedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(executionEnvironments.id, id),
+            eq(executionEnvironments.companyId, companyId),
+            eq(executionEnvironments.status, 'leased'),
+            eq(executionEnvironments.leaseOwnerAgentId, body.agentId),
+            eq(executionEnvironments.leaseOwnerExecutionId, body.executionId),
+          ),
+        )
+        .returning();
 
-    const ownerPredicates = [
-      body.agentId ? eq(executionEnvironments.leaseOwnerAgentId, body.agentId) : undefined,
-      body.executionId ? eq(executionEnvironments.leaseOwnerExecutionId, body.executionId) : undefined,
-    ].filter((check): check is NonNullable<typeof check> => Boolean(check));
-    // When both owner identifiers are provided, require both to match the active lease.
-    const ownerPredicate =
-      ownerPredicates.length > 1 ? and(...ownerPredicates) : ownerPredicates[0]!;
+      if (released) {
+        await tx
+          .update(agentExecutions)
+          .set({ environmentId: null, lastEventAt: now })
+          .where(
+            and(
+              eq(agentExecutions.id, body.executionId),
+              eq(agentExecutions.companyId, companyId),
+              eq(agentExecutions.agentId, body.agentId),
+            ),
+          );
+      }
 
-    const [row] = await db.drizzle
-      .update(executionEnvironments)
-      .set({
-        status: 'available',
-        leaseOwnerAgentId: null,
-        leaseOwnerExecutionId: null,
-        releasedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(executionEnvironments.id, id),
-          eq(executionEnvironments.companyId, companyId),
-          eq(executionEnvironments.status, 'leased'),
-          ownerPredicate,
-        ),
-      )
-      .returning();
+      return released ?? null;
+    });
 
     if (!row) {
       const [environment] = await db.drizzle
@@ -222,14 +366,19 @@ export function environmentsRouter(db: DbInstance): Router {
       );
     }
 
+    const safeRow = {
+      ...row,
+      workspacePath: await revalidateWorkspacePathContainment(companyId, row.workspacePath),
+    };
+
     eventBus.emitEvent({
       type: 'environment.released',
       companyId,
-      payload: { environment: row },
+      payload: { environment: safeRow },
       timestamp: now.toISOString(),
     });
 
-    res.json({ data: row });
+    res.json({ data: safeRow });
   });
 
   router.post('/:id/assign', validate(AssignEnvironmentBody), async (req, res) => {

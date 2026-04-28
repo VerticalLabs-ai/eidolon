@@ -1,8 +1,10 @@
-import { eq, and, sql, inArray, isNull } from 'drizzle-orm';
+import { eq, and, sql, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import logger from '../utils/logger.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
+import { retryDueAt } from './execution-retry.js';
+import { TaskAssigner, type AgentRow } from './task-assigner.js';
 
 const RECOVERY_TASK_CREATE_RETRIES = 3;
 
@@ -30,8 +32,11 @@ export class HeartbeatScheduler {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
   private tickIntervalMs = 30_000; // Check every 30 seconds
+  private readonly taskAssigner: TaskAssigner;
 
-  constructor(private db: DbInstance) {}
+  constructor(private db: DbInstance) {
+    this.taskAssigner = new TaskAssigner(db);
+  }
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -55,7 +60,7 @@ export class HeartbeatScheduler {
 
   /** Allow external callers (e.g. the /wake endpoint) to trigger a single tick for one agent. */
   async wakeAgent(agentId: string): Promise<{ assigned: boolean; taskId?: string }> {
-    const { agents, tasks } = this.db.schema;
+    const { agents } = this.db.schema;
 
     const [agent] = await this.db.drizzle
       .select()
@@ -77,7 +82,7 @@ export class HeartbeatScheduler {
       return { assigned: false };
     }
 
-    const result = await this.tryAssignTask(agent, agents, tasks);
+    const result = await this.tryAssignTask(agent);
     return result;
   }
 
@@ -131,7 +136,7 @@ export class HeartbeatScheduler {
 
         if (now - lastBeat < intervalMs) continue;
 
-        await this.tryAssignTask(agent, agents, tasks);
+        await this.tryAssignTask(agent);
       }
     } catch (err) {
       logger.error({ err }, 'Heartbeat tick error');
@@ -152,6 +157,7 @@ export class HeartbeatScheduler {
         timeoutSeconds: agents.executionTimeoutSeconds,
         recoveryTaskId: agentExecutions.recoveryTaskId,
         livenessStatus: agentExecutions.livenessStatus,
+        retryAttempt: agentExecutions.retryAttempt,
       })
       .from(agentExecutions)
       .innerJoin(agents, eq(agentExecutions.agentId, agents.id))
@@ -175,6 +181,11 @@ export class HeartbeatScheduler {
               .update(agentExecutions)
               .set({
                 livenessStatus: 'recovering',
+                retryAttempt: row.retryAttempt + 1,
+                retryStatus: 'scheduled',
+                retryDueAt: retryDueAt(now, row.retryAttempt + 1),
+                failureCategory: 'execution_stalled',
+                lastEventAt: now,
                 nextActionHint: 'review_recovery_task',
                 watchdogLastCheckedAt: now,
               })
@@ -262,6 +273,7 @@ export class HeartbeatScheduler {
     tasks: typeof this.db.schema.tasks,
     nowMs: number,
   ): Promise<void> {
+    const { agentExecutions } = this.db.schema;
     // Find in-progress tasks whose assigned agent has a timeout configured
     const inProgressTasks = await this.db.drizzle
       .select({
@@ -285,6 +297,21 @@ export class HeartbeatScheduler {
       const timeoutMs = row.timeoutSeconds * 1000;
 
       if (nowMs - startedMs > timeoutMs) {
+        const [activeExecution] = await this.db.drizzle
+          .select({ id: agentExecutions.id })
+          .from(agentExecutions)
+          .where(
+            and(
+              eq(agentExecutions.companyId, row.companyId),
+              row.agentId ? eq(agentExecutions.agentId, row.agentId) : sql`false`,
+              eq(agentExecutions.taskId, row.taskId),
+              eq(agentExecutions.status, 'running'),
+            ),
+          )
+          .limit(1);
+
+        if (activeExecution) continue;
+
         // Task has exceeded its timeout -- transition to timed_out
         await this.db.drizzle.transaction(async (tx) => {
           await tx
@@ -314,7 +341,7 @@ export class HeartbeatScheduler {
           timestamp: now.toISOString(),
         });
 
-        logger.warn(
+      logger.warn(
           {
             taskId: row.taskId,
             taskTitle: row.title,
@@ -331,145 +358,7 @@ export class HeartbeatScheduler {
   // Task assignment helper
   // ---------------------------------------------------------------------------
 
-  private async tryAssignTask(
-    agent: Record<string, any>,
-    agents: typeof this.db.schema.agents,
-    tasks: typeof this.db.schema.tasks,
-  ): Promise<{ assigned: boolean; taskId?: string }> {
-    const now = new Date();
-    const { taskHolds } = this.db.schema;
-
-    const candidateTasks = await this.db.drizzle
-      .select()
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.companyId, agent.companyId),
-          inArray(tasks.status, ['todo', 'backlog']),
-          isNull(tasks.assigneeAgentId),
-        ),
-      )
-      .orderBy(sql`CASE ${tasks.priority}
-        WHEN 'critical' THEN 0
-        WHEN 'high' THEN 1
-        WHEN 'medium' THEN 2
-        WHEN 'low' THEN 3
-        ELSE 4
-      END`)
-      .limit(25);
-
-    const candidateTaskIds = candidateTasks.map((task) => task.id);
-    const activeHoldIds = new Set<string>();
-    if (candidateTaskIds.length > 0) {
-      const activeHolds = await this.db.drizzle
-        .select({ taskId: taskHolds.taskId })
-        .from(taskHolds)
-        .where(
-          and(
-            eq(taskHolds.companyId, agent.companyId),
-            inArray(taskHolds.taskId, candidateTaskIds),
-            eq(taskHolds.status, 'active'),
-          ),
-        );
-      for (const hold of activeHolds) activeHoldIds.add(hold.taskId);
-    }
-
-    const dependencyIds = [
-      ...new Set(
-        candidateTasks.flatMap((task) =>
-          Array.isArray(task.dependencies) ? task.dependencies : [],
-        ),
-      ),
-    ];
-    const dependencyStatusById = new Map<string, string>();
-    if (dependencyIds.length > 0) {
-      const dependencyRows = await this.db.drizzle
-        .select({ id: tasks.id, status: tasks.status })
-        .from(tasks)
-        .where(and(eq(tasks.companyId, agent.companyId), inArray(tasks.id, dependencyIds)));
-      for (const dependency of dependencyRows) {
-        dependencyStatusById.set(dependency.id, dependency.status);
-      }
-    }
-
-    let nextTaskId: string | null = null;
-    for (const candidate of candidateTasks) {
-      if (activeHoldIds.has(candidate.id)) continue;
-
-      const dependencies = Array.isArray(candidate.dependencies) ? candidate.dependencies : [];
-      if (dependencies.length > 0) {
-        if (!dependencies.every((dependencyId) => dependencyStatusById.get(dependencyId) === 'done')) {
-          continue;
-        }
-      }
-
-      nextTaskId = candidate.id;
-      break;
-    }
-
-    const [assignedTask] = await this.db.drizzle
-      .update(tasks)
-      .set({
-        assigneeAgentId: agent.id,
-        status: 'in_progress',
-        startedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          nextTaskId ? eq(tasks.id, nextTaskId) : sql`false`,
-          isNull(tasks.assigneeAgentId),
-        ),
-      )
-      .returning();
-
-    if (!assignedTask) {
-      await this.db.drizzle
-        .update(agents)
-        .set({ lastHeartbeatAt: now })
-        .where(eq(agents.id, agent.id));
-      return { assigned: false };
-    }
-
-    // Update agent status
-    await this.db.drizzle
-      .update(agents)
-      .set({
-        status: 'working',
-        lastHeartbeatAt: now,
-        updatedAt: now,
-      })
-      .where(eq(agents.id, agent.id));
-
-    // Emit events
-    eventBus.emitEvent({
-      type: 'agent.status_changed',
-      companyId: agent.companyId,
-      payload: { agentId: agent.id, status: 'working', taskId: assignedTask.id },
-      timestamp: now.toISOString(),
-    });
-
-    eventBus.emitEvent({
-      type: 'task.updated',
-      companyId: agent.companyId,
-      payload: {
-        taskId: assignedTask.id,
-        status: 'in_progress',
-        assigneeAgentId: agent.id,
-      },
-      timestamp: now.toISOString(),
-    });
-
-    logger.info(
-      {
-        agentId: agent.id,
-        agentName: agent.name,
-        taskId: assignedTask.id,
-        taskTitle: assignedTask.title,
-      },
-      'Heartbeat: assigned task to agent',
-    );
-
-    return { assigned: true, taskId: assignedTask.id };
+  private async tryAssignTask(agent: AgentRow): Promise<{ assigned: boolean; taskId?: string }> {
+    return this.taskAssigner.assignNextAvailableTask(agent);
   }
 }

@@ -252,6 +252,13 @@ type ExecutionRow = {
   lastContinuationAt: Date | null;
   watchdogLastCheckedAt: Date | null;
   recoveryTaskId: string | null;
+  retryAttempt: number;
+  retryStatus: "none" | "scheduled" | "retrying" | "exhausted" | "released";
+  retryDueAt: Date | null;
+  failureCategory: string | null;
+  lastEventAt: Date | null;
+  executionMode: "single" | "agentic-loop" | "manual" | "recovery";
+  environmentId: string | null;
   log: Array<{ timestamp: string; level: string; message: string }>;
 };
 
@@ -302,6 +309,13 @@ function serializeExecution(
       ? new Date(row.watchdogLastCheckedAt).toISOString()
       : null,
     recoveryTaskId: row.recoveryTaskId ?? null,
+    retryAttempt: row.retryAttempt ?? 0,
+    retryStatus: row.retryStatus ?? "none",
+    retryDueAt: row.retryDueAt ? new Date(row.retryDueAt).toISOString() : null,
+    failureCategory: row.failureCategory ?? null,
+    lastEventAt: row.lastEventAt ? new Date(row.lastEventAt).toISOString() : null,
+    executionMode: row.executionMode ?? "single",
+    environmentId: row.environmentId ?? null,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt?.toISOString() ?? null,
   };
@@ -1027,6 +1041,8 @@ export function agentsRouter(db: DbInstance): Router {
           startedAt: now,
           modelUsed: body.modelUsed ?? agent.model,
           provider: body.provider ?? agent.provider,
+          executionMode: "manual",
+          lastEventAt: now,
           livenessStatus: LIVENESS_STATUS_HEALTHY,
           lastUsefulAction: LAST_USEFUL_ACTION_MANUAL_EXECUTION,
           nextActionHint: NEXT_ACTION_HINT_AWAIT_LOG,
@@ -1080,6 +1096,11 @@ export function agentsRouter(db: DbInstance): Router {
       const updates: Record<string, unknown> = {};
 
       if (body.status !== undefined) updates.status = body.status;
+      if (body.status === "running") {
+        updates.retryStatus = "none";
+        updates.retryDueAt = null;
+        updates.failureCategory = null;
+      }
       if (body.inputTokens !== undefined)
         updates.inputTokens = body.inputTokens;
       if (body.outputTokens !== undefined)
@@ -1119,6 +1140,7 @@ export function agentsRouter(db: DbInstance): Router {
           }),
         };
         updates.log = [...currentLog, newEntry];
+        updates.lastEventAt = new Date(newEntry.timestamp);
 
         // Emit log event
         eventBus.emitEvent({
@@ -1139,6 +1161,12 @@ export function agentsRouter(db: DbInstance): Router {
         ["completed", "failed", "cancelled"].includes(body.status)
       ) {
         updates.completedAt = new Date();
+        updates.lastEventAt = updates.completedAt;
+        if (body.status === "completed" || body.status === "cancelled") {
+          updates.retryStatus = "none";
+          updates.retryDueAt = null;
+          updates.failureCategory = null;
+        }
       }
 
       const [updated] = await db.drizzle
