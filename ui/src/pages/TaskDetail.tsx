@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   Clock,
@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import {
   useAddTaskComment,
   useDecideApproval,
+  useMarkInboxRead,
   useRespondTaskInteraction,
   useTask,
   useTaskSubtreeControls,
@@ -25,6 +26,7 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
+import { shortId } from "@/lib/ids";
 import type { TaskThreadItem } from "@/lib/api";
 
 const statusFlow = ["backlog", "todo", "in_progress", "review", "done"];
@@ -76,12 +78,17 @@ function getExecutionPayload(item: TaskThreadItem) {
   };
 }
 
-function shortId(id: string) {
-  return id.slice(0, 8);
+function isFocusedThreadItem(item: TaskThreadItem, focusId: string | null) {
+  if (!focusId) return false;
+  if (item.id === focusId) return true;
+  if (item.relatedApprovalId && focusId === `approval:${item.relatedApprovalId}`) return true;
+  if (item.relatedExecutionId && focusId === `execution:${item.relatedExecutionId}`) return true;
+  return false;
 }
 
 export function TaskDetail() {
   const { companyId, taskId } = useParams();
+  const [searchParams] = useSearchParams();
   const { data: task, isLoading } = useTask(companyId, taskId);
   const { data: thread = [] } = useTaskThread(companyId, taskId);
   const updateTask = useUpdateTask(companyId!);
@@ -89,8 +96,15 @@ export function TaskDetail() {
   const respondInteraction = useRespondTaskInteraction(companyId!);
   const subtreeControls = useTaskSubtreeControls(companyId!);
   const decideApproval = useDecideApproval(companyId!);
+  const markInboxRead = useMarkInboxRead(companyId!);
+  const markInboxReadRef = useRef(markInboxRead.mutateAsync);
+  const pendingInboxItemRef = useRef<string | null>(null);
+  markInboxReadRef.current = markInboxRead.mutateAsync;
   const [comment, setComment] = useState("");
   const [formAnswers, setFormAnswers] = useState<Record<string, string>>({});
+  const [markedInboxItem, setMarkedInboxItem] = useState<string | null>(null);
+  const focusedThreadItemId = searchParams.get("threadItem") ?? searchParams.get("focus");
+  const inboxItemId = searchParams.get("inboxItem");
 
   const sortedThread = useMemo(
     () =>
@@ -99,6 +113,49 @@ export function TaskDetail() {
       ),
     [thread],
   );
+
+  useEffect(() => {
+    if (!companyId || !inboxItemId || markedInboxItem === inboxItemId) return;
+    if (pendingInboxItemRef.current === inboxItemId) return;
+
+    let cancelled = false;
+    pendingInboxItemRef.current = inboxItemId;
+    markInboxReadRef.current([inboxItemId])
+      .then(() => {
+        if (!cancelled) {
+          setMarkedInboxItem(inboxItemId);
+        }
+        if (pendingInboxItemRef.current === inboxItemId) {
+          pendingInboxItemRef.current = null;
+        }
+      })
+      .catch(() => {
+        if (!cancelled) toast.error("Could not mark inbox item as read");
+        if (pendingInboxItemRef.current === inboxItemId) {
+          pendingInboxItemRef.current = null;
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (pendingInboxItemRef.current === inboxItemId) {
+        pendingInboxItemRef.current = null;
+      }
+    };
+  }, [companyId, inboxItemId, markedInboxItem]);
+
+  useEffect(() => {
+    if (!focusedThreadItemId || sortedThread.length === 0) return;
+    const target = sortedThread.find((item) => isFocusedThreadItem(item, focusedThreadItemId));
+    if (!target) return;
+    const frameId = window.requestAnimationFrame(() => {
+      document.getElementById(`thread-${target.id}`)?.scrollIntoView?.({
+        block: "center",
+        behavior: "smooth",
+      });
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [focusedThreadItemId, sortedThread]);
 
   if (isLoading) {
     return (
@@ -271,8 +328,18 @@ export function TaskDetail() {
                 sortedThread.map((item) => {
                   const executionPayload = getExecutionPayload(item);
                   const relatedApprovalId = item.relatedApprovalId;
+                  const isFocused = isFocusedThreadItem(item, focusedThreadItemId);
                   return (
-                    <div key={item.id} className="p-5">
+                    <div
+                      key={item.id}
+                      id={`thread-${item.id}`}
+                      tabIndex={-1}
+                      className={`p-5 outline-none transition-colors duration-300 ${
+                        isFocused
+                          ? "bg-accent/[0.07] ring-1 ring-inset ring-accent/30"
+                          : ""
+                      }`}
+                    >
                       <div className="flex items-start gap-3">
                         <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.04] text-neon-cyan">
                           {itemIcon(item)}
@@ -472,7 +539,7 @@ export function TaskDetail() {
                   {dependencies.map((depId) => (
                     <Link
                       key={depId}
-                      to={`/company/${companyId}/issues/${depId}`}
+                      to={`/company/${companyId}/tasks/${depId}`}
                       className="flex items-center gap-3 rounded-lg glass-raised p-3"
                     >
                       <GitBranch className="h-4 w-4 text-neon-purple" />

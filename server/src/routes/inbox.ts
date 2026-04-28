@@ -23,7 +23,7 @@ import { routeParams } from '../utils/route-params.js';
 
 export interface InboxItem {
   id: string;
-  kind: 'approval' | 'collaboration' | 'activity';
+  kind: 'approval' | 'collaboration' | 'activity' | 'task_thread';
   title: string;
   subtitle?: string;
   priority?: 'critical' | 'high' | 'medium' | 'low';
@@ -31,6 +31,8 @@ export interface InboxItem {
   actorId?: string;
   entityType?: string;
   entityId?: string;
+  taskId?: string;
+  threadItemId?: string;
   link: string;
   createdAt: string;
   readAt: string | null;
@@ -55,7 +57,7 @@ const MarkBody = z.object({
 
 export function inboxRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { approvals, agentCollaborations, activityLog, inboxReadStates } =
+  const { approvals, agentCollaborations, activityLog, inboxReadStates, taskThreadItems } =
     db.schema;
 
   // -------------------------------------------------------------------------
@@ -93,6 +95,19 @@ export function inboxRouter(db: DbInstance): Router {
       .orderBy(desc(agentCollaborations.createdAt))
       .limit(limit);
 
+    const pendingThreadItems = await db.drizzle
+      .select()
+      .from(taskThreadItems)
+      .where(
+        and(
+          eq(taskThreadItems.companyId, companyId),
+          eq(taskThreadItems.kind, 'interaction'),
+          eq(taskThreadItems.status, 'pending'),
+        ),
+      )
+      .orderBy(desc(taskThreadItems.createdAt))
+      .limit(limit);
+
     const recentActivity = await db.drizzle
       .select()
       .from(activityLog)
@@ -116,12 +131,26 @@ export function inboxRouter(db: DbInstance): Router {
           eq(agentCollaborations.status, 'pending'),
         ),
       );
+    const [{ pendingThreadItemTotal }] = await db.drizzle
+      .select({ pendingThreadItemTotal: sql<number>`count(*)` })
+      .from(taskThreadItems)
+      .where(
+        and(
+          eq(taskThreadItems.companyId, companyId),
+          eq(taskThreadItems.kind, 'interaction'),
+          eq(taskThreadItems.status, 'pending'),
+        ),
+      );
 
     const items: InboxItem[] = [];
 
     for (const a of pendingApprovals) {
+      const itemId = `approval:${a.id}`;
+      const taskThreadLink = a.taskId
+        ? taskThreadUrl(companyId, a.taskId, itemId)
+        : null;
       items.push({
-        id: `approval:${a.id}`,
+        id: itemId,
         kind: 'approval',
         title: a.title,
         subtitle:
@@ -131,7 +160,11 @@ export function inboxRouter(db: DbInstance): Router {
         status: a.status as string,
         entityType: 'approval',
         entityId: a.id,
-        link: `/company/${companyId}/approvals?focus=${a.id}`,
+        taskId: a.taskId ?? undefined,
+        threadItemId: a.taskId ? itemId : undefined,
+        link: taskThreadLink
+          ? withInboxItem(taskThreadLink, itemId)
+          : `/company/${companyId}/approvals?focus=${a.id}`,
         createdAt: new Date(a.createdAt).toISOString(),
         readAt: null,
       });
@@ -156,6 +189,26 @@ export function inboxRouter(db: DbInstance): Router {
       });
     }
 
+    for (const item of pendingThreadItems) {
+      const inboxItemId = `thread:${item.id}`;
+      const interactionLabel = (item.interactionType ?? 'interaction').replace('_', ' ');
+      items.push({
+        id: inboxItemId,
+        kind: 'task_thread',
+        title: `Task question: ${interactionLabel}`,
+        subtitle: item.content?.slice(0, 160) ?? 'Agent needs an operator response',
+        status: item.status,
+        actorId: item.authorAgentId ?? item.authorUserId ?? undefined,
+        entityType: 'task_thread_item',
+        entityId: item.id,
+        taskId: item.taskId,
+        threadItemId: item.id,
+        link: withInboxItem(taskThreadUrl(companyId, item.taskId, item.id), inboxItemId),
+        createdAt: new Date(item.createdAt).toISOString(),
+        readAt: null,
+      });
+    }
+
     for (const row of recentActivity) {
       if (!ACTIVITY_KINDS_OF_INTEREST.has(row.action)) continue;
       items.push({
@@ -171,7 +224,8 @@ export function inboxRouter(db: DbInstance): Router {
         actorId: row.actorId ?? undefined,
         entityType: row.entityType,
         entityId: row.entityId ?? undefined,
-        link: linkForActivity(companyId, row),
+        taskId: activityTaskId(row) ?? undefined,
+        link: withInboxItem(linkForActivity(companyId, row), `activity:${row.id}`),
         createdAt: new Date(row.createdAt).toISOString(),
         readAt: null,
       });
@@ -216,6 +270,7 @@ export function inboxRouter(db: DbInstance): Router {
       meta: {
         pendingApprovals: Number(pendingApprovalTotal),
         pendingCollaborations: Number(pendingCollabTotal),
+        pendingThreadItems: Number(pendingThreadItemTotal),
         total: items.length,
         unread,
       },
@@ -297,9 +352,13 @@ function linkForActivity(
   row: {
     entityType: string;
     entityId: string | null;
+    metadata?: Record<string, unknown>;
   },
 ): string {
   const base = `/company/${companyId}`;
+  const taskId = activityTaskId(row);
+  if (taskId) return `${base}/tasks/${taskId}`;
+
   switch (row.entityType) {
     case 'agent':
       return row.entityId ? `${base}/agents/${row.entityId}` : `${base}/agents`;
@@ -316,4 +375,23 @@ function linkForActivity(
     default:
       return base;
   }
+}
+
+function activityTaskId(row: {
+  entityType: string;
+  entityId: string | null;
+  metadata?: Record<string, unknown>;
+}): string | null {
+  if (row.entityType === 'task') return row.entityId;
+  const taskId = row.metadata?.taskId;
+  return typeof taskId === 'string' && taskId.length > 0 ? taskId : null;
+}
+
+function taskThreadUrl(companyId: string, taskId: string, threadItemId: string): string {
+  return `/company/${companyId}/tasks/${taskId}?threadItem=${encodeURIComponent(threadItemId)}`;
+}
+
+function withInboxItem(link: string, inboxItemId: string): string {
+  const separator = link.includes('?') ? '&' : '?';
+  return `${link}${separator}inboxItem=${encodeURIComponent(inboxItemId)}`;
 }
