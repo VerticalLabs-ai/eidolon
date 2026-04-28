@@ -16,9 +16,70 @@ import { MemoryService } from './memory.js';
 import { MCPClientService } from './mcp-client.js';
 import { BudgetEnforcer } from './budget-enforcer.js';
 import { decrypt } from './crypto.js';
+import { continuationRetryDueAt, retryDueAt } from './execution-retry.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
+
+export const MAX_CONTINUATION_RETRIES = 3;
+
+type AgenticLoopRetryMetadata = {
+  retryAttempt: number;
+  retryStatus: 'none' | 'scheduled' | 'exhausted';
+  retryDueAt: Date | null;
+  failureCategory: string | null;
+};
+
+export function buildAgenticLoopRetryMetadata(
+  status: LoopResult['status'],
+  completedAt: Date,
+  currentRetryAttempt: number,
+): AgenticLoopRetryMetadata {
+  const nextAttempt = currentRetryAttempt + 1;
+
+  if (status === 'failed') {
+    if (nextAttempt > MAX_CONTINUATION_RETRIES) {
+      return {
+        retryAttempt: currentRetryAttempt,
+        retryStatus: 'exhausted',
+        retryDueAt: null,
+        failureCategory: 'agentic_loop_error',
+      };
+    }
+
+    return {
+      retryAttempt: nextAttempt,
+      retryStatus: 'scheduled',
+      retryDueAt: retryDueAt(completedAt, nextAttempt),
+      failureCategory: 'agentic_loop_error',
+    };
+  }
+
+  if (status === 'max_steps_reached') {
+    if (nextAttempt > MAX_CONTINUATION_RETRIES) {
+      return {
+        retryAttempt: currentRetryAttempt,
+        retryStatus: 'exhausted',
+        retryDueAt: null,
+        failureCategory: 'max_steps_reached',
+      };
+    }
+
+    return {
+      retryAttempt: nextAttempt,
+      retryStatus: 'scheduled',
+      retryDueAt: continuationRetryDueAt(completedAt),
+      failureCategory: 'max_steps_reached',
+    };
+  }
+
+  return {
+    retryAttempt: currentRetryAttempt,
+    retryStatus: 'none',
+    retryDueAt: null,
+    failureCategory: null,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -193,6 +254,8 @@ export class AgenticLoop {
       startedAt,
       modelUsed: agent.model,
       provider: providerName,
+      executionMode: 'agentic-loop',
+      lastEventAt: startedAt,
       createdAt: startedAt,
     });
 
@@ -392,7 +455,19 @@ export class AgenticLoop {
       ? finalOutput.slice(0, 497) + '...'
       : finalOutput;
 
+    const [currentExecution] = await this.db.drizzle
+      .select({ retryAttempt: agentExecutions.retryAttempt })
+      .from(agentExecutions)
+      .where(eq(agentExecutions.id, execId))
+      .limit(1);
+
     // Update execution record
+    const retryMetadata = buildAgenticLoopRetryMetadata(
+      status,
+      completedAt,
+      currentExecution?.retryAttempt ?? 0,
+    );
+
     await this.db.drizzle
       .update(agentExecutions)
       .set({
@@ -403,6 +478,8 @@ export class AgenticLoop {
         costCents: totalCostCents,
         summary,
         error: status === 'failed' ? finalOutput : null,
+        lastEventAt: completedAt,
+        ...retryMetadata,
         log: steps.map((s, idx) => ({
           timestamp: s.timestamp,
           level: s.phase === 'reflect' && status === 'failed' ? 'error' : 'info',

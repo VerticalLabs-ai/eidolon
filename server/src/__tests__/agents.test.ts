@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
+import { eq } from 'drizzle-orm';
 import { createTestDb, createTestApp } from '../test-utils.js';
 import { decrypt } from '../services/crypto.js';
 
@@ -584,6 +585,33 @@ describe('Agents API', () => {
       expect(res.body.data.costCents).toBe(5);
       expect(res.body.data.summary).toBe('Task completed successfully');
       expect(res.body.data.completedAt).toBeDefined();
+    });
+
+    it('should clear retry metadata when cancelling an execution', async () => {
+      const execRes = await request(app)
+        .post(`${agentUrl(agentId)}/executions`)
+        .send({});
+      const execId = execRes.body.data.id;
+
+      await db.drizzle
+        .update(db.schema.agentExecutions)
+        .set({
+          retryAttempt: 2,
+          retryStatus: 'scheduled',
+          retryDueAt: new Date(Date.now() + 30_000),
+          failureCategory: 'operator_cancelled',
+        })
+        .where(eq(db.schema.agentExecutions.id, execId));
+
+      const res = await request(app)
+        .patch(`${agentUrl(agentId)}/executions/${execId}`)
+        .send({ status: 'cancelled' })
+        .expect(200);
+
+      expect(res.body.data.status).toBe('cancelled');
+      expect(res.body.data.retryStatus).toBe('none');
+      expect(res.body.data.retryDueAt).toBeNull();
+      expect(res.body.data.failureCategory).toBeNull();
     });
 
     it('should append log entries to execution', async () => {

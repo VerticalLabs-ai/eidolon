@@ -1,7 +1,22 @@
 import { eq, and, sql, ne, isNull, inArray } from 'drizzle-orm';
+import type { agents as agentsTable } from '@eidolon/db';
 import logger from '../utils/logger.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
+
+const DEFAULT_TASK_ASSIGNER_CANDIDATE_LIMIT = 200;
+const TASK_ASSIGNER_CANDIDATE_LIMIT_ENV = 'TASK_ASSIGNER_CANDIDATE_LIMIT';
+export type AgentRow = typeof agentsTable.$inferSelect;
+
+function resolveTaskAssignerCandidateLimit(): number {
+  const rawLimit = process.env[TASK_ASSIGNER_CANDIDATE_LIMIT_ENV];
+  if (!rawLimit) return DEFAULT_TASK_ASSIGNER_CANDIDATE_LIMIT;
+
+  const parsedLimit = Number.parseInt(rawLimit, 10);
+  return Number.isFinite(parsedLimit) && parsedLimit > 0
+    ? parsedLimit
+    : DEFAULT_TASK_ASSIGNER_CANDIDATE_LIMIT;
+}
 
 /**
  * Smart Task Assignment Service
@@ -13,7 +28,10 @@ import type { DbInstance } from '../types.js';
  *   - Role hierarchy (prefer lower-level agents for implementation work)
  */
 export class TaskAssigner {
-  constructor(private db: DbInstance) {}
+  constructor(
+    private db: DbInstance,
+    private readonly candidateLimit = resolveTaskAssignerCandidateLimit(),
+  ) {}
 
   // ---------------------------------------------------------------------------
   // Find the best agent for a given task
@@ -171,6 +189,184 @@ export class TaskAssigner {
   // ---------------------------------------------------------------------------
   // Assign a task to a specific agent
   // ---------------------------------------------------------------------------
+
+  async assignNextAvailableTask(agent: AgentRow): Promise<{ assigned: boolean; taskId?: string }> {
+    const { agents, tasks, taskHolds } = this.db.schema;
+    const now = new Date();
+
+    const candidateTasks = await this.db.drizzle
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.companyId, agent.companyId),
+          inArray(tasks.status, ['todo', 'backlog']),
+          isNull(tasks.assigneeAgentId),
+        ),
+      )
+      .orderBy(
+        sql`CASE ${tasks.priority}
+          WHEN 'critical' THEN 0
+          WHEN 'high' THEN 1
+          WHEN 'medium' THEN 2
+          WHEN 'low' THEN 3
+          ELSE 4
+        END`,
+        tasks.createdAt,
+      )
+      .limit(this.candidateLimit);
+
+    const candidateTaskIds = candidateTasks.map((task) => task.id);
+    const activeHoldIds = new Set<string>();
+    if (candidateTaskIds.length > 0) {
+      const activeHolds = await this.db.drizzle
+        .select({ taskId: taskHolds.taskId })
+        .from(taskHolds)
+        .where(
+          and(
+            eq(taskHolds.companyId, agent.companyId),
+            inArray(taskHolds.taskId, candidateTaskIds),
+            eq(taskHolds.action, 'pause'),
+            eq(taskHolds.status, 'active'),
+          ),
+        );
+      for (const hold of activeHolds) activeHoldIds.add(hold.taskId);
+    }
+
+    const dependencyIds = [
+      ...new Set(
+        candidateTasks.flatMap((task) =>
+          Array.isArray(task.dependencies) ? task.dependencies : [],
+        ),
+      ),
+    ];
+    const dependencyStatusById = new Map<string, string>();
+    if (dependencyIds.length > 0) {
+      const dependencyRows = await this.db.drizzle
+        .select({ id: tasks.id, status: tasks.status })
+        .from(tasks)
+        .where(and(eq(tasks.companyId, agent.companyId), inArray(tasks.id, dependencyIds)));
+      for (const dependency of dependencyRows) {
+        dependencyStatusById.set(dependency.id, dependency.status);
+      }
+    }
+
+    let nextTaskId: string | null = null;
+    let nextTaskStatus: 'todo' | 'backlog' | null = null;
+    for (const candidate of candidateTasks) {
+      if (activeHoldIds.has(candidate.id)) continue;
+
+      const dependencies = Array.isArray(candidate.dependencies) ? candidate.dependencies : [];
+      if (dependencies.length > 0) {
+        let dependenciesSatisfied = true;
+
+        for (const dependencyId of dependencies) {
+          const dependencyStatus = dependencyStatusById.get(dependencyId);
+          if (dependencyStatus === undefined) {
+            logger.warn(
+              { taskId: candidate.id, dependencyId },
+              'TaskAssigner: task dependency missing; leaving task blocked',
+            );
+            dependenciesSatisfied = false;
+            break;
+          }
+          if (dependencyStatus !== 'done') {
+            dependenciesSatisfied = false;
+            break;
+          }
+        }
+
+        if (!dependenciesSatisfied) continue;
+      }
+
+      nextTaskId = candidate.id;
+      nextTaskStatus = candidate.status as 'todo' | 'backlog';
+      break;
+    }
+
+    if (!nextTaskId || !nextTaskStatus) {
+      await this.db.drizzle
+        .update(agents)
+        .set({ lastHeartbeatAt: now })
+        .where(eq(agents.id, agent.id));
+      return { assigned: false };
+    }
+
+    const confirmedNextTaskId = nextTaskId;
+    const confirmedNextTaskStatus = nextTaskStatus;
+
+    const assignedTask = await this.db.drizzle.transaction(async (tx) => {
+      const [task] = await tx
+        .update(tasks)
+        .set({
+          assigneeAgentId: agent.id,
+          status: 'in_progress',
+          startedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(tasks.id, confirmedNextTaskId),
+            eq(tasks.status, confirmedNextTaskStatus),
+            isNull(tasks.assigneeAgentId),
+          ),
+        )
+        .returning();
+
+      if (!task) {
+        return null;
+      }
+
+      await tx
+        .update(agents)
+        .set({
+          status: 'working',
+          lastHeartbeatAt: now,
+          updatedAt: now,
+        })
+        .where(eq(agents.id, agent.id));
+
+      return task;
+    });
+
+    if (!assignedTask) {
+      await this.db.drizzle
+        .update(agents)
+        .set({ lastHeartbeatAt: now })
+        .where(eq(agents.id, agent.id));
+      return { assigned: false };
+    }
+
+    eventBus.emitEvent({
+      type: 'agent.status_changed',
+      companyId: agent.companyId,
+      payload: { agentId: agent.id, status: 'working', taskId: assignedTask.id },
+      timestamp: now.toISOString(),
+    });
+
+    eventBus.emitEvent({
+      type: 'task.updated',
+      companyId: agent.companyId,
+      payload: {
+        taskId: assignedTask.id,
+        status: 'in_progress',
+        assigneeAgentId: agent.id,
+      },
+      timestamp: now.toISOString(),
+    });
+
+    logger.info(
+      {
+        agentId: agent.id,
+        agentName: agent.name,
+        taskId: assignedTask.id,
+        taskTitle: assignedTask.title,
+      },
+      'TaskAssigner: assigned next available task to agent',
+    );
+
+    return { assigned: true, taskId: assignedTask.id };
+  }
 
   async assignTask(taskId: string, agentId: string): Promise<void> {
     const { agents, tasks } = this.db.schema;

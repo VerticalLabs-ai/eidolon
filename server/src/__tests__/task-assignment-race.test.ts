@@ -290,6 +290,11 @@ describe('Task assignment concurrency', () => {
       .where(eq(db.schema.agentExecutions.id, executionId));
     expect(execution.livenessStatus).toBe('recovering');
     expect(execution.recoveryTaskId).toBeTruthy();
+    expect(execution.retryAttempt).toBe(1);
+    expect(execution.retryStatus).toBe('scheduled');
+    expect(execution.failureCategory).toBe('execution_stalled');
+    expect(execution.retryDueAt).toBeInstanceOf(Date);
+    expect(execution.lastEventAt).toBeInstanceOf(Date);
 
     const [recoveryTask] = await db.drizzle
       .select()
@@ -298,5 +303,29 @@ describe('Task assignment concurrency', () => {
     expect(recoveryTask.title).toContain('Recover stalled execution');
     expect(recoveryTask.description).toContain('Raw provider errors are intentionally redacted');
     expect(recoveryTask.description).not.toContain('provider secret stack trace');
+  });
+
+  it('HeartbeatScheduler.runOnce: releases tasks without active executions after timeout', async () => {
+    const agentId = await insertAgent({ status: 'working', intervalSeconds: 0, executionTimeoutSeconds: 1 });
+    const taskId = await insertTask({
+      title: 'Timeout task',
+      status: 'in_progress',
+      assigneeAgentId: agentId,
+      startedAt: new Date(Date.now() - 120_000),
+    });
+
+    await new HeartbeatScheduler(db).runOnce();
+
+    const [task] = await db.drizzle
+      .select()
+      .from(db.schema.tasks)
+      .where(eq(db.schema.tasks.id, taskId));
+    const [agent] = await db.drizzle
+      .select()
+      .from(db.schema.agents)
+      .where(eq(db.schema.agents.id, agentId));
+
+    expect(task.status).toBe('timed_out');
+    expect(agent.status).toBe('idle');
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { createTestDb, createTestApp } from '../test-utils.js';
+import { workspaceRootForCompany } from '../routes/environments.js';
 
 describe('Execution Environments API', () => {
   let app: ReturnType<typeof createTestApp>;
@@ -35,12 +36,20 @@ describe('Execution Environments API', () => {
     };
   }
 
+  async function createExecution(agentId: string): Promise<string> {
+    const execution = await request(app)
+      .post(`${agentsUrl()}/${agentId}/executions`)
+      .send({})
+      .expect(201);
+    return execution.body.data.id as string;
+  }
+
   it('should create and list a local environment', async () => {
     const created = await request(app)
       .post(environmentsUrl())
       .send({
         name: 'Local Workspace',
-        workspacePath: process.cwd(),
+        workspacePath: 'runtime/local-workspace',
         branchName: 'main',
         runtimeUrl: 'http://localhost:5173',
         metadata: { runtime: 'pnpm' },
@@ -49,7 +58,9 @@ describe('Execution Environments API', () => {
 
     expect(created.body.data.provider).toBe('local');
     expect(created.body.data.status).toBe('available');
-    expect(created.body.data.workspacePath).toBe(process.cwd());
+    expect(created.body.data.workspacePath).toBe(
+      `${workspaceRootForCompany(companyId)}/runtime/local-workspace`,
+    );
 
     const listed = await request(app)
       .get(environmentsUrl())
@@ -63,40 +74,45 @@ describe('Execution Environments API', () => {
 
   it('should lease an environment to an agent', async () => {
     const { agentId, environmentId } = await createAgentAndEnvironment();
+    const executionId = await createExecution(agentId);
     const leased = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
-      .send({ agentId })
+      .send({ agentId, executionId })
       .expect(200);
 
     expect(leased.body.data.status).toBe('leased');
     expect(leased.body.data.leaseOwnerAgentId).toBe(agentId);
+    expect(leased.body.data.leaseOwnerExecutionId).toBe(executionId);
   });
 
   it('should reject double-lease with 409', async () => {
     const { agentId, environmentId } = await createAgentAndEnvironment();
+    const executionId = await createExecution(agentId);
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
-      .send({ agentId })
+      .send({ agentId, executionId })
       .expect(200);
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
-      .send({ agentId })
+      .send({ agentId, executionId })
       .expect(409);
   });
 
   it('should reject release by non-owner with 409', async () => {
     const { agentId, environmentId } = await createAgentAndEnvironment();
+    const executionId = await createExecution(agentId);
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
-      .send({ agentId })
+      .send({ agentId, executionId })
       .expect(200);
     const otherAgent = await request(app)
       .post(agentsUrl())
       .send({ name: 'Other Env Agent', role: 'engineer' })
       .expect(201);
+    const otherExecutionId = await createExecution(otherAgent.body.data.id);
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
-      .send({ agentId: otherAgent.body.data.id })
+      .send({ agentId: otherAgent.body.data.id, executionId: otherExecutionId })
       .expect(409);
   });
 
@@ -121,13 +137,14 @@ describe('Execution Environments API', () => {
 
   it('should release environment successfully', async () => {
     const { agentId, environmentId } = await createAgentAndEnvironment();
+    const executionId = await createExecution(agentId);
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
-      .send({ agentId })
+      .send({ agentId, executionId })
       .expect(200);
     const released = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
-      .send({ agentId })
+      .send({ agentId, executionId })
       .expect(200);
 
     expect(released.body.data.status).toBe('available');
@@ -156,5 +173,36 @@ describe('Execution Environments API', () => {
       .send({ agentId, executionId: execution.body.data.id })
       .expect(200);
     expect(released.body.data.status).toBe('available');
+  });
+
+  it('should reject unsafe workspace paths outside the workspace root', async () => {
+    await request(app)
+      .post(environmentsUrl())
+      .send({
+        name: 'Escaping Workspace',
+        workspacePath: '../outside-root',
+      })
+      .expect(400);
+
+    await request(app)
+      .post(environmentsUrl())
+      .send({
+        name: 'Absolute Outside Workspace',
+        workspacePath: '/tmp/not-eidolon-workspace',
+      })
+      .expect(400);
+  });
+
+  it('should reject leases without execution ownership', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/lease`)
+      .send({ agentId })
+      .expect(400);
+
+    await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/lease`)
+      .send({ agentId, executionId: '00000000-0000-0000-0000-000000000000' })
+      .expect(404);
   });
 });
