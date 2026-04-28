@@ -1293,7 +1293,7 @@ export const exportCompany = (
 
 // ── Inbox (unified feed) ────────────────────────────────────────────────
 
-export type InboxItemKind = "approval" | "collaboration" | "activity";
+export type InboxItemKind = "approval" | "collaboration" | "activity" | "task_thread";
 
 export interface InboxItem {
   id: string;
@@ -1305,6 +1305,8 @@ export interface InboxItem {
   actorId?: string;
   entityType?: string;
   entityId?: string;
+  taskId?: string;
+  threadItemId?: string;
   link: string;
   createdAt: string;
   readAt: string | null;
@@ -1315,6 +1317,7 @@ export interface InboxResponse {
   meta: {
     pendingApprovals: number;
     pendingCollaborations: number;
+    pendingThreadItems?: number;
     total: number;
     unread: number;
   };

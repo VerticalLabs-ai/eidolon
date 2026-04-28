@@ -63,10 +63,12 @@ export interface AuthMiddlewareDeps {
   /** Verifier that returns an AuthSession or null. Defaults to the real
    *  Clerk-backed implementation. Overridden in tests. */
   verify?: (req: Request) => Promise<AuthSession | null>;
+  /** Auth mode override for isolated tests. Production reads AUTH_MODE. */
+  authMode?: 'local_trusted' | 'authenticated';
 }
 
 export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
-  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+  const isLocalTrusted = (deps.authMode ?? process.env.AUTH_MODE) === 'local_trusted';
   const verify = deps.verify ?? ((req: Request) => authenticateRequest(req));
 
   async function requireAuth(

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   respondInteractionMutate: vi.fn(),
   subtreeMutate: vi.fn(),
   decideApprovalMutate: vi.fn(),
+  markInboxReadMutate: vi.fn(() => Promise.resolve({})),
 }));
 
 vi.mock("@/lib/hooks", () => ({
@@ -37,6 +38,11 @@ vi.mock("@/lib/hooks", () => ({
   }),
   useDecideApproval: () => ({
     mutate: mocks.decideApprovalMutate,
+    isPending: false,
+  }),
+  useMarkInboxRead: () => ({
+    mutate: mocks.markInboxReadMutate,
+    mutateAsync: mocks.markInboxReadMutate,
     isPending: false,
   }),
 }));
@@ -68,11 +74,11 @@ const task = {
   updatedAt: "2026-04-27T12:05:00.000Z",
 };
 
-function renderTaskDetail() {
+function renderTaskDetail(initialPath = "/company/company-1/tasks/task-1") {
   return render(
-    <MemoryRouter initialEntries={["/company/company-1/issues/task-1"]}>
+    <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
-        <Route path="/company/:companyId/issues/:taskId" element={<TaskDetail />} />
+        <Route path="/company/:companyId/tasks/:taskId" element={<TaskDetail />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -108,7 +114,7 @@ describe("TaskDetail", () => {
     expect(screen.getAllByText("In Progress").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("link", { name: /dependen/ })).toHaveAttribute(
       "href",
-      "/company/company-1/issues/dependency-1",
+      "/company/company-1/tasks/dependency-1",
     );
 
     await user.click(screen.getByRole("button", { name: "Review" }));
@@ -225,5 +231,33 @@ describe("TaskDetail", () => {
       { taskId: "task-1", content: "Restart with smaller batch." },
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
+  });
+
+  it("focuses linked thread items and marks inbox source read", () => {
+    mocks.useTaskThread.mockReturnValue({
+      data: [
+        {
+          id: "interaction-1",
+          companyId: "company-1",
+          taskId: "task-1",
+          kind: "interaction",
+          interactionType: "confirmation",
+          content: "Need operator direction",
+          payload: {},
+          status: "pending",
+          createdAt: "2026-04-27T12:03:00.000Z",
+          updatedAt: "2026-04-27T12:03:00.000Z",
+        },
+      ],
+    });
+
+    renderTaskDetail(
+      "/company/company-1/tasks/task-1?threadItem=interaction-1&inboxItem=thread%3Ainteraction-1",
+    );
+
+    expect(mocks.markInboxReadMutate).toHaveBeenCalledWith(["thread:interaction-1"]);
+    const focusedItem = screen.getByText("Need operator direction").closest("#thread-interaction-1");
+    expect(focusedItem).not.toBeNull();
+    expect(focusedItem).toHaveClass("bg-accent/[0.07]");
   });
 });

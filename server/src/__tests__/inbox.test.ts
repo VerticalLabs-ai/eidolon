@@ -26,6 +26,7 @@ describe('Inbox unified feed', () => {
     expect(res.body.meta).toEqual({
       pendingApprovals: 0,
       pendingCollaborations: 0,
+      pendingThreadItems: 0,
       total: 0,
       unread: 0,
     });
@@ -48,6 +49,61 @@ describe('Inbox unified feed', () => {
     expect(item.status).toBe('pending');
     expect(item.id).toBe(`approval:${approval.body.data.id}`);
     expect(item.link).toContain(`/approvals?focus=${approval.body.data.id}`);
+  });
+
+  it('deep-links task approvals to the task thread', async () => {
+    const task = await request(app)
+      .post(`/api/companies/${companyId}/tasks`)
+      .send({ title: 'Review rollout plan' })
+      .expect(201);
+    const approval = await request(app)
+      .post(`/api/companies/${companyId}/approvals`)
+      .send({
+        title: 'Approve rollout plan',
+        priority: 'high',
+        taskId: task.body.data.id,
+      })
+      .expect(201);
+
+    const res = await request(app).get(url()).expect(200);
+    const item = res.body.data.find(
+      (candidate: { id: string }) => candidate.id === `approval:${approval.body.data.id}`,
+    );
+
+    expect(item.taskId).toBe(task.body.data.id);
+    expect(item.threadItemId).toBe(`approval:${approval.body.data.id}`);
+    expect(item.link).toBe(
+      `/company/${companyId}/tasks/${task.body.data.id}?threadItem=approval%3A${approval.body.data.id}&inboxItem=approval%3A${approval.body.data.id}`,
+    );
+  });
+
+  it('surfaces pending task-thread interactions with exact task-thread links', async () => {
+    const task = await request(app)
+      .post(`/api/companies/${companyId}/tasks`)
+      .send({ title: 'Investigate agent question' })
+      .expect(201);
+    const interaction = await request(app)
+      .post(`/api/companies/${companyId}/tasks/${task.body.data.id}/thread/interactions`)
+      .send({
+        interactionType: 'form',
+        content: 'Which environment should I use?',
+        payload: { fields: [{ id: 'environment', label: 'Environment' }] },
+      })
+      .expect(201);
+
+    const res = await request(app).get(url()).expect(200);
+    expect(res.body.meta.pendingThreadItems).toBe(1);
+
+    const item = res.body.data.find(
+      (candidate: { id: string }) => candidate.id === `thread:${interaction.body.data.id}`,
+    );
+    expect(item.kind).toBe('task_thread');
+    expect(item.title).toBe('Task question: form');
+    expect(item.taskId).toBe(task.body.data.id);
+    expect(item.threadItemId).toBe(interaction.body.data.id);
+    expect(item.link).toBe(
+      `/company/${companyId}/tasks/${task.body.data.id}?threadItem=${encodeURIComponent(interaction.body.data.id)}&inboxItem=thread%3A${interaction.body.data.id}`,
+    );
   });
 
   it('hides resolved approvals from the feed', async () => {

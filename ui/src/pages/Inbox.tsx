@@ -5,6 +5,7 @@ import {
   ShieldCheck,
   Users,
   Bell,
+  MessageSquareDot,
   Check,
   ArrowRight,
   MessageCircle,
@@ -24,6 +25,7 @@ import {
   useMarkInboxRead,
   useMarkInboxUnread,
 } from "@/lib/hooks";
+import { shortId } from "@/lib/ids";
 import { BoardChat } from "@/pages/BoardChat";
 import { MessageCenter } from "@/pages/MessageCenter";
 import type { InboxItem, InboxItemKind } from "@/lib/api";
@@ -38,12 +40,14 @@ const kindIcon: Record<InboxItemKind, typeof ShieldCheck> = {
   approval: ShieldCheck,
   collaboration: Users,
   activity: Bell,
+  task_thread: MessageSquareDot,
 };
 
 const kindTint: Record<InboxItemKind, string> = {
   approval: "text-success bg-success/15",
   collaboration: "text-neon-purple bg-neon-purple/15",
   activity: "text-accent bg-accent/15",
+  task_thread: "text-warning bg-warning/15",
 };
 
 const priorityVariant: Record<string, "info" | "warning" | "error"> = {
@@ -227,6 +231,11 @@ function InboxFeed({ companyId }: { companyId: string }) {
           {data?.meta?.pendingApprovals ? (
             <span>
               · <strong>{data.meta.pendingApprovals}</strong> pending approvals
+            </span>
+          ) : null}
+          {data?.meta?.pendingThreadItems ? (
+            <span>
+              · <strong>{data.meta.pendingThreadItems}</strong> task questions
             </span>
           ) : null}
         </div>
@@ -469,6 +478,12 @@ function SwipeableInboxRow({
               {item.subtitle}
             </p>
           )}
+          {item.taskId && (
+            <p className="mt-1 truncate font-mono text-[10px] text-text-secondary/70">
+              task {shortId(item.taskId)}
+              {item.threadItemId ? ` · thread ${shortId(item.threadItemId)}` : ""}
+            </p>
+          )}
         </div>
         <span className="text-[10px] text-text-secondary tabular-nums">
           {formatRelative(item.createdAt)}
@@ -509,6 +524,12 @@ function DetailPane({
           </h2>
           <div className="mt-1 flex items-center gap-2 text-[11px] text-text-secondary">
             <span className="capitalize">{item.kind}</span>
+            {item.taskId && (
+              <>
+                <span>·</span>
+                <span className="font-mono">task {shortId(item.taskId)}</span>
+              </>
+            )}
             {item.priority && (
               <>
                 <span>·</span>
@@ -543,8 +564,8 @@ function DetailPane({
 
       <div className="flex-1 overflow-auto p-5 text-xs text-text-secondary">
         <p>
-          Open the underlying {item.kind} for the full thread, payload, and
-          available actions.
+          Open the linked {item.taskId ? "task thread" : item.kind} to review
+          the current state and complete the available action.
         </p>
       </div>
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express, { type Request, type Response } from 'express';
 import request from 'supertest';
 import { createAuthMiddleware } from '../middleware/auth.js';
@@ -12,10 +12,16 @@ import type { AuthSession } from '../auth.js';
 
 function buildTestApp(
   verify: (req: Request) => Promise<AuthSession | null>,
-  opts: { requireRole?: 'owner' | 'admin' | 'member' | 'viewer' } = {},
+  opts: {
+    authMode?: 'local_trusted' | 'authenticated';
+    requireRole?: 'owner' | 'admin' | 'member' | 'viewer';
+  } = {},
 ) {
   const app = express();
-  const { requireAuth, requireOrgMember } = createAuthMiddleware({ verify });
+  const { requireAuth, requireOrgMember } = createAuthMiddleware({
+    verify,
+    authMode: opts.authMode ?? 'authenticated',
+  });
 
   app.get('/me', requireAuth, (req: Request, res: Response) => {
     res.json({ user: req.user ?? null });
@@ -55,15 +61,8 @@ const mockSession = (overrides: Partial<AuthSession['session']> = {}) => ({
 // ---------------------------------------------------------------------------
 
 describe('auth middleware', () => {
-  const originalAuthMode = process.env.AUTH_MODE;
-
   beforeEach(() => {
     vi.restoreAllMocks();
-  });
-
-  afterEach(() => {
-    if (originalAuthMode === undefined) delete process.env.AUTH_MODE;
-    else process.env.AUTH_MODE = originalAuthMode;
   });
 
   // -------------------------------------------------------------------------
@@ -72,8 +71,7 @@ describe('auth middleware', () => {
 
   describe('requireAuth', () => {
     it('injects the dev user when AUTH_MODE=local_trusted', async () => {
-      process.env.AUTH_MODE = 'local_trusted';
-      const app = buildTestApp(async () => null);
+      const app = buildTestApp(async () => null, { authMode: 'local_trusted' });
 
       const res = await request(app).get('/me').expect(200);
       expect(res.body.user.id).toBe('dev-user-000');
@@ -81,7 +79,6 @@ describe('auth middleware', () => {
     });
 
     it('returns 401 when the verifier returns null (authenticated mode)', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const app = buildTestApp(async () => null);
 
       const res = await request(app).get('/me').expect(401);
@@ -89,7 +86,6 @@ describe('auth middleware', () => {
     });
 
     it('attaches the user when verifier returns a session', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const app = buildTestApp(async () => ({
         user: mockUser(),
         session: mockSession(),
@@ -101,7 +97,6 @@ describe('auth middleware', () => {
     });
 
     it('returns 401 when the verifier throws', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const app = buildTestApp(async () => {
         throw new Error('boom');
       });
@@ -117,9 +112,8 @@ describe('auth middleware', () => {
 
   describe('requireOrgMember', () => {
     it('grants owner-tier membership in local_trusted mode without calling the verifier', async () => {
-      process.env.AUTH_MODE = 'local_trusted';
       const verify = vi.fn(async () => null);
-      const app = buildTestApp(verify);
+      const app = buildTestApp(verify, { authMode: 'local_trusted' });
 
       const res = await request(app).get('/companies/co-42/ping').expect(200);
       expect(res.body.membership.role).toBe('owner');
@@ -129,7 +123,6 @@ describe('auth middleware', () => {
     });
 
     it('returns 403 when the user has no active organization', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const app = buildTestApp(async () => ({
         user: mockUser({ role: 'user' }),
         session: mockSession({ activeOrganizationId: null }),
@@ -140,7 +133,6 @@ describe('auth middleware', () => {
     });
 
     it('returns 403 when activeOrganizationId does not match the route', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const app = buildTestApp(async () => ({
         user: mockUser({ role: 'user' }),
         session: mockSession({ activeOrganizationId: 'co-OTHER', activeOrganizationRole: 'member' }),
@@ -151,7 +143,6 @@ describe('auth middleware', () => {
     });
 
     it('allows matching org members with sufficient role', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const app = buildTestApp(
         async () => ({
           user: mockUser({ role: 'user' }),
@@ -169,7 +160,6 @@ describe('auth middleware', () => {
     });
 
     it('rejects members whose role is below the required level', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const app = buildTestApp(
         async () => ({
           user: mockUser({ role: 'user' }),
@@ -192,7 +182,6 @@ describe('auth middleware', () => {
 
   describe('admin bypass', () => {
     it('grants owner access to any organization AND writes an audit log', async () => {
-      process.env.AUTH_MODE = 'authenticated';
       const logSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
       const app = buildTestApp(async () => ({
         user: mockUser({ id: 'admin-user', name: 'Root', email: 'root@x.co', role: 'admin' }),
