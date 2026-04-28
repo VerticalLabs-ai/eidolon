@@ -11,6 +11,7 @@
   },
   "rewrites": [
     { "source": "/api/cron/:path*", "destination": "/api/cron/:path*" },
+    { "source": "/robots.txt", "destination": "/api/robots" },
     { "source": "/api/:path*", "destination": "/api" },
     { "source": "/((?!api|assets|.*\\..*).*)", "destination": "/index.html" }
   ],
