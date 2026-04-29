@@ -22,10 +22,13 @@
   },
   "dependencies": {
     "@eidolon/shared": "workspace:*",
-    "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.5"
   },
+  "peerDependencies": {
+    "drizzle-orm": "^0.45.2"
+  },
   "devDependencies": {
+    "drizzle-orm": "^0.45.2",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"

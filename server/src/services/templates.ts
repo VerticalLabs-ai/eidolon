@@ -37,6 +37,126 @@ export interface CompanyTemplateConfig {
   prompts: TemplatePromptConfig[];
 }
 
+const BUILT_IN_TEMPLATE_DATE = new Date('2026-04-29T00:00:00.000Z');
+
+const BUILT_IN_TEMPLATES = [
+  {
+    id: 'builtin-demo-saas-operator',
+    name: 'SaaS Operator Demo',
+    description:
+      'A guided demo company with executive, product, engineering, marketing, and support agents so new users can inspect Eidolon workflows immediately.',
+    category: 'software' as const,
+    author: 'Eidolon',
+    version: '1.0.0',
+    config: {
+      name: 'Demo SaaS Operator',
+      description: 'A sample AI company configured to run a focused SaaS operating cadence.',
+      mission:
+        'Show how Eidolon coordinates specialized AI agents across planning, delivery, growth, and customer feedback loops.',
+      budgetMonthlyCents: 250000,
+      agents: [
+        {
+          name: 'Avery',
+          role: 'ceo',
+          title: 'AI CEO',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          systemPrompt:
+            'Coordinate the demo company. Keep strategy, priorities, and operating cadence aligned across every agent.',
+          capabilities: ['strategy', 'planning', 'executive-review'],
+          budgetMonthlyCents: 60000,
+          reportsTo: null,
+        },
+        {
+          name: 'Mira',
+          role: 'cto',
+          title: 'AI CTO',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          systemPrompt:
+            'Own technical architecture, delivery risk, and engineering execution for the demo product.',
+          capabilities: ['architecture', 'code-review', 'delivery-planning'],
+          budgetMonthlyCents: 55000,
+          reportsTo: 'role:ceo',
+        },
+        {
+          name: 'Rowan',
+          role: 'engineer',
+          title: 'Product Engineer',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          systemPrompt:
+            'Break product opportunities into implementation tasks, surface blockers, and keep delivery work testable.',
+          capabilities: ['implementation', 'testing', 'issue-triage'],
+          budgetMonthlyCents: 50000,
+          reportsTo: 'role:cto',
+        },
+        {
+          name: 'Sol',
+          role: 'marketer',
+          title: 'Growth Lead',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          systemPrompt:
+            'Turn product progress into positioning, launch plans, and customer-facing narratives.',
+          capabilities: ['positioning', 'launch-planning', 'customer-research'],
+          budgetMonthlyCents: 40000,
+          reportsTo: 'role:ceo',
+        },
+        {
+          name: 'Iris',
+          role: 'support',
+          title: 'Customer Operations',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          systemPrompt:
+            'Convert customer questions and issues into actionable feedback for product and growth.',
+          capabilities: ['support-triage', 'feedback-analysis', 'knowledge-base'],
+          budgetMonthlyCents: 45000,
+          reportsTo: 'role:ceo',
+        },
+      ],
+      goals: [
+        {
+          title: 'Ship a credible onboarding demo',
+          description:
+            'Give new users a preconfigured company they can inspect to understand agents, goals, tasks, prompts, and operating rhythm.',
+          level: 'company',
+        },
+        {
+          title: 'Prepare first customer-ready workflow',
+          description:
+            'Define a narrow workflow that demonstrates cross-agent collaboration from intake through execution review.',
+          level: 'team',
+        },
+      ],
+      prompts: [
+        {
+          name: 'Weekly Operator Review',
+          category: 'planning',
+          content:
+            'Summarize company progress for {{company_name}}. Include wins, risks, next decisions, and which agent owns each follow-up.',
+          variables: ['company_name'],
+        },
+        {
+          name: 'Customer Feedback Triage',
+          category: 'support',
+          content:
+            'Turn the following customer feedback into product themes, severity, affected workflow, and recommended next action: {{feedback}}',
+          variables: ['feedback'],
+        },
+      ],
+    } satisfies CompanyTemplateConfig,
+    agentCount: 5,
+    isPublic: 1,
+    downloadCount: 0,
+    tags: ['demo', 'onboarding', 'saas', 'agents'],
+    previewImage: null,
+    createdAt: BUILT_IN_TEMPLATE_DATE,
+    updatedAt: BUILT_IN_TEMPLATE_DATE,
+  },
+];
+
 export class TemplateService {
   constructor(private db: DbInstance) {}
 
@@ -245,6 +365,10 @@ export class TemplateService {
    */
   async listTemplates(category?: string) {
     const { companyTemplates } = this.db.schema;
+    const includeBuiltIns = !category || category === "all";
+    const builtIns = includeBuiltIns
+      ? BUILT_IN_TEMPLATES
+      : BUILT_IN_TEMPLATES.filter((template) => template.category === category);
 
     if (category && category !== "all") {
       const cat = category as
@@ -257,16 +381,23 @@ export class TemplateService {
       return this.db.drizzle
         .select()
         .from(companyTemplates)
-        .where(eq(companyTemplates.category, cat));
+        .where(eq(companyTemplates.category, cat))
+        .then((templates) => [...builtIns, ...templates]);
     }
 
-    return this.db.drizzle.select().from(companyTemplates);
+    return this.db.drizzle
+      .select()
+      .from(companyTemplates)
+      .then((templates) => [...builtIns, ...templates]);
   }
 
   /**
    * Get a single template by ID.
    */
   async getTemplate(id: string) {
+    const builtIn = BUILT_IN_TEMPLATES.find((template) => template.id === id);
+    if (builtIn) return builtIn;
+
     const { companyTemplates } = this.db.schema;
 
     const [template] = await this.db.drizzle

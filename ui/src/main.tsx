@@ -33,7 +33,7 @@ createRoot(document.getElementById("root")!).render(
       publishableKey={CLERK_PUBLISHABLE_KEY}
       // Keep Clerk's sign-in / sign-up flows routed within the SPA.
       signInUrl="/login"
-      signUpUrl="/register"
+      signUpUrl="/login"
       signInFallbackRedirectUrl="/"
       signUpFallbackRedirectUrl="/"
     >

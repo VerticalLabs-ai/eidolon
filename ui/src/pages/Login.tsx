@@ -15,11 +15,12 @@ export function Login() {
         <SignIn
           routing="path"
           path="/login"
-          signUpUrl="/register"
+          signUpUrl="/login"
           fallbackRedirectUrl="/"
           appearance={{
             elements: {
               card: "bg-surface-raised border border-white/[0.06]",
+              footerAction: "hidden",
               formButtonPrimary: "bg-accent text-surface hover:brightness-110",
             },
           }}

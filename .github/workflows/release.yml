@@ -31,7 +31,7 @@ jobs:
           node-version: "20"
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!@eidolon/desktop'
 
       - name: Compute next CalVer tag
         id: calver
@@ -69,5 +69,63 @@ jobs:
         with:
           tag_name: ${{ needs.verify.outputs.tag }}
           generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  desktop-mac:
+    needs: verify
+    if: needs.verify.outputs.skip != 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Import Developer ID certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build macOS DMG
+        env:
+          EIDOLON_DESKTOP_APP_URL: https://eidolon.verticallabs.ai
+          EIDOLON_REQUIRE_MAC_SIGNING: "1"
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: pnpm desktop:make:mac
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eidolon-${{ needs.verify.outputs.tag }}-mac-arm64-dmg
+          path: packages/desktop/out/make/*.dmg
+          if-no-files-found: error
+
+  attach-desktop:
+    needs: [verify, release, desktop-mac]
+    if: needs.verify.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download DMG artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Eidolon-${{ needs.verify.outputs.tag }}-mac-arm64-dmg
+          path: desktop-artifacts
+
+      - name: Attach DMG to GitHub Release
+        run: gh release upload "${{ needs.verify.outputs.tag }}" desktop-artifacts/*.dmg --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

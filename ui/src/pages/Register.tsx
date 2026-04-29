@@ -1,4 +1,4 @@
-import { SignUp } from "@clerk/clerk-react";
+import { Link } from "react-router-dom";
 
 export function Register() {
   return (
@@ -9,21 +9,20 @@ export function Register() {
             Eidolon
           </h1>
           <p className="mt-2 text-sm text-text-secondary">
-            Create your account
+            Access is currently invite-only.
           </p>
         </div>
-        <SignUp
-          routing="path"
-          path="/register"
-          signInUrl="/login"
-          fallbackRedirectUrl="/"
-          appearance={{
-            elements: {
-              card: "bg-surface-raised border border-white/[0.06]",
-              formButtonPrimary: "bg-accent text-surface hover:brightness-110",
-            },
-          }}
-        />
+        <div className="rounded-lg border border-white/[0.06] bg-surface-raised p-6 text-center shadow-xl">
+          <p className="text-sm leading-6 text-text-secondary">
+            New account creation is disabled for this deployment.
+          </p>
+          <Link
+            to="/login"
+            className="mt-5 inline-flex h-10 items-center justify-center rounded-md bg-accent px-4 text-sm font-medium text-surface transition hover:brightness-110"
+          >
+            Sign in
+          </Link>
+        </div>
       </div>
     </div>
   );

@@ -1,11 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "pnpm run build:vercel",
-  "installCommand": "pnpm install --frozen-lockfile",
+  "installCommand": "pnpm install --frozen-lockfile --filter '!@eidolon/desktop'",
   "outputDirectory": "ui/dist",
   "framework": null,
   "functions": {
-    "api/**/*.ts": {
+    "api/**/*.js": {
       "maxDuration": 60
     }
   },

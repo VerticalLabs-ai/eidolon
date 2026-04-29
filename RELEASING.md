@@ -8,6 +8,20 @@ Releases are automated; see the **Releases** section in [README.md](README.md) f
 - The `verify` job must pass (`npm run typecheck`, `npm run test:run`, `npm run build`) or no tag or release is created.
 - The `verify` job computes the next CalVer tag once via [`scripts/calver-next-tag.sh`](scripts/calver-next-tag.sh), uses it for the UI build, and exposes it to `release` as a job output.
 - The `release` job consumes that verified tag, pushes it, then creates a GitHub Release with generated notes.
+- The `desktop-mac` job builds the signed/notarized macOS DMG on a macOS runner and `attach-desktop` uploads it to the GitHub Release.
+
+## Desktop DMG
+
+Desktop release builds require the signing and notarization secrets referenced in [`packages/desktop/README.md`](packages/desktop/README.md):
+
+- `APPLE_TEAM_ID`
+- `APPLE_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `MACOS_CERTIFICATE_P12`
+- `MACOS_CERTIFICATE_PASSWORD`
+
+The release workflow sets `EIDOLON_REQUIRE_MAC_SIGNING=1`, so missing credentials fail the desktop job instead of publishing an unsigned DMG.
 
 ## Retries
 

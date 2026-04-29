@@ -1,5 +1,16 @@
 import { useAuth, useUser } from "@clerk/clerk-react";
 
+const ADMIN_EMAILS = new Set(["matt@verticallabs.ai"]);
+
+function normalizeEmail(email: string | null | undefined): string {
+  return email?.trim().toLowerCase() ?? "";
+}
+
+function resolveUserRole(email: string, metadataRole: string | null): string | null {
+  if (ADMIN_EMAILS.has(email)) return "admin";
+  return metadataRole;
+}
+
 /**
  * useSession — thin compatibility shim over Clerk's hooks. Returns an object
  * shaped roughly like BetterAuth's session so existing AuthGuard / nav code
@@ -15,6 +26,10 @@ export function useSession() {
     return { data: null, isPending };
   }
 
+  const email = normalizeEmail(user.primaryEmailAddress?.emailAddress);
+  const metadataRole =
+    (user.publicMetadata as { role?: string } | null)?.role ?? null;
+
   return {
     isPending: false,
     data: {
@@ -23,12 +38,11 @@ export function useSession() {
         name:
           [user.firstName, user.lastName].filter(Boolean).join(" ") ||
           user.username ||
-          user.primaryEmailAddress?.emailAddress ||
+          email ||
           user.id,
-        email: user.primaryEmailAddress?.emailAddress ?? "",
+        email,
         image: user.imageUrl,
-        role:
-          (user.publicMetadata as { role?: string } | null)?.role ?? null,
+        role: resolveUserRole(email, metadataRole),
       },
       session: {
         id: sessionId ?? `sess:${user.id}`,

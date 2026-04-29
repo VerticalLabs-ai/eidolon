@@ -6,8 +6,12 @@
     "dev": "node scripts/dev.mjs",
     "dev:server": "pnpm --filter server dev",
     "dev:ui": "pnpm --filter ui dev",
+    "desktop:dev": "pnpm --filter @eidolon/desktop dev",
+    "desktop:package": "pnpm --filter @eidolon/desktop package",
+    "desktop:make": "pnpm --filter @eidolon/desktop make",
+    "desktop:make:mac": "pnpm --filter @eidolon/desktop make:mac",
     "build": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter server build && pnpm --filter ui build",
-    "build:vercel": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter @eidolon/db migrate && pnpm --filter ui build",
+    "build:vercel": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter server build && pnpm --filter @eidolon/db migrate && pnpm --filter ui build",
     "typecheck": "tsc -b",
     "test": "vitest",
     "test:run": "vitest run",
@@ -32,7 +36,10 @@
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild"
+      "electron",
+      "esbuild",
+      "fs-xattr",
+      "macos-alias"
     ]
   }
 }

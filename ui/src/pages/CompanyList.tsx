@@ -12,10 +12,9 @@ import {
   Archive,
   Trash2,
 } from "lucide-react";
-import { useCompanies, useDeleteCompany } from "@/lib/hooks";
+import { useDeleteCompany } from "@/lib/hooks";
 import type { Company, DashboardData } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { CreateCompanyModal } from "@/components/companies/CreateCompanyModal";
 
@@ -154,13 +153,15 @@ export function CompanyList() {
           <h2 className="font-display text-xl font-semibold text-text-primary">
             Your Companies
           </h2>
-          <button
-            onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
-          >
-            <Plus className="h-4 w-4" />
-            Create Company
-          </button>
+          {companies.length > 0 && (
+            <button
+              onClick={() => setModalOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
+            >
+              <Plus className="h-4 w-4" />
+              Create Company
+            </button>
+          )}
         </div>
 
         {isLoading ? (
@@ -176,15 +177,24 @@ export function CompanyList() {
           <EmptyState
             icon={<Building2 className="h-6 w-6" />}
             title="No companies yet"
-            description="Create your first AI-powered company to get started."
+            description="Start with a demo template to see Eidolon's agent workflows, or create a blank company when you are ready."
             action={
-              <button
-                onClick={() => setModalOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
-              >
-                <Plus className="h-4 w-4" />
-                Create Company
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <button
+                  onClick={() => navigate("/templates")}
+                  className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
+                >
+                  <Package className="h-4 w-4" />
+                  Browse Templates
+                </button>
+                <button
+                  onClick={() => setModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-text-primary border border-white/10 bg-white/[0.04] transition-all duration-200 hover:bg-white/[0.08] active:scale-[0.97]"
+                >
+                  <Plus className="h-4 w-4" />
+                  Create Blank
+                </button>
+              </div>
             }
           />
         ) : (

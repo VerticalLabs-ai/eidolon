@@ -1,6 +1,9 @@
 import { createClerkClient, type ClerkClient } from '@clerk/backend';
 import logger from './utils/logger.js';
 
+const DEFAULT_AUTHORIZED_EMAILS = ['matt@verticallabs.ai'];
+const DEFAULT_ADMIN_EMAILS = ['matt@verticallabs.ai'];
+
 // ---------------------------------------------------------------------------
 // Auth types (kept stable across the BetterAuth → Clerk migration so the
 // middleware + routes don't need to care about the underlying provider).
@@ -31,6 +34,45 @@ export interface AuthSession {
 // ---------------------------------------------------------------------------
 
 let cachedClient: ClerkClient | null = null;
+
+function normalizeEmail(email: string | null | undefined): string {
+  return email?.trim().toLowerCase() ?? '';
+}
+
+function parseEmailList(value: string | undefined, defaults: string[]): Set<string> {
+  const raw = value?.trim();
+  const emails = raw
+    ? raw.split(',').map(normalizeEmail)
+    : defaults.map(normalizeEmail);
+
+  return new Set(emails.filter(Boolean));
+}
+
+export function getAuthorizedEmails(): Set<string> {
+  return new Set([
+    ...parseEmailList(process.env.EIDOLON_AUTHORIZED_EMAILS, DEFAULT_AUTHORIZED_EMAILS),
+    ...getAdminEmails(),
+  ]);
+}
+
+export function getAdminEmails(): Set<string> {
+  return parseEmailList(process.env.EIDOLON_ADMIN_EMAILS, DEFAULT_ADMIN_EMAILS);
+}
+
+export function isAuthorizedEmail(email: string | null | undefined): boolean {
+  return getAuthorizedEmails().has(normalizeEmail(email));
+}
+
+export function resolveUserRole(options: {
+  email: string | null | undefined;
+  metadataRole?: string | null;
+}): string | null {
+  if (getAdminEmails().has(normalizeEmail(options.email))) {
+    return 'admin';
+  }
+
+  return options.metadataRole ?? null;
+}
 
 function getClerkClient(): ClerkClient | null {
   if (cachedClient) return cachedClient;
@@ -107,15 +149,26 @@ export async function authenticateRequest(
   let user: AuthUser;
   try {
     const clerkUser = await client.users.getUser(auth.userId);
+    const email = normalizeEmail(clerkUser.primaryEmailAddress?.emailAddress);
+
+    if (!isAuthorizedEmail(email)) {
+      logger.warn(
+        { userId: auth.userId, email },
+        'Auth: rejected Clerk user because email is not authorized',
+      );
+      return null;
+    }
+
+    const metadataRole = (clerkUser.publicMetadata as { role?: string } | null)?.role;
     user = {
       id: clerkUser.id,
       name:
         [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') ||
         clerkUser.username ||
-        clerkUser.primaryEmailAddress?.emailAddress ||
+        email ||
         clerkUser.id,
-      email: clerkUser.primaryEmailAddress?.emailAddress ?? '',
-      role: (clerkUser.publicMetadata as { role?: string } | null)?.role,
+      email,
+      role: resolveUserRole({ email, metadataRole }),
       imageUrl: clerkUser.imageUrl ?? null,
     };
   } catch (err) {

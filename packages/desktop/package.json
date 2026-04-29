@@ -1,0 +1,22 @@
+{
+  "name": "@eidolon/desktop",
+  "productName": "Eidolon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native macOS shell for Eidolon.",
+  "main": "src/main.cjs",
+  "scripts": {
+    "dev": "npm_config_node_linker=hoisted electron-forge start",
+    "package": "npm_config_node_linker=hoisted electron-forge package",
+    "make": "node scripts/rebuild-dmg-native.cjs && npm_config_node_linker=hoisted electron-forge make",
+    "make:mac": "node scripts/rebuild-dmg-native.cjs && npm_config_node_linker=hoisted electron-forge make --platform=darwin"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.10.2",
+    "@electron-forge/maker-dmg": "^7.10.2",
+    "electron": "^39.2.6",
+    "fs-xattr": "0.3.1",
+    "macos-alias": "0.2.12",
+    "node-gyp": "^12.2.0"
+  }
+}
