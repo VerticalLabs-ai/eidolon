@@ -16,8 +16,18 @@ import {
   ChevronRight,
   Loader2,
   Check,
+  Save,
+  RefreshCcw,
+  Trash2,
 } from "lucide-react";
-import { useTemplates, useImportTemplate } from "@/lib/hooks";
+import {
+  useCompanies,
+  useDeleteTemplate,
+  useExportCompany,
+  useImportTemplate,
+  useTemplates,
+  useUpdateTemplateFromCompany,
+} from "@/lib/hooks";
 import type { CompanyTemplate } from "@/lib/api";
 
 const CATEGORIES = [
@@ -45,9 +55,21 @@ export function Templates() {
   const [importName, setImportName] = useState("");
   const [showImportModal, setShowImportModal] = useState(false);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [templateToUpdate, setTemplateToUpdate] = useState<CompanyTemplate | null>(null);
+  const [sourceCompanyId, setSourceCompanyId] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [templateDescription, setTemplateDescription] = useState("");
+  const [templateCategory, setTemplateCategory] = useState("software");
+  const [templateTags, setTemplateTags] = useState("");
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null);
 
   const { data: templates, isLoading } = useTemplates(activeCategory);
+  const { data: companies = [] } = useCompanies();
   const importMutation = useImportTemplate();
+  const exportMutation = useExportCompany(sourceCompanyId);
+  const updateFromCompanyMutation = useUpdateTemplateFromCompany(sourceCompanyId);
+  const deleteTemplateMutation = useDeleteTemplate();
 
   const handleImport = async () => {
     if (!selectedTemplate) return;
@@ -81,6 +103,51 @@ export function Templates() {
     }
   };
 
+  const openSaveTemplateModal = (template?: CompanyTemplate) => {
+    const firstCompany = companies[0];
+    setTemplateToUpdate(template ?? null);
+    setSourceCompanyId(firstCompany?.id ?? "");
+    setTemplateName(template?.name ?? (firstCompany ? `${firstCompany.name} Template` : ""));
+    setTemplateDescription(template?.description ?? "");
+    setTemplateCategory(
+      template?.category ?? (activeCategory !== "all" ? activeCategory : "software"),
+    );
+    setTemplateTags(template?.tags?.join(", ") ?? "");
+    setShowSaveModal(true);
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!sourceCompanyId || !templateName.trim()) return;
+    const payload = {
+      name: templateName.trim(),
+      description: templateDescription.trim() || undefined,
+      category: templateCategory,
+      tags: templateTags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    };
+
+    if (templateToUpdate) {
+      await updateFromCompanyMutation.mutateAsync({
+        templateId: templateToUpdate.id,
+        data: payload,
+      });
+      setTemplateNotice(`Updated ${payload.name} to the next version.`);
+    } else {
+      await exportMutation.mutateAsync(payload);
+      setTemplateNotice(`Saved ${payload.name} as version 1.0.0.`);
+    }
+
+    setShowSaveModal(false);
+  };
+
+  const handleDeleteTemplate = async (template: CompanyTemplate) => {
+    if (!window.confirm(`Delete "${template.name}"? This cannot be undone.`)) return;
+    await deleteTemplateMutation.mutateAsync(template.id);
+    setTemplateNotice(`Deleted ${template.name}.`);
+  };
+
   return (
     <div className="min-h-dvh bg-surface">
       {/* Hero header */}
@@ -100,7 +167,7 @@ export function Templates() {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500/10 glow-accent">
               <Package className="h-7 w-7 text-amber-500" />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <h1 className="font-display text-2xl font-bold tracking-wide text-text-primary">
                 Template Gallery
               </h1>
@@ -108,7 +175,20 @@ export function Templates() {
                 Pre-built AI company configurations ready to deploy
               </p>
             </div>
+            <button
+              onClick={() => openSaveTemplateModal()}
+              disabled={!companies.length}
+              className="inline-flex items-center gap-2 rounded-md h-9 px-3 text-xs font-medium text-surface bg-amber-500 transition-all duration-200 hover:brightness-110 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Save className="h-4 w-4" />
+              Save Company
+            </button>
           </div>
+          {templateNotice && (
+            <div className="mt-4 inline-flex rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+              {templateNotice}
+            </div>
+          )}
         </div>
       </div>
 
@@ -178,6 +258,7 @@ export function Templates() {
               const config = getConfig(template);
               const agents = config.agents ?? [];
               const catColor = CATEGORY_COLORS[template.category] ?? CATEGORY_COLORS.general;
+              const isBuiltIn = template.id.startsWith("builtin-");
 
               return (
                 <div
@@ -199,6 +280,9 @@ export function Templates() {
                       <Sparkles className="h-5 w-5" style={{ color: catColor }} />
                     </div>
                     <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center rounded-md border border-white/10 px-2 py-0.5 text-[10px] font-semibold text-text-secondary">
+                        v{template.version}
+                      </span>
                       <span
                         className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
                         style={{
@@ -208,6 +292,30 @@ export function Templates() {
                       >
                         {template.category}
                       </span>
+                      {!isBuiltIn && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openSaveTemplateModal(template);
+                            }}
+                            title="Update template from a company"
+                            className="rounded-md p-1 text-text-secondary hover:text-amber-500 hover:bg-amber-500/10 transition-colors"
+                          >
+                            <RefreshCcw className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleDeleteTemplate(template);
+                            }}
+                            title="Delete template"
+                            className="rounded-md p-1 text-text-secondary hover:text-error hover:bg-error/10 transition-colors"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -382,6 +490,150 @@ export function Templates() {
                   <>
                     <Download className="h-4 w-4" />
                     Create Company
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Save/update template modal */}
+      {showSaveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="glass-raised rounded-2xl w-full max-w-lg mx-4 p-6 shadow-2xl border border-white/10">
+            <h2 className="font-display text-lg font-semibold text-text-primary mb-1">
+              {templateToUpdate ? "Update Template" : "Save Company Template"}
+            </h2>
+            <p className="text-sm text-text-secondary mb-6">
+              {templateToUpdate
+                ? "Refresh this saved template from the latest company state and bump its version."
+                : "Save the current company structure as a reusable versioned template."}
+            </p>
+
+            <div className="space-y-4">
+              <label className="block">
+                <span className="text-xs font-medium text-text-secondary mb-1 block">
+                  Source Company
+                </span>
+                <select
+                  value={sourceCompanyId}
+                  onChange={(e) => {
+                    const nextCompanyId = e.target.value;
+                    setSourceCompanyId(nextCompanyId);
+                    if (!templateToUpdate) {
+                      const company = companies.find((item) => item.id === nextCompanyId);
+                      setTemplateName(company ? `${company.name} Template` : "");
+                    }
+                  }}
+                  className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
+                >
+                  {!companies.length && <option value="">No companies available</option>}
+                  {companies.map((company) => (
+                    <option key={company.id} value={company.id}>
+                      {company.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-medium text-text-secondary mb-1 block">
+                  Template Name
+                </span>
+                <input
+                  type="text"
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-medium text-text-secondary mb-1 block">
+                  Description
+                </span>
+                <textarea
+                  value={templateDescription}
+                  onChange={(e) => setTemplateDescription(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-md bg-white/[0.04] border border-white/10 px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <label className="block">
+                  <span className="text-xs font-medium text-text-secondary mb-1 block">
+                    Category
+                  </span>
+                  <select
+                    value={templateCategory}
+                    onChange={(e) => setTemplateCategory(e.target.value)}
+                    className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
+                  >
+                    {CATEGORIES.filter((cat) => cat.id !== "all").map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-medium text-text-secondary mb-1 block">
+                    Tags
+                  </span>
+                  <input
+                    type="text"
+                    value={templateTags}
+                    onChange={(e) => setTemplateTags(e.target.value)}
+                    placeholder="ops, launch, sales"
+                    className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
+                  />
+                </label>
+              </div>
+
+              {templateToUpdate && (
+                <div className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-text-secondary">
+                  Current version:{" "}
+                  <span className="font-display text-text-primary">
+                    v{templateToUpdate.version}
+                  </span>
+                  . Saving will create the next patch version.
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowSaveModal(false)}
+                className="h-9 px-4 rounded-md text-sm font-medium text-text-secondary hover:text-text-primary transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void handleSaveTemplate()}
+                disabled={
+                  !sourceCompanyId ||
+                  !templateName.trim() ||
+                  exportMutation.isPending ||
+                  updateFromCompanyMutation.isPending
+                }
+                className="inline-flex items-center gap-2 h-9 px-4 rounded-md text-sm font-medium text-surface bg-amber-500 transition-all duration-200 hover:brightness-110 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {exportMutation.isPending || updateFromCompanyMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    {templateToUpdate ? (
+                      <RefreshCcw className="h-4 w-4" />
+                    ) : (
+                      <Save className="h-4 w-4" />
+                    )}
+                    {templateToUpdate ? "Update Template" : "Save Template"}
                   </>
                 )}
               </button>

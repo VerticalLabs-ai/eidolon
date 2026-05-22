@@ -1035,13 +1035,57 @@ export function useImportTemplate() {
   });
 }
 
+export function useUpdateTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Parameters<typeof api.updateTemplate>[1];
+    }) => api.updateTemplate(id, data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["templates", "detail", vars.id] });
+    },
+  });
+}
+
+export function useDeleteTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteTemplate(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+    },
+  });
+}
+
 export function useExportCompany(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data?: { name?: string; description?: string; category?: string; tags?: string[] }) =>
+    mutationFn: (data?: { name?: string; description?: string; category?: string; tags?: string[]; version?: string }) =>
       api.exportCompany(companyId, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["templates"] });
+    },
+  });
+}
+
+export function useUpdateTemplateFromCompany(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      templateId,
+      data,
+    }: {
+      templateId: string;
+      data?: Parameters<typeof api.updateTemplateFromCompany>[2];
+    }) => api.updateTemplateFromCompany(companyId, templateId, data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["templates", "detail", vars.templateId] });
     },
   });
 }

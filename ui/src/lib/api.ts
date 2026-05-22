@@ -1273,6 +1273,27 @@ export const saveTemplate = (data: {
     body: JSON.stringify(data),
   });
 
+export const updateTemplate = (
+  id: string,
+  data: Partial<{
+    name: string;
+    description: string | null;
+    category: string;
+    author: string | null;
+    version: string;
+    config: Record<string, unknown>;
+    tags: string[];
+    isPublic: boolean;
+  }>,
+) =>
+  request<CompanyTemplate>(`/templates/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const deleteTemplate = (id: string) =>
+  request<void>(`/templates/${id}`, { method: "DELETE" });
+
 export const importTemplate = (
   templateId: string,
   overrides?: { companyName?: string; budgetMultiplier?: number },
@@ -1284,11 +1305,27 @@ export const importTemplate = (
 
 export const exportCompany = (
   companyId: string,
-  data?: { name?: string; description?: string; category?: string; tags?: string[] },
+  data?: { name?: string; description?: string; category?: string; tags?: string[]; version?: string },
 ) =>
   request<{ template: CompanyTemplate; config: Record<string, unknown> }>(
     `/companies/${companyId}/export`,
     { method: "POST", body: JSON.stringify(data ?? {}) },
+  );
+
+export const updateTemplateFromCompany = (
+  companyId: string,
+  templateId: string,
+  data?: {
+    name?: string;
+    description?: string;
+    category?: string;
+    tags?: string[];
+    version?: string;
+  },
+) =>
+  request<{ template: CompanyTemplate; config: Record<string, unknown> }>(
+    `/companies/${companyId}/export/${templateId}`,
+    { method: "PATCH", body: JSON.stringify(data ?? {}) },
   );
 
 // ── Inbox (unified feed) ────────────────────────────────────────────────

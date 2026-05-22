@@ -22,6 +22,12 @@ describe('Templates API', () => {
         }),
       ]),
     );
+
+    const builtIns = res.body.data.filter((template: any) => template.id.startsWith('builtin-'));
+    expect(builtIns.map((template: any) => template.category)).toEqual(
+      expect.arrayContaining(['software', 'marketing', 'ecommerce', 'consulting', 'content']),
+    );
+    expect(builtIns.every((template: any) => template.version === '1.0.0')).toBe(true);
   });
 
   it('imports the built-in demo template as a user-owned company', async () => {
@@ -38,5 +44,55 @@ describe('Templates API', () => {
 
     const agents = await request(app).get(`/api/companies/${companyId}/agents`).expect(200);
     expect(agents.body.data).toHaveLength(5);
+  });
+
+  it('exports, updates, versions, and deletes user-created templates', async () => {
+    const companyRes = await request(app)
+      .post('/api/companies')
+      .send({
+        name: 'Template Source Co',
+        description: 'Company to save as a template',
+        mission: 'Keep template snapshots current',
+        budgetMonthlyCents: 100000,
+      })
+      .expect(201);
+
+    const companyId = companyRes.body.data.id;
+    const exportRes = await request(app)
+      .post(`/api/companies/${companyId}/export`)
+      .send({
+        name: 'Source Snapshot',
+        category: 'consulting',
+        tags: ['snapshot'],
+      })
+      .expect(201);
+
+    const template = exportRes.body.data.template;
+    expect(template.version).toBe('1.0.0');
+    expect(template.category).toBe('consulting');
+
+    const updateRes = await request(app)
+      .patch(`/api/companies/${companyId}/export/${template.id}`)
+      .send({
+        name: 'Source Snapshot Updated',
+        category: 'content',
+        tags: ['snapshot', 'updated'],
+      })
+      .expect(200);
+
+    expect(updateRes.body.data.template).toMatchObject({
+      id: template.id,
+      name: 'Source Snapshot Updated',
+      category: 'content',
+      version: '1.0.1',
+      tags: ['snapshot', 'updated'],
+    });
+
+    await request(app).delete(`/api/templates/${template.id}`).expect(204);
+    await request(app).get(`/api/templates/${template.id}`).expect(404);
+  });
+
+  it('prevents deleting built-in templates', async () => {
+    await request(app).delete('/api/templates/builtin-demo-saas-operator').expect(403);
   });
 });

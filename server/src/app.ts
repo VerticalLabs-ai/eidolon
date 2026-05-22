@@ -111,7 +111,7 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/webhooks', webhookTriggerRouter(db));
 
   // Company Templates (public read, auth for write)
-  app.use('/api/templates', templatesRouter(db));
+  app.use('/api/templates', templatesRouter(db, requireAuth));
 
   // Global prompts (public read)
   app.use('/api/prompts', globalPromptsRouter(db));

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -44,12 +44,14 @@ const SaveTemplateBody = z.object({
   isPublic: z.boolean().default(false),
 });
 
+const UpdateTemplateBody = SaveTemplateBody.partial();
+
 const ImportOverridesBody = z.object({
   companyName: z.string().min(1).max(255).optional(),
   budgetMultiplier: z.number().positive().default(1),
 });
 
-export function templatesRouter(db: DbInstance): Router {
+export function templatesRouter(db: DbInstance, requireAuth?: RequestHandler): Router {
   const router = Router();
   const service = new TemplateService(db);
 
@@ -69,11 +71,50 @@ export function templatesRouter(db: DbInstance): Router {
     res.json({ data: template });
   });
 
+  if (requireAuth) {
+    router.use(requireAuth);
+  }
+
   // POST /api/templates - save a new template
   router.post('/', validate(SaveTemplateBody), async (req, res) => {
     const body = req.body as z.infer<typeof SaveTemplateBody>;
     const template = await service.saveTemplate(body as any);
     res.status(201).json({ data: template });
+  });
+
+  // PATCH /api/templates/:id - update a user-created template
+  router.patch('/:id', validate(UpdateTemplateBody), async (req, res) => {
+    try {
+      const template = await service.updateTemplate(
+        routeParams(req).id,
+        req.body as any,
+      );
+      if (!template) {
+        throw new AppError(404, 'NOT_FOUND', `Template ${routeParams(req).id} not found`);
+      }
+      res.json({ data: template });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('built-in')) {
+        throw new AppError(403, 'CANNOT_UPDATE_BUILT_IN', error.message);
+      }
+      throw error;
+    }
+  });
+
+  // DELETE /api/templates/:id - delete a user-created template
+  router.delete('/:id', async (req, res) => {
+    try {
+      const deleted = await service.deleteTemplate(routeParams(req).id);
+      if (!deleted) {
+        throw new AppError(404, 'NOT_FOUND', `Template ${routeParams(req).id} not found`);
+      }
+      res.status(204).send();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('built-in')) {
+        throw new AppError(403, 'CANNOT_DELETE_BUILT_IN', error.message);
+      }
+      throw error;
+    }
   });
 
   // POST /api/templates/:id/import - import a template to create a new company
@@ -115,12 +156,41 @@ export function companyExportRouter(db: DbInstance): Router {
       description: (req.body as any)?.description ?? `Template exported from ${config.name}`,
       category: (req.body as any)?.category ?? 'general',
       author: (req.body as any)?.author ?? 'user',
+      version: (req.body as any)?.version ?? '1.0.0',
       config,
       tags: (req.body as any)?.tags ?? [],
       isPublic: false,
     });
 
     res.status(201).json({ data: { template, config } });
+  });
+
+  // PATCH /api/companies/:companyId/export/:templateId - refresh a template from the latest company state
+  router.patch('/:templateId', async (req, res) => {
+    const companyId = routeParams(req).companyId;
+    const templateId = routeParams(req).templateId;
+    const config = await service.exportCompany(companyId);
+
+    try {
+      const template = await service.updateTemplate(templateId, {
+        name: (req.body as any)?.name,
+        description: (req.body as any)?.description,
+        category: (req.body as any)?.category,
+        author: (req.body as any)?.author,
+        version: (req.body as any)?.version,
+        config,
+        tags: (req.body as any)?.tags,
+      });
+      if (!template) {
+        throw new AppError(404, 'NOT_FOUND', `Template ${templateId} not found`);
+      }
+      res.json({ data: { template, config } });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('built-in')) {
+        throw new AppError(403, 'CANNOT_UPDATE_BUILT_IN', error.message);
+      }
+      throw error;
+    }
   });
 
   return router;

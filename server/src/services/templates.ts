@@ -37,17 +37,75 @@ export interface CompanyTemplateConfig {
   prompts: TemplatePromptConfig[];
 }
 
-const BUILT_IN_TEMPLATE_DATE = new Date('2026-04-29T00:00:00.000Z');
+type TemplateCategory =
+  | "general"
+  | "software"
+  | "marketing"
+  | "ecommerce"
+  | "consulting"
+  | "content";
+
+interface CompanyTemplateRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  category: TemplateCategory;
+  author: string | null;
+  version: string;
+  config: CompanyTemplateConfig;
+  agentCount: number;
+  isPublic: number;
+  downloadCount: number;
+  tags: string[];
+  previewImage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const BUILT_IN_TEMPLATE_DATE = new Date("2026-04-29T00:00:00.000Z");
+const BUILT_IN_TEMPLATE_VERSION = "1.0.0";
+
+function builtInTemplate(
+  template: Omit<
+    CompanyTemplateRecord,
+    | "author"
+    | "version"
+    | "agentCount"
+    | "isPublic"
+    | "downloadCount"
+    | "previewImage"
+    | "createdAt"
+    | "updatedAt"
+  >,
+): CompanyTemplateRecord {
+  return {
+    ...template,
+    author: "Eidolon",
+    version: BUILT_IN_TEMPLATE_VERSION,
+    agentCount: template.config.agents.length,
+    isPublic: 1,
+    downloadCount: 0,
+    previewImage: null,
+    createdAt: BUILT_IN_TEMPLATE_DATE,
+    updatedAt: BUILT_IN_TEMPLATE_DATE,
+  };
+}
+
+function nextPatchVersion(version: string): string {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return "1.0.1";
+  const [, major, minor, patch] = match;
+  return `${major}.${minor}.${Number(patch) + 1}`;
+}
 
 const BUILT_IN_TEMPLATES = [
-  {
-    id: 'builtin-demo-saas-operator',
-    name: 'SaaS Operator Demo',
+  builtInTemplate({
+    id: "builtin-demo-saas-operator",
+    name: "SaaS Operator Demo",
     description:
-      'A guided demo company with executive, product, engineering, marketing, and support agents so new users can inspect Eidolon workflows immediately.',
-    category: 'software' as const,
-    author: 'Eidolon',
-    version: '1.0.0',
+      "A guided demo company with executive, product, engineering, marketing, and support agents so new users can inspect Eidolon workflows immediately.",
+    category: "software",
+    tags: ["demo", "onboarding", "saas", "agents"],
     config: {
       name: 'Demo SaaS Operator',
       description: 'A sample AI company configured to run a focused SaaS operating cadence.',
@@ -146,15 +204,400 @@ const BUILT_IN_TEMPLATES = [
           variables: ['feedback'],
         },
       ],
-    } satisfies CompanyTemplateConfig,
-    agentCount: 5,
-    isPublic: 1,
-    downloadCount: 0,
-    tags: ['demo', 'onboarding', 'saas', 'agents'],
-    previewImage: null,
-    createdAt: BUILT_IN_TEMPLATE_DATE,
-    updatedAt: BUILT_IN_TEMPLATE_DATE,
-  },
+    },
+  }),
+  builtInTemplate({
+    id: "builtin-growth-marketing-studio",
+    name: "Growth Marketing Studio",
+    description:
+      "A launch-ready marketing team for positioning, campaigns, lifecycle experiments, and creative review.",
+    category: "marketing",
+    tags: ["growth", "campaigns", "lifecycle", "creative"],
+    config: {
+      name: "Growth Marketing Studio",
+      description: "A marketing operator company for shipping campaigns and learning from the funnel.",
+      mission:
+        "Coordinate positioning, channel experiments, content production, and performance review around a focused growth motion.",
+      budgetMonthlyCents: 180000,
+      agents: [
+        {
+          name: "Noa",
+          role: "cmo",
+          title: "AI CMO",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Set marketing strategy, pick the campaign thesis, and keep every channel tied to measurable pipeline.",
+          capabilities: ["positioning", "campaign-strategy", "funnel-review"],
+          budgetMonthlyCents: 55000,
+          reportsTo: null,
+        },
+        {
+          name: "Vale",
+          role: "growth",
+          title: "Growth Experiment Lead",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Design channel tests, define success metrics, and turn results into the next experiment queue.",
+          capabilities: ["experimentation", "analytics", "channel-testing"],
+          budgetMonthlyCents: 45000,
+          reportsTo: "role:cmo",
+        },
+        {
+          name: "Lena",
+          role: "content",
+          title: "Content Strategist",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Create content briefs, nurture assets, and campaign copy that are specific to the audience and offer.",
+          capabilities: ["content-strategy", "copywriting", "editorial-planning"],
+          budgetMonthlyCents: 40000,
+          reportsTo: "role:cmo",
+        },
+        {
+          name: "Quinn",
+          role: "creative",
+          title: "Creative Reviewer",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Review creative assets for clarity, brand consistency, offer strength, and conversion risks.",
+          capabilities: ["creative-review", "brand-consistency", "ad-critique"],
+          budgetMonthlyCents: 40000,
+          reportsTo: "role:cmo",
+        },
+      ],
+      goals: [
+        {
+          title: "Launch the first campaign sprint",
+          description:
+            "Ship a campaign with a clear audience, offer, channel plan, and review cadence.",
+          level: "company",
+        },
+        {
+          title: "Build a reusable experiment backlog",
+          description:
+            "Convert funnel observations into prioritized growth tests with owner and metric definitions.",
+          level: "team",
+        },
+      ],
+      prompts: [
+        {
+          name: "Campaign Brief",
+          category: "marketing",
+          content:
+            "Create a campaign brief for {{offer}} targeting {{audience}}. Include positioning, channels, assets, risks, and measurement.",
+          variables: ["offer", "audience"],
+        },
+        {
+          name: "Funnel Retrospective",
+          category: "analytics",
+          content:
+            "Review this funnel data and propose the next three experiments with reasoning: {{funnel_data}}",
+          variables: ["funnel_data"],
+        },
+      ],
+    },
+  }),
+  builtInTemplate({
+    id: "builtin-ecommerce-ops-hub",
+    name: "E-commerce Ops Hub",
+    description:
+      "A commerce team for merchandising, lifecycle retention, customer operations, and storefront optimization.",
+    category: "ecommerce",
+    tags: ["commerce", "merchandising", "retention", "support"],
+    config: {
+      name: "E-commerce Ops Hub",
+      description: "An AI commerce company configured around catalog, conversion, and retention workflows.",
+      mission:
+        "Improve store performance by coordinating product merchandising, promotion planning, customer insights, and support loops.",
+      budgetMonthlyCents: 220000,
+      agents: [
+        {
+          name: "Mara",
+          role: "gm",
+          title: "AI Commerce GM",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Own commercial priorities, trading cadence, and cross-functional decisions for the store.",
+          capabilities: ["commerce-strategy", "trading-review", "prioritization"],
+          budgetMonthlyCents: 60000,
+          reportsTo: null,
+        },
+        {
+          name: "Pax",
+          role: "merchandiser",
+          title: "Merchandising Lead",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Plan category focus, product storytelling, bundle ideas, and landing page improvements.",
+          capabilities: ["merchandising", "catalog-analysis", "offer-planning"],
+          budgetMonthlyCents: 50000,
+          reportsTo: "role:gm",
+        },
+        {
+          name: "Rin",
+          role: "retention",
+          title: "Lifecycle Marketer",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Build email, SMS, and loyalty workflows that lift repeat purchase and customer lifetime value.",
+          capabilities: ["email", "sms", "retention-analysis"],
+          budgetMonthlyCents: 45000,
+          reportsTo: "role:gm",
+        },
+        {
+          name: "Tess",
+          role: "support",
+          title: "Customer Insights Lead",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Turn customer questions, returns, and reviews into product, content, and operations improvements.",
+          capabilities: ["support-triage", "review-analysis", "customer-insights"],
+          budgetMonthlyCents: 35000,
+          reportsTo: "role:gm",
+        },
+        {
+          name: "Oren",
+          role: "analyst",
+          title: "Store Performance Analyst",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Analyze conversion, AOV, repeat purchase, and inventory signals to recommend weekly actions.",
+          capabilities: ["analytics", "conversion-review", "forecasting"],
+          budgetMonthlyCents: 30000,
+          reportsTo: "role:gm",
+        },
+      ],
+      goals: [
+        {
+          title: "Improve storefront conversion",
+          description:
+            "Identify and ship the highest-impact merchandising and offer improvements for the store.",
+          level: "company",
+        },
+        {
+          title: "Close the customer feedback loop",
+          description:
+            "Turn support and review themes into specific improvements across products, pages, and lifecycle messages.",
+          level: "team",
+        },
+      ],
+      prompts: [
+        {
+          name: "Weekly Trading Review",
+          category: "analytics",
+          content:
+            "Review this commerce performance snapshot and recommend priority actions for merchandising, retention, and support: {{store_metrics}}",
+          variables: ["store_metrics"],
+        },
+        {
+          name: "Product Page Improvement",
+          category: "conversion",
+          content:
+            "Improve this product page for {{product_name}} using the following customer objections and reviews: {{customer_signals}}",
+          variables: ["product_name", "customer_signals"],
+        },
+      ],
+    },
+  }),
+  builtInTemplate({
+    id: "builtin-consulting-delivery-office",
+    name: "Consulting Delivery Office",
+    description:
+      "A client-services operating model for discovery, delivery planning, research, and stakeholder reporting.",
+    category: "consulting",
+    tags: ["client-services", "delivery", "research", "reporting"],
+    config: {
+      name: "Consulting Delivery Office",
+      description: "A consulting team designed to run client discovery through delivery review.",
+      mission:
+        "Keep client engagements crisp by connecting discovery, research, work planning, and executive communication.",
+      budgetMonthlyCents: 200000,
+      agents: [
+        {
+          name: "Cass",
+          role: "partner",
+          title: "Engagement Partner",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Own client outcomes, engagement scope, executive communication, and decision quality.",
+          capabilities: ["client-strategy", "scope-management", "executive-review"],
+          budgetMonthlyCents: 65000,
+          reportsTo: null,
+        },
+        {
+          name: "Eli",
+          role: "pm",
+          title: "Delivery Manager",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Break engagement goals into plans, milestones, risks, and clear owner assignments.",
+          capabilities: ["project-planning", "risk-management", "status-reporting"],
+          budgetMonthlyCents: 50000,
+          reportsTo: "role:partner",
+        },
+        {
+          name: "Sage",
+          role: "researcher",
+          title: "Research Lead",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Run structured research, synthesize evidence, and separate findings from assumptions.",
+          capabilities: ["research", "synthesis", "market-analysis"],
+          budgetMonthlyCents: 45000,
+          reportsTo: "role:partner",
+        },
+        {
+          name: "Niko",
+          role: "analyst",
+          title: "Business Analyst",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Translate client data, interviews, and operating context into decisions, options, and tradeoffs.",
+          capabilities: ["analysis", "modeling", "recommendations"],
+          budgetMonthlyCents: 40000,
+          reportsTo: "role:pm",
+        },
+      ],
+      goals: [
+        {
+          title: "Create the engagement operating plan",
+          description:
+            "Define scope, milestones, research questions, stakeholder cadence, and delivery risks.",
+          level: "company",
+        },
+        {
+          title: "Produce the first client-ready recommendation",
+          description:
+            "Synthesize evidence into a practical recommendation with tradeoffs and next actions.",
+          level: "team",
+        },
+      ],
+      prompts: [
+        {
+          name: "Client Discovery Synthesis",
+          category: "research",
+          content:
+            "Synthesize these client discovery notes into goals, constraints, unknowns, risks, and next questions: {{discovery_notes}}",
+          variables: ["discovery_notes"],
+        },
+        {
+          name: "Executive Status Update",
+          category: "reporting",
+          content:
+            "Write an executive status update for {{client_name}} covering progress, blockers, decisions needed, and next milestones.",
+          variables: ["client_name"],
+        },
+      ],
+    },
+  }),
+  builtInTemplate({
+    id: "builtin-content-production-desk",
+    name: "Content Production Desk",
+    description:
+      "A publishing team for editorial planning, research, writing, editing, distribution, and performance review.",
+    category: "content",
+    tags: ["editorial", "publishing", "research", "distribution"],
+    config: {
+      name: "Content Production Desk",
+      description: "An editorial operating company for running a consistent content machine.",
+      mission:
+        "Plan, produce, edit, distribute, and learn from content with a clear editorial standard and cadence.",
+      budgetMonthlyCents: 160000,
+      agents: [
+        {
+          name: "June",
+          role: "editor",
+          title: "Managing Editor",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Own editorial strategy, calendar quality, review standards, and publication readiness.",
+          capabilities: ["editorial-strategy", "editing", "calendar-planning"],
+          budgetMonthlyCents: 50000,
+          reportsTo: null,
+        },
+        {
+          name: "Arlo",
+          role: "researcher",
+          title: "Research Producer",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Gather credible source material, identify angles, and prepare research packets for writers.",
+          capabilities: ["research", "source-review", "angle-development"],
+          budgetMonthlyCents: 35000,
+          reportsTo: "role:editor",
+        },
+        {
+          name: "Bea",
+          role: "writer",
+          title: "Lead Writer",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Draft clear, specific, audience-aware content from approved briefs and research packets.",
+          capabilities: ["writing", "storytelling", "drafting"],
+          budgetMonthlyCents: 40000,
+          reportsTo: "role:editor",
+        },
+        {
+          name: "Kai",
+          role: "distribution",
+          title: "Distribution Lead",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          systemPrompt:
+            "Turn published content into channel-specific distribution, repurposing, and performance learnings.",
+          capabilities: ["distribution", "repurposing", "performance-review"],
+          budgetMonthlyCents: 35000,
+          reportsTo: "role:editor",
+        },
+      ],
+      goals: [
+        {
+          title: "Ship the first editorial cycle",
+          description:
+            "Move topics from brief through research, draft, edit, publish, and distribution.",
+          level: "company",
+        },
+        {
+          title: "Build the reusable content standards",
+          description:
+            "Define quality bars, review steps, and performance signals for future publishing cycles.",
+          level: "team",
+        },
+      ],
+      prompts: [
+        {
+          name: "Editorial Brief",
+          category: "content",
+          content:
+            "Create an editorial brief for {{topic}} aimed at {{audience}}. Include angle, thesis, outline, sources needed, and distribution notes.",
+          variables: ["topic", "audience"],
+        },
+        {
+          name: "Content Repurposing Plan",
+          category: "distribution",
+          content:
+            "Repurpose this published piece into channel-specific assets for newsletter, social, and sales enablement: {{content_url_or_text}}",
+          variables: ["content_url_or_text"],
+        },
+      ],
+    },
+  }),
 ];
 
 export class TemplateService {
@@ -446,6 +889,82 @@ export class TemplateService {
       .returning();
 
     return template;
+  }
+
+  /**
+   * Update an existing user-created template and bump its version by default.
+   */
+  async updateTemplate(
+    templateId: string,
+    data: Partial<{
+      name: string;
+      description: string | null;
+      category: TemplateCategory;
+      author: string | null;
+      version: string;
+      config: CompanyTemplateConfig;
+      tags: string[];
+      isPublic: boolean;
+    }>,
+  ) {
+    if (BUILT_IN_TEMPLATES.some((template) => template.id === templateId)) {
+      throw new Error("Cannot update built-in templates");
+    }
+
+    const { companyTemplates } = this.db.schema;
+    const [current] = await this.db.drizzle
+      .select()
+      .from(companyTemplates)
+      .where(eq(companyTemplates.id, templateId))
+      .limit(1);
+
+    if (!current) return null;
+
+    const [template] = await this.db.drizzle
+      .update(companyTemplates)
+      .set({
+        ...(data.name !== undefined ? { name: data.name } : {}),
+        ...(data.description !== undefined
+          ? { description: data.description }
+          : {}),
+        ...(data.category !== undefined
+          ? { category: data.category as any }
+          : {}),
+        ...(data.author !== undefined ? { author: data.author } : {}),
+        version: data.version ?? nextPatchVersion(current.version),
+        ...(data.config !== undefined
+          ? {
+              config: data.config as any,
+              agentCount: data.config.agents.length,
+            }
+          : {}),
+        ...(data.tags !== undefined ? { tags: data.tags } : {}),
+        ...(data.isPublic !== undefined
+          ? { isPublic: data.isPublic ? 1 : 0 }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(companyTemplates.id, templateId))
+      .returning();
+
+    return template;
+  }
+
+  /**
+   * Delete a user-created template.
+   */
+  async deleteTemplate(templateId: string) {
+    if (BUILT_IN_TEMPLATES.some((template) => template.id === templateId)) {
+      throw new Error("Cannot delete built-in templates");
+    }
+
+    const { companyTemplates } = this.db.schema;
+    const [template] = await this.db.drizzle
+      .delete(companyTemplates)
+      .where(eq(companyTemplates.id, templateId))
+      .returning({ id: companyTemplates.id });
+
+    return template ?? null;
   }
 
   /**
