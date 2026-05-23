@@ -92,6 +92,46 @@ const runtimeTotalsCacheCleanup = setInterval(
 );
 runtimeTotalsCacheCleanup.unref?.();
 
+function pruneRuntimeTotalsCache(now = Date.now()): void {
+  for (const [key, entry] of runtimeTotalsCache) {
+    if (entry.expiresAt <= now) runtimeTotalsCache.delete(key);
+  }
+
+  while (runtimeTotalsCache.size > RUNTIME_TOTALS_CACHE_MAX_ENTRIES) {
+    const oldestKey = runtimeTotalsCache.keys().next().value;
+    if (!oldestKey) break;
+    runtimeTotalsCache.delete(oldestKey);
+  }
+}
+
+function readRuntimeTotalsCache(key: string, now: number): RuntimeTotals | null {
+  const entry = runtimeTotalsCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= now) {
+    runtimeTotalsCache.delete(key);
+    return null;
+  }
+
+  runtimeTotalsCache.delete(key);
+  runtimeTotalsCache.set(key, entry);
+  return entry.totals;
+}
+
+function writeRuntimeTotalsCache(key: string, totals: RuntimeTotals): void {
+  runtimeTotalsCache.delete(key);
+  runtimeTotalsCache.set(key, {
+    expiresAt: Date.now() + RUNTIME_TOTALS_CACHE_TTL_MS,
+    totals,
+  });
+  pruneRuntimeTotalsCache();
+}
+
+const runtimeTotalsCacheCleanup = setInterval(
+  () => pruneRuntimeTotalsCache(),
+  RUNTIME_TOTALS_CACHE_TTL_MS,
+);
+runtimeTotalsCacheCleanup.unref?.();
+
 const RuntimeStateQuery = z.object({
   runningLimit: z.coerce.number().int().min(1).max(200).default(50),
   runningOffset: z.coerce.number().int().min(0).default(0),
