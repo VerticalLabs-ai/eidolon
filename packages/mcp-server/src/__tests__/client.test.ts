@@ -97,6 +97,31 @@ describe("EidolonClient", () => {
     expect(fetchStub.calls[1].init.method).toBe("POST");
   });
 
+  it("calls skill catalog management endpoints", async () => {
+    const fetchStub = makeFetch(() => ({ body: { data: { ok: true } } }));
+    const client = new EidolonClient(baseConfig, fetchStub.fn);
+    const companyId = "11111111-1111-1111-1111-111111111111";
+    const skillId = "33333333-3333-3333-3333-333333333333";
+
+    await client.auditSkills(companyId);
+    await client.exportSkill(companyId, skillId);
+    await client.resetSkill(companyId, skillId, {
+      agentIds: ["22222222-2222-2222-2222-222222222222"],
+      reason: "resync local adapter home",
+    });
+
+    expect(fetchStub.calls.map((call) => call.url)).toEqual([
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/skills/audit",
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/skills/33333333-3333-3333-3333-333333333333/export",
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/skills/33333333-3333-3333-3333-333333333333/reset",
+    ]);
+    expect(fetchStub.calls[2].init.method).toBe("POST");
+    expect(JSON.parse(String(fetchStub.calls[2].init.body))).toEqual({
+      agentIds: ["22222222-2222-2222-2222-222222222222"],
+      reason: "resync local adapter home",
+    });
+  });
+
   it("skips Authorization when no apiKey is set (local_trusted mode)", async () => {
     const fetchStub = makeFetch(() => ({ body: { data: [] } }));
     const client = new EidolonClient(

@@ -22,6 +22,8 @@ approvals directly from the chat.
 - `eidolon_get_approval` — includes comments
 - `eidolon_list_adapters` — capability matrix for every adapter (streaming, tools, vision, reasoning, …)
 - `eidolon_list_runtime_adapters` — provider, process, HTTP, MCP, and OpenJarvis-local runtime descriptors
+- `eidolon_audit_skills` — company skill catalog health, assignment, and sync diagnostics
+- `eidolon_export_skill` — export one skill in an agentskills.io-compatible shape
 
 ### Write
 
@@ -33,6 +35,7 @@ approvals directly from the chat.
 - `eidolon_cancel_runtime_session`
 - `eidolon_finalize_runtime_session`
 - `eidolon_install_skill`
+- `eidolon_reset_skill_sync`
 - `eidolon_create_routine`
 - `eidolon_create_approval`
 - `eidolon_decide_approval` — `approved` or `rejected`

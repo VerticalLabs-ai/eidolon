@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import request from 'supertest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, createTestDb } from '../test-utils.js';
 
@@ -311,6 +311,106 @@ describe('Hybrid Jarvis runtime foundation', () => {
       .get(`/api/companies/${companyId}/agents/${agent.body.data.id}`)
       .expect(200);
     expect(refreshedAgent.body.data.skillsEnabled).toContain('code-explainer');
+  });
+
+  it('audits, exports, and resets company skill sync state', async () => {
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: 'Skill Operator', role: 'engineer' })
+      .expect(201);
+
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'daily-briefing',
+        version: '1.0.0',
+        source: 'agentskills.io/manual',
+        provenance: 'manual',
+        trustLevel: 'markdown_only',
+        entrypoint: '../escape.md',
+        content: '# Daily Briefing\nSummarize open tasks and approvals.',
+        tags: ['jarvis', 'briefing'],
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
+
+    await db.drizzle
+      .update(db.schema.agentSkills)
+      .set({
+        syncStatus: 'synced',
+        materializedPath: '/tmp/eidolon/skills/daily-briefing',
+        lastSyncedAt: new Date(),
+      })
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+
+    const audit = await request(app)
+      .get(`/api/companies/${companyId}/skills/audit`)
+      .expect(200);
+    expect(audit.body.data.totals.skills).toBe(1);
+    expect(audit.body.data.totals.assignments).toBe(1);
+    expect(audit.body.data.totals.syncedAssignments).toBe(1);
+    expect(audit.body.data.skills[0]).toMatchObject({
+      name: 'daily-briefing',
+      assignmentCount: 1,
+      issues: [],
+    });
+
+    const exported = await request(app)
+      .get(`/api/companies/${companyId}/skills/${installed.body.data.skill.id}/export`)
+      .expect(200);
+    expect(exported.body.data.schema).toBe('agentskills.io/v1');
+    expect(exported.body.data.skill.name).toBe('daily-briefing');
+    expect(exported.body.data.skill.entrypoint).toBe('SKILL.md');
+    expect(exported.body.data.files).toEqual([
+      {
+        path: 'SKILL.md',
+        content: '# Daily Briefing\nSummarize open tasks and approvals.',
+      },
+    ]);
+    expect(exported.body.data.assignments[0]).toMatchObject({
+      agentId: agent.body.data.id,
+      syncStatus: 'synced',
+      materializedPath: '/tmp/eidolon/skills/daily-briefing',
+    });
+
+    const reset = await request(app)
+      .post(`/api/companies/${companyId}/skills/${installed.body.data.skill.id}/reset`)
+      .send({ reason: 'resync local adapter home' })
+      .expect(200);
+    expect(reset.body.data.assignments[0]).toMatchObject({
+      agentId: agent.body.data.id,
+      syncStatus: 'pending',
+      materializedPath: null,
+      lastSyncedAt: null,
+    });
+
+    await request(app)
+      .post(`/api/companies/${companyId}/skills/${installed.body.data.skill.id}/reset`)
+      .send({ agentIds: [] })
+      .expect(400);
+
+    const unassignedAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: 'Unassigned Skill Agent', role: 'support' })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/skills/${installed.body.data.skill.id}/reset`)
+      .send({ agentIds: [unassignedAgent.body.data.id] })
+      .expect(404);
+
+    const [assignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(
+        and(
+          eq(db.schema.agentSkills.companyId, companyId),
+          eq(db.schema.agentSkills.skillId, installed.body.data.skill.id),
+        ),
+      );
+    expect(assignment.syncStatus).toBe('pending');
+    expect(assignment.materializedPath).toBeNull();
+    expect(assignment.lastSyncedAt).toBeNull();
   });
 
   it('creates and triggers Jarvis routines', async () => {

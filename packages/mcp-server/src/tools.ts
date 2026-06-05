@@ -413,6 +413,61 @@ export function registerEidolonTools(
   );
 
   server.registerTool(
+    "eidolon_audit_skills",
+    {
+      title: "Audit skills",
+      description:
+        "Audit the company skills catalog for assignments, sync status, executable trust, missing entrypoints, and agent catalog mismatches.",
+      inputSchema: {
+        companyId: companyIdArg,
+      },
+    },
+    async ({ companyId }) =>
+      asJsonContent(
+        await client.auditSkills(requireCompanyId(config, companyId)),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_export_skill",
+    {
+      title: "Export skill",
+      description:
+        "Export one company skill in an agentskills.io-compatible shape with content, metadata, and current assignments.",
+      inputSchema: {
+        companyId: companyIdArg,
+        skillId: z.string().uuid(),
+      },
+    },
+    async ({ companyId, skillId }) =>
+      asJsonContent(
+        await client.exportSkill(requireCompanyId(config, companyId), skillId),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_reset_skill_sync",
+    {
+      title: "Reset skill sync",
+      description:
+        "Reset one skill's materialized assignments back to pending so local adapter homes can resync or recover.",
+      inputSchema: {
+        companyId: companyIdArg,
+        skillId: z.string().uuid(),
+        agentIds: z.array(z.string().uuid()).min(1).optional(),
+        reason: z.string().max(1000).optional(),
+      },
+    },
+    async ({ companyId, skillId, agentIds, reason }) =>
+      asJsonContent(
+        await client.resetSkill(requireCompanyId(config, companyId), skillId, {
+          agentIds,
+          reason,
+        }),
+      ),
+  );
+
+  server.registerTool(
     "eidolon_create_routine",
     {
       title: "Create routine",

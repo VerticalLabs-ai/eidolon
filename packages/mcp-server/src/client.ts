@@ -295,6 +295,29 @@ export class EidolonClient {
     );
   }
 
+  auditSkills(companyId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/skills/audit`,
+    );
+  }
+
+  exportSkill(companyId: string, skillId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/skills/${skillId}/export`,
+    );
+  }
+
+  resetSkill(
+    companyId: string,
+    skillId: string,
+    body: { agentIds?: string[]; reason?: string } = {},
+  ) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/skills/${skillId}/reset`,
+      { method: "POST", body },
+    );
+  }
+
   createRoutine(companyId: string, body: Record<string, unknown>) {
     return this.request<Record<string, unknown>>(
       `/api/companies/${companyId}/routines`,
