@@ -72,6 +72,9 @@ const jarvisModeOptions: Array<{ value: JarvisRoutine["jarvisMode"]; label: stri
 ];
 
 type BadgeTone = "default" | "success" | "warning" | "error" | "info";
+type DesktopBridge = NonNullable<Window["eidolonDesktop"]>;
+type DesktopRuntimeStatus = Awaited<ReturnType<DesktopBridge["getRuntimeStatus"]>>;
+type DesktopRuntimeService = DesktopRuntimeStatus["services"][number];
 
 const activeSessionStatuses = new Set<RuntimeSessionStatus>([
   "queued",
@@ -113,6 +116,24 @@ function statusVariant(status: RuntimeSessionStatus): BadgeTone {
   if (status === "completed" || status === "finalized") return "success";
   if (status === "failed" || status === "cancelled") return "error";
   return "warning";
+}
+
+function desktopServiceVariant(service: DesktopRuntimeService): BadgeTone {
+  if (service.status === "healthy") return "success";
+  if (service.status === "error") return "error";
+  if (service.status === "unavailable") return service.required ? "error" : "warning";
+  return service.required ? "warning" : "default";
+}
+
+function desktopServiceDetail(service: DesktopRuntimeService): string {
+  if (service.status === "healthy") {
+    const parts = [];
+    if (typeof service.statusCode === "number") parts.push(`HTTP ${service.statusCode}`);
+    if (typeof service.latencyMs === "number") parts.push(`${service.latencyMs}ms`);
+    return parts.join(" - ") || "Healthy";
+  }
+  if (service.status === "unconfigured") return "No health URL configured";
+  return service.error || "Health check failed";
 }
 
 function defaultAdapterIdForAgent(agent: Agent): string {
@@ -213,6 +234,169 @@ function AdminRequiredPanel({ title }: { title: string }) {
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DesktopCompanionPanel() {
+  const desktop = typeof window !== "undefined" ? window.eidolonDesktop : undefined;
+  const [status, setStatus] = useState<DesktopRuntimeStatus | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(Boolean(desktop));
+  const [launchingPreset, setLaunchingPreset] = useState<string | null>(null);
+
+  async function refreshStatus(showToast = false) {
+    if (!desktop) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const nextStatus = await desktop.getRuntimeStatus();
+      setStatus(nextStatus);
+      if (showToast) toast.success("Desktop runtime status refreshed");
+    } catch (error) {
+      setError(error);
+      if (showToast) toast.error(errorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!desktop) return;
+
+    void refreshStatus();
+    return desktop.onRuntimeStatusRefresh(() => {
+      void refreshStatus();
+    });
+  }, [desktop]);
+
+  async function handleLaunchPreset(presetId: string) {
+    if (!desktop) return;
+
+    setLaunchingPreset(presetId);
+    try {
+      const result = await desktop.launchOpenJarvisPreset(presetId);
+      toast.success(`OpenJarvis preset launched${result.pid ? ` (pid ${result.pid})` : ""}`);
+      await refreshStatus();
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setLaunchingPreset(null);
+    }
+  }
+
+  return (
+    <div className="glass rounded-xl overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-white/[0.06] px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Cpu className="h-4 w-4 text-neon-cyan" />
+            <h3 className="text-sm font-semibold text-text-primary font-display">
+              Desktop Companion
+            </h3>
+          </div>
+          <p className="mt-1 text-xs text-text-secondary">
+            Local service health and explicit OpenJarvis preset launch from the Electron shell.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={desktop ? "success" : "warning"}>
+            {desktop ? "Desktop bridge active" : "Browser session"}
+          </Badge>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<RefreshCw className="h-3.5 w-3.5" />}
+            disabled={!desktop}
+            loading={loading}
+            onClick={() => void refreshStatus(true)}
+          >
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      {!desktop ? (
+        <p className="p-5 text-sm text-text-secondary">
+          Desktop app not detected. Open Eidolon through the packaged app to inspect local runtime services and launch configured OpenJarvis presets.
+        </p>
+      ) : error ? (
+        <ErrorPanel title="Desktop companion unavailable" error={error} />
+      ) : loading && !status ? (
+        <div className="grid gap-4 p-5 lg:grid-cols-2">
+          <Skeleton lines={3} />
+          <Skeleton lines={3} />
+        </div>
+      ) : status ? (
+        <div className="grid gap-0 lg:grid-cols-[1fr_360px]">
+          <div className="divide-y divide-white/[0.06] border-b border-white/[0.06] lg:border-b-0 lg:border-r">
+            {status.services.map((service) => (
+              <div key={service.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-text-primary font-display">
+                      {service.label}
+                    </p>
+                    <Badge variant={desktopServiceVariant(service)}>
+                      {toLabel(service.status)}
+                    </Badge>
+                    {service.required && <Badge variant="low">Required</Badge>}
+                  </div>
+                  <p className="mt-1 truncate text-xs text-text-secondary">
+                    {service.url || "No URL configured"}
+                  </p>
+                </div>
+                <p className="text-xs text-text-muted sm:text-right">
+                  {desktopServiceDetail(service)}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <div className="p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold text-text-primary font-display">
+                  OpenJarvis presets
+                </p>
+                <p className="mt-1 text-xs text-text-secondary">
+                  {status.openJarvis.configured
+                    ? "Launch configured local presets."
+                    : "No preset commands configured."}
+                </p>
+              </div>
+              <Badge variant={status.openJarvis.configured ? "success" : "default"}>
+                {status.openJarvis.presets.filter((preset) => preset.configured).length} ready
+              </Badge>
+            </div>
+            <div className="space-y-2">
+              {status.openJarvis.presets.map((preset) => (
+                <div key={preset.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-text-primary">
+                      {toLabel(preset.id)}
+                    </p>
+                    <p className="text-[11px] text-text-muted">
+                      {preset.configured ? "Configured" : "Needs argv config"}
+                    </p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<Play className="h-3.5 w-3.5" />}
+                    disabled={!preset.configured}
+                    loading={launchingPreset === preset.id}
+                    onClick={() => void handleLaunchPreset(preset.id)}
+                  >
+                    Launch
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -844,6 +1028,8 @@ export function JarvisRuntime() {
           <StatTile icon={Activity} label="Sessions" value={sessions.length} tone="success" />
           <StatTile icon={Gauge} label="Routines" value={routines.length} tone="warning" />
         </div>
+
+        <DesktopCompanionPanel />
 
         <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
           <RuntimeLauncher
