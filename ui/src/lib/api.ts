@@ -70,6 +70,12 @@ export interface Agent {
   title: string | null;
   provider: string;
   model: string;
+  adapterId?: string | null;
+  adapterConfig?: Record<string, unknown>;
+  defaultEnvironmentId?: string | null;
+  skillsEnabled?: string[];
+  routinePolicy?: Record<string, unknown>;
+  sessionPolicy?: Record<string, unknown>;
   status: string;
   reportsTo: string | null;
   capabilities: string[];
@@ -262,6 +268,12 @@ export const updateAgent = (
     method: "PATCH",
     body: JSON.stringify(data),
   });
+
+export const wakeAgent = (companyId: string, agentId: string) =>
+  request<{ agentId: string; wake: boolean; taskId?: string | null }>(
+    `/companies/${companyId}/agents/${agentId}/wake`,
+    { method: "POST" },
+  );
 
 // ── Tasks ────────────────────────────────────────────────────────────────
 
@@ -1160,6 +1172,232 @@ export const callMCPTool = (
   request<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>(
     `/companies/${companyId}/mcp/tools/${toolName}/call`,
     { method: "POST", body: JSON.stringify(data) },
+  );
+
+// ── Hybrid Jarvis Runtime ──────────────────────────────────────────────
+
+export type RuntimeAdapterKind =
+  | "provider"
+  | "process"
+  | "http"
+  | "mcp"
+  | "openjarvis-local";
+export type RuntimeAdapterLocality = "cloud" | "local" | "hybrid";
+export type RuntimeAdapterMode = "on_demand" | "scheduled" | "continuous";
+
+export interface RuntimeAdapterCapabilities {
+  runtime: boolean;
+  streaming: boolean;
+  tools: boolean;
+  mcp: boolean;
+  skills: boolean;
+  vision: boolean;
+  browser: boolean;
+  voice: boolean;
+  shell: boolean;
+  filesystem: boolean;
+  reasoning: boolean;
+  jsonMode: boolean;
+  systemPrompt: boolean;
+  costTracking: boolean;
+  requiresApiKey: boolean;
+  local: boolean;
+  sessionResume: boolean;
+  energyTelemetry: boolean;
+}
+
+export interface RuntimeAdapterDescriptor {
+  id: string;
+  name: string;
+  kind: RuntimeAdapterKind;
+  locality: RuntimeAdapterLocality;
+  description: string;
+  supportedModes: RuntimeAdapterMode[];
+  capabilities: RuntimeAdapterCapabilities;
+  models: Array<{
+    id: string;
+    label: string;
+    maxContextTokens?: number;
+    maxOutputTokens?: number;
+    capabilitiesOverride?: Partial<RuntimeAdapterCapabilities>;
+  }>;
+}
+
+export type RuntimeSessionMode =
+  | "on_demand"
+  | "scheduled"
+  | "continuous"
+  | "manual"
+  | "recovery";
+export type RuntimeSessionStatus =
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "cancelled"
+  | "finalizing"
+  | "finalized"
+  | "completed"
+  | "failed";
+
+export interface RuntimeSession {
+  id: string;
+  companyId: string;
+  agentId: string;
+  taskId: string | null;
+  executionId: string | null;
+  environmentId: string | null;
+  runId: string;
+  adapterId: string;
+  adapterConfig: Record<string, unknown>;
+  mode: RuntimeSessionMode;
+  status: RuntimeSessionStatus;
+  resumeState: Record<string, unknown>;
+  transcript: Array<Record<string, unknown>>;
+  cancellationReason: string | null;
+  finalizeRequired: boolean;
+  finalizedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CompanySkill {
+  id: string;
+  companyId: string;
+  name: string;
+  version: string;
+  source: string;
+  provenance: "bundled" | "catalog" | "runtime" | "adapter" | "github" | "manual";
+  trustLevel: "markdown_only" | "assets" | "scripts_executables";
+  entrypoint: string | null;
+  content: string;
+  metadata: Record<string, unknown>;
+  tags: string[];
+  installedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentSkillAssignment {
+  id: string;
+  companyId: string;
+  agentId: string;
+  skillId: string;
+  syncStatus: "pending" | "synced" | "failed" | "disabled";
+  materializedPath: string | null;
+  lastSyncedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JarvisRoutine {
+  id: string;
+  companyId: string;
+  agentId: string | null;
+  name: string;
+  mode: "scheduled" | "continuous" | "on_demand";
+  jarvisMode: "daily_briefing" | "monitoring" | "research" | "follow_up" | "custom";
+  schedule: string | null;
+  prompt: string;
+  enabled: boolean;
+  variables: Record<string, unknown>;
+  workspacePolicy: Record<string, unknown>;
+  lastTriggeredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const getRuntimeAdapters = () =>
+  request<RuntimeAdapterDescriptor[]>("/runtime/adapters");
+
+export const getRuntimeSessions = (companyId: string) =>
+  request<RuntimeSession[]>(`/companies/${companyId}/sessions`);
+
+export const createRuntimeSession = (
+  companyId: string,
+  data: {
+    agentId: string;
+    taskId?: string | null;
+    executionId?: string | null;
+    environmentId?: string | null;
+    adapterId?: string | null;
+    adapterConfig?: Record<string, unknown>;
+    mode?: RuntimeSessionMode;
+    resumeState?: Record<string, unknown>;
+    finalizeRequired?: boolean;
+  },
+) =>
+  request<RuntimeSession>(`/companies/${companyId}/sessions`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const cancelRuntimeSession = (
+  companyId: string,
+  sessionId: string,
+  reason?: string,
+) =>
+  request<RuntimeSession>(`/companies/${companyId}/sessions/${sessionId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+
+export const finalizeRuntimeSession = (companyId: string, sessionId: string) =>
+  request<RuntimeSession>(
+    `/companies/${companyId}/sessions/${sessionId}/finalize`,
+    { method: "POST" },
+  );
+
+export const getCompanySkills = (companyId: string) =>
+  request<CompanySkill[]>(`/companies/${companyId}/skills`);
+
+export const installCompanySkill = (
+  companyId: string,
+  data: {
+    name: string;
+    version?: string;
+    source?: string;
+    provenance?: CompanySkill["provenance"];
+    trustLevel?: CompanySkill["trustLevel"];
+    entrypoint?: string;
+    content: string;
+    metadata?: Record<string, unknown>;
+    tags?: string[];
+    agentIds?: string[];
+  },
+) =>
+  request<{ skill: CompanySkill; assignments: AgentSkillAssignment[] }>(
+    `/companies/${companyId}/skills/install`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const getJarvisRoutines = (companyId: string) =>
+  request<JarvisRoutine[]>(`/companies/${companyId}/routines`);
+
+export const createJarvisRoutine = (
+  companyId: string,
+  data: {
+    agentId?: string | null;
+    name: string;
+    mode?: JarvisRoutine["mode"];
+    jarvisMode?: JarvisRoutine["jarvisMode"];
+    schedule?: string | null;
+    prompt: string;
+    enabled?: boolean;
+    variables?: Record<string, unknown>;
+    workspacePolicy?: Record<string, unknown>;
+  },
+) =>
+  request<JarvisRoutine>(`/companies/${companyId}/routines`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const triggerJarvisRoutine = (companyId: string, routineId: string) =>
+  request<JarvisRoutine>(
+    `/companies/${companyId}/routines/${routineId}/trigger`,
+    { method: "POST" },
   );
 
 // ── Agent Collaborations ────────────────────────────────────────────────

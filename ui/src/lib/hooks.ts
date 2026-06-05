@@ -949,6 +949,125 @@ export function useMCPTools(companyId: string | undefined) {
   });
 }
 
+// ── Hybrid Jarvis Runtime ──────────────────────────────────────────────
+
+export function useRuntimeAdapters() {
+  return useQuery({
+    queryKey: ["runtime-adapters"],
+    queryFn: async () =>
+      unwrap<api.RuntimeAdapterDescriptor[]>(await api.getRuntimeAdapters()),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useRuntimeSessions(companyId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ["runtime-sessions", companyId],
+    queryFn: async () =>
+      unwrap<api.RuntimeSession[]>(await api.getRuntimeSessions(companyId!)),
+    enabled: enabled && !!companyId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useCreateRuntimeSession(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createRuntimeSession>[1]) =>
+      api.createRuntimeSession(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+      qc.invalidateQueries({ queryKey: ["agents", companyId] });
+    },
+  });
+}
+
+export function useCancelRuntimeSession(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { sessionId: string; reason?: string }) =>
+      api.cancelRuntimeSession(companyId, args.sessionId, args.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+    },
+  });
+}
+
+export function useFinalizeRuntimeSession(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.finalizeRuntimeSession(companyId, sessionId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+    },
+  });
+}
+
+export function useWakeAgent(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (agentId: string) => api.wakeAgent(companyId, agentId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agents", companyId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
+      qc.invalidateQueries({ queryKey: ["dashboard", companyId] });
+    },
+  });
+}
+
+export function useCompanySkills(companyId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ["company-skills", companyId],
+    queryFn: async () =>
+      unwrap<api.CompanySkill[]>(await api.getCompanySkills(companyId!)),
+    enabled: enabled && !!companyId,
+  });
+}
+
+export function useInstallCompanySkill(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.installCompanySkill>[1]) =>
+      api.installCompanySkill(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["company-skills", companyId] });
+      qc.invalidateQueries({ queryKey: ["agents", companyId] });
+    },
+  });
+}
+
+export function useJarvisRoutines(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["jarvis-routines", companyId],
+    queryFn: async () =>
+      unwrap<api.JarvisRoutine[]>(await api.getJarvisRoutines(companyId!)),
+    enabled: !!companyId,
+  });
+}
+
+export function useCreateJarvisRoutine(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createJarvisRoutine>[1]) =>
+      api.createJarvisRoutine(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jarvis-routines", companyId] });
+    },
+  });
+}
+
+export function useTriggerJarvisRoutine(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (routineId: string) => api.triggerJarvisRoutine(companyId, routineId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jarvis-routines", companyId] });
+      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+    },
+  });
+}
+
 // ── Agent Collaborations ────────────────────────────────────────────────
 
 export function useCollaborations(companyId: string | undefined) {

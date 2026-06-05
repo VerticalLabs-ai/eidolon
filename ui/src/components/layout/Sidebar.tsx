@@ -8,6 +8,7 @@ import {
   BarChart3,
   BookOpen,
   Bot,
+  BrainCircuit,
   FileText,
   Globe,
   Inbox,
@@ -67,6 +68,7 @@ const navSections: NavSection[] = [
     label: "Agents",
     items: [
       { to: "/agents", icon: Bot, label: "Agent Directory" },
+      { to: "/jarvis", icon: BrainCircuit, label: "Jarvis Runtime" },
       { to: "/org-chart", icon: Network, label: "Org Chart" },
       { to: "/workspace", icon: Globe, label: "Workspace" },
     ],

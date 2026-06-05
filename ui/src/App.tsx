@@ -14,6 +14,7 @@ import { TaskDetail } from "@/pages/TaskDetail";
 import { GoalTree } from "@/pages/GoalTree";
 import { AgentList } from "@/pages/AgentList";
 import { AgentDetail } from "@/pages/AgentDetail";
+import { JarvisRuntime } from "@/pages/JarvisRuntime";
 import { OrgChart } from "@/pages/OrgChart";
 import { VirtualWorkspace } from "@/pages/VirtualWorkspace";
 import { Documents } from "@/pages/Documents";
@@ -103,6 +104,7 @@ export function App() {
           <Route path="goals" element={<GoalTree />} />
           <Route path="agents" element={<AgentList />} />
           <Route path="agents/:agentId" element={<AgentDetail />} />
+          <Route path="jarvis" element={<JarvisRuntime />} />
           <Route path="org-chart" element={<OrgChart />} />
           <Route path="workspace" element={<VirtualWorkspace />} />
           <Route path="documents" element={<Documents />} />
