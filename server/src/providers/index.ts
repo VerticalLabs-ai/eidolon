@@ -6,7 +6,12 @@ import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
-import type { AIProvider, ServerAdapter } from './types.js';
+import type {
+  AIProvider,
+  ServerAdapter,
+  ServerAdapterCapabilities,
+  ServerAdapterDescriptor,
+} from './types.js';
 
 const ollama = new OllamaProvider();
 
@@ -58,6 +63,115 @@ export function listAdapters(): ServerAdapter[] {
     out.push(adapter);
   }
   return out;
+}
+
+function descriptorFromAdapter(adapter: ServerAdapter): ServerAdapterDescriptor {
+  return {
+    id: adapter.id ?? `provider:${adapter.name}`,
+    name: adapter.name,
+    kind: adapter.kind ?? 'provider',
+    locality: adapter.locality ?? (adapter.capabilities.local ? 'local' : 'cloud'),
+    description: adapter.description ?? `${adapter.name} provider runtime`,
+    supportedModes: adapter.supportedModes ?? ['on_demand'],
+    capabilities: adapter.capabilities,
+    models: adapter.models,
+  };
+}
+
+const baseRuntimeCapabilities: ServerAdapterCapabilities = {
+  runtime: true,
+  streaming: true,
+  tools: true,
+  mcp: true,
+  skills: true,
+  vision: false,
+  browser: false,
+  voice: false,
+  shell: false,
+  filesystem: false,
+  reasoning: true,
+  jsonMode: true,
+  systemPrompt: true,
+  costTracking: false,
+  requiresApiKey: false,
+  local: true,
+  sessionResume: true,
+  energyTelemetry: false,
+};
+
+const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
+  {
+    id: 'process:local',
+    name: 'process',
+    kind: 'process',
+    locality: 'local',
+    description: 'Generic local process adapter for CLI agents such as Codex, Claude Code, Cursor, Gemini, or custom shells.',
+    supportedModes: ['on_demand', 'scheduled', 'continuous'],
+    capabilities: {
+      ...baseRuntimeCapabilities,
+      shell: true,
+      filesystem: true,
+    },
+    models: [{ id: 'process-command', label: 'Process command' }],
+  },
+  {
+    id: 'http:remote',
+    name: 'http',
+    kind: 'http',
+    locality: 'hybrid',
+    description: 'Generic HTTP adapter for webhooked or remotely hosted agent runtimes.',
+    supportedModes: ['on_demand', 'scheduled'],
+    capabilities: {
+      ...baseRuntimeCapabilities,
+      local: false,
+      shell: false,
+      filesystem: false,
+    },
+    models: [{ id: 'http-endpoint', label: 'HTTP endpoint' }],
+  },
+  {
+    id: 'mcp:tool-runtime',
+    name: 'mcp',
+    kind: 'mcp',
+    locality: 'hybrid',
+    description: 'MCP-backed runtime that dispatches work through a configured MCP server and tool.',
+    supportedModes: ['on_demand', 'scheduled'],
+    capabilities: {
+      ...baseRuntimeCapabilities,
+      local: false,
+      shell: false,
+      filesystem: false,
+    },
+    models: [{ id: 'mcp-tool', label: 'MCP tool' }],
+  },
+  {
+    id: 'openjarvis:local',
+    name: 'openjarvis-local',
+    kind: 'openjarvis-local',
+    locality: 'local',
+    description: 'Local-first OpenJarvis runtime for daily briefing, deep research, scheduled monitor, and code assistant presets.',
+    supportedModes: ['on_demand', 'scheduled', 'continuous'],
+    capabilities: {
+      ...baseRuntimeCapabilities,
+      browser: true,
+      voice: true,
+      shell: true,
+      filesystem: true,
+      energyTelemetry: true,
+    },
+    models: [
+      { id: 'chat-simple', label: 'OpenJarvis Chat Simple' },
+      { id: 'morning-digest', label: 'OpenJarvis Morning Digest' },
+      { id: 'deep-research', label: 'OpenJarvis Deep Research' },
+      { id: 'scheduled-monitor', label: 'OpenJarvis Scheduled Monitor' },
+      { id: 'code-assistant', label: 'OpenJarvis Code Assistant' },
+    ],
+  },
+];
+
+export function listRuntimeAdapterDescriptors(): ServerAdapterDescriptor[] {
+  const providerDescriptors = listAdapters().map(descriptorFromAdapter);
+  return [...providerDescriptors, ...runtimeOnlyAdapters];
 }
 
 export * from './types.js';

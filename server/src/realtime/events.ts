@@ -37,6 +37,21 @@ export interface ExecutionEvent extends ServerEvent {
     | 'execution.recovery_created';
 }
 
+export interface RuntimeEvent extends ServerEvent {
+  type:
+    | 'runtime.session_started'
+    | 'runtime.session_cancelled'
+    | 'runtime.tool_call'
+    | 'runtime.skill_sync'
+    | 'runtime.workspace_finalized';
+}
+
+export interface RoutineEvent extends ServerEvent {
+  type:
+    | 'routine.triggered'
+    | 'jarvis.digest_ready';
+}
+
 export interface EnvironmentEvent extends ServerEvent {
   type:
     | 'environment.created'
@@ -113,7 +128,9 @@ export type EidolonEvent =
   | WorkflowEvent
   | ActivityEvent
   | EnvironmentEvent
-  | ExecutionEvent;
+  | ExecutionEvent
+  | RuntimeEvent
+  | RoutineEvent;
 
 // ---------------------------------------------------------------------------
 // Event bus singleton

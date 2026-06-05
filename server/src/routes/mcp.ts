@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
-import { MCPClientService } from '../services/mcp-client.js';
+import { MCPClientService, MCPPolicyError } from '../services/mcp-client.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
@@ -45,14 +45,22 @@ export function mcpRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof RegisterServerBody>;
     const { companyId } = routeParams(req);
 
-    const server = await mcpService.registerServer(companyId, {
-      name: body.name,
-      transport: body.transport,
-      command: body.command,
-      args: body.args,
-      env: body.env,
-      url: body.url,
-    });
+    let server;
+    try {
+      server = await mcpService.registerServer(companyId, {
+        name: body.name,
+        transport: body.transport,
+        command: body.command,
+        args: body.args,
+        env: body.env,
+        url: body.url,
+      });
+    } catch (error) {
+      if (error instanceof MCPPolicyError) {
+        throw new AppError(403, 'MCP_TRANSPORT_DISABLED', error.message);
+      }
+      throw error;
+    }
 
     eventBus.emitEvent({
       type: 'activity.logged' as any,
@@ -95,6 +103,30 @@ export function mcpRouter(db: DbInstance): Router {
     res.status(204).end();
   });
 
+  // POST /api/companies/:companyId/mcp/servers/:id/connect -- discover tools/resources
+  router.post('/servers/:id/connect', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+
+    const server = await mcpService.getServer(id);
+    if (!server || server.companyId !== companyId) {
+      throw new AppError(404, 'MCP_SERVER_NOT_FOUND', `MCP server ${id} not found`);
+    }
+
+    try {
+      const updated = await mcpService.connectServer(id);
+      res.json({ data: updated });
+    } catch (error) {
+      if (error instanceof MCPPolicyError) {
+        throw new AppError(403, 'MCP_TRANSPORT_DISABLED', error.message);
+      }
+      throw new AppError(
+        502,
+        'MCP_SERVER_CONNECT_FAILED',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  });
+
   // GET /api/companies/:companyId/mcp/tools -- list all available tools across servers
   router.get('/tools', async (req, res) => {
     const { companyId } = routeParams(req);
@@ -113,7 +145,7 @@ export function mcpRouter(db: DbInstance): Router {
       throw new AppError(404, 'MCP_SERVER_NOT_FOUND', `MCP server ${body.serverId} not found`);
     }
 
-    const result = await mcpService.callTool(body.serverId, toolName, body.args);
+    const result = await mcpService.callTool(companyId, body.serverId, toolName, body.args);
 
     res.json({ data: result });
   });

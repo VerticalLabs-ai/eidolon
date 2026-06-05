@@ -17,9 +17,11 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 | **Unified inbox** | Approvals, collaborations, and high-signal activity in one feed with j/k/a/o keyboard nav. |
 | **Approvals governance** | First-class approvals table for budget changes, agent terminations, custom reviews — with decision audit + comment threads. |
 | **Agentic loop runtime** | Observe → Think → Act → Reflect loop with per-step streaming transcript visible on each agent. |
+| **Hybrid runtime sessions** | Durable run/session records with adapter metadata, workspace leases, cancellation, finalization, and Jarvis-oriented runtime events. |
+| **Skills + routines foundation** | Company skill install/assignment and scheduled/continuous Jarvis routines for daily briefing, monitoring, research, and follow-up workflows. |
 | **Knowledge base + RAG** | Company-scoped documents with chunked semantic retrieval plugged into the agentic loop. |
 | **Agent memories** | Per-agent long-term memory synthesized from completed tasks. |
-| **MCP client + server** | Connect agents to any MCP tool server, and expose Eidolon itself as an MCP server (`@eidolon/mcp-server`) so Claude Desktop / Cursor can drive the platform. |
+| **MCP client + server** | Connect agents to real MCP tool servers over stdio, SSE, or Streamable HTTP, and expose Eidolon itself as an MCP server (`@eidolon/mcp-server`) so Claude Desktop / Cursor can drive the platform. |
 | **Real-time dashboard** | WebSocket-powered live updates. Monitor everything from your phone. |
 | **Multi-tenancy** | Run multiple autonomous companies from one deployment, isolated by org membership. |
 | **Activity audit log** | Every action tracked with actor, entity, and timestamp. |
@@ -97,6 +99,8 @@ EIDOLON_COMPANY_ID=<uuid> \
 
 Point any MCP-capable client (Claude Desktop, Cursor, Claude Code, `mcp-cli`) at the binary. Full docs in [`packages/mcp-server/README.md`](packages/mcp-server/README.md).
 
+For agent-side MCP client connections, tenant-registered `stdio` transports are disabled by default because they spawn local processes on the Eidolon server. Operators can enable them for trusted deployments with `EIDOLON_ENABLE_TENANT_STDIO_MCP=true`; `EIDOLON_MCP_STDIO_COMMAND_ALLOWLIST` must list exact full argv presets such as `/usr/local/bin/node /opt/eidolon/mcp/echo-server.mjs`, not generic interpreters or package runners. Stdio env overrides are rejected unless each key is listed in `EIDOLON_MCP_STDIO_ENV_ALLOWLIST`; the spawned process never inherits the Eidolon server process env. Remote SSE/Streamable HTTP transports can use safe public IP literals by default; hostnames and trusted private hosts must be listed in `EIDOLON_MCP_REMOTE_HOST_ALLOWLIST` so operators own the DNS/network path. MCP connect, discovery, and tool calls are bounded by `EIDOLON_MCP_CONNECT_TIMEOUT_MS`, `EIDOLON_MCP_DISCOVERY_TIMEOUT_MS`, and `EIDOLON_MCP_TOOL_CALL_TIMEOUT_MS`.
+
 ## How it works
 
 1. **Create a company** — Define mission and budget.
@@ -114,11 +118,18 @@ All endpoints under `/api`. See the per-route source for full schemas.
 |---|---|
 | `GET /api/companies` | List companies |
 | `POST /api/companies` | Create company |
-| `GET /api/adapters` | Adapter manifest with capability flags |
+| `GET /api/adapters` | Provider adapter manifest with capability flags |
+| `GET /api/runtime/adapters` | Provider, process, HTTP, MCP, and OpenJarvis-local runtime descriptors |
 | `GET /api/companies/:id/agents` | List agents |
 | `POST /api/companies/:id/agents` | Hire agent |
+| `POST /api/companies/:id/agents/:agentId/wake` | Wake an idle agent for immediate task assignment |
 | `GET /api/companies/:id/agents/:agentId/executions` | Execution history with transcripts |
 | `POST /api/companies/:id/agents/:agentId/execute` | Run agent on a task (supports `?mode=loop`) |
+| `POST /api/companies/:id/sessions` | Create a durable runtime session |
+| `POST /api/companies/:id/sessions/:sessionId/cancel` | Cancel a runtime session |
+| `POST /api/companies/:id/sessions/:sessionId/finalize` | Finalize a runtime session and release its workspace |
+| `POST /api/companies/:id/skills/install` | Install/update a company skill and optionally assign it to agents |
+| `POST /api/companies/:id/routines` | Create a scheduled, continuous, or on-demand Jarvis routine |
 | `GET /api/companies/:id/tasks` | List tasks |
 | `POST /api/companies/:id/tasks` | Create task |
 | `GET /api/companies/:id/goals` | Goal tree |

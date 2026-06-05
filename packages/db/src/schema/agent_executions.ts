@@ -56,6 +56,7 @@ export const agentExecutions = pgTable(
     // this scalar here avoids a circular module import because environments also
     // reference agent_executions for lease ownership.
     environmentId: text('environment_id'),
+    runtimeSessionId: text('runtime_session_id'),
     lastUsefulAction: text('last_useful_action'),
     nextActionHint: text('next_action_hint'),
     continuationAttempts: integer('continuation_attempts').notNull().default(0),
@@ -98,5 +99,6 @@ export const agentExecutions = pgTable(
       .on(table.companyId, table.retryStatus, table.retryDueAt)
       .where(sql`${table.retryStatus} IN ('scheduled', 'retrying')`),
     index('idx_agent_executions_environment').on(table.environmentId),
+    index('idx_agent_executions_runtime_session').on(table.runtimeSessionId),
   ],
 );

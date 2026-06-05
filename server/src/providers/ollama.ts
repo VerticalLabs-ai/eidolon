@@ -26,17 +26,31 @@ interface OllamaChatResponse {
 
 export class OllamaProvider implements ServerAdapter {
   readonly name = 'ollama';
+  readonly id = 'provider:ollama';
+  readonly kind = 'provider' as const;
+  readonly locality = 'local' as const;
+  readonly supportedModes = ['on_demand', 'scheduled', 'continuous'] as const;
+  readonly description = 'Local Ollama runtime for on-device models.';
 
   readonly capabilities: ServerAdapterCapabilities = {
+    runtime: true,
     streaming: true,
     tools: false,
+    mcp: false,
+    skills: true,
     vision: false,
+    browser: false,
+    voice: false,
+    shell: false,
+    filesystem: false,
     reasoning: false,
     jsonMode: false,
     systemPrompt: true,
     costTracking: false,
     requiresApiKey: false,
     local: true,
+    sessionResume: false,
+    energyTelemetry: true,
   };
 
   readonly models: AdapterModel[] = [

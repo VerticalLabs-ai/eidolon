@@ -21,12 +21,19 @@ approvals directly from the chat.
 - `eidolon_list_approvals` — filter by `status`
 - `eidolon_get_approval` — includes comments
 - `eidolon_list_adapters` — capability matrix for every adapter (streaming, tools, vision, reasoning, …)
+- `eidolon_list_runtime_adapters` — provider, process, HTTP, MCP, and OpenJarvis-local runtime descriptors
 
 ### Write
 
 - `eidolon_create_task`
 - `eidolon_update_task`
 - `eidolon_assign_task`
+- `eidolon_wake_agent`
+- `eidolon_create_runtime_session`
+- `eidolon_cancel_runtime_session`
+- `eidolon_finalize_runtime_session`
+- `eidolon_install_skill`
+- `eidolon_create_routine`
 - `eidolon_create_approval`
 - `eidolon_decide_approval` — `approved` or `rejected`
 - `eidolon_add_approval_comment`

@@ -43,6 +43,11 @@ import {
   taskThreadItems,
   taskHolds,
   executionEnvironments,
+  agentRuntimeSessions,
+  mcpToolCalls,
+  companySkills,
+  agentSkills,
+  routines,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -84,6 +89,11 @@ const SCHEMA_BUNDLE = {
   taskThreadItems,
   taskHolds,
   executionEnvironments,
+  agentRuntimeSessions,
+  mcpToolCalls,
+  companySkills,
+  agentSkills,
+  routines,
 } as const;
 
 export interface BootstrapOptions {

@@ -29,6 +29,11 @@ export const agents = pgTable(
     })
       .notNull()
       .default('anthropic'),
+    adapterId: text('adapter_id'),
+    adapterConfig: jsonb('adapter_config')
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default({}),
     // Schema default is intentionally lagging behind the app-level default set
     // in agents route (CreateAgentBody.model). We keep this stable and rely on
     // Zod at the API boundary to apply the current preferred model.
@@ -54,6 +59,18 @@ export const agents = pgTable(
       .notNull()
       .$type<string[]>()
       .default([]),
+    skillsEnabled: jsonb('skills_enabled')
+      .notNull()
+      .$type<string[]>()
+      .default([]),
+    routinePolicy: jsonb('routine_policy')
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default({}),
+    sessionPolicy: jsonb('session_policy')
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default({}),
     allowedDomains: jsonb('allowed_domains')
       .notNull()
       .$type<string[]>()

@@ -17,17 +17,31 @@ import logger from '../utils/logger.js';
 
 export class AnthropicProvider implements ServerAdapter {
   readonly name = 'anthropic';
+  readonly id = 'provider:anthropic';
+  readonly kind = 'provider' as const;
+  readonly locality = 'cloud' as const;
+  readonly supportedModes = ['on_demand', 'scheduled'] as const;
+  readonly description = 'Cloud Anthropic Messages API runtime for Claude models.';
 
   readonly capabilities: ServerAdapterCapabilities = {
+    runtime: true,
     streaming: true,
     tools: true,
+    mcp: false,
+    skills: false,
     vision: true,
+    browser: false,
+    voice: false,
+    shell: false,
+    filesystem: false,
     reasoning: true,
     jsonMode: false,
     systemPrompt: true,
     costTracking: true,
     requiresApiKey: true,
     local: false,
+    sessionResume: false,
+    energyTelemetry: false,
   };
 
   readonly models: AdapterModel[] = [
