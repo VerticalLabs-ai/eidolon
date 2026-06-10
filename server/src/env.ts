@@ -3,7 +3,9 @@
  *
  * Loads BOTH `.env.local` and `.env` from the monorepo root, in that order.
  * `.env` takes precedence over `.env.local` (local dev overrides win over
- * the file written by `vercel env pull`), matching our production split:
+ * the file written by `vercel env pull`), while explicitly supplied shell
+ * variables still win over both files. This matching keeps Conductor and
+ * other script-level overrides reliable.
  *
  *   .env        — gitignored; holds local-only overrides like
  *                 DATABASE_URL pointing at docker Supabase
@@ -36,8 +38,14 @@ function findMonorepoRoot(): string {
 }
 
 const root = findMonorepoRoot();
+const inheritedEnv = new Map<string, string>();
+for (const [key, value] of Object.entries(process.env)) {
+  if (typeof value === 'string') inheritedEnv.set(key, value);
+}
+
 // Order matters: dotenv.config(... override: true) replaces existing keys,
-// so load `.env.local` FIRST, then `.env` so `.env` can override.
+// so load `.env.local` FIRST, then `.env` so `.env` can override. Restore
+// inherited shell values afterward so command-level env remains authoritative.
 const loadOrder = [
   path.join(root, '.env.local'),
   path.join(root, '.env'),
@@ -54,6 +62,10 @@ for (const envPath of loadOrder) {
       `[env] Loaded ${Object.keys(result.parsed ?? {}).length} vars from ${envPath}`,
     );
   }
+}
+
+for (const [key, value] of inheritedEnv) {
+  process.env[key] = value;
 }
 
 if (!loadedAny) {

@@ -45,6 +45,12 @@ export default defineConfig(({ mode }) => {
     merged.VITE_CLERK_PUBLISHABLE_KEY ??
     merged.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
     "";
+  const apiPort = merged.PORT?.trim() || "3100";
+  const apiProxyTarget =
+    merged.VITE_API_PROXY_TARGET?.trim() || `http://localhost:${apiPort}`;
+  const wsProxyTarget =
+    merged.VITE_WS_PROXY_TARGET?.trim() ||
+    apiProxyTarget.replace(/^http/, "ws");
 
   return {
     define: {
@@ -62,11 +68,11 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       proxy: {
         "/api": {
-          target: "http://localhost:3100",
+          target: apiProxyTarget,
           changeOrigin: true,
         },
         "/ws": {
-          target: "ws://localhost:3100",
+          target: wsProxyTarget,
           ws: true,
         },
       },
