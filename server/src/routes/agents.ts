@@ -44,6 +44,8 @@ const CreateAgentBody = z.object({
       "ollama",
     ])
     .default("anthropic"),
+  adapterId: z.string().max(255).optional(),
+  adapterConfig: z.record(z.unknown()).default({}),
   model: z.string().min(1).max(255).default("claude-opus-4-7"),
   status: z
     .enum(["idle", "working", "paused", "error", "offline"])
@@ -63,9 +65,13 @@ const CreateAgentBody = z.object({
   temperature: z.number().min(0).max(2).default(0.7),
   maxTokens: z.number().int().positive().default(4096),
   toolsEnabled: z.array(z.string()).default([]),
+  skillsEnabled: z.array(z.string()).default([]),
+  routinePolicy: z.record(z.unknown()).default({}),
+  sessionPolicy: z.record(z.unknown()).default({}),
   allowedDomains: z.array(z.string()).default([]),
   maxConcurrentTasks: z.number().int().positive().default(1),
   heartbeatIntervalSeconds: z.number().int().positive().default(300),
+  defaultEnvironmentId: z.string().uuid().nullable().optional(),
   autoAssignTasks: z.number().int().min(0).max(1).default(0),
 });
 
@@ -89,6 +95,8 @@ const UpdateAgentBody = z.object({
   provider: z
     .enum(["anthropic", "openai", "google", "local", "ollama"])
     .optional(),
+  adapterId: z.string().max(255).nullable().optional(),
+  adapterConfig: z.record(z.unknown()).optional(),
   model: z.string().min(1).max(255).optional(),
   status: z.enum(["idle", "working", "paused", "error", "offline"]).optional(),
   reportsTo: z.string().uuid().nullable().optional(),
@@ -106,9 +114,13 @@ const UpdateAgentBody = z.object({
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().positive().optional(),
   toolsEnabled: z.array(z.string()).optional(),
+  skillsEnabled: z.array(z.string()).optional(),
+  routinePolicy: z.record(z.unknown()).optional(),
+  sessionPolicy: z.record(z.unknown()).optional(),
   allowedDomains: z.array(z.string()).optional(),
   maxConcurrentTasks: z.number().int().positive().optional(),
   heartbeatIntervalSeconds: z.number().int().positive().optional(),
+  defaultEnvironmentId: z.string().uuid().nullable().optional(),
   autoAssignTasks: z.number().int().min(0).max(1).optional(),
 });
 
@@ -173,6 +185,8 @@ const TRACKED_CONFIG_KEYS = [
   "role",
   "title",
   "provider",
+  "adapterId",
+  "adapterConfig",
   "model",
   "systemPrompt",
   "capabilities",
@@ -185,14 +199,24 @@ const TRACKED_CONFIG_KEYS = [
   "temperature",
   "maxTokens",
   "toolsEnabled",
+  "skillsEnabled",
+  "routinePolicy",
+  "sessionPolicy",
   "allowedDomains",
   "maxConcurrentTasks",
   "heartbeatIntervalSeconds",
+  "defaultEnvironmentId",
   "autoAssignTasks",
   "budgetMonthlyCents",
   "reportsTo",
   "metadata",
 ] as const;
+
+type AgentProvider = "anthropic" | "openai" | "google" | "local";
+
+function defaultRuntimeAdapterId(provider: AgentProvider): string {
+  return `provider:${provider === "local" ? "ollama" : provider}`;
+}
 
 function snapshotConfig(
   agent: Record<string, unknown>,
@@ -259,6 +283,7 @@ type ExecutionRow = {
   lastEventAt: Date | null;
   executionMode: "single" | "agentic-loop" | "manual" | "recovery";
   environmentId: string | null;
+  runtimeSessionId: string | null;
   log: Array<{ timestamp: string; level: string; message: string }>;
 };
 
@@ -316,6 +341,7 @@ function serializeExecution(
     lastEventAt: row.lastEventAt ? new Date(row.lastEventAt).toISOString() : null,
     executionMode: row.executionMode ?? "single",
     environmentId: row.environmentId ?? null,
+    runtimeSessionId: row.runtimeSessionId ?? null,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt?.toISOString() ?? null,
   };
@@ -327,7 +353,39 @@ function serializeExecution(
 
 export function agentsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { agents, tasks, agentConfigRevisions, agentExecutions } = db.schema;
+  const {
+    agents,
+    tasks,
+    agentConfigRevisions,
+    agentExecutions,
+    executionEnvironments,
+  } = db.schema;
+
+  const assertDefaultEnvironment = async (
+    environmentId: string | null | undefined,
+    companyId: string,
+  ) => {
+    if (!environmentId) return;
+
+    const [environment] = await db.drizzle
+      .select({ id: executionEnvironments.id })
+      .from(executionEnvironments)
+      .where(
+        and(
+          eq(executionEnvironments.id, environmentId),
+          eq(executionEnvironments.companyId, companyId),
+        ),
+      )
+      .limit(1);
+
+    if (!environment) {
+      throw new AppError(
+        404,
+        "ENVIRONMENT_NOT_FOUND",
+        `Environment ${environmentId} not found`,
+      );
+    }
+  };
 
   // GET /api/companies/:companyId/agents - list by company
   router.get("/", async (req, res) => {
@@ -345,6 +403,7 @@ export function agentsRouter(db: DbInstance): Router {
     const now = new Date();
     const provider = normalizeAgentProvider(body.provider);
     const apiKeyEncrypted = normalizeApiKeyForStorage(body.apiKeyEncrypted);
+    await assertDefaultEnvironment(body.defaultEnvironmentId, companyId);
 
     const [row] = await db.drizzle
       .insert(agents)
@@ -354,6 +413,8 @@ export function agentsRouter(db: DbInstance): Router {
         role: body.role,
         title: body.title ?? null,
         provider,
+        adapterId: body.adapterId ?? defaultRuntimeAdapterId(provider),
+        adapterConfig: body.adapterConfig,
         model: body.model,
         status: body.status,
         reportsTo: body.reportsTo,
@@ -372,9 +433,13 @@ export function agentsRouter(db: DbInstance): Router {
         temperature: body.temperature,
         maxTokens: body.maxTokens,
         toolsEnabled: body.toolsEnabled,
+        skillsEnabled: body.skillsEnabled,
+        routinePolicy: body.routinePolicy,
+        sessionPolicy: body.sessionPolicy,
         allowedDomains: body.allowedDomains,
         maxConcurrentTasks: body.maxConcurrentTasks,
         heartbeatIntervalSeconds: body.heartbeatIntervalSeconds,
+        defaultEnvironmentId: body.defaultEnvironmentId ?? null,
         autoAssignTasks: body.autoAssignTasks,
         createdAt: now,
         updatedAt: now,
@@ -433,6 +498,7 @@ export function agentsRouter(db: DbInstance): Router {
     const beforeConfig = snapshotConfig(
       existing as unknown as Record<string, unknown>,
     );
+    await assertDefaultEnvironment(body.defaultEnvironmentId, companyId);
 
     const statusChanged = body.status && body.status !== existing.status;
     const updates: Record<string, unknown> = {
@@ -441,7 +507,11 @@ export function agentsRouter(db: DbInstance): Router {
     };
 
     if (body.provider !== undefined) {
-      updates.provider = normalizeAgentProvider(body.provider);
+      const normalizedProvider = normalizeAgentProvider(body.provider);
+      updates.provider = normalizedProvider;
+      if (body.adapterId === undefined) {
+        updates.adapterId = defaultRuntimeAdapterId(normalizedProvider);
+      }
     }
 
     if (body.apiKeyEncrypted !== undefined) {
@@ -780,6 +850,18 @@ export function agentsRouter(db: DbInstance): Router {
 
     const scheduler = new HeartbeatScheduler(db);
     const result = await scheduler.wakeAgent(id);
+
+    eventBus.emitEvent({
+      type: "agent.heartbeat",
+      companyId,
+      payload: {
+        agentId: id,
+        wake: true,
+        assigned: result.assigned,
+        taskId: result.taskId ?? null,
+      },
+      timestamp: new Date().toISOString(),
+    });
 
     if (result.assigned) {
       res.json({

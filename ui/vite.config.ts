@@ -51,12 +51,14 @@ export default defineConfig(({ mode }) => {
   const wsProxyTarget =
     merged.VITE_WS_PROXY_TARGET?.trim() ||
     apiProxyTarget.replace(/^http/, "ws");
+  const authMode = merged.VITE_AUTH_MODE ?? "";
 
   return {
     define: {
       "import.meta.env.VITE_APP_VERSION": JSON.stringify(getAppVersion()),
       "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY":
         JSON.stringify(clerkPublishableKey),
+      "import.meta.env.VITE_AUTH_MODE": JSON.stringify(authMode),
     },
     plugins: [react(), tailwindcss()],
     resolve: {
@@ -65,7 +67,7 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      port: 3000,
+      port: 5173,
       proxy: {
         "/api": {
           target: apiProxyTarget,

@@ -323,6 +323,7 @@ export class AgenticLoop {
             const toolServerId = toolCall.serverId || this.resolveServerId(mcpTools, toolCall.name);
 
             const toolResult = await this.mcpService.callTool(
+              companyId,
               toolServerId,
               toolCall.name,
               toolCall.args ?? {},

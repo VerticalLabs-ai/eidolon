@@ -255,6 +255,75 @@ export class EidolonClient {
   listAdapters() {
     return this.request<Array<Record<string, unknown>>>("/api/adapters");
   }
+
+  listRuntimeAdapters() {
+    return this.request<Array<Record<string, unknown>>>("/api/runtime/adapters");
+  }
+
+  wakeAgent(companyId: string, agentId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/agents/${agentId}/wake`,
+      { method: "POST" },
+    );
+  }
+
+  createSession(companyId: string, body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/sessions`,
+      { method: "POST", body },
+    );
+  }
+
+  cancelSession(companyId: string, sessionId: string, reason?: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/sessions/${sessionId}/cancel`,
+      { method: "POST", body: { reason } },
+    );
+  }
+
+  finalizeSession(companyId: string, sessionId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/sessions/${sessionId}/finalize`,
+      { method: "POST" },
+    );
+  }
+
+  installSkill(companyId: string, body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/skills/install`,
+      { method: "POST", body },
+    );
+  }
+
+  auditSkills(companyId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/skills/audit`,
+    );
+  }
+
+  exportSkill(companyId: string, skillId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/skills/${skillId}/export`,
+    );
+  }
+
+  resetSkill(
+    companyId: string,
+    skillId: string,
+    body: { agentIds?: string[]; reason?: string } = {},
+  ) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/skills/${skillId}/reset`,
+      { method: "POST", body },
+    );
+  }
+
+  createRoutine(companyId: string, body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/routines`,
+      { method: "POST", body },
+    );
+  }
 }
 
 function safeJsonParse(text: string): unknown {

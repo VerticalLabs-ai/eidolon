@@ -23,6 +23,18 @@ describe('Agents API', () => {
   const agentsUrl = () => `/api/companies/${companyId}/agents`;
   const agentUrl = (id: string) => `${agentsUrl()}/${id}`;
 
+  const createOtherCompanyEnvironment = async () => {
+    const otherCompany = await request(app)
+      .post('/api/companies')
+      .send({ name: 'Other Agent Test Corp', budgetMonthlyCents: 100000 })
+      .expect(201);
+    const environment = await request(app)
+      .post(`/api/companies/${otherCompany.body.data.id}/environments`)
+      .send({ name: 'Other Workspace' })
+      .expect(201);
+    return environment.body.data.id as string;
+  };
+
   // ---------------------------------------------------------------------------
   // POST - create agent
   // ---------------------------------------------------------------------------
@@ -98,7 +110,23 @@ describe('Agents API', () => {
         .expect(201);
 
       expect(res.body.data.provider).toBe('local');
+      expect(res.body.data.adapterId).toBe('provider:ollama');
       expect(res.body.data.model).toBe('gemma4');
+    });
+
+    it('should reject a default environment from another company', async () => {
+      const environmentId = await createOtherCompanyEnvironment();
+
+      const res = await request(app)
+        .post(agentsUrl())
+        .send({
+          name: 'Cross Tenant Workspace Agent',
+          role: 'engineer',
+          defaultEnvironmentId: environmentId,
+        })
+        .expect(404);
+
+      expect(res.body.code).toBe('ENVIRONMENT_NOT_FOUND');
     });
 
     it('should reject invalid role', async () => {
@@ -183,11 +211,13 @@ describe('Agents API', () => {
 
       const res = await request(app)
         .patch(agentUrl(id))
-        .send({ name: 'After', temperature: 0.5 })
+        .send({ name: 'After', temperature: 0.5, provider: 'ollama' })
         .expect(200);
 
       expect(res.body.data.name).toBe('After');
       expect(res.body.data.temperature).toBeCloseTo(0.5);
+      expect(res.body.data.provider).toBe('local');
+      expect(res.body.data.adapterId).toBe('provider:ollama');
     });
 
     it('should create a config revision on update', async () => {
@@ -225,6 +255,21 @@ describe('Agents API', () => {
         .expect(200);
 
       expect(res.body.data.status).toBe('working');
+    });
+
+    it('should reject updating a default environment from another company', async () => {
+      const created = await request(app)
+        .post(agentsUrl())
+        .send({ name: 'Workspace Agent', role: 'engineer' })
+        .expect(201);
+      const environmentId = await createOtherCompanyEnvironment();
+
+      const res = await request(app)
+        .patch(agentUrl(created.body.data.id))
+        .send({ defaultEnvironmentId: environmentId })
+        .expect(404);
+
+      expect(res.body.code).toBe('ENVIRONMENT_NOT_FOUND');
     });
 
     it('should encrypt plaintext API keys before storing them', async () => {

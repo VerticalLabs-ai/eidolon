@@ -220,6 +220,16 @@ export function registerEidolonTools(
     async () => asJsonContent(await client.listAdapters()),
   );
 
+  server.registerTool(
+    "eidolon_list_runtime_adapters",
+    {
+      title: "List runtime adapters",
+      description:
+        "Return provider, process, HTTP, MCP, and OpenJarvis-local runtime descriptors with Jarvis capability flags.",
+    },
+    async () => asJsonContent(await client.listRuntimeAdapters()),
+  );
+
   // -----------------------------------------------------------------------
   // WRITE TOOLS
   // -----------------------------------------------------------------------
@@ -290,6 +300,195 @@ export function registerEidolonTools(
           taskId,
           agentId,
         ),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_wake_agent",
+    {
+      title: "Wake agent",
+      description:
+        "Trigger an agent heartbeat immediately so it can claim eligible work.",
+      inputSchema: {
+        agentId: z.string().uuid(),
+        companyId: companyIdArg,
+      },
+    },
+    async ({ companyId, agentId }) =>
+      asJsonContent(
+        await client.wakeAgent(requireCompanyId(config, companyId), agentId),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_create_runtime_session",
+    {
+      title: "Create runtime session",
+      description:
+        "Create a durable Jarvis runtime session for an agent, optionally binding a task, execution, environment, adapter, and resume state.",
+      inputSchema: {
+        companyId: companyIdArg,
+        agentId: z.string().uuid(),
+        taskId: z.string().uuid().optional(),
+        executionId: z.string().uuid().optional(),
+        environmentId: z.string().uuid().optional(),
+        adapterId: z.string().max(255).optional(),
+        adapterConfig: z.record(z.unknown()).optional(),
+        mode: z.enum(["on_demand", "scheduled", "continuous", "manual", "recovery"]).optional(),
+        resumeState: z.record(z.unknown()).optional(),
+        finalizeRequired: z.boolean().optional(),
+      },
+    },
+    async ({ companyId, ...body }) =>
+      asJsonContent(
+        await client.createSession(requireCompanyId(config, companyId), body),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_cancel_runtime_session",
+    {
+      title: "Cancel runtime session",
+      description: "Cancel a durable runtime session and record the operator reason.",
+      inputSchema: {
+        companyId: companyIdArg,
+        sessionId: z.string().uuid(),
+        reason: z.string().max(2000).optional(),
+      },
+    },
+    async ({ companyId, sessionId, reason }) =>
+      asJsonContent(
+        await client.cancelSession(
+          requireCompanyId(config, companyId),
+          sessionId,
+          reason,
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_finalize_runtime_session",
+    {
+      title: "Finalize runtime session",
+      description:
+        "Finalize a durable runtime session and release its leased workspace when owned by that session.",
+      inputSchema: {
+        companyId: companyIdArg,
+        sessionId: z.string().uuid(),
+      },
+    },
+    async ({ companyId, sessionId }) =>
+      asJsonContent(
+        await client.finalizeSession(
+          requireCompanyId(config, companyId),
+          sessionId,
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_install_skill",
+    {
+      title: "Install skill",
+      description:
+        "Install or update a company skill using the agentskills-style shape, optionally assigning it to agents.",
+      inputSchema: {
+        companyId: companyIdArg,
+        name: z.string().min(1).max(255),
+        version: z.string().min(1).max(100).optional(),
+        source: z.string().min(1).max(2000).optional(),
+        provenance: z.enum(["bundled", "catalog", "runtime", "adapter", "github", "manual"]).optional(),
+        trustLevel: z.enum(["markdown_only", "assets", "scripts_executables"]).optional(),
+        entrypoint: z.string().max(1000).optional(),
+        content: z.string().min(1).max(200_000),
+        metadata: z.record(z.unknown()).optional(),
+        tags: z.array(z.string()).optional(),
+        agentIds: z.array(z.string().uuid()).optional(),
+      },
+    },
+    async ({ companyId, ...body }) =>
+      asJsonContent(
+        await client.installSkill(requireCompanyId(config, companyId), body),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_audit_skills",
+    {
+      title: "Audit skills",
+      description:
+        "Audit the company skills catalog for assignments, sync status, executable trust, missing entrypoints, and agent catalog mismatches.",
+      inputSchema: {
+        companyId: companyIdArg,
+      },
+    },
+    async ({ companyId }) =>
+      asJsonContent(
+        await client.auditSkills(requireCompanyId(config, companyId)),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_export_skill",
+    {
+      title: "Export skill",
+      description:
+        "Export one company skill in an agentskills.io-compatible shape with content, metadata, and current assignments.",
+      inputSchema: {
+        companyId: companyIdArg,
+        skillId: z.string().uuid(),
+      },
+    },
+    async ({ companyId, skillId }) =>
+      asJsonContent(
+        await client.exportSkill(requireCompanyId(config, companyId), skillId),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_reset_skill_sync",
+    {
+      title: "Reset skill sync",
+      description:
+        "Reset one skill's materialized assignments back to pending so local adapter homes can resync or recover.",
+      inputSchema: {
+        companyId: companyIdArg,
+        skillId: z.string().uuid(),
+        agentIds: z.array(z.string().uuid()).min(1).optional(),
+        reason: z.string().max(1000).optional(),
+      },
+    },
+    async ({ companyId, skillId, agentIds, reason }) =>
+      asJsonContent(
+        await client.resetSkill(requireCompanyId(config, companyId), skillId, {
+          agentIds,
+          reason,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_create_routine",
+    {
+      title: "Create routine",
+      description:
+        "Create a scheduled, continuous, or on-demand Jarvis routine such as daily briefing, monitoring, research, or follow-up.",
+      inputSchema: {
+        companyId: companyIdArg,
+        agentId: z.string().uuid().optional(),
+        name: z.string().min(1).max(255),
+        mode: z.enum(["scheduled", "continuous", "on_demand"]).optional(),
+        jarvisMode: z.enum(["daily_briefing", "monitoring", "research", "follow_up", "custom"]).optional(),
+        schedule: z.string().max(255).optional(),
+        prompt: z.string().min(1).max(100_000),
+        enabled: z.boolean().optional(),
+        variables: z.record(z.unknown()).optional(),
+        workspacePolicy: z.record(z.unknown()).optional(),
+      },
+    },
+    async ({ companyId, ...body }) =>
+      asJsonContent(
+        await client.createRoutine(requireCompanyId(config, companyId), body),
       ),
   );
 

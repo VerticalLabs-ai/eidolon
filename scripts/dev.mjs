@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, "..")
 
 const DEFAULT_SERVER_PORT = 3100
-const DEFAULT_UI_PORT = 3000
+const DEFAULT_UI_PORT = 5173
 const MAX_UI_PORT_SCAN = 20
 const CHILD_KILL_TIMEOUT_MS = 1_500
 const SERVER_PORT_HOSTS = ["127.0.0.1", "0.0.0.0", "::1", "::"]
@@ -61,8 +61,6 @@ async function findAvailablePort(
 
 function buildCorsOrigins(uiPort) {
   const origins = new Set([
-    "http://localhost:3000",
-    "http://localhost:3001",
     "http://localhost:5173",
     `http://localhost:${uiPort}`,
   ])

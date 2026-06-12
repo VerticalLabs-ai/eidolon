@@ -16,17 +16,31 @@ import { calculateCostCents } from './cost.js';
 
 export class OpenAIProvider implements ServerAdapter {
   readonly name = 'openai';
+  readonly id = 'provider:openai';
+  readonly kind = 'provider' as const;
+  readonly locality = 'cloud' as const;
+  readonly supportedModes = ['on_demand', 'scheduled'] as const;
+  readonly description = 'Cloud OpenAI chat runtime for GPT and reasoning models.';
 
   readonly capabilities: ServerAdapterCapabilities = {
+    runtime: true,
     streaming: true,
     tools: true,
+    mcp: false,
+    skills: false,
     vision: true,
+    browser: false,
+    voice: false,
+    shell: false,
+    filesystem: false,
     reasoning: true,
     jsonMode: true,
     systemPrompt: true,
     costTracking: true,
     requiresApiKey: true,
     local: false,
+    sessionResume: false,
+    energyTelemetry: false,
   };
 
   readonly models: AdapterModel[] = [

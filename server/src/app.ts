@@ -36,6 +36,10 @@ import { approvalsRouter } from './routes/approvals.js';
 import { inboxRouter } from './routes/inbox.js';
 import { environmentsRouter } from './routes/environments.js';
 import { runtimeRouter } from './routes/runtime.js';
+import { runtimeAdaptersRouter } from './routes/runtime-adapters.js';
+import { sessionsRouter } from './routes/sessions.js';
+import { skillsRouter } from './routes/skills.js';
+import { routinesRouter } from './routes/routines.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -106,6 +110,7 @@ export function createApp(db: DbInstance): express.Express {
 
   // Adapter registry introspection (public read; no secrets leaked)
   app.use('/api/adapters', adaptersRouter());
+  app.use('/api/runtime', runtimeAdaptersRouter());
 
   // Inbound webhook trigger (public endpoint - validated via webhook secret)
   app.use('/api/webhooks', webhookTriggerRouter(db));
@@ -176,6 +181,11 @@ export function createApp(db: DbInstance): express.Express {
 
   // Company runtime snapshot
   app.use('/api/companies/:companyId/runtime', requireAuth, requireOrgMember(), runtimeRouter(db));
+
+  // Durable runtime sessions, skills, and routines
+  app.use('/api/companies/:companyId/sessions', requireAuth, requireOrgMember('admin'), sessionsRouter(db));
+  app.use('/api/companies/:companyId/skills', requireAuth, requireOrgMember('admin'), skillsRouter(db));
+  app.use('/api/companies/:companyId/routines', requireAuth, requireOrgMember(), routinesRouter(db));
 
   // Local execution environments
   app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));

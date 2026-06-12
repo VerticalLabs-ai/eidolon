@@ -1,6 +1,12 @@
 import { SignIn } from "@clerk/clerk-react";
+import { Navigate } from "react-router-dom";
+import { isLocalTrustedAuth } from "@/lib/auth";
 
 export function Login() {
+  if (isLocalTrustedAuth()) {
+    return <Navigate to="/" replace />;
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">

@@ -12,7 +12,12 @@ export function adaptersRouter(): Router {
 
   router.get('/', (_req, res) => {
     const adapters = listAdapters().map((a) => ({
+      id: a.id ?? a.name,
       name: a.name,
+      kind: a.kind ?? 'provider',
+      locality: a.locality ?? (a.capabilities.local ? 'local' : 'cloud'),
+      description: a.description ?? null,
+      supportedModes: a.supportedModes ?? ['on_demand'],
       capabilities: a.capabilities,
       models: a.models,
     }));
