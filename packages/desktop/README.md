@@ -1,6 +1,6 @@
 # Eidolon Desktop
 
-Native macOS shell for the hosted Eidolon app.
+Native macOS shell for Eidolon.
 
 ## Development
 
@@ -8,10 +8,17 @@ Native macOS shell for the hosted Eidolon app.
 pnpm desktop:dev
 ```
 
-By default the app opens `https://eidolon.verticallabs.ai`. To point at another approved Eidolon host:
+By default the app opens the local single-host Eidolon server at `http://localhost:3100`. To point at another approved Eidolon host:
 
 ```bash
 EIDOLON_DESKTOP_APP_URL=https://staging.eidolon.verticallabs.ai pnpm desktop:dev
+```
+
+For local development against Vite, run the web app on its default port and point the desktop shell at it:
+
+```bash
+pnpm run dev
+EIDOLON_DESKTOP_APP_URL=http://localhost:5173 pnpm desktop:dev
 ```
 
 Loopback `http://localhost:<port>` URLs are accepted for local development. Non-loopback app URLs must use HTTPS.

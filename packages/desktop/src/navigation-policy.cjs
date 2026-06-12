@@ -1,4 +1,4 @@
-const DEFAULT_APP_URL = "https://eidolon.verticallabs.ai";
+const DEFAULT_APP_URL = "http://localhost:3100";
 const DEFAULT_ALLOWED_HOSTS = [
   "eidolon.verticallabs.ai",
   "staging.eidolon.verticallabs.ai",
@@ -32,8 +32,57 @@ function parseHostList(value) {
     .filter(Boolean);
 }
 
+function normalizeOrigin(value) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  try {
+    const url = trimmed.includes("://")
+      ? new URL(trimmed)
+      : new URL(`https://${trimmed}`);
+    return url.origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function parseOriginList(value) {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+}
+
 function isLoopbackHost(hostname) {
   return LOOPBACK_HOSTS.has(hostname.toLowerCase());
+}
+
+function formatOriginHost(hostname) {
+  return hostname.includes(":") ? `[${hostname}]` : hostname;
+}
+
+function normalizeLoopbackOriginForAppHost(value, appUrl) {
+  const host = normalizeHost(value);
+  if (
+    !host ||
+    appUrl.protocol !== "http:" ||
+    !isLoopbackHost(appUrl.hostname) ||
+    !isLoopbackHost(host)
+  ) {
+    return null;
+  }
+
+  const port = appUrl.port ? `:${appUrl.port}` : "";
+  return `${appUrl.protocol}//${formatOriginHost(host)}${port}`.toLowerCase();
+}
+
+function parseLoopbackOriginsForAppHost(value, appUrl) {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((entry) => normalizeLoopbackOriginForAppHost(entry, appUrl))
+    .filter(Boolean);
 }
 
 function resolveAppUrl(rawUrl = process.env.EIDOLON_DESKTOP_APP_URL) {
@@ -59,6 +108,18 @@ function buildAllowedHosts(options = {}) {
   ]);
 }
 
+function buildAllowedOrigins(options = {}) {
+  const appUrl = options.appUrl || resolveAppUrl();
+  return new Set([
+    appUrl.origin.toLowerCase(),
+    ...parseOriginList(options.extraOrigins ?? process.env.EIDOLON_DESKTOP_ALLOWED_ORIGINS),
+    ...parseLoopbackOriginsForAppHost(
+      options.extraHosts ?? process.env.EIDOLON_DESKTOP_ALLOWED_HOSTS,
+      appUrl,
+    ),
+  ]);
+}
+
 function buildAuthFlowHosts(options = {}) {
   return new Set([
     ...DEFAULT_AUTH_FLOW_HOSTS,
@@ -66,7 +127,14 @@ function buildAuthFlowHosts(options = {}) {
   ]);
 }
 
-function isAllowedNavigationUrl(rawUrl, allowedHosts = buildAllowedHosts()) {
+function isAllowedNavigationUrl(rawUrl, options = {}) {
+  const allowedHosts =
+    options instanceof Set ? options : options.allowedHosts ?? buildAllowedHosts(options);
+  const allowedOrigins =
+    options instanceof Set
+      ? buildAllowedOrigins()
+      : options.allowedOrigins ?? buildAllowedOrigins(options);
+
   let url;
   try {
     url = new URL(rawUrl);
@@ -75,7 +143,7 @@ function isAllowedNavigationUrl(rawUrl, allowedHosts = buildAllowedHosts()) {
   }
 
   if (url.protocol === "http:") {
-    return isLoopbackHost(url.hostname) && allowedHosts.has(url.hostname.toLowerCase());
+    return isLoopbackHost(url.hostname) && allowedOrigins.has(url.origin.toLowerCase());
   }
 
   if (url.protocol !== "https:") {
@@ -98,7 +166,7 @@ function isAllowedAuthFlowUrl(rawUrl, authFlowHosts = buildAuthFlowHosts()) {
 
 function shouldKeepNavigationInApp(rawUrl, options = {}) {
   return (
-    isAllowedNavigationUrl(rawUrl, options.allowedHosts) ||
+    isAllowedNavigationUrl(rawUrl, options) ||
     isAllowedAuthFlowUrl(rawUrl, options.authFlowHosts)
   );
 }
@@ -109,6 +177,7 @@ module.exports = {
   DEFAULT_AUTH_FLOW_HOSTS,
   buildAuthFlowHosts,
   buildAllowedHosts,
+  buildAllowedOrigins,
   isAllowedNavigationUrl,
   isAllowedAuthFlowUrl,
   resolveAppUrl,

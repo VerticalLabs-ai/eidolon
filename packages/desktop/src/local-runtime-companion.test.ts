@@ -8,6 +8,10 @@ import {
 } from "./local-runtime-companion.cjs";
 
 describe("local runtime companion", () => {
+  it("defaults to the local single-host app URL", () => {
+    expect(readLocalRuntimeConfig({}).appUrl).toBe("http://localhost:3100");
+  });
+
   it("parses configured OpenJarvis preset commands and ignores unsupported presets", () => {
     const config = readLocalRuntimeConfig({
       EIDOLON_DESKTOP_OPENJARVIS_PRESET_COMMANDS: JSON.stringify({

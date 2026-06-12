@@ -1,6 +1,13 @@
 import { useAuth, useUser } from "@clerk/clerk-react";
 
 const ADMIN_EMAILS = new Set(["matt@verticallabs.ai"]);
+const LOCAL_TRUSTED_USER = {
+  id: "local-dev-user",
+  name: "Local Operator",
+  email: "local@eidolon.dev",
+  image: "",
+  role: "admin",
+};
 
 function normalizeEmail(email: string | null | undefined): string {
   return email?.trim().toLowerCase() ?? "";
@@ -17,6 +24,21 @@ function resolveUserRole(email: string, metadataRole: string | null): string | n
  * keeps working after the migration.
  */
 export function useSession() {
+  if (isLocalTrustedAuth()) {
+    return {
+      isPending: false,
+      data: {
+        user: LOCAL_TRUSTED_USER,
+        session: {
+          id: "local-dev-session",
+          userId: LOCAL_TRUSTED_USER.id,
+          activeOrganizationId: null,
+          activeOrganizationRole: "admin",
+        },
+      },
+    };
+  }
+
   const { isLoaded: userLoaded, user } = useUser();
   const { isLoaded: authLoaded, sessionId, orgId, orgRole } = useAuth();
 
@@ -56,3 +78,7 @@ export function useSession() {
 
 export const CLERK_PUBLISHABLE_KEY =
   (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? "";
+
+export function isLocalTrustedAuth(): boolean {
+  return import.meta.env.VITE_AUTH_MODE === "local_trusted";
+}

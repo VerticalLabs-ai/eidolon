@@ -4,6 +4,7 @@ const { app, BrowserWindow, Menu, ipcMain, shell } = require("electron");
 const {
   buildAuthFlowHosts,
   buildAllowedHosts,
+  buildAllowedOrigins,
   isAllowedNavigationUrl,
   resolveAppUrl,
   shouldKeepNavigationInApp,
@@ -17,10 +18,11 @@ app.setName("Eidolon");
 
 const appUrl = resolveAppUrl();
 const allowedHosts = buildAllowedHosts({ appUrl });
+const allowedOrigins = buildAllowedOrigins({ appUrl });
 const authFlowHosts = buildAuthFlowHosts();
 
 function buildJarvisRuntimeUrl(currentUrl = appUrl.toString()) {
-  const baseUrl = isAllowedNavigationUrl(currentUrl, allowedHosts)
+  const baseUrl = isAllowedNavigationUrl(currentUrl, { allowedHosts, allowedOrigins })
     ? currentUrl
     : appUrl.toString();
   const jarvisUrl = new URL(baseUrl);
@@ -35,7 +37,10 @@ function buildJarvisRuntimeUrl(currentUrl = appUrl.toString()) {
 
 function assertTrustedAppSender(event) {
   const frameUrl = event.senderFrame?.url;
-  if (!frameUrl || !isAllowedNavigationUrl(frameUrl, allowedHosts)) {
+  if (
+    !frameUrl ||
+    !isAllowedNavigationUrl(frameUrl, { allowedHosts, allowedOrigins })
+  ) {
     throw new Error("Eidolon desktop bridge is only available to trusted app origins");
   }
 }
@@ -47,7 +52,9 @@ function openExternal(url) {
 }
 
 function handleExternalNavigation(event, url) {
-  if (shouldKeepNavigationInApp(url, { allowedHosts, authFlowHosts })) return;
+  if (shouldKeepNavigationInApp(url, { allowedHosts, allowedOrigins, authFlowHosts })) {
+    return;
+  }
 
   event.preventDefault();
   openExternal(url);
@@ -141,7 +148,7 @@ function createMainWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (shouldKeepNavigationInApp(url, { allowedHosts, authFlowHosts })) {
+    if (shouldKeepNavigationInApp(url, { allowedHosts, allowedOrigins, authFlowHosts })) {
       mainWindow.loadURL(url).catch((err) => {
         console.error("Failed to load allowed URL", err);
       });

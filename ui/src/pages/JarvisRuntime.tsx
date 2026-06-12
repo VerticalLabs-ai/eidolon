@@ -185,17 +185,19 @@ function StatTile({
 }
 
 function CapabilityPill({ label, enabled }: { label: string; enabled: boolean }) {
+  const Icon = enabled ? CheckCircle2 : XCircle;
+
   return (
     <span
       className={clsx(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        "flex h-8 min-w-0 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium leading-none",
         enabled
-          ? "border-neon-cyan/20 bg-neon-cyan/10 text-neon-cyan"
-          : "border-white/[0.06] bg-white/[0.03] text-text-secondary",
+          ? "border-neon-cyan/25 bg-neon-cyan/[0.08] text-neon-cyan"
+          : "border-white/[0.06] bg-white/[0.025] text-text-muted",
       )}
     >
-      {enabled ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-      {label}
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
     </span>
   );
 }
@@ -413,7 +415,7 @@ function AdapterRow({ adapter }: { adapter: RuntimeAdapterDescriptor }) {
   ] as const;
 
   return (
-    <div className="grid gap-4 border-b border-white/[0.06] p-4 last:border-b-0 lg:grid-cols-[minmax(220px,1fr)_160px_1.4fr]">
+    <div className="grid gap-4 border-b border-white/[0.06] p-4 last:border-b-0 xl:grid-cols-[minmax(220px,1fr)_140px_minmax(0,1.4fr)]">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <p className="truncate text-sm font-semibold text-text-primary font-display">
@@ -438,7 +440,7 @@ function AdapterRow({ adapter }: { adapter: RuntimeAdapterDescriptor }) {
           ))}
         </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7">
         {capabilityList.map(([label, enabled]) => (
           <CapabilityPill key={label} label={label} enabled={enabled} />
         ))}

@@ -121,7 +121,7 @@ function CompanyIconRail() {
       </div>
 
       {/* Company icons */}
-      <div className="flex flex-1 flex-col items-center gap-2 overflow-y-auto scrollbar-none">
+      <div className="flex w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 scrollbar-none">
         {companies?.map((company, index) => {
           const color = getColor(company, index);
           const isActive = company.id === companyId;

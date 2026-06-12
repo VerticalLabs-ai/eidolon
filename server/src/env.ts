@@ -16,7 +16,7 @@
  * a local Postgres pool.
  */
 import dotenv from 'dotenv';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,34 +38,36 @@ function findMonorepoRoot(): string {
 }
 
 const root = findMonorepoRoot();
-const inheritedEnv = new Map<string, string>();
-for (const [key, value] of Object.entries(process.env)) {
-  if (typeof value === 'string') inheritedEnv.set(key, value);
-}
-
-// Order matters: dotenv.config(... override: true) replaces existing keys,
-// so load `.env.local` FIRST, then `.env` so `.env` can override. Restore
-// inherited shell values afterward so command-level env remains authoritative.
+// Order matters: load `.env.local` FIRST, then `.env` so `.env` can override
+// file-backed values. Explicit process env wins over both files, which lets
+// launchd/packaged local services force production-local settings safely.
 const loadOrder = [
   path.join(root, '.env.local'),
   path.join(root, '.env'),
 ];
 
 let loadedAny = false;
+const fileEnv: Record<string, string> = {};
 for (const envPath of loadOrder) {
   if (!existsSync(envPath)) continue;
-  const result = dotenv.config({ path: envPath, override: true });
-  if (!result.error) {
+  try {
+    const parsed = dotenv.parse(readFileSync(envPath));
+    Object.assign(fileEnv, parsed);
     loadedAny = true;
     // eslint-disable-next-line no-console
     console.log(
-      `[env] Loaded ${Object.keys(result.parsed ?? {}).length} vars from ${envPath}`,
+      `[env] Loaded ${Object.keys(parsed).length} vars from ${envPath}`,
     );
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[env] Failed to load ${envPath}: ${(error as Error).message}`);
   }
 }
 
-for (const [key, value] of inheritedEnv) {
-  process.env[key] = value;
+for (const [key, value] of Object.entries(fileEnv)) {
+  if (process.env[key] === undefined) {
+    process.env[key] = value;
+  }
 }
 
 if (!loadedAny) {

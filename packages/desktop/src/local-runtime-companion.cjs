@@ -44,7 +44,7 @@ function normalizePresetCommands(value) {
 }
 
 function readLocalRuntimeConfig(env = process.env) {
-  const appUrl = env.EIDOLON_DESKTOP_APP_URL || "https://eidolon.verticallabs.ai";
+  const appUrl = env.EIDOLON_DESKTOP_APP_URL || "http://localhost:3100";
   const apiHealthUrl =
     env.EIDOLON_DESKTOP_LOCAL_API_HEALTH_URL || "http://localhost:3100/api/health";
   const openJarvisHealthUrl = env.EIDOLON_DESKTOP_OPENJARVIS_HEALTH_URL || "";

@@ -34,7 +34,7 @@ cd eidolon
 pnpm install
 pnpm run db:start      # Boot local Supabase (Postgres on :54322, Studio on :54323)
 pnpm run db:migrate    # Apply Drizzle migrations
-pnpm run dev           # Start server (:3100) + UI (:3000)
+pnpm run dev           # Start server (:3100) + UI (:5173)
 ```
 
 The database starts empty — create your first company from the UI. There is no demo/mock data.
@@ -76,7 +76,7 @@ eidolon/
 ```bash
 pnpm run dev           # Start server + UI in dev mode
 pnpm run dev:server    # Server only  (Express on :3100)
-pnpm run dev:ui        # UI only      (Vite on :3000)
+pnpm run dev:ui        # UI only      (Vite on :5173)
 pnpm run build         # Build shared → server → UI
 pnpm run typecheck     # tsc -b across all projects
 pnpm run test          # vitest watch mode
