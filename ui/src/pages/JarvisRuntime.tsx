@@ -43,6 +43,7 @@ import type {
   Agent,
   CompanySkill,
   JarvisRoutine,
+  JarvisRoutineTriggerResult,
   RuntimeAdapterDescriptor,
   RuntimeSession,
   RuntimeSessionMode,
@@ -687,6 +688,9 @@ function RoutinePanel({ agents }: { agents: Agent[] }) {
   const [prompt, setPrompt] = useState(
     "Prepare a concise briefing from open tasks, approvals, runtime sessions, blocked work, and follow-up items.",
   );
+  const [triggerResults, setTriggerResults] = useState<
+    Record<string, JarvisRoutineTriggerResult>
+  >({});
 
   function handleCreate(event: FormEvent) {
     event.preventDefault();
@@ -738,41 +742,30 @@ function RoutinePanel({ agents }: { agents: Agent[] }) {
         ) : (
           <div>
             {routines.map((routine) => (
-              <div
+              <RoutineRow
                 key={routine.id}
-                className="flex flex-col gap-3 border-b border-white/[0.06] p-4 last:border-b-0 lg:flex-row lg:items-center lg:justify-between"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="truncate text-sm font-semibold text-text-primary font-display">
-                      {routine.name}
-                    </p>
-                    <Badge variant={routine.enabled ? "success" : "default"}>
-                      {routine.enabled ? "Enabled" : "Disabled"}
-                    </Badge>
-                    <Badge variant="info">{toLabel(routine.jarvisMode)}</Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-text-secondary">
-                    {toLabel(routine.mode)} - {routine.schedule || "manual trigger"} - last {formatDateTime(routine.lastTriggeredAt)}
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  icon={<Play className="h-3.5 w-3.5" />}
-                  loading={triggerRoutine.isPending}
-                  disabled={isError}
-                  onClick={() =>
-                    triggerRoutine.mutate(routine.id, {
-                      onSuccess: () => toast.success("Routine triggered"),
-                      onError: (error) =>
-                        toast.error(error instanceof Error ? error.message : "Trigger failed"),
-                    })
-                  }
-                >
-                  Trigger
-                </Button>
-              </div>
+                routine={routine}
+                triggerResult={triggerResults[routine.id]}
+                triggering={triggerRoutine.isPending}
+                disabled={isError}
+                onTrigger={() =>
+                  triggerRoutine.mutate(routine.id, {
+                    onSuccess: (result) => {
+                      setTriggerResults((current) => ({
+                        ...current,
+                        [routine.id]: result,
+                      }));
+                      toast.success(
+                        result.session
+                          ? "Routine triggered and session started"
+                          : "Routine triggered and task created",
+                      );
+                    },
+                    onError: (error) =>
+                      toast.error(error instanceof Error ? error.message : "Trigger failed"),
+                  })
+                }
+              />
             ))}
           </div>
         )}
@@ -825,6 +818,66 @@ function RoutinePanel({ agents }: { agents: Agent[] }) {
           Add routine
         </Button>
       </form>
+    </div>
+  );
+}
+
+function RoutineRow({
+  routine,
+  triggerResult,
+  triggering,
+  disabled,
+  onTrigger,
+}: {
+  routine: JarvisRoutine;
+  triggerResult?: JarvisRoutineTriggerResult;
+  triggering: boolean;
+  disabled: boolean;
+  onTrigger: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 border-b border-white/[0.06] p-4 last:border-b-0 lg:flex-row lg:items-start lg:justify-between">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="truncate text-sm font-semibold text-text-primary font-display">
+            {routine.name}
+          </p>
+          <Badge variant={routine.enabled ? "success" : "default"}>
+            {routine.enabled ? "Enabled" : "Disabled"}
+          </Badge>
+          <Badge variant="info">{toLabel(routine.jarvisMode)}</Badge>
+        </div>
+        <p className="mt-1 text-xs text-text-secondary">
+          {toLabel(routine.mode)} - {routine.schedule || "manual trigger"} - last {formatDateTime(routine.lastTriggeredAt)}
+        </p>
+        {triggerResult && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+            <Badge variant={triggerResult.session ? statusVariant(triggerResult.session.status) : "warning"}>
+              {triggerResult.session ? toLabel(triggerResult.session.status) : "Task only"}
+            </Badge>
+            <span>
+              Task {triggerResult.task.identifier ?? compactId(triggerResult.task.id)}
+            </span>
+            {triggerResult.session ? (
+              <span>
+                Session {compactId(triggerResult.session.runId)} via {triggerResult.session.adapterId}
+              </span>
+            ) : (
+              <span>No agent assigned to this routine.</span>
+            )}
+          </div>
+        )}
+      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        icon={<Play className="h-3.5 w-3.5" />}
+        loading={triggering}
+        disabled={disabled}
+        onClick={onTrigger}
+      >
+        Trigger
+      </Button>
     </div>
   );
 }

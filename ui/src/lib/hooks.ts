@@ -1060,10 +1060,15 @@ export function useCreateJarvisRoutine(companyId: string) {
 export function useTriggerJarvisRoutine(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (routineId: string) => api.triggerJarvisRoutine(companyId, routineId),
-    onSuccess: () => {
+    mutationFn: async (routineId: string) =>
+      unwrap<api.JarvisRoutineTriggerResult>(
+        await api.triggerJarvisRoutine(companyId, routineId),
+      ),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["jarvis-routines", companyId] });
       qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId, result.task.id, "thread"] });
     },
   });
 }

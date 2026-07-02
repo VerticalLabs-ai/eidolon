@@ -436,6 +436,94 @@ describe('Hybrid Jarvis runtime foundation', () => {
     const triggered = await request(app)
       .post(`/api/companies/${companyId}/routines/${routine.body.data.id}/trigger`)
       .expect(200);
-    expect(triggered.body.data.lastTriggeredAt).toBeTruthy();
+    expect(triggered.body.data.routine.lastTriggeredAt).toBeTruthy();
+    expect(triggered.body.data.status).toBe('session_started');
+    expect(triggered.body.data.task.title).toBe('Run routine: Morning briefing');
+    expect(triggered.body.data.task.assigneeAgentId).toBe(agent.body.data.id);
+    expect(triggered.body.data.task.status).toBe('in_progress');
+    expect(triggered.body.data.task.startedAt).toBeTruthy();
+    expect(triggered.body.data.execution.agentId).toBe(agent.body.data.id);
+    expect(triggered.body.data.execution.taskId).toBe(triggered.body.data.task.id);
+    expect(triggered.body.data.execution.runtimeSessionId).toBe(triggered.body.data.session.id);
+    expect(triggered.body.data.session.agentId).toBe(agent.body.data.id);
+    expect(triggered.body.data.session.taskId).toBe(triggered.body.data.task.id);
+    expect(triggered.body.data.session.executionId).toBe(triggered.body.data.execution.id);
+    expect(triggered.body.data.threadItem.relatedExecutionId).toBe(triggered.body.data.execution.id);
+
+    const [execution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.id, triggered.body.data.execution.id));
+    expect(execution).toBeDefined();
+    expect(execution!.runtimeSessionId).toBe(triggered.body.data.session.id);
+
+    const [threadItem] = await db.drizzle
+      .select()
+      .from(db.schema.taskThreadItems)
+      .where(eq(db.schema.taskThreadItems.id, triggered.body.data.threadItem.id));
+    expect(threadItem).toBeDefined();
+    expect(threadItem!.payload).toMatchObject({
+      routineId: routine.body.data.id,
+      executionId: triggered.body.data.execution.id,
+    });
+  });
+
+  it('creates task-only work when triggering a company-level routine', async () => {
+    const routine = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        name: 'Company monitor',
+        jarvisMode: 'monitoring',
+        mode: 'on_demand',
+        prompt: 'Check open operational risks.',
+      })
+      .expect(201);
+
+    const triggered = await request(app)
+      .post(`/api/companies/${companyId}/routines/${routine.body.data.id}/trigger`)
+      .expect(200);
+
+    expect(triggered.body.data.status).toBe('task_created_without_agent');
+    expect(triggered.body.data.task.title).toBe('Run routine: Company monitor');
+    expect(triggered.body.data.task.status).toBe('backlog');
+    expect(triggered.body.data.task.assigneeAgentId).toBeNull();
+    expect(triggered.body.data.execution).toBeNull();
+    expect(triggered.body.data.session).toBeNull();
+    expect(triggered.body.data.threadItem.content).toContain('no assigned agent');
+
+    const persistedExecutions = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.taskId, triggered.body.data.task.id));
+    expect(persistedExecutions).toHaveLength(0);
+  });
+
+  it('creates distinct work for repeated manual routine triggers', async () => {
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: 'Follow-up Agent', role: 'support' })
+      .expect(201);
+
+    const routine = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        name: 'Follow-up sweep',
+        agentId: agent.body.data.id,
+        jarvisMode: 'follow_up',
+        mode: 'on_demand',
+        prompt: 'Find stale follow-ups.',
+      })
+      .expect(201);
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/routines/${routine.body.data.id}/trigger`)
+      .expect(200);
+    const second = await request(app)
+      .post(`/api/companies/${companyId}/routines/${routine.body.data.id}/trigger`)
+      .expect(200);
+
+    expect(first.body.data.task.id).not.toBe(second.body.data.task.id);
+    expect(first.body.data.execution.id).not.toBe(second.body.data.execution.id);
+    expect(first.body.data.session.id).not.toBe(second.body.data.session.id);
   });
 });

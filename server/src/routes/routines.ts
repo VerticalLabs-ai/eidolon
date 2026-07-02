@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
+import type { RoutineEvent } from '../realtime/events.js';
+import { RoutineTriggerService } from '../services/routine-trigger.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
@@ -23,6 +25,7 @@ const CreateRoutineBody = z.object({
 export function routinesRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const { routines, agents } = db.schema;
+  const routineTriggers = new RoutineTriggerService(db);
 
   router.get('/', async (req, res) => {
     const { companyId } = routeParams(req);
@@ -74,25 +77,47 @@ export function routinesRouter(db: DbInstance): Router {
 
   router.post('/:id/trigger', async (req, res) => {
     const { companyId, id } = routeParams(req);
-    const now = new Date();
-    const [routine] = await db.drizzle
-      .update(routines)
-      .set({ lastTriggeredAt: now, updatedAt: now })
-      .where(and(eq(routines.id, id), eq(routines.companyId, companyId)))
-      .returning();
+    const triggered = await routineTriggers.trigger(companyId, id);
 
-    if (!routine) {
+    if (!triggered) {
       throw new AppError(404, 'ROUTINE_NOT_FOUND', `Routine ${id} not found`);
     }
 
+    const eventTimestamp = new Date().toISOString();
+    const routineEventType: RoutineEvent['type'] = triggered.routine.jarvisMode === 'daily_briefing'
+      ? 'jarvis.digest_ready'
+      : 'routine.triggered';
+
     eventBus.emitEvent({
-      type: routine.jarvisMode === 'daily_briefing' ? 'jarvis.digest_ready' as any : 'routine.triggered' as any,
+      type: routineEventType,
       companyId,
-      payload: { routineId: id, jarvisMode: routine.jarvisMode, agentId: routine.agentId ?? null },
-      timestamp: now.toISOString(),
+      payload: {
+        routineId: id,
+        jarvisMode: triggered.routine.jarvisMode,
+        agentId: triggered.routine.agentId ?? null,
+        taskId: triggered.task.id,
+        executionId: triggered.execution?.id ?? null,
+        sessionId: triggered.session?.id ?? null,
+        status: triggered.status,
+      },
+      timestamp: eventTimestamp,
     });
 
-    res.json({ data: routine });
+    eventBus.emitEvent({
+      type: 'task.created',
+      companyId,
+      payload: { task: triggered.task, source: 'routine_trigger', routineId: id },
+      timestamp: eventTimestamp,
+    });
+
+    eventBus.emitEvent({
+      type: 'task.thread_item_seen',
+      companyId,
+      payload: { taskId: triggered.task.id, item: triggered.threadItem },
+      timestamp: eventTimestamp,
+    });
+
+    res.json({ data: triggered });
   });
 
   return router;

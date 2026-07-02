@@ -1308,6 +1308,27 @@ export interface JarvisRoutine {
   updatedAt: string;
 }
 
+export interface JarvisRoutineTriggerExecution {
+  id: string;
+  companyId: string;
+  agentId: string;
+  taskId: string | null;
+  status: string;
+  summary: string | null;
+  runtimeSessionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JarvisRoutineTriggerResult {
+  routine: JarvisRoutine;
+  task: Task;
+  execution: JarvisRoutineTriggerExecution | null;
+  session: RuntimeSession | null;
+  threadItem: TaskThreadItem;
+  status: "session_started" | "task_created_without_agent";
+}
+
 export const getRuntimeAdapters = () =>
   request<RuntimeAdapterDescriptor[]>("/runtime/adapters");
 
@@ -1395,7 +1416,7 @@ export const createJarvisRoutine = (
   });
 
 export const triggerJarvisRoutine = (companyId: string, routineId: string) =>
-  request<JarvisRoutine>(
+  request<JarvisRoutineTriggerResult>(
     `/companies/${companyId}/routines/${routineId}/trigger`,
     { method: "POST" },
   );
