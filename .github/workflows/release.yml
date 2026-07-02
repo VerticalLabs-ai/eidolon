@@ -76,6 +76,8 @@ jobs:
     needs: verify
     if: needs.verify.outputs.skip != 'true'
     runs-on: macos-latest
+    outputs:
+      artifact-created: ${{ steps.signing-inputs.outputs.enabled }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,15 +91,35 @@ jobs:
           node-version: "20"
           cache: pnpm
 
+      - name: Check macOS signing inputs
+        id: signing-inputs
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          if [[ -n "$MACOS_CERTIFICATE_P12" && -n "$MACOS_CERTIFICATE_PASSWORD" && -n "$APPLE_SIGNING_IDENTITY" && -n "$APPLE_TEAM_ID" && -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping macOS DMG build because Developer ID signing secrets are not fully configured."
+          fi
+
       - name: Import Developer ID certificate
+        if: steps.signing-inputs.outputs.enabled == 'true'
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           p12-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
 
-      - run: pnpm install --frozen-lockfile
+      - if: steps.signing-inputs.outputs.enabled == 'true'
+        run: pnpm install --frozen-lockfile
 
       - name: Build macOS DMG
+        if: steps.signing-inputs.outputs.enabled == 'true'
         env:
           EIDOLON_DESKTOP_APP_URL: https://eidolon.verticallabs.ai
           EIDOLON_REQUIRE_MAC_SIGNING: "1"
@@ -108,6 +130,7 @@ jobs:
         run: pnpm desktop:make:mac
 
       - name: Upload DMG artifact
+        if: steps.signing-inputs.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Eidolon-${{ needs.verify.outputs.tag }}-mac-arm64-dmg
@@ -116,7 +139,7 @@ jobs:
 
   attach-desktop:
     needs: [verify, release, desktop-mac]
-    if: needs.verify.outputs.skip != 'true'
+    if: needs.verify.outputs.skip != 'true' && needs.desktop-mac.outputs.artifact-created == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download DMG artifact
