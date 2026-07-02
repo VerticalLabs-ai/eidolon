@@ -852,8 +852,8 @@ function RoutineRow({
         </p>
         {triggerResult && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-            <Badge variant={triggerResult.session ? "success" : "warning"}>
-              {triggerResult.session ? "Session started" : "Task only"}
+            <Badge variant={triggerResult.session ? statusVariant(triggerResult.session.status) : "warning"}>
+              {triggerResult.session ? toLabel(triggerResult.session.status) : "Task only"}
             </Badge>
             <span>
               Task {triggerResult.task.identifier ?? compactId(triggerResult.task.id)}

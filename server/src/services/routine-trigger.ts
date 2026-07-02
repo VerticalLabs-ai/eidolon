@@ -47,7 +47,7 @@ export class RoutineTriggerService {
       try {
         session = await this.sessions.createSession({
           companyId,
-          agentId: result.routine.agentId!,
+          agentId: result.execution.agentId,
           taskId: result.task.id,
           executionId: result.execution.id,
           mode: 'manual',

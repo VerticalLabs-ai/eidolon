@@ -454,13 +454,15 @@ describe('Hybrid Jarvis runtime foundation', () => {
       .select()
       .from(db.schema.agentExecutions)
       .where(eq(db.schema.agentExecutions.id, triggered.body.data.execution.id));
-    expect(execution.runtimeSessionId).toBe(triggered.body.data.session.id);
+    expect(execution).toBeDefined();
+    expect(execution!.runtimeSessionId).toBe(triggered.body.data.session.id);
 
     const [threadItem] = await db.drizzle
       .select()
       .from(db.schema.taskThreadItems)
       .where(eq(db.schema.taskThreadItems.id, triggered.body.data.threadItem.id));
-    expect(threadItem?.payload).toMatchObject({
+    expect(threadItem).toBeDefined();
+    expect(threadItem!.payload).toMatchObject({
       routineId: routine.body.data.id,
       executionId: triggered.body.data.execution.id,
     });
@@ -488,6 +490,12 @@ describe('Hybrid Jarvis runtime foundation', () => {
     expect(triggered.body.data.execution).toBeNull();
     expect(triggered.body.data.session).toBeNull();
     expect(triggered.body.data.threadItem.content).toContain('no assigned agent');
+
+    const persistedExecutions = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.taskId, triggered.body.data.task.id));
+    expect(persistedExecutions).toHaveLength(0);
   });
 
   it('creates distinct work for repeated manual routine triggers', async () => {
