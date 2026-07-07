@@ -41,3 +41,17 @@ This project is indexed by GitNexus as **eidolon** (2827 symbols, 6515 relations
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Promotion (staging→main)
+
+Promote staging to main with `pnpm promote` or the **Promote staging → main** GitHub Action (Actions tab → Run workflow).
+
+This promotion is fast-forward only. **Never** promote staging to main via a PR merge or rebase-merge; those rewrite SHAs and drift the branches.
+
+If promotion refuses because main diverged, merge main back into staging first, then re-run promotion:
+
+```bash
+git checkout staging
+git merge --no-ff origin/main
+git push
+```
