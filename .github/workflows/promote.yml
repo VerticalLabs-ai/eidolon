@@ -1,0 +1,52 @@
+name: Promote staging → main
+
+# One-click promotion from the GitHub UI (Actions tab → Run workflow), or the
+# gh CLI: `gh workflow run "Promote staging → main"`.
+# Performs a true fast-forward of main to staging's reviewed tip — no merge
+# commit, no SHA rewrite, so main and staging stay byte-for-byte identical.
+# Refuses (non-zero exit) if main has commits staging lacks (diverged); a human
+# must reconcile first.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-staging-main
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # default GITHUB_TOKEN can push to main here; branch protection that
+          # blocks the token will surface as a failed push (safe — nothing drifts).
+
+      - name: Fast-forward main to staging
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin \
+            "+refs/heads/staging:refs/remotes/origin/staging" \
+            "+refs/heads/main:refs/remotes/origin/main"
+          SRC_TIP="$(git rev-parse origin/staging)"
+          DST_TIP="$(git rev-parse origin/main)"
+          MB="$(git merge-base origin/staging origin/main)"
+          if [ "$SRC_TIP" = "$DST_TIP" ]; then
+            echo "main already at staging ($(git rev-parse --short "$SRC_TIP")) — nothing to promote."
+            exit 0
+          fi
+          if [ "$MB" != "$DST_TIP" ]; then
+            echo "::error::main has commits staging lacks — DIVERGED. Refusing to fast-forward. Reconcile manually (merge main into staging), then re-run."
+            git log --oneline "origin/staging..origin/main" | sed 's/^/  main-only: /'
+            exit 1
+          fi
+          echo "Promoting:"
+          git log --oneline --no-decorate "origin/main..origin/staging" | sed 's/^/  /'
+          git push origin "$SRC_TIP:refs/heads/main"
+          echo "main now identical to staging (0 divergence)."
