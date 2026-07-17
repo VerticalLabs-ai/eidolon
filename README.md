@@ -39,7 +39,7 @@ pnpm run dev           # Start server (:3100) + UI (:5173)
 
 The database starts empty — create your first company from the UI. There is no demo/mock data.
 
-**Requirements:** Node.js 20+, `pnpm`, Docker, and the [Supabase CLI](https://supabase.com/docs/guides/cli) (`brew install supabase/tap/supabase` on macOS). Auth is handled by Clerk via the Vercel Marketplace integration (see [Deployment](#deployment)).
+**Requirements:** Node.js 24 LTS, `pnpm`, Docker, and the [Supabase CLI](https://supabase.com/docs/guides/cli) (`brew install supabase/tap/supabase` on macOS). Auth is handled by Clerk via the Vercel Marketplace integration (see [Deployment](#deployment)).
 
 ## Architecture
 
@@ -63,7 +63,7 @@ eidolon/
 
 ## Tech stack
 
-- **Backend:** Node.js 20+, Express 5, TypeScript
+- **Backend:** Node.js 24 LTS, Express 5, TypeScript
 - **Database:** Postgres via Drizzle ORM + `postgres.js`. Locally provisioned by the Supabase CLI (`supabase/config.toml`); migrations live in `packages/db/drizzle/`. Tests run against PGlite (in-memory Postgres) with the same migrations.
 - **Frontend:** React 19, Vite, Tailwind CSS v4, TanStack React Query, Framer Motion
 - **Auth:** Clerk (production) / `local_trusted` bypass (dev loopback)

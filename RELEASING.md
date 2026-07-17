@@ -33,4 +33,4 @@ Avoid creating CalVer tags by hand unless you know what you are doing; the next 
 
 ## Local tests and `better-sqlite3`
 
-If `npm run test:run` fails with a Node native module version mismatch for `better-sqlite3`, run `npm rebuild better-sqlite3` (or reinstall with your current Node version). CI runs `npm ci` on Ubuntu with Node 20 and compiles the add-on for that environment.
+If `pnpm run test:run` fails with a Node native module version mismatch for `better-sqlite3`, run `pnpm rebuild better-sqlite3` (or reinstall with your current Node version). CI installs dependencies on Ubuntu with Node 24 and compiles the add-on for that environment.
