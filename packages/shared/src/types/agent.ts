@@ -75,6 +75,8 @@ export interface Agent {
   role: AgentRole;
   title: string;
   provider: AgentProvider;
+  adapterId: string | null;
+  adapterConfig: Record<string, unknown>;
   model: string;
   status: AgentStatus;
   reportsTo: string | null;
@@ -100,6 +102,8 @@ export const AgentSchema = z.object({
   role: AgentRoleEnum,
   title: z.string().min(1).max(255),
   provider: AgentProviderEnum,
+  adapterId: z.string().max(255).nullable(),
+  adapterConfig: z.record(z.unknown()).default({}),
   model: z.string().min(1).max(255),
   status: AgentStatusEnum,
   reportsTo: z.string().uuid().nullable(),
@@ -124,6 +128,8 @@ export const CreateAgentInputSchema = z.object({
   role: AgentRoleEnum,
   title: z.string().min(1).max(255),
   provider: AgentProviderEnum,
+  adapterId: z.string().max(255).nullable().optional(),
+  adapterConfig: z.record(z.unknown()).default({}),
   model: z.string().min(1).max(255),
   status: AgentStatusEnum.default('idle'),
   reportsTo: z.string().uuid().nullable().default(null),
@@ -141,6 +147,8 @@ export const UpdateAgentInputSchema = z.object({
   role: AgentRoleEnum.optional(),
   title: z.string().min(1).max(255).optional(),
   provider: AgentProviderEnum.optional(),
+  adapterId: z.string().max(255).nullable().optional(),
+  adapterConfig: z.record(z.unknown()).optional(),
   model: z.string().min(1).max(255).optional(),
   status: AgentStatusEnum.optional(),
   reportsTo: z.string().uuid().nullable().optional(),

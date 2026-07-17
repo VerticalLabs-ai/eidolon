@@ -245,6 +245,8 @@ export const createAgent = (
     role: string;
     title: string;
     provider?: string;
+    adapterId?: string | null;
+    adapterConfig?: Record<string, unknown>;
     model?: string;
     reportsTo?: string;
     capabilities?: string[];

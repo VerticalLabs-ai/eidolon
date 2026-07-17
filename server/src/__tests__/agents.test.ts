@@ -43,7 +43,7 @@ describe('Agents API', () => {
     it('should create an agent with minimal fields', async () => {
       const res = await request(app)
         .post(agentsUrl())
-        .send({ name: 'Alice', role: 'engineer' })
+        .send({ name: 'Alice', role: 'engineer', adapterId: null })
         .expect(201);
 
       expect(res.body.data.id).toBeDefined();
@@ -52,6 +52,8 @@ describe('Agents API', () => {
       expect(res.body.data.companyId).toBe(companyId);
       expect(res.body.data.status).toBe('idle');
       expect(res.body.data.provider).toBe('anthropic');
+      expect(res.body.data.adapterId).toBe('provider:anthropic');
+      expect(res.body.data.adapterConfig).toEqual({});
       expect(res.body.data.model).toBe('claude-opus-4-7');
       expect(res.body.data.temperature).toBeCloseTo(0.7);
       expect(res.body.data.maxTokens).toBe(4096);
@@ -163,12 +165,19 @@ describe('Agents API', () => {
     });
 
     it('should list all agents for a company', async () => {
-      await request(app).post(agentsUrl()).send({ name: 'A1', role: 'engineer' });
+      await request(app).post(agentsUrl()).send({
+        name: 'A1',
+        role: 'engineer',
+        adapterId: 'process:local',
+        adapterConfig: { command: 'codex' },
+      });
       await request(app).post(agentsUrl()).send({ name: 'A2', role: 'designer' });
 
       const res = await request(app).get(agentsUrl()).expect(200);
 
       expect(res.body.data).toHaveLength(2);
+      expect(res.body.data[0].adapterId).toBe('process:local');
+      expect(res.body.data[0].adapterConfig).toEqual({ command: 'codex' });
     });
   });
 
@@ -187,6 +196,8 @@ describe('Agents API', () => {
 
       expect(res.body.data.id).toBe(id);
       expect(res.body.data.name).toBe('Lookup');
+      expect(res.body.data.adapterId).toBe('provider:anthropic');
+      expect(res.body.data.adapterConfig).toEqual({});
     });
 
     it('should 404 for non-existent agent', async () => {
@@ -211,13 +222,22 @@ describe('Agents API', () => {
 
       const res = await request(app)
         .patch(agentUrl(id))
-        .send({ name: 'After', temperature: 0.5, provider: 'ollama' })
+        .send({
+          name: 'After',
+          temperature: 0.5,
+          provider: 'ollama',
+          adapterId: 'http:remote',
+          adapterConfig: { url: 'https://runtime.example.test' },
+        })
         .expect(200);
 
       expect(res.body.data.name).toBe('After');
       expect(res.body.data.temperature).toBeCloseTo(0.5);
       expect(res.body.data.provider).toBe('local');
-      expect(res.body.data.adapterId).toBe('provider:ollama');
+      expect(res.body.data.adapterId).toBe('http:remote');
+      expect(res.body.data.adapterConfig).toEqual({
+        url: 'https://runtime.example.test',
+      });
     });
 
     it('should create a config revision on update', async () => {
