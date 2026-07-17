@@ -44,7 +44,7 @@ const CreateAgentBody = z.object({
       "ollama",
     ])
     .default("anthropic"),
-  adapterId: z.string().max(255).optional(),
+  adapterId: z.string().max(255).nullable().optional(),
   adapterConfig: z.record(z.unknown()).default({}),
   model: z.string().min(1).max(255).default("claude-opus-4-7"),
   status: z

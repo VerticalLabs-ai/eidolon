@@ -31,6 +31,7 @@ import {
   useUpdateAgentInstructions,
   useAgentRevisions,
   useAgentExecutions,
+  useRuntimeAdapters,
 } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
@@ -320,6 +321,11 @@ function OverviewTab({
     (t) => t.status === "pending" || t.status === "todo",
   );
   const reportsToAgent = agents?.find((a) => a.id === agent.reportsTo);
+  const { data: runtimeAdapters = [] } = useRuntimeAdapters();
+  const runtimeAdapter = runtimeAdapters.find(
+    (adapter) => adapter.id === agent.adapterId,
+  );
+  const adapterConfigCount = Object.keys(agent.adapterConfig ?? {}).length;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -465,6 +471,22 @@ function OverviewTab({
           <div className="p-6 space-y-4">
             <DetailRow label="Provider" value={agent.provider ?? "N/A"} />
             <DetailRow label="Model" value={agent.model ?? "N/A"} />
+            <DetailRow
+              label="Runtime Adapter"
+              value={
+                runtimeAdapter
+                  ? `${runtimeAdapter.name} (${runtimeAdapter.kind})`
+                  : agent.adapterId ?? "Provider default"
+              }
+            />
+            <DetailRow
+              label="Adapter Config"
+              value={
+                adapterConfigCount === 0
+                  ? "Default"
+                  : `${adapterConfigCount} setting${adapterConfigCount === 1 ? "" : "s"}`
+              }
+            />
             <DetailRow
               label="Last Heartbeat"
               value={
