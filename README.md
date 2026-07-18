@@ -119,6 +119,14 @@ Tenant adapter environment values are delivered to the sandboxed launcher over a
 
 Processes are spawned without a shell in a managed process group, transcript output is bounded, and cancellation/timeout terminates the process tree. POSIX runners receive a graceful termination signal before the force deadline; Windows runners retain the supervised tree for the configured drain interval and then use a forced tree kill because Windows does not provide an equivalent catchable signal for arbitrary console process trees. Each claimed run persists a unique server-owner ID. Only successful durable lease refreshes renew the child supervisor watchdog; a stalled database heartbeat therefore fences the CLI tree even if its server process remains alive. A local session remains fenced in `cancelling` until its owner records the exit; after a restart, a foreign owner can be reconciled only after its last durable heartbeat plus the supervisor lease timeout, the configured force-kill grace, and a fencing buffer have expired. Failures record the command, cwd, exit code or signal, timeout state, and stderr tail without logging configured environment values. These adapters require a trusted local/desktop server host with the relevant authenticated CLI installed; a serverless Vercel function cannot provide that host runtime.
 
+### Generic process, HTTP, and OpenClaw adapters
+
+`process:local` runs an operator-approved executable through the same external containment launcher and process-tree supervisor as the local CLI adapters. Its `adapterConfig.command` must be absolute, and the complete `[command, ...args]` tuple must exactly match one entry in `EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON` before any filesystem lookup. The configured and allowlisted command must be the same canonical real path; symlinks are rejected. The path must reference a root- or operator-owned regular executable, must not be group/world writable, and must not traverse an untrusted writable directory. It accepts the same bounded `env`, `cwd`, `timeoutSec`, and `graceSec` settings as local CLI sessions; the agent must also appear in `EIDOLON_LOCAL_CLI_ALLOWED_AGENTS`.
+
+`http:remote` posts `{ prompt, companyId, agentId, sessionId }` plus optional `adapterConfig.payload` fields to `adapterConfig.url`. `openclaw:webhook` posts the OpenClaw hook shape `{ message, agentId, deliver }`. Both accept string-valued `adapterConfig.headers` and `timeoutSec`. Outbound request bodies are capped at 256 KiB. Response bodies are capped at 1 MiB but are not persisted by default; `adapterConfig.responseFields` may name up to 20 top-level scalar JSON fields that are safe to retain in the session transcript. `EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON` maps each allowed scheme, host, and port to its own approved IP addresses, for example `{"https://openclaw.internal":["10.0.0.8"],"http://127.0.0.1:3000":["127.0.0.1"]}`. Eidolon resolves once and pins the connection to an address approved for that exact origin; literal IP targets must map to themselves. Redirects are blocked, configured URL paths, queries, and fragments are reduced to the origin in diagnostics, and the timeout/cancellation boundary includes DNS resolution.
+
+Operators can validate a configured process, HTTP, or OpenClaw session without running work via `POST /api/companies/:id/sessions/:sessionId/test`. Process diagnostics verify the executable, exact argv allowlist, authorization, and containment launcher. Remote diagnostics issue a bounded `HEAD` request and report actionable policy, authentication, or reachability failures. POST-only endpoints that return 405 are reported as reachable but inconclusive, never as a successful diagnostic.
+
 ## How it works
 
 1. **Create a company** — Define mission and budget.
@@ -137,14 +145,15 @@ All endpoints under `/api`. See the per-route source for full schemas.
 | `GET /api/companies` | List companies |
 | `POST /api/companies` | Create company |
 | `GET /api/adapters` | Provider adapter manifest with capability flags |
-| `GET /api/runtime/adapters` | Provider, process, HTTP, MCP, and OpenJarvis-local runtime descriptors |
+| `GET /api/runtime/adapters` | Provider, process, HTTP, OpenClaw, MCP, and OpenJarvis-local runtime descriptors |
 | `GET /api/companies/:id/agents` | List agents |
 | `POST /api/companies/:id/agents` | Hire agent |
 | `POST /api/companies/:id/agents/:agentId/wake` | Wake an idle agent for immediate task assignment |
 | `GET /api/companies/:id/agents/:agentId/executions` | Execution history with transcripts |
 | `POST /api/companies/:id/agents/:agentId/execute` | Run agent on a task (supports `?mode=loop`) |
 | `POST /api/companies/:id/sessions` | Create a durable runtime session |
-| `POST /api/companies/:id/sessions/:sessionId/run` | Run a prompt through a Codex Local or Claude Local session |
+| `POST /api/companies/:id/sessions/:sessionId/run` | Run a prompt through a configured local process, HTTP, or OpenClaw runtime |
+| `POST /api/companies/:id/sessions/:sessionId/test` | Validate a configured process, HTTP, or OpenClaw runtime |
 | `POST /api/companies/:id/sessions/:sessionId/cancel` | Cancel a runtime session |
 | `POST /api/companies/:id/sessions/:sessionId/finalize` | Finalize a runtime session and release its workspace |
 | `POST /api/companies/:id/skills/install` | Install/update a company skill and optionally assign it to agents |
