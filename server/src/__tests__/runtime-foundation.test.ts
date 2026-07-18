@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { createTestApp, createTestDb } from '../test-utils.js';
+import { RuntimeSessionService } from '../services/runtime-sessions.js';
 
 describe('Hybrid Jarvis runtime foundation', () => {
   let app: ReturnType<typeof createTestApp>;
@@ -1662,13 +1663,40 @@ process.stdin.on("end", () => {
     expect(stillLeased.leaseOwnerAgentId).toBe(agent.body.data.id);
   });
 
-  it('preserves the runtime session not-found code when finalizing', async () => {
+  it('preserves runtime session not-found codes across lifecycle routes', async () => {
     const missingId = randomUUID();
-    const response = await request(app)
+    const runResponse = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${missingId}/run`)
+      .send({ prompt: 'Do not run.' })
+      .expect(404);
+    const cancelResponse = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${missingId}/cancel`)
+      .send({})
+      .expect(404);
+    const finalizeResponse = await request(app)
       .post(`/api/companies/${companyId}/sessions/${missingId}/finalize`)
       .expect(404);
 
-    expect(response.body.code).toBe('RUNTIME_SESSION_NOT_FOUND');
+    expect(runResponse.body.code).toBe('RUNTIME_SESSION_NOT_FOUND');
+    expect(cancelResponse.body.code).toBe('RUNTIME_SESSION_NOT_FOUND');
+    expect(finalizeResponse.body.code).toBe('RUNTIME_SESSION_NOT_FOUND');
+  });
+
+  it('reports runtime cancellation update contention as a conflict', async () => {
+    const sessionId = randomUUID();
+    const cancelSpy = vi
+      .spyOn(RuntimeSessionService.prototype, 'cancelSession')
+      .mockRejectedValueOnce(new Error(`Session ${sessionId} is already being updated`));
+    try {
+      const response = await request(app)
+        .post(`/api/companies/${companyId}/sessions/${sessionId}/cancel`)
+        .send({})
+        .expect(409);
+
+      expect(response.body.code).toBe('RUNTIME_SESSION_CONFLICT');
+    } finally {
+      cancelSpy.mockRestore();
+    }
   });
 
   it('installs company skills and assigns them to agents', async () => {

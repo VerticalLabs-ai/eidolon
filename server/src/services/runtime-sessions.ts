@@ -543,7 +543,7 @@ export class RuntimeSessionService {
 
       if (finalSession.status === 'cancelled') {
         eventBus.emitEvent({
-          type: 'runtime.session_cancelled' as any,
+          type: 'runtime.session_cancelled',
           companyId,
           payload: {
             sessionId,
@@ -555,7 +555,7 @@ export class RuntimeSessionService {
       }
 
       eventBus.emitEvent({
-        type: 'runtime.session_completed' as any,
+        type: 'runtime.session_completed',
         companyId,
         payload: {
           sessionId,
@@ -704,7 +704,7 @@ export class RuntimeSessionService {
           waitsForLocalProcess
             ? 'runtime.session_cancelling'
             : 'runtime.session_cancelled'
-        ) as any,
+        ),
         companyId,
         payload: { sessionId, reason: cancellationReason, status: cancellationStatus },
         timestamp: now.toISOString(),

@@ -67,7 +67,10 @@ export function sessionsRouter(db: DbInstance): Router {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const status = message === `Session ${id} not found` ? 404 : 400;
-      throw new AppError(status, 'RUNTIME_SESSION_RUN_FAILED', message);
+      const code = status === 404
+        ? 'RUNTIME_SESSION_NOT_FOUND'
+        : 'RUNTIME_SESSION_RUN_FAILED';
+      throw new AppError(status, code, message);
     }
   });
 
@@ -77,7 +80,16 @@ export function sessionsRouter(db: DbInstance): Router {
       const session = await sessions.cancelSession(companyId, id, (req.body as z.infer<typeof CancelSessionBody>).reason);
       res.json({ data: session });
     } catch (error) {
-      throw new AppError(404, 'RUNTIME_SESSION_NOT_FOUND', error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound = message === `Session ${id} not found`;
+      const isConflict = message === `Session ${id} is already being updated`;
+      const status = isNotFound ? 404 : isConflict ? 409 : 400;
+      const code = isNotFound
+        ? 'RUNTIME_SESSION_NOT_FOUND'
+        : isConflict
+          ? 'RUNTIME_SESSION_CONFLICT'
+          : 'RUNTIME_SESSION_CANCEL_FAILED';
+      throw new AppError(status, code, message);
     }
   });
 
