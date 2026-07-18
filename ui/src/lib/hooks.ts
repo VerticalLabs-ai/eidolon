@@ -960,6 +960,17 @@ export function useRuntimeAdapters() {
   });
 }
 
+export function useRefreshAgentModels(companyId: string, agentId: string) {
+  return useMutation({
+    mutationFn: async () => ({
+      ...unwrap<api.AdapterModelDiscoveryResult>(
+        await api.refreshAgentModels(companyId, agentId),
+      ),
+      agentId,
+    }),
+  });
+}
+
 export function useRuntimeSessions(companyId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: ["runtime-sessions", companyId],

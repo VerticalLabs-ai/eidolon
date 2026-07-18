@@ -7,6 +7,7 @@ import type {
   AdapterModel,
   ChatMessage,
   CompletionResult,
+  ModelDiscoveryConfig,
   ProviderConfig,
   ServerAdapter,
   ServerAdapterCapabilities,
@@ -14,6 +15,8 @@ import type {
 } from './types.js';
 import { calculateCostCents } from './cost.js';
 import logger from '../utils/logger.js';
+
+const DEFAULT_MODELS_URL = 'https://api.anthropic.com/v1/models';
 
 export class AnthropicProvider implements ServerAdapter {
   readonly name = 'anthropic';
@@ -60,6 +63,61 @@ export class AnthropicProvider implements ServerAdapter {
       maxOutputTokens: 16_000,
     },
   ];
+
+  async discoverModels(config: ModelDiscoveryConfig): Promise<AdapterModel[]> {
+    if (!config.authorization) {
+      throw new Error('Anthropic API key is required to refresh models');
+    }
+
+    const signal = AbortSignal.timeout(config.timeoutMs ?? 10_000);
+    const models: AdapterModel[] = [];
+    let afterId: string | undefined;
+
+    for (let page = 0; page < 20; page += 1) {
+      const url = new URL(DEFAULT_MODELS_URL);
+      url.searchParams.set('limit', '100');
+      if (afterId) {
+        url.searchParams.set('after_id', afterId);
+      }
+
+      const response = await fetch(url, {
+        headers: {
+          'anthropic-version': '2023-06-01',
+          'x-api-key': config.authorization,
+        },
+        signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Anthropic model discovery failed with HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        data?: Array<{ id?: string; display_name?: string }>;
+        has_more?: boolean;
+        last_id?: string;
+      };
+
+      models.push(
+        ...(data.data ?? [])
+          .filter((model): model is { id: string; display_name?: string } => Boolean(model.id))
+          .map((model) => ({
+            id: model.id,
+            label: model.display_name ?? model.id,
+          })),
+      );
+
+      if (!data.has_more) {
+        return models;
+      }
+      if (!data.last_id || data.last_id === afterId) {
+        throw new Error('Anthropic model discovery returned an invalid page cursor');
+      }
+      afterId = data.last_id;
+    }
+
+    throw new Error('Anthropic model discovery exceeded the pagination limit');
+  }
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     if (!config.apiKey) {

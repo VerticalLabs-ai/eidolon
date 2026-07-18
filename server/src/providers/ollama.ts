@@ -6,6 +6,7 @@ import type {
   AdapterModel,
   ChatMessage,
   CompletionResult,
+  ModelDiscoveryConfig,
   ProviderConfig,
   ServerAdapter,
   ServerAdapterCapabilities,
@@ -64,6 +65,48 @@ export class OllamaProvider implements ServerAdapter {
     { id: 'mistral', label: 'Mistral (local)' },
     { id: 'phi4', label: 'Phi 4' },
   ];
+
+  async discoverModels(config: ModelDiscoveryConfig): Promise<AdapterModel[]> {
+    const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
+    const signal = AbortSignal.timeout(config.timeoutMs ?? 10_000);
+    const response = await fetch(`${baseUrl}/api/tags`, {
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama model discovery failed with HTTP ${response.status}`);
+    }
+
+    const data = (await response.json()) as {
+      models?: Array<{ name?: string; model?: string }>;
+    };
+
+    const installedModels = (data.models ?? [])
+      .map((model) => model.name ?? model.model)
+      .filter((id): id is string => Boolean(id));
+    const chatModels: AdapterModel[] = [];
+
+    for (const id of installedModels) {
+      const detailsResponse = await fetch(`${baseUrl}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: id }),
+        signal,
+      });
+      if (!detailsResponse.ok) {
+        continue;
+      }
+
+      const details = (await detailsResponse.json()) as {
+        capabilities?: string[];
+      };
+      if ((details.capabilities ?? []).includes('completion')) {
+        chatModels.push({ id, label: id });
+      }
+    }
+
+    return chatModels.sort((left, right) => left.id.localeCompare(right.id));
+  }
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;

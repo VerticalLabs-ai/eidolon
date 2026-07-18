@@ -16,6 +16,7 @@ import {
   Eye,
   EyeOff,
   Clock,
+  RefreshCw,
   ToggleLeft,
   ToggleRight,
   AlertCircle,
@@ -31,6 +32,7 @@ import {
   useUpdateAgentInstructions,
   useAgentRevisions,
   useAgentExecutions,
+  useRefreshAgentModels,
   useRuntimeAdapters,
 } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
@@ -560,16 +562,39 @@ function ConfigTab({
     String((agent.budgetMonthlyCents ?? 0) / 100),
   );
   const [saved, setSaved] = useState(false);
+  const refreshModels = useRefreshAgentModels(companyId, agent.id);
+  const persistedProvider = normalizeProvider(agent.provider);
+  const persistedModel = agent.model ?? "";
+  const persistedAdapter =
+    persistedProvider === "local" ? "ollama" : persistedProvider;
+  const activeDiscovery =
+    refreshModels.data?.agentId === agent.id &&
+    refreshModels.data.adapter === persistedAdapter
+      ? refreshModels.data
+      : undefined;
 
-  const modelOptions = getModelOptions(provider);
+  const modelOptions = useMemo(() => {
+    const discovered =
+      provider === persistedProvider && activeDiscovery?.status === "success"
+        ? activeDiscovery.models.map((candidate) => ({
+            value: candidate.id,
+            label: candidate.label,
+          }))
+        : getModelOptions(provider);
 
-  useEffect(() => {
-    // When provider changes, reset model to first option for that provider
-    const opts = getModelOptions(provider);
-    if (opts && opts.length > 0 && !opts.find((m) => m.value === model)) {
-      setModel(opts[0].value);
+    if (
+      provider === persistedProvider &&
+      model &&
+      !discovered.some((candidate) => candidate.value === model)
+    ) {
+      return [
+        { value: model, label: model },
+        ...discovered,
+      ];
     }
-  }, [provider]);
+
+    return discovered;
+  }, [activeDiscovery, model, persistedProvider, provider]);
 
   const handleSave = () => {
     const data: Record<string, unknown> = {
@@ -621,7 +646,15 @@ function ConfigTab({
               label="Provider"
               options={[...PROVIDER_OPTIONS]}
               value={provider}
-              onChange={(e) => setProvider(e.target.value)}
+              onChange={(e) => {
+                const nextProvider = e.target.value;
+                setProvider(nextProvider);
+                setModel(
+                  nextProvider === persistedProvider && persistedModel
+                    ? persistedModel
+                    : (getModelOptions(nextProvider)[0]?.value ?? ""),
+                );
+              }}
             />
             <Select
               label="Model"
@@ -629,6 +662,44 @@ function ConfigTab({
               value={model}
               onChange={(e) => setModel(e.target.value)}
             />
+          </div>
+          <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-white/[0.06] bg-surface/40 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-text-primary">
+                Model catalog
+              </p>
+              <p
+                className={clsx(
+                  "mt-0.5 text-xs",
+                  activeDiscovery?.status === "error"
+                    ? "text-warning"
+                    : "text-text-secondary",
+                )}
+              >
+                {provider !== persistedProvider
+                  ? "Save the provider change before refreshing its models."
+                  : activeDiscovery?.diagnostic ??
+                    "Using the built-in model catalog. Refresh to query the provider."}
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={
+                <RefreshCw
+                  className={clsx(
+                    "h-3.5 w-3.5",
+                    refreshModels.isPending && "animate-spin",
+                  )}
+                />
+              }
+              disabled={
+                provider !== persistedProvider || refreshModels.isPending
+              }
+              onClick={() => refreshModels.mutate()}
+            >
+              Refresh models
+            </Button>
           </div>
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-2">

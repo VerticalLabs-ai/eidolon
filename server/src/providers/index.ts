@@ -7,7 +7,9 @@ import { OpenAIProvider } from './openai.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
 import type {
+  AdapterModelDiscoveryResult,
   AIProvider,
+  ModelDiscoveryConfig,
   ServerAdapter,
   ServerAdapterCapabilities,
   ServerAdapterDescriptor,
@@ -40,6 +42,25 @@ export function getAdapter(name: string): ServerAdapter {
     throw new Error(`Unknown adapter: "${name}". Available: ${available}`);
   }
   return adapter;
+}
+
+export function getConfiguredProviderBaseUrl(name: string): string | undefined {
+  if (name !== 'local' && name !== 'ollama') {
+    return undefined;
+  }
+
+  const configured = process.env.EIDOLON_OLLAMA_BASE_URL?.trim();
+  if (!configured) {
+    return undefined;
+  }
+
+  const url = new URL(configured);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error(
+      'EIDOLON_OLLAMA_BASE_URL must be an HTTP(S) URL without embedded credentials',
+    );
+  }
+  return configured.replace(/\/$/, '');
 }
 
 /**
@@ -224,6 +245,51 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
 export function listRuntimeAdapterDescriptors(): ServerAdapterDescriptor[] {
   const providerDescriptors = listAdapters().map(descriptorFromAdapter);
   return [...providerDescriptors, ...runtimeOnlyAdapters];
+}
+
+export async function discoverAdapterModels(
+  name: string,
+  config: ModelDiscoveryConfig,
+): Promise<AdapterModelDiscoveryResult> {
+  const adapter = getAdapter(name);
+  const refreshedAt = new Date().toISOString();
+
+  if (!adapter.discoverModels) {
+    return {
+      adapter: adapter.name,
+      models: adapter.models,
+      source: 'static',
+      status: 'unsupported',
+      refreshedAt,
+      diagnostic: `${adapter.name} does not support live model discovery. The static catalog remains available.`,
+    };
+  }
+
+  try {
+    const models = await adapter.discoverModels(config);
+    if (models.length === 0) {
+      throw new Error(`${adapter.name} returned no compatible models`);
+    }
+
+    return {
+      adapter: adapter.name,
+      models,
+      source: 'live',
+      status: 'success',
+      refreshedAt,
+      diagnostic: `Loaded ${models.length} models from ${adapter.name}.`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      adapter: adapter.name,
+      models: adapter.models,
+      source: 'static',
+      status: 'error',
+      refreshedAt,
+      diagnostic: `${message}. Check the provider credential and connectivity, then retry. The static catalog remains available.`,
+    };
+  }
 }
 
 export * from './types.js';

@@ -6,6 +6,7 @@ import type {
   AdapterModel,
   ChatMessage,
   CompletionResult,
+  ModelDiscoveryConfig,
   ProviderConfig,
   ServerAdapter,
   ServerAdapterCapabilities,
@@ -80,6 +81,70 @@ export class GoogleProvider implements ServerAdapter {
     { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', maxContextTokens: 2_000_000, maxOutputTokens: 64_000 },
     { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', maxContextTokens: 1_000_000, maxOutputTokens: 64_000 },
   ];
+
+  async discoverModels(config: ModelDiscoveryConfig): Promise<AdapterModel[]> {
+    if (!config.authorization) {
+      throw new Error('Google API key is required to refresh models');
+    }
+
+    const signal = AbortSignal.timeout(config.timeoutMs ?? 10_000);
+    const models: AdapterModel[] = [];
+    let pageCursor: string | undefined;
+
+    for (let page = 0; page < 20; page += 1) {
+      const url = new URL(`${DEFAULT_BASE_URL}/models`);
+      url.searchParams.set('pageSize', '1000');
+      if (pageCursor) {
+        url.searchParams.set('pageToken', pageCursor);
+      }
+
+      const response = await fetch(url, {
+        headers: { 'x-goog-api-key': config.authorization },
+        signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Google model discovery failed with HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        models?: Array<{
+          name?: string;
+          displayName?: string;
+          supportedGenerationMethods?: string[];
+        }>;
+        nextPageToken?: string;
+      };
+
+      models.push(
+        ...(data.models ?? [])
+          .filter(
+            (model): model is {
+              name: string;
+              displayName?: string;
+              supportedGenerationMethods?: string[];
+            } =>
+              typeof model.name === 'string' &&
+              (model.supportedGenerationMethods ?? []).includes('generateContent'),
+          )
+          .map((model) => {
+            const id = model.name.replace(/^models\//, '');
+            return { id, label: model.displayName ?? id };
+          }),
+      );
+
+      const nextCursor = data.nextPageToken;
+      if (!nextCursor) {
+        return models;
+      }
+      if (nextCursor === pageCursor) {
+        throw new Error('Google model discovery returned an invalid page token');
+      }
+      pageCursor = nextCursor;
+    }
+
+    throw new Error('Google model discovery exceeded the pagination limit');
+  }
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     if (!config.apiKey) {

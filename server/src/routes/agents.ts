@@ -4,8 +4,12 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AppError } from "../middleware/error-handler.js";
 import { validate } from "../middleware/validate.js";
+import {
+  discoverAdapterModels,
+  getConfiguredProviderBaseUrl,
+} from "../providers/index.js";
 import eventBus from "../realtime/events.js";
-import { encrypt } from "../services/crypto.js";
+import { decrypt, encrypt } from "../services/crypto.js";
 import { AgentExecutor } from "../services/agent-executor.js";
 import { AgenticLoop } from "../services/agentic-loop.js";
 import { HeartbeatScheduler } from "../services/scheduler.js";
@@ -477,6 +481,44 @@ export function agentsRouter(db: DbInstance): Router {
       );
     }
     res.json({ data: row });
+  });
+
+  // POST /api/companies/:companyId/agents/:id/models/refresh
+  router.post("/:id/models/refresh", async (req, res) => {
+    const { id, companyId } = routeParams(req);
+    const [agent] = await db.drizzle
+      .select()
+      .from(agents)
+      .where(and(eq(agents.id, id), eq(agents.companyId, companyId)))
+      .limit(1);
+
+    if (!agent) {
+      throw new AppError(404, "AGENT_NOT_FOUND", `Agent ${id} not found`);
+    }
+
+    const adapterName = agent.provider === "local" ? "ollama" : agent.provider;
+    const credentialProvider =
+      agent.apiKeyProvider === "local" ? "ollama" : agent.apiKeyProvider;
+    let resolvedValue: string | undefined;
+
+    if (
+      agent.apiKeyEncrypted &&
+      credentialProvider === adapterName
+    ) {
+      try {
+        resolvedValue = decrypt(agent.apiKeyEncrypted);
+      } catch {
+        // The adapter will return its static catalog with an actionable
+        // missing-credential diagnostic instead of exposing crypto details.
+      }
+    }
+
+    res.json({
+      data: await discoverAdapterModels(adapterName, {
+        authorization: resolvedValue,
+        baseUrl: getConfiguredProviderBaseUrl(adapterName),
+      }),
+    });
   });
 
   // PATCH /api/companies/:companyId/agents/:id - update (with revision tracking)

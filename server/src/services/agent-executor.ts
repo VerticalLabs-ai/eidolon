@@ -4,7 +4,10 @@
 
 import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { getProvider } from '../providers/index.js';
+import {
+  getConfiguredProviderBaseUrl,
+  getProvider,
+} from '../providers/index.js';
 import type { ChatMessage, CompletionResult, ProviderConfig } from '../providers/types.js';
 import { decrypt } from './crypto.js';
 import { BudgetEnforcer } from './budget-enforcer.js';
@@ -210,6 +213,7 @@ export class AgentExecutor {
       const provider = getProvider(providerName);
       const providerConfig: ProviderConfig = {
         apiKey,
+        baseUrl: getConfiguredProviderBaseUrl(providerName),
         model: agent.model,
         temperature: agent.temperature ?? 0.7,
         maxTokens: agent.maxTokens ?? 4096,
