@@ -22,6 +22,10 @@ const CancelSessionBody = z.object({
   reason: z.string().max(2000).optional(),
 });
 
+const RunSessionBody = z.object({
+  prompt: z.string().min(1).max(100_000),
+});
+
 export function sessionsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const sessions = new RuntimeSessionService(db);
@@ -44,13 +48,48 @@ export function sessionsRouter(db: DbInstance): Router {
     }
   });
 
+  router.post('/:id/run', validate(RunSessionBody), async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    if (req.user?.role !== 'admin') {
+      throw new AppError(
+        403,
+        'RUNTIME_SESSION_OPERATOR_REQUIRED',
+        'Local CLI sessions can only be run by a platform operator',
+      );
+    }
+    try {
+      const session = await sessions.runSession(
+        companyId,
+        id,
+        req.body as z.infer<typeof RunSessionBody>,
+      );
+      res.json({ data: session });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === `Session ${id} not found` ? 404 : 400;
+      const code = status === 404
+        ? 'RUNTIME_SESSION_NOT_FOUND'
+        : 'RUNTIME_SESSION_RUN_FAILED';
+      throw new AppError(status, code, message);
+    }
+  });
+
   router.post('/:id/cancel', validate(CancelSessionBody), async (req, res) => {
     const { companyId, id } = routeParams(req);
     try {
       const session = await sessions.cancelSession(companyId, id, (req.body as z.infer<typeof CancelSessionBody>).reason);
       res.json({ data: session });
     } catch (error) {
-      throw new AppError(404, 'RUNTIME_SESSION_NOT_FOUND', error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound = message === `Session ${id} not found`;
+      const isConflict = message === `Session ${id} is already being updated`;
+      const status = isNotFound ? 404 : isConflict ? 409 : 400;
+      const code = isNotFound
+        ? 'RUNTIME_SESSION_NOT_FOUND'
+        : isConflict
+          ? 'RUNTIME_SESSION_CONFLICT'
+          : 'RUNTIME_SESSION_CANCEL_FAILED';
+      throw new AppError(status, code, message);
     }
   });
 
@@ -60,7 +99,12 @@ export function sessionsRouter(db: DbInstance): Router {
       const session = await sessions.finalizeSession(companyId, id);
       res.json({ data: session });
     } catch (error) {
-      throw new AppError(404, 'RUNTIME_SESSION_NOT_FOUND', error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === `Session ${id} not found` ? 404 : 400;
+      const code = status === 404
+        ? 'RUNTIME_SESSION_NOT_FOUND'
+        : 'RUNTIME_SESSION_FINALIZE_FAILED';
+      throw new AppError(status, code, message);
     }
   });
 

@@ -40,7 +40,9 @@ export interface ExecutionEvent extends ServerEvent {
 export interface RuntimeEvent extends ServerEvent {
   type:
     | 'runtime.session_started'
+    | 'runtime.session_cancelling'
     | 'runtime.session_cancelled'
+    | 'runtime.session_completed'
     | 'runtime.tool_call'
     | 'runtime.skill_sync'
     | 'runtime.workspace_finalized';

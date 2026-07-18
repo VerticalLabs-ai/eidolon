@@ -32,6 +32,7 @@ approvals directly from the chat.
 - `eidolon_assign_task`
 - `eidolon_wake_agent`
 - `eidolon_create_runtime_session`
+- `eidolon_run_runtime_session` — run a prompt through an existing Codex Local or Claude Local session
 - `eidolon_cancel_runtime_session`
 - `eidolon_finalize_runtime_session`
 - `eidolon_install_skill`
