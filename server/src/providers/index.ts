@@ -54,7 +54,14 @@ export function getConfiguredProviderBaseUrl(name: string): string | undefined {
     return undefined;
   }
 
-  const url = new URL(configured);
+  let url: URL;
+  try {
+    url = new URL(configured);
+  } catch {
+    throw new Error(
+      'EIDOLON_OLLAMA_BASE_URL must be an HTTP(S) base URL without credentials, query parameters, or fragments',
+    );
+  }
   if (
     !['http:', 'https:'].includes(url.protocol) ||
     url.username ||
@@ -68,7 +75,12 @@ export function getConfiguredProviderBaseUrl(name: string): string | undefined {
       'EIDOLON_OLLAMA_BASE_URL must be an HTTP(S) base URL without credentials, query parameters, or fragments',
     );
   }
-  return configured.replace(/\/+$/, '');
+
+  const normalizedPath = url.pathname.replace(/\/+$/, '');
+  url.pathname = normalizedPath.endsWith('/api')
+    ? normalizedPath.slice(0, -4) || '/'
+    : normalizedPath || '/';
+  return url.toString().replace(/\/$/, '');
 }
 
 /**

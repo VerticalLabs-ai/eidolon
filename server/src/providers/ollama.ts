@@ -68,9 +68,9 @@ export class OllamaProvider implements ServerAdapter {
 
   async discoverModels(config: ModelDiscoveryConfig): Promise<AdapterModel[]> {
     const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
-    const signal = AbortSignal.timeout(config.timeoutMs ?? 10_000);
+    const timeoutMs = config.timeoutMs ?? 10_000;
     const response = await fetch(`${baseUrl}/api/tags`, {
-      signal,
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
@@ -87,6 +87,7 @@ export class OllamaProvider implements ServerAdapter {
     const chatModels: AdapterModel[] = [];
 
     for (const id of installedModels) {
+      const signal = AbortSignal.timeout(timeoutMs);
       try {
         const detailsResponse = await fetch(`${baseUrl}/api/show`, {
           method: 'POST',

@@ -113,6 +113,12 @@ describe('Adapter model discovery', () => {
         body: JSON.stringify({ model: 'qwen3:8b' }),
       }),
     );
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).not.toBe(
+      fetchMock.mock.calls[1]?.[1]?.signal,
+    );
+    expect(fetchMock.mock.calls[1]?.[1]?.signal).not.toBe(
+      fetchMock.mock.calls[2]?.[1]?.signal,
+    );
   });
 
   it('skips individual Ollama model detail failures', async () => {
@@ -165,6 +171,23 @@ describe('Adapter model discovery', () => {
     expect(getConfiguredProviderBaseUrl('openai')).toBeUndefined();
   });
 
+  it('normalizes the Ollama API suffix while preserving a proxy prefix', () => {
+    vi.stubEnv(
+      'EIDOLON_OLLAMA_BASE_URL',
+      'http://ollama.internal:11435/proxy/api/',
+    );
+
+    expect(getConfiguredProviderBaseUrl('ollama')).toBe(
+      'http://ollama.internal:11435/proxy',
+    );
+  });
+
+  it('does not treat an Ollama hostname named api as an API suffix', () => {
+    vi.stubEnv('EIDOLON_OLLAMA_BASE_URL', 'http://api/');
+
+    expect(getConfiguredProviderBaseUrl('ollama')).toBe('http://api');
+  });
+
   it('rejects credentials embedded in the Ollama base URL', () => {
     vi.stubEnv(
       'EIDOLON_OLLAMA_BASE_URL',
@@ -173,6 +196,14 @@ describe('Adapter model discovery', () => {
 
     expect(() => getConfiguredProviderBaseUrl('ollama')).toThrow(
       'without credentials, query parameters, or fragments',
+    );
+  });
+
+  it('returns an actionable error for a malformed Ollama base URL', () => {
+    vi.stubEnv('EIDOLON_OLLAMA_BASE_URL', 'not-a-url');
+
+    expect(() => getConfiguredProviderBaseUrl('ollama')).toThrow(
+      'must be an HTTP(S) base URL',
     );
   });
 
