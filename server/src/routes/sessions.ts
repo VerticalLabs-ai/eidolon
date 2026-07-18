@@ -74,6 +74,23 @@ export function sessionsRouter(db: DbInstance): Router {
     }
   });
 
+  router.post('/:id/test', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    try {
+      res.json({ data: await sessions.testSessionAdapter(companyId, id) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === `Session ${id} not found` ? 404 : 400;
+      throw new AppError(
+        status,
+        status === 404
+          ? 'RUNTIME_SESSION_NOT_FOUND'
+          : 'RUNTIME_ADAPTER_TEST_FAILED',
+        message,
+      );
+    }
+  });
+
   router.post('/:id/cancel', validate(CancelSessionBody), async (req, res) => {
     const { companyId, id } = routeParams(req);
     try {

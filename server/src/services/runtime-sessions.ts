@@ -4,11 +4,18 @@ import type { DbInstance } from '../types.js';
 import eventBus from '../realtime/events.js';
 import {
   isLocalCliAdapterId,
+  isProcessRuntimeAdapterId,
   LOCAL_CLI_SUPERVISOR_LEASE_TIMEOUT_MS,
   normalizeLocalCliGraceSec,
   runLocalCliAdapter,
+  testProcessRuntimeAdapter,
   type LocalCliTranscriptEntry,
 } from './local-cli-adapter.js';
+import {
+  isRemoteRuntimeAdapterId,
+  runRemoteRuntimeAdapter,
+  testRemoteRuntimeAdapter,
+} from './remote-runtime-adapter.js';
 
 export interface CreateRuntimeSessionInput {
   companyId: string;
@@ -37,6 +44,22 @@ const RUN_OWNER_RECONCILIATION_BUFFER_MS =
 
 function runtimeSessionProcessKey(companyId: string, sessionId: string): string {
   return `${companyId}:${sessionId}`;
+}
+
+function isRunnableRuntimeAdapterId(adapterId: string): boolean {
+  return (
+    isLocalCliAdapterId(adapterId) ||
+    isProcessRuntimeAdapterId(adapterId) ||
+    isRemoteRuntimeAdapterId(adapterId)
+  );
+}
+
+function runtimeAction(
+  adapterId: string,
+  localAction: string,
+  genericAction: string,
+): string {
+  return isLocalCliAdapterId(adapterId) ? localAction : genericAction;
 }
 
 function boundPersistedEntries<T>(entries: T[]): T[] {
@@ -163,7 +186,7 @@ export class RuntimeSessionService {
           adapterId,
           adapterConfig: input.adapterConfig ?? agent.adapterConfig ?? {},
           mode: input.mode ?? 'on_demand',
-          status: isLocalCliAdapterId(adapterId) ? 'queued' : 'running',
+          status: isRunnableRuntimeAdapterId(adapterId) ? 'queued' : 'running',
           resumeState: input.resumeState ?? {},
           transcript: [],
           finalizeRequired: input.finalizeRequired ?? true,
@@ -215,7 +238,7 @@ export class RuntimeSessionService {
       .limit(1);
 
     if (!session) throw new Error(`Session ${sessionId} not found`);
-    if (!isLocalCliAdapterId(session.adapterId)) {
+    if (!isRunnableRuntimeAdapterId(session.adapterId)) {
       throw new Error(
         `Session ${sessionId} uses unsupported run adapter "${session.adapterId}"`,
       );
@@ -281,7 +304,11 @@ export class RuntimeSessionService {
               error: null,
               lastEventAt: startedAt,
               livenessStatus: 'healthy',
-              lastUsefulAction: 'local_cli_started',
+              lastUsefulAction: runtimeAction(
+                session.adapterId,
+                'local_cli_started',
+                'runtime_adapter_started',
+              ),
               nextActionHint: 'await_runtime_output',
               updatedAt: startedAt,
             })
@@ -363,24 +390,37 @@ export class RuntimeSessionService {
         void abortIfSessionStopped();
       }, 250);
       cancellationPoll.unref?.();
-      const result = await runLocalCliAdapter({
-        adapterId: session.adapterId,
-        prompt: input.prompt,
-        adapterConfig: session.adapterConfig,
-        companyId,
-        agentId: session.agentId,
-        sessionId,
-        environmentId: session.environmentId,
-        workspacePath: environment?.workspacePath,
-        resumeState: session.resumeState,
-        signal: abortController.signal,
-        leaseHeartbeatAt: () => lastHeartbeatAt,
-      });
+      const result = isRemoteRuntimeAdapterId(session.adapterId)
+        ? await runRemoteRuntimeAdapter({
+            adapterId: session.adapterId,
+            prompt: input.prompt,
+            adapterConfig: session.adapterConfig,
+            companyId,
+            agentId: session.agentId,
+            sessionId,
+            resumeState: session.resumeState,
+            signal: abortController.signal,
+          })
+        : await runLocalCliAdapter({
+            adapterId: session.adapterId,
+            prompt: input.prompt,
+            adapterConfig: session.adapterConfig,
+            companyId,
+            agentId: session.agentId,
+            sessionId,
+            environmentId: session.environmentId,
+            workspacePath: environment?.workspacePath,
+            resumeState: session.resumeState,
+            signal: abortController.signal,
+            leaseHeartbeatAt: () => lastHeartbeatAt,
+          });
       transcript = result.transcript;
       resumeState = result.resumeState;
       status = result.ok ? 'completed' : 'failed';
       summary = result.summary;
-      errorMessage = result.ok ? null : String(result.diagnostic.message ?? 'Local CLI adapter failed');
+      errorMessage = result.ok
+        ? null
+        : String(result.diagnostic.message ?? 'Runtime adapter failed');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       transcript = [{
@@ -508,10 +548,22 @@ export class RuntimeSessionService {
                 livenessStatus: persistedStatus === 'completed' ? 'healthy' : 'stalled',
                 lastUsefulAction:
                   persistedStatus === 'completed'
-                    ? 'local_cli_response_recorded'
+                    ? runtimeAction(
+                        session.adapterId,
+                        'local_cli_response_recorded',
+                        'runtime_adapter_response_recorded',
+                      )
                     : persistedStatus === 'cancelled'
-                      ? 'local_cli_cancelled'
-                      : 'local_cli_error_recorded',
+                      ? runtimeAction(
+                          session.adapterId,
+                          'local_cli_cancelled',
+                          'runtime_adapter_cancelled',
+                        )
+                      : runtimeAction(
+                          session.adapterId,
+                          'local_cli_error_recorded',
+                          'runtime_adapter_error_recorded',
+                        ),
                 nextActionHint:
                   persistedStatus === 'completed'
                     ? 'review_runtime_output'
@@ -577,6 +629,37 @@ export class RuntimeSessionService {
     }
   }
 
+  async testSessionAdapter(companyId: string, sessionId: string) {
+    const { agentRuntimeSessions } = this.db.schema;
+    const [session] = await this.db.drizzle
+      .select()
+      .from(agentRuntimeSessions)
+      .where(
+        and(
+          eq(agentRuntimeSessions.id, sessionId),
+          eq(agentRuntimeSessions.companyId, companyId),
+        ),
+      )
+      .limit(1);
+    if (!session) throw new Error(`Session ${sessionId} not found`);
+    if (isProcessRuntimeAdapterId(session.adapterId)) {
+      return testProcessRuntimeAdapter({
+        companyId,
+        agentId: session.agentId,
+        adapterConfig: session.adapterConfig,
+      });
+    }
+    if (isRemoteRuntimeAdapterId(session.adapterId)) {
+      return testRemoteRuntimeAdapter({
+        adapterId: session.adapterId,
+        adapterConfig: session.adapterConfig,
+      });
+    }
+    throw new Error(
+      `Session ${sessionId} uses unsupported test adapter "${session.adapterId}"`,
+    );
+  }
+
   async cancelSession(companyId: string, sessionId: string, reason?: string | null) {
     const { agentExecutions, agentRuntimeSessions } = this.db.schema;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -610,26 +693,33 @@ export class RuntimeSessionService {
       const processKey = runtimeSessionProcessKey(companyId, sessionId);
       const hasActiveLocalController =
         activeRuntimeSessionControllers.has(processKey);
+      const hasProcessOwnerOrController =
+        Boolean(processOwnerId) || hasActiveLocalController;
       const isForeignLocalOwner =
-        isLocalCliAdapterId(existing.adapterId) &&
+        isRunnableRuntimeAdapterId(existing.adapterId) &&
         Boolean(processOwnerId) &&
         processOwnerId !== runtimeProcessOwnerId;
       const isOrphanedLocalOwner =
-        isLocalCliAdapterId(existing.adapterId) &&
+        isRunnableRuntimeAdapterId(existing.adapterId) &&
         processOwnerId === runtimeProcessOwnerId &&
         !hasActiveLocalController;
       const canReconcileExpiredOwner =
         (isForeignLocalOwner || isOrphanedLocalOwner) &&
         now.getTime() - existing.updatedAt.getTime() > ownerReconciliationDelayMs;
-      if (existing.status === 'cancelling' && !canReconcileExpiredOwner) {
+      if (
+        existing.status === 'cancelling' &&
+        hasProcessOwnerOrController &&
+        !canReconcileExpiredOwner
+      ) {
         activeRuntimeSessionControllers
           .get(processKey)
           ?.abort();
         return existing;
       }
       const waitsForLocalProcess =
-        isLocalCliAdapterId(existing.adapterId) &&
+        isRunnableRuntimeAdapterId(existing.adapterId) &&
         ['running', 'cancelling'].includes(existing.status) &&
+        hasProcessOwnerOrController &&
         !canReconcileExpiredOwner;
       const cancellationStatus = waitsForLocalProcess ? 'cancelling' : 'cancelled';
       const cancellationReason =
@@ -677,7 +767,11 @@ export class RuntimeSessionService {
               error: `Runtime session cancelled${cancellationReason ? `: ${cancellationReason}` : ''}`,
               lastEventAt: now,
               livenessStatus: 'stalled',
-              lastUsefulAction: 'local_cli_cancelled',
+              lastUsefulAction: runtimeAction(
+                updated.adapterId,
+                'local_cli_cancelled',
+                'runtime_adapter_cancelled',
+              ),
               nextActionHint: 'operator_review',
               updatedAt: now,
             })
@@ -736,7 +830,8 @@ export class RuntimeSessionService {
       }
       if (
         existing.status === 'cancelling' ||
-        (existing.status === 'running' && isLocalCliAdapterId(existing.adapterId)) ||
+        (existing.status === 'running' &&
+          isRunnableRuntimeAdapterId(existing.adapterId)) ||
         activeRuntimeSessionControllers.has(runtimeSessionProcessKey(companyId, sessionId))
       ) {
         throw new Error(`Session ${sessionId} must be cancelled before it can be finalized`);

@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -207,6 +208,7 @@ process.stdin.on("end", () => {
     expect(ids).toContain('claude_local');
     expect(ids).toContain('process:local');
     expect(ids).toContain('http:remote');
+    expect(ids).toContain('openclaw:webhook');
     expect(ids).toContain('mcp:tool-runtime');
     expect(ids).toContain('openjarvis:local');
     expect(
@@ -996,9 +998,9 @@ process.stdin.on("end", () => {
     const agent = await request(app)
       .post(`/api/companies/${companyId}/agents`)
       .send({
-        name: 'Process Runtime Worker',
+        name: 'MCP Runtime Worker',
         role: 'engineer',
-        adapterId: 'process:local',
+        adapterId: 'mcp:tool-runtime',
       })
       .expect(201);
     const created = await request(app)
@@ -1018,6 +1020,377 @@ process.stdin.on("end", () => {
     expect(rejected.body.message).toContain('unsupported run adapter');
     expect(persisted.status).toBe('running');
     expect(persisted.transcript).toEqual([]);
+  });
+
+  it('tests and runs an operator-approved process adapter with structured logs', async () => {
+    const command = await createCliFixture();
+    vi.stubEnv(
+      'EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON',
+      JSON.stringify([[command]]),
+    );
+    const workspace = await createWorkspace('process');
+    const environmentId = await createManagedEnvironment(workspace);
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Process Worker',
+        role: 'engineer',
+        adapterId: 'process:local',
+        adapterConfig: {
+          command,
+          args: [],
+          env: { FIXTURE_ADAPTER: 'process' },
+          timeoutSec: 5,
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const execution = await request(app)
+      .post(`/api/companies/${companyId}/agents/${agent.body.data.id}/executions`)
+      .send({})
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({
+        agentId: agent.body.data.id,
+        executionId: execution.body.data.id,
+        environmentId,
+      })
+      .expect(201);
+
+    expect(created.body.data.status).toBe('queued');
+    const diagnostic = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/test`)
+      .expect(200);
+    expect(diagnostic.body.data).toMatchObject({
+      ok: true,
+      adapterId: 'process:local',
+      command,
+    });
+
+    const completed = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Process this request.' })
+      .expect(200);
+    expect(completed.body.data.status).toBe('completed');
+    expect(
+      completed.body.data.transcript.some(
+        (entry: any) => entry.data?.type === 'fixture.meta',
+      ),
+    ).toBe(true);
+
+    const [recordedExecution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.id, execution.body.data.id));
+    expect(recordedExecution.provider).toBe('process:local');
+    expect(recordedExecution.lastUsefulAction).toBe(
+      'runtime_adapter_response_recorded',
+    );
+    expect(recordedExecution.log).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: 'process:local fixture.meta',
+          phase: 'act',
+        }),
+      ]),
+    );
+  });
+
+  it('tests and runs HTTP and OpenClaw webhook adapters', async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const contentLengths: string[] = [];
+    const remote = createServer((req, res) => {
+      if (req.method === 'HEAD') {
+        res.writeHead(req.url === '/no-head' ? 405 : 204).end();
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        requests.push(JSON.parse(body) as Record<string, unknown>);
+        contentLengths.push(req.headers['content-length'] ?? '');
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({
+          summary: 'accepted',
+          privateData: 'response-marker',
+        }));
+      });
+    });
+    remote.listen(0, '127.0.0.1');
+    await once(remote, 'listening');
+    const address = remote.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected a TCP test server address.');
+    }
+    const redactedUrl = `http://localhost:${address.port}/hooks/agent`;
+    const url = `${redactedUrl}?trace=redaction-marker#fragment`;
+    vi.stubEnv(
+      'EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON',
+      JSON.stringify({
+        [`http://localhost:${address.port}`]: ['127.0.0.1'],
+      }),
+    );
+
+    try {
+      const httpAgent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: 'HTTP Worker',
+          role: 'engineer',
+          adapterId: 'http:remote',
+          adapterConfig: {
+            url,
+            payload: { source: 'eidolon-test' },
+            responseFields: ['summary'],
+            timeoutSec: 1.2345,
+          },
+        })
+        .expect(201);
+      const httpExecution = await request(app)
+        .post(`/api/companies/${companyId}/agents/${httpAgent.body.data.id}/executions`)
+        .send({})
+        .expect(201);
+      const httpSession = await request(app)
+        .post(`/api/companies/${companyId}/sessions`)
+        .send({
+          agentId: httpAgent.body.data.id,
+          executionId: httpExecution.body.data.id,
+        })
+        .expect(201);
+      await request(app)
+        .post(`/api/companies/${companyId}/sessions/${httpSession.body.data.id}/test`)
+        .expect(({ body }) => {
+          expect(body.data.url).toBe(redactedUrl);
+          expect(JSON.stringify(body)).not.toContain('redaction-marker');
+        })
+        .expect(200);
+      const httpRun = await request(app)
+        .post(`/api/companies/${companyId}/sessions/${httpSession.body.data.id}/run`)
+        .send({ prompt: 'Dispatch over HTTP.' })
+        .expect(200);
+
+      expect(httpRun.body.data.status).toBe('completed');
+      expect(JSON.stringify(httpRun.body.data.transcript)).not.toContain(
+        'redaction-marker',
+      );
+      expect(JSON.stringify(httpRun.body.data.transcript)).not.toContain(
+        'response-marker',
+      );
+      expect(
+        httpRun.body.data.transcript.find(
+          (entry: any) => entry.kind === 'diagnostic',
+        )?.data.url,
+      ).toBe(redactedUrl);
+      expect(
+        httpRun.body.data.transcript.find(
+          (entry: any) => entry.kind === 'json',
+        )?.data,
+      ).toEqual({ summary: 'accepted' });
+      expect(requests[0]).toMatchObject({
+        source: 'eidolon-test',
+        prompt: 'Dispatch over HTTP.',
+        companyId,
+        agentId: httpAgent.body.data.id,
+        sessionId: httpSession.body.data.id,
+      });
+      expect(contentLengths[0]).toBe(
+        String(Buffer.byteLength(JSON.stringify(requests[0]))),
+      );
+      const [httpRecordedExecution] = await db.drizzle
+        .select()
+        .from(db.schema.agentExecutions)
+        .where(eq(db.schema.agentExecutions.id, httpExecution.body.data.id));
+      expect(httpRecordedExecution.provider).toBe('http:remote');
+      expect(httpRecordedExecution.log).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            message: 'http:remote diagnostic',
+            phase: 'act',
+          }),
+        ]),
+      );
+
+      const openClawAgent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: 'OpenClaw Worker',
+          role: 'engineer',
+          adapterId: 'openclaw:webhook',
+          adapterConfig: {
+            url,
+            agentId: 'researcher',
+            headers: { authorization: 'Bearer test-token' },
+          },
+        })
+        .expect(201);
+      const openClawSession = await request(app)
+        .post(`/api/companies/${companyId}/sessions`)
+        .send({ agentId: openClawAgent.body.data.id })
+        .expect(201);
+      await request(app)
+        .post(`/api/companies/${companyId}/sessions/${openClawSession.body.data.id}/test`)
+        .expect(200);
+      const openClawRun = await request(app)
+        .post(`/api/companies/${companyId}/sessions/${openClawSession.body.data.id}/run`)
+        .send({ prompt: 'Wake OpenClaw.' })
+        .expect(200);
+
+      expect(openClawRun.body.data.status).toBe('completed');
+      expect(requests[1]).toEqual({
+        message: 'Wake OpenClaw.',
+        agentId: 'researcher',
+        deliver: true,
+      });
+      expect(contentLengths[1]).toBe(
+        String(Buffer.byteLength(JSON.stringify(requests[1]))),
+      );
+      expect(JSON.stringify(openClawRun.body.data.transcript)).not.toContain(
+        'response-marker',
+      );
+
+      const oversizedAgent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: 'Oversized HTTP Worker',
+          role: 'engineer',
+          adapterId: 'http:remote',
+          adapterConfig: {
+            url,
+            payload: { input: 'x'.repeat(300_000) },
+          },
+        })
+        .expect(201);
+      const oversizedSession = await request(app)
+        .post(`/api/companies/${companyId}/sessions`)
+        .send({ agentId: oversizedAgent.body.data.id })
+        .expect(201);
+      const oversizedDiagnostic = await request(app)
+        .post(`/api/companies/${companyId}/sessions/${oversizedSession.body.data.id}/test`)
+        .expect(400);
+      expect(oversizedDiagnostic.body.message).toContain(
+        'the limit is 262144 bytes',
+      );
+      const oversizedRun = await request(app)
+        .post(`/api/companies/${companyId}/sessions/${oversizedSession.body.data.id}/run`)
+        .send({ prompt: 'Reject this request.' })
+        .expect(200);
+      expect(oversizedRun.body.data.status).toBe('failed');
+      expect(oversizedRun.body.data.transcript.at(-1).data.message).toContain(
+        'the limit is 262144 bytes',
+      );
+
+      const noHeadAgent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: 'No HEAD Worker',
+          role: 'engineer',
+          adapterId: 'http:remote',
+          adapterConfig: {
+            url: `http://localhost:${address.port}/no-head`,
+          },
+        })
+        .expect(201);
+      const noHeadSession = await request(app)
+        .post(`/api/companies/${companyId}/sessions`)
+        .send({ agentId: noHeadAgent.body.data.id })
+        .expect(201);
+      const noHeadDiagnostic = await request(app)
+        .post(`/api/companies/${companyId}/sessions/${noHeadSession.body.data.id}/test`)
+        .expect(200);
+      expect(noHeadDiagnostic.body.data).toMatchObject({
+        ok: false,
+        reachable: true,
+        inconclusive: true,
+        status: 405,
+      });
+    } finally {
+      remote.close();
+      await once(remote, 'close');
+    }
+  });
+
+  it('returns actionable diagnostics for blocked process and remote adapter configs', async () => {
+    const command = await createCliFixture();
+    const processAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Blocked Process Worker',
+        role: 'engineer',
+        adapterId: 'process:local',
+        adapterConfig: { command },
+      })
+      .expect(201);
+    authorizeAgent(processAgent.body.data.id);
+    const processSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: processAgent.body.data.id })
+      .expect(201);
+    const processDiagnostic = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${processSession.body.data.id}/test`)
+      .expect(400);
+    expect(processDiagnostic.body.code).toBe('RUNTIME_ADAPTER_TEST_FAILED');
+    expect(processDiagnostic.body.message).toContain(
+      'EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON',
+    );
+
+    vi.stubEnv(
+      'EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON',
+      JSON.stringify([[workspaceRoot]]),
+    );
+    const directoryAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Directory Process Worker',
+        role: 'engineer',
+        adapterId: 'process:local',
+        adapterConfig: { command: workspaceRoot },
+      })
+      .expect(201);
+    authorizeAgent(directoryAgent.body.data.id);
+    const directorySession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: directoryAgent.body.data.id })
+      .expect(201);
+    const directoryDiagnostic = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${directorySession.body.data.id}/test`)
+      .expect(400);
+    expect(directoryDiagnostic.body.message).toContain(
+      'regular executable file',
+    );
+
+    const httpAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Blocked HTTP Worker',
+        role: 'engineer',
+        adapterId: 'http:remote',
+        adapterConfig: { url: 'http://192.0.2.1/runtime' },
+      })
+      .expect(201);
+    const httpSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: httpAgent.body.data.id })
+      .expect(201);
+    const httpDiagnostic = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${httpSession.body.data.id}/test`)
+      .expect(400);
+    expect(httpDiagnostic.body.code).toBe('RUNTIME_ADAPTER_TEST_FAILED');
+    expect(httpDiagnostic.body.message).toContain(
+      'EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON',
+    );
+
+    const failedRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${httpSession.body.data.id}/run`)
+      .send({ prompt: 'Do not dispatch.' })
+      .expect(200);
+    expect(failedRun.body.data.status).toBe('failed');
+    expect(failedRun.body.data.transcript.at(-1).data.message).toContain(
+      'EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON',
+    );
   });
 
   it('records actionable local CLI failures and enforces timeout grace periods', async () => {
@@ -1409,6 +1782,35 @@ process.stdin.on("end", () => {
       .expect(200);
   });
 
+  it('cancels an upgraded ownerless process session immediately', async () => {
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Legacy Process Worker',
+        role: 'engineer',
+        adapterId: 'process:local',
+      })
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({
+        status: 'running',
+        resumeState: {},
+      })
+      .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+
+    const cancelled = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+      .send({ reason: 'upgrade reconciliation' })
+      .expect(200);
+    expect(cancelled.body.data.status).toBe('cancelled');
+    expect(cancelled.body.data.completedAt).not.toBeNull();
+  });
+
   it('stores adapter, skill, routine, and session policy on agents', async () => {
     const created = await request(app)
       .post(`/api/companies/${companyId}/agents`)
@@ -1608,7 +2010,7 @@ process.stdin.on("end", () => {
       })
       .expect(201);
 
-    expect(created.body.data.status).toBe('running');
+    expect(created.body.data.status).toBe('queued');
     expect(created.body.data.runId).toBeDefined();
     expect(created.body.data.environmentId).toBe(environment.body.data.id);
 
@@ -1658,7 +2060,7 @@ process.stdin.on("end", () => {
       .select()
       .from(db.schema.executionEnvironments)
       .where(eq(db.schema.executionEnvironments.id, environment.body.data.id));
-    expect(secondSession.body.data.status).toBe('running');
+    expect(secondSession.body.data.status).toBe('queued');
     expect(stillLeased.status).toBe('leased');
     expect(stillLeased.leaseOwnerAgentId).toBe(agent.body.data.id);
   });

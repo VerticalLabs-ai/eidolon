@@ -70,6 +70,7 @@ const execFileAsync = promisify(execFile);
 
 export const LOCAL_CLI_ADAPTER_IDS = ['codex_local', 'claude_local'] as const;
 export type LocalCliAdapterId = (typeof LOCAL_CLI_ADAPTER_IDS)[number];
+export const PROCESS_RUNTIME_ADAPTER_ID = 'process:local' as const;
 const LOCAL_CLI_PROVIDER_ENV_KEYS: Record<LocalCliAdapterId, string> = {
   codex_local: 'CODEX_API_KEY',
   claude_local: 'ANTHROPIC_API_KEY',
@@ -114,6 +115,12 @@ export function isLocalCliAdapterId(value: string): value is LocalCliAdapterId {
   return LOCAL_CLI_ADAPTER_IDS.includes(value as LocalCliAdapterId);
 }
 
+export function isProcessRuntimeAdapterId(
+  value: string,
+): value is typeof PROCESS_RUNTIME_ADAPTER_ID {
+  return value === PROCESS_RUNTIME_ADAPTER_ID;
+}
+
 function asString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
@@ -153,6 +160,82 @@ function parseEnvAllowlist(): Set<string> {
       .map((key) => key.trim())
       .filter(Boolean),
   );
+}
+
+async function resolveProcessCommand(
+  config: Record<string, unknown>,
+): Promise<{ command: string; args: string[] }> {
+  const command = asString(config.command).trim();
+  const args = Array.isArray(config.args) &&
+    config.args.every((value) => typeof value === 'string')
+    ? config.args as string[]
+    : [];
+  if (!command || !path.isAbsolute(command)) {
+    throw new Error(
+      'process:local adapterConfig.command must be an absolute executable path.',
+    );
+  }
+  if (config.args !== undefined && !Array.isArray(config.args)) {
+    throw new Error('process:local adapterConfig.args must be an array of strings.');
+  }
+  if (
+    Array.isArray(config.args) &&
+    config.args.some((value) => typeof value !== 'string')
+  ) {
+    throw new Error('process:local adapterConfig.args must contain only strings.');
+  }
+
+  let presets: unknown;
+  try {
+    presets = JSON.parse(
+      process.env.EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON ?? '[]',
+    );
+  } catch {
+    throw new Error(
+      'EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON must be a JSON array of argv arrays.',
+    );
+  }
+  const allowed = Array.isArray(presets)
+    ? presets.some(
+        (preset) =>
+          Array.isArray(preset) &&
+          preset.every((value) => typeof value === 'string') &&
+          JSON.stringify(preset) === JSON.stringify([command, ...args]),
+      )
+    : false;
+  if (!allowed) {
+    throw new Error(
+      `process:local argv ${JSON.stringify([command, ...args])} is not in EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON.`,
+    );
+  }
+  await fs.access(command, fsConstants.X_OK);
+  const commandStats = await fs.stat(command);
+  if (!commandStats.isFile()) {
+    throw new Error(
+      `process:local adapterConfig.command "${command}" must be a regular executable file.`,
+    );
+  }
+  return { command, args };
+}
+
+export async function testProcessRuntimeAdapter(input: {
+  companyId: string;
+  agentId: string;
+  adapterConfig: Record<string, unknown>;
+}): Promise<Record<string, unknown>> {
+  assertOperatorAuthorized(input.companyId, input.agentId);
+  const containmentCommand = await resolveContainmentCommand();
+  const { command, args } = await resolveProcessCommand(
+    asRecord(input.adapterConfig),
+  );
+  return {
+    ok: true,
+    adapterId: PROCESS_RUNTIME_ADAPTER_ID,
+    command,
+    args,
+    containmentCommand,
+    message: 'Process command and containment launcher are executable and operator-approved.',
+  };
 }
 
 function assertOperatorAuthorized(companyId: string, agentId: string): void {
@@ -655,9 +738,12 @@ function failureMessage(input: {
 export async function runLocalCliAdapter(
   input: RunLocalCliAdapterInput,
 ): Promise<LocalCliRunResult> {
-  if (!isLocalCliAdapterId(input.adapterId)) {
+  if (
+    !isLocalCliAdapterId(input.adapterId) &&
+    !isProcessRuntimeAdapterId(input.adapterId)
+  ) {
     throw new Error(
-      `Unsupported local CLI adapter "${input.adapterId}". Expected ${LOCAL_CLI_ADAPTER_IDS.join(' or ')}.`,
+      `Unsupported local process adapter "${input.adapterId}".`,
     );
   }
   assertOperatorAuthorized(input.companyId, input.agentId);
@@ -666,7 +752,7 @@ export async function runLocalCliAdapter(
   }
 
   const config = asRecord(input.adapterConfig);
-  if (config.command !== undefined) {
+  if (!isProcessRuntimeAdapterId(input.adapterId) && config.command !== undefined) {
     throw new Error(
       'adapterConfig.command is not allowed. Configure the server-owned CLI path with EIDOLON_CODEX_CLI_COMMAND or EIDOLON_CLAUDE_CLI_COMMAND.',
     );
@@ -676,7 +762,7 @@ export async function runLocalCliAdapter(
       'adapterConfig.codexHome is not allowed. Configure the operator-owned root with EIDOLON_RUNTIME_HOME.',
     );
   }
-  if (config.args !== undefined) {
+  if (!isProcessRuntimeAdapterId(input.adapterId) && config.args !== undefined) {
     throw new Error(
       'adapterConfig.args is not allowed. Local CLI arguments are controlled by the Eidolon server.',
     );
@@ -692,7 +778,11 @@ export async function runLocalCliAdapter(
   const cwd = await resolveWorkspaceCwd(input);
   const containmentCommand = await resolveContainmentCommand();
   const containmentCommandArgs = containmentArgs();
-  const command = await resolveOperatorCommand(input.adapterId);
+  const processCommand = isProcessRuntimeAdapterId(input.adapterId)
+    ? await resolveProcessCommand(config)
+    : null;
+  const command = processCommand?.command ??
+    await resolveOperatorCommand(input.adapterId as LocalCliAdapterId);
   const configuredEnv = asRecord(config.env);
   if (configuredEnv.CODEX_HOME !== undefined) {
     throw new Error('adapterConfig.env.CODEX_HOME is not allowed; Eidolon manages isolated Codex homes.');
@@ -737,14 +827,16 @@ export async function runLocalCliAdapter(
     }
     env[key] = value;
   }
-  const gatewayCredential = await issueLocalGatewayToken(input, input.adapterId);
-  env[LOCAL_CLI_PROVIDER_ENV_KEYS[input.adapterId]] = gatewayCredential.token;
   let codexGatewayBaseUrl: string | null = null;
-  if (input.adapterId === 'claude_local') {
-    env.ANTHROPIC_BASE_URL = gatewayCredential.baseUrl;
-    env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
-  } else {
-    codexGatewayBaseUrl = gatewayCredential.baseUrl;
+  if (isLocalCliAdapterId(input.adapterId)) {
+    const gatewayCredential = await issueLocalGatewayToken(input, input.adapterId);
+    env[LOCAL_CLI_PROVIDER_ENV_KEYS[input.adapterId]] = gatewayCredential.token;
+    if (input.adapterId === 'claude_local') {
+      env.ANTHROPIC_BASE_URL = gatewayCredential.baseUrl;
+      env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+    } else {
+      codexGatewayBaseUrl = gatewayCredential.baseUrl;
+    }
   }
 
   const runtimeRoot = path.resolve(
@@ -783,9 +875,10 @@ export async function runLocalCliAdapter(
       ...Object.keys(configuredEnv),
     ]),
   ).sort();
-  const args = input.adapterId === 'codex_local'
-    ? buildCodexArgs(config, resumeState, codexToolEnvKeys, codexGatewayBaseUrl!)
-    : buildClaudeArgs(config, resumeState);
+  const args = processCommand?.args ??
+    (input.adapterId === 'codex_local'
+      ? buildCodexArgs(config, resumeState, codexToolEnvKeys, codexGatewayBaseUrl!)
+      : buildClaudeArgs(config, resumeState));
   const requestedTimeoutSec = asNumber(config.timeoutSec, DEFAULT_TIMEOUT_SEC, 86_400);
   const timeoutSec = requestedTimeoutSec > 0 ? requestedTimeoutSec : DEFAULT_TIMEOUT_SEC;
   const graceSec = normalizeLocalCliGraceSec(config.graceSec);
