@@ -222,10 +222,7 @@ async function resolveRemoteTarget(
 }
 
 function redactRemoteUrl(url: URL): string {
-  const redacted = new URL(url);
-  redacted.search = '';
-  redacted.hash = '';
-  return redacted.toString();
+  return url.origin;
 }
 
 function resolveHeaders(config: Record<string, unknown>): Record<string, string> {

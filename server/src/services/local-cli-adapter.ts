@@ -208,14 +208,57 @@ async function resolveProcessCommand(
       `process:local argv ${JSON.stringify([command, ...args])} is not in EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON.`,
     );
   }
-  await fs.access(command, fsConstants.X_OK);
-  const commandStats = await fs.stat(command);
+  const resolvedCommand = await fs.realpath(command);
+  if (resolvedCommand !== command) {
+    throw new Error(
+      'process:local adapterConfig.command and its allowlist preset must use the canonical real path.',
+    );
+  }
+  await fs.access(resolvedCommand, fsConstants.X_OK);
+  const commandStats = await fs.stat(resolvedCommand);
   if (!commandStats.isFile()) {
     throw new Error(
       `process:local adapterConfig.command "${command}" must be a regular executable file.`,
     );
   }
-  return { command, args };
+  const currentUid = process.getuid?.();
+  if (
+    (currentUid !== undefined &&
+      commandStats.uid !== 0 &&
+      commandStats.uid !== currentUid) ||
+    (commandStats.mode & 0o022) !== 0
+  ) {
+    throw new Error(
+      `process:local adapterConfig.command "${command}" must be root- or operator-owned and not group/world writable.`,
+    );
+  }
+  for (
+    let directory = path.dirname(resolvedCommand);
+    ;
+    directory = path.dirname(directory)
+  ) {
+    const directoryStats = await fs.stat(directory);
+    const trustedOwner =
+      currentUid === undefined ||
+      directoryStats.uid === 0 ||
+      directoryStats.uid === currentUid;
+    const groupOrWorldWritable = (directoryStats.mode & 0o022) !== 0;
+    const rootOwnedStickyDirectory =
+      directoryStats.uid === 0 && (directoryStats.mode & 0o1000) !== 0;
+    if (
+      !directoryStats.isDirectory() ||
+      !trustedOwner ||
+      (groupOrWorldWritable && !rootOwnedStickyDirectory)
+    ) {
+      throw new Error(
+        `process:local adapterConfig.command "${command}" must not be reachable through an untrusted writable directory.`,
+      );
+    }
+    if (directory === path.dirname(directory)) {
+      break;
+    }
+  }
+  return { command: resolvedCommand, args };
 }
 
 export async function testProcessRuntimeAdapter(input: {

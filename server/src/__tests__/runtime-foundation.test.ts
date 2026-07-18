@@ -1027,9 +1027,10 @@ process.stdin.on("end", () => {
 
   it('tests and runs an operator-approved process adapter with structured logs', async () => {
     const command = await createCliFixture();
+    const canonicalCommand = await fs.realpath(command);
     vi.stubEnv(
       'EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON',
-      JSON.stringify([[command]]),
+      JSON.stringify([[canonicalCommand]]),
     );
     const workspace = await createWorkspace('process');
     const environmentId = await createManagedEnvironment(workspace);
@@ -1040,7 +1041,7 @@ process.stdin.on("end", () => {
         role: 'engineer',
         adapterId: 'process:local',
         adapterConfig: {
-          command,
+          command: canonicalCommand,
           args: [],
           env: { FIXTURE_ADAPTER: 'process' },
           timeoutSec: 5,
@@ -1068,7 +1069,7 @@ process.stdin.on("end", () => {
     expect(diagnostic.body.data).toMatchObject({
       ok: true,
       adapterId: 'process:local',
-      command,
+      command: canonicalCommand,
     });
 
     const completed = await request(app)
@@ -1129,8 +1130,9 @@ process.stdin.on("end", () => {
     if (!address || typeof address === 'string') {
       throw new Error('Expected a TCP test server address.');
     }
-    const redactedUrl = `http://localhost:${address.port}/hooks/agent`;
-    const url = `${redactedUrl}?trace=redaction-marker#fragment`;
+    const redactedUrl = `http://localhost:${address.port}`;
+    const url =
+      `${redactedUrl}/hooks/path-redaction-marker?trace=query-redaction-marker#fragment`;
     vi.stubEnv(
       'EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON',
       JSON.stringify({
@@ -1168,7 +1170,8 @@ process.stdin.on("end", () => {
         .post(`/api/companies/${companyId}/sessions/${httpSession.body.data.id}/test`)
         .expect(({ body }) => {
           expect(body.data.url).toBe(redactedUrl);
-          expect(JSON.stringify(body)).not.toContain('redaction-marker');
+          expect(JSON.stringify(body)).not.toContain('path-redaction-marker');
+          expect(JSON.stringify(body)).not.toContain('query-redaction-marker');
         })
         .expect(200);
       const httpRun = await request(app)
@@ -1178,7 +1181,10 @@ process.stdin.on("end", () => {
 
       expect(httpRun.body.data.status).toBe('completed');
       expect(JSON.stringify(httpRun.body.data.transcript)).not.toContain(
-        'redaction-marker',
+        'path-redaction-marker',
+      );
+      expect(JSON.stringify(httpRun.body.data.transcript)).not.toContain(
+        'query-redaction-marker',
       );
       expect(JSON.stringify(httpRun.body.data.transcript)).not.toContain(
         'response-marker',
@@ -1365,7 +1371,34 @@ process.stdin.on("end", () => {
 
     vi.stubEnv(
       'EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON',
-      JSON.stringify([[workspaceRoot]]),
+      JSON.stringify([[await fs.realpath(command)]]),
+    );
+    await fs.chmod(command, 0o777);
+    const writableAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Writable Process Worker',
+        role: 'engineer',
+        adapterId: 'process:local',
+        adapterConfig: { command: await fs.realpath(command) },
+      })
+      .expect(201);
+    authorizeAgent(writableAgent.body.data.id);
+    const writableSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: writableAgent.body.data.id })
+      .expect(201);
+    const writableDiagnostic = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${writableSession.body.data.id}/test`)
+      .expect(400);
+    expect(writableDiagnostic.body.message).toContain(
+      'not group/world writable',
+    );
+
+    const canonicalWorkspaceRoot = await fs.realpath(workspaceRoot);
+    vi.stubEnv(
+      'EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON',
+      JSON.stringify([[canonicalWorkspaceRoot]]),
     );
     const directoryAgent = await request(app)
       .post(`/api/companies/${companyId}/agents`)
@@ -1373,7 +1406,7 @@ process.stdin.on("end", () => {
         name: 'Directory Process Worker',
         role: 'engineer',
         adapterId: 'process:local',
-        adapterConfig: { command: workspaceRoot },
+        adapterConfig: { command: canonicalWorkspaceRoot },
       })
       .expect(201);
     authorizeAgent(directoryAgent.body.data.id);
