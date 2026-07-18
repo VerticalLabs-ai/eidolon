@@ -1,15 +1,36 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import type { Writable } from 'node:stream';
 import { createTestApp, createTestDb } from '../test-utils.js';
 
 describe('Hybrid Jarvis runtime foundation', () => {
   let app: ReturnType<typeof createTestApp>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
+  let tempDirs: string[];
+  let workspaceRoot: string;
+  let runtimeRoot: string;
 
   beforeEach(async () => {
+    tempDirs = [];
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-workspace-root-'));
+    runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-runtime-root-'));
+    tempDirs.push(workspaceRoot, runtimeRoot);
+    vi.stubEnv('EIDOLON_WORKSPACE_ROOT', workspaceRoot);
+    vi.stubEnv('EIDOLON_RUNTIME_HOME', runtimeRoot);
+    vi.stubEnv(
+      'EIDOLON_LOCAL_CLI_ENV_ALLOWLIST',
+      'FIXTURE_ADAPTER,EIDOLON_TEST_ENV,FIXTURE_MARKER,FIXTURE_MODE',
+    );
+    vi.stubEnv('ANTHROPIC_API_KEY', 'fixture-host-provider-value');
+    vi.stubEnv('CODEX_API_KEY', 'fixture-codex-key');
     db = await createTestDb();
     app = createTestApp(db);
 
@@ -20,20 +41,1371 @@ describe('Hybrid Jarvis runtime foundation', () => {
     companyId = company.body.data.id;
   });
 
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await Promise.all(tempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  async function createCliFixture(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-cli-fixture-'));
+    tempDirs.push(dir);
+    const executable = path.join(dir, 'fixture-cli');
+    await fs.writeFile(
+      executable,
+      `#!/usr/bin/env node
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  const adapter = process.env.FIXTURE_ADAPTER;
+  const mode = process.env.FIXTURE_MODE;
+  if (mode === "timeout") {
+    if (process.env.FIXTURE_MARKER) {
+      require("node:fs").writeFileSync(process.env.FIXTURE_MARKER, "started");
+    }
+    process.on("SIGTERM", () => {});
+    setInterval(() => {}, 1000);
+    return;
+  }
+  if (mode === "fail") {
+    process.stderr.write("fixture authentication failed\\n");
+    process.exit(3);
+  }
+  const args = process.argv.slice(2);
+  const resumeIndex = adapter === "codex"
+    ? args.indexOf("resume")
+    : args.indexOf("--resume");
+  const resumedSession = resumeIndex >= 0 ? args[resumeIndex + 1] : null;
+  const sessionId = resumedSession || (adapter === "codex"
+    ? "22222222-2222-4222-8222-222222222222"
+    : "11111111-1111-4111-8111-111111111111");
+  if (mode === "background") {
+    const child = require("node:child_process").spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { stdio: "ignore" },
+    );
+    child.unref();
+    require("node:fs").writeFileSync(process.env.FIXTURE_MARKER, String(child.pid));
+  }
+  if (adapter === "codex") {
+    console.log(JSON.stringify({ type: "thread.started", thread_id: sessionId }));
+  } else {
+    console.log(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId }));
+  }
+  console.log(JSON.stringify({
+    type: "fixture.meta",
+    cwd: process.cwd(),
+    env: process.env.EIDOLON_TEST_ENV,
+    codexHome: process.env.CODEX_HOME || null,
+    anthropicKeyPresent: Boolean(process.env.ANTHROPIC_API_KEY),
+    hostAnthropicKeyLeaked:
+      process.env.ANTHROPIC_API_KEY === "fixture-host-provider-value",
+    anthropicAuthTokenPresent: Boolean(process.env.ANTHROPIC_AUTH_TOKEN),
+    anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null,
+    codexKeyPresent: Boolean(process.env.CODEX_API_KEY),
+    hostCodexKeyLeaked:
+      process.env.CODEX_API_KEY === "fixture-codex-key",
+    subprocessScrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB || null,
+    args,
+  }));
+  if (mode === "unicode") {
+    const line = Buffer.from(JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "hello 👋 from codex" },
+    }) + "\\n");
+    const emojiStart = line.indexOf(Buffer.from("👋"));
+    process.stdout.write(line.subarray(0, emojiStart + 2));
+    setTimeout(() => process.stdout.write(line.subarray(emojiStart + 2)), 25);
+    return;
+  }
+  if (mode === "many-lines") {
+    for (let index = 0; index < 5001; index += 1) {
+      console.log(JSON.stringify({ type: "fixture.progress", index }));
+    }
+  }
+  if (mode === "large-json") {
+    console.log(JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "L".repeat(150000) },
+    }));
+    return;
+  }
+  if (adapter === "codex") {
+    console.log(JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "hello from codex: " + prompt.trim() },
+    }));
+  } else {
+    console.log(JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: sessionId,
+      result: "hello from claude: " + prompt.trim(),
+    }));
+  }
+});
+`,
+      { mode: 0o755 },
+    );
+    const containmentWrapper = path.join(dir, 'containment-wrapper');
+    await fs.writeFile(
+      containmentWrapper,
+      '#!/bin/sh\nexec "$@"\n',
+      { mode: 0o755 },
+    );
+    const gatewayTokenHelper = path.join(dir, 'gateway-token-helper');
+    await fs.writeFile(
+      gatewayTokenHelper,
+      '#!/bin/sh\nprintf %s test-value\n',
+      { mode: 0o755 },
+    );
+    vi.stubEnv('EIDOLON_CODEX_CLI_COMMAND', executable);
+    vi.stubEnv('EIDOLON_CLAUDE_CLI_COMMAND', executable);
+    vi.stubEnv('EIDOLON_CODEX_GATEWAY_URL', 'https://gateway.example.test/v1');
+    vi.stubEnv('EIDOLON_CODEX_GATEWAY_TOKEN_COMMAND', gatewayTokenHelper);
+    vi.stubEnv('EIDOLON_CLAUDE_GATEWAY_URL', 'https://gateway.example.test');
+    vi.stubEnv('EIDOLON_CLAUDE_GATEWAY_TOKEN_COMMAND', gatewayTokenHelper);
+    vi.stubEnv('EIDOLON_LOCAL_CLI_CONTAINMENT_COMMAND', containmentWrapper);
+    vi.stubEnv('EIDOLON_LOCAL_CLI_CONTAINMENT_ARGS_JSON', '[]');
+    return executable;
+  }
+
+  async function createWorkspace(name: string): Promise<string> {
+    const workspace = path.join(workspaceRoot, companyId, name);
+    await fs.mkdir(workspace, { recursive: true });
+    return fs.realpath(workspace);
+  }
+
+  async function createManagedEnvironment(workspacePath: string): Promise<string> {
+    const id = randomUUID();
+    await db.drizzle.insert(db.schema.executionEnvironments).values({
+      id,
+      companyId,
+      name: 'Managed CLI Workspace',
+      workspacePath,
+    });
+    return id;
+  }
+
+  function authorizeAgent(agentId: string): void {
+    const authorization = `${companyId}:${agentId}`;
+    const existing = process.env.EIDOLON_LOCAL_CLI_ALLOWED_AGENTS;
+    vi.stubEnv(
+      'EIDOLON_LOCAL_CLI_ALLOWED_AGENTS',
+      existing ? `${existing},${authorization}` : authorization,
+    );
+  }
+
   it('exposes provider and runtime-only adapter descriptors', async () => {
     const res = await request(app).get('/api/runtime/adapters').expect(200);
     const ids = res.body.data.map((adapter: any) => adapter.id);
 
     expect(ids).toContain('provider:anthropic');
+    expect(ids).toContain('codex_local');
+    expect(ids).toContain('claude_local');
     expect(ids).toContain('process:local');
     expect(ids).toContain('http:remote');
     expect(ids).toContain('mcp:tool-runtime');
     expect(ids).toContain('openjarvis:local');
+    expect(
+      res.body.data.find((adapter: any) => adapter.id === 'codex_local')
+        .capabilities.browser,
+    ).toBe(false);
+    expect(
+      res.body.data.find((adapter: any) => adapter.id === 'claude_local')
+        .capabilities.browser,
+    ).toBe(false);
 
     const openJarvis = res.body.data.find((adapter: any) => adapter.id === 'openjarvis:local');
     expect(openJarvis.capabilities.voice).toBe(true);
     expect(openJarvis.capabilities.browser).toBe(true);
     expect(openJarvis.supportedModes).toContain('continuous');
+  });
+
+  it('runs and resumes Codex locally with isolated state and structured transcripts', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('codex');
+    const environmentId = await createManagedEnvironment(workspace);
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Codex Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          model: 'codex-default',
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            EIDOLON_TEST_ENV: 'codex-env-ok',
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const execution = await request(app)
+      .post(`/api/companies/${companyId}/agents/${agent.body.data.id}/executions`)
+      .send({})
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({
+        agentId: agent.body.data.id,
+        executionId: execution.body.data.id,
+        environmentId,
+      })
+      .expect(201);
+
+    const firstRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Respond with hello.' })
+      .expect(200);
+
+    expect(
+      firstRun.body.data.status,
+      JSON.stringify(firstRun.body.data.transcript),
+    ).toBe('completed');
+    expect(firstRun.body.data.resumeState.sessionId).toBe(
+      '22222222-2222-4222-8222-222222222222',
+    );
+    expect(firstRun.body.data.resumeState.cwd).toBe(workspace);
+    expect(firstRun.body.data.resumeState.codexHome).toContain(environmentId);
+    const firstMeta = firstRun.body.data.transcript.find(
+      (entry: any) => entry.data?.type === 'fixture.meta',
+    );
+    expect(firstMeta.data.cwd).toBe(workspace);
+    expect(firstMeta.data.env).toBe('codex-env-ok');
+    expect(firstMeta.data.codexHome).toBe(firstRun.body.data.resumeState.codexHome);
+    expect(firstMeta.data.anthropicKeyPresent).toBe(false);
+    expect(firstMeta.data.codexKeyPresent).toBe(true);
+    expect(firstMeta.data.hostCodexKeyLeaked).toBe(false);
+    expect(firstMeta.data.subprocessScrub).toBeNull();
+    expect(firstMeta.data.args).toContain('--skip-git-repo-check');
+    expect(firstMeta.data.args).not.toContain('codex-default');
+    expect(firstMeta.data.args).toEqual(
+      expect.arrayContaining([
+        '--strict-config',
+        '--disable',
+        'shell_snapshot',
+        'approval_policy="never"',
+        'allow_login_shell=false',
+        'default_permissions="eidolon"',
+        'permissions.eidolon.filesystem.:minimal="read"',
+        'permissions.eidolon.filesystem.:workspace_roots="write"',
+        'permissions.eidolon.network.enabled=false',
+        'shell_environment_policy.inherit="all"',
+        'model_provider="eidolon_gateway"',
+        'model_providers.eidolon_gateway.name="Eidolon Gateway"',
+        'model_providers.eidolon_gateway.base_url="https://gateway.example.test/v1"',
+        'model_providers.eidolon_gateway.env_key="CODEX_API_KEY"',
+        'model_providers.eidolon_gateway.wire_api="responses"',
+        'model_providers.eidolon_gateway.requires_openai_auth=false',
+      ]),
+    );
+    const toolEnvPolicy = firstMeta.data.args.find(
+      (arg: string) => arg.startsWith('shell_environment_policy.include_only='),
+    );
+    expect(toolEnvPolicy).toContain('EIDOLON_TEST_ENV');
+    expect(toolEnvPolicy).toContain('FIXTURE_ADAPTER');
+    expect(toolEnvPolicy).not.toContain('CODEX_API_KEY');
+    const [recordedExecution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.id, execution.body.data.id));
+    expect(recordedExecution.status).toBe('completed');
+    expect(recordedExecution.provider).toBe('codex_local');
+    expect(recordedExecution.log).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: 'codex_local fixture.meta',
+          phase: 'act',
+        }),
+      ]),
+    );
+
+    const resumed = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Continue the session.' })
+      .expect(200);
+    const resumedMeta = [...resumed.body.data.transcript]
+      .reverse()
+      .find((entry: any) => entry.data?.type === 'fixture.meta');
+
+    expect(resumed.body.data.status).toBe('completed');
+    expect(resumedMeta.data.args).toEqual(
+      expect.arrayContaining([
+        'resume',
+        '22222222-2222-4222-8222-222222222222',
+        '-',
+      ]),
+    );
+    expect(resumed.body.data.transcript).toHaveLength(
+      firstRun.body.data.transcript.length + 4,
+    );
+  });
+
+  it('reopens a linked execution while resuming a completed session', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('resume-execution');
+    const environmentId = await createManagedEnvironment(workspace);
+    const marker = path.join(workspace, 'resumed-run-started');
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Resumed Execution Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          env: { FIXTURE_ADAPTER: 'codex' },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const execution = await request(app)
+      .post(`/api/companies/${companyId}/agents/${agent.body.data.id}/executions`)
+      .send({})
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({
+        agentId: agent.body.data.id,
+        executionId: execution.body.data.id,
+        environmentId,
+      })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Complete the first run.' })
+      .expect(200);
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({
+        adapterConfig: {
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            FIXTURE_MARKER: marker,
+            FIXTURE_MODE: 'timeout',
+          },
+          timeoutSec: 30,
+          graceSec: 1,
+        },
+      })
+      .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+
+    const resumedRun = request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Resume and wait.' })
+      .then((response) => response);
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        await fs.access(marker);
+        break;
+      } catch {
+        if (attempt === 49) throw new Error('Resumed CLI fixture did not start');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    const [runningExecution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.id, execution.body.data.id));
+    expect(runningExecution.status).toBe('running');
+    expect(runningExecution.completedAt).toBeNull();
+    expect(runningExecution.summary).toBeNull();
+    expect(runningExecution.error).toBeNull();
+    expect(runningExecution.lastUsefulAction).toBe('local_cli_started');
+
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+      .send({ reason: 'resume state verified' })
+      .expect(200);
+    const stoppedRun = await resumedRun;
+    expect(stoppedRun.body.data.status).toBe('cancelled');
+  });
+
+  it('decodes local CLI output across UTF-8 chunk boundaries', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('unicode');
+    const environmentId = await createManagedEnvironment(workspace);
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Unicode Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            FIXTURE_MODE: 'unicode',
+          },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id, environmentId })
+      .expect(201);
+
+    const run = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Respond with Unicode.' })
+      .expect(200);
+
+    expect(run.body.data.status).toBe('completed');
+    expect(run.body.data.transcript).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            item: expect.objectContaining({ text: 'hello 👋 from codex' }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('parses oversized structured result events before bounding storage', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('large-json');
+    const environmentId = await createManagedEnvironment(workspace);
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Large Result Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            FIXTURE_MODE: 'large-json',
+          },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id, environmentId })
+      .expect(201);
+
+    const run = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Return a large result.' })
+      .expect(200);
+    const resultEvent = run.body.data.transcript.find(
+      (entry: any) => entry.data?.type === 'item.completed',
+    );
+
+    expect(run.body.data.status).toBe('completed');
+    expect(resultEvent.kind).toBe('json');
+    expect(resultEvent.data._eidolon).toEqual(
+      expect.objectContaining({
+        truncated: true,
+        originalBytes: expect.any(Number),
+      }),
+    );
+    expect(resultEvent.data.item.text.length).toBeLessThan(150_000);
+  });
+
+  it('runs and resumes Claude locally with cwd and environment propagation', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('claude');
+    const environmentId = await createManagedEnvironment(workspace);
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Claude Worker',
+        role: 'engineer',
+        adapterId: 'claude_local',
+        adapterConfig: {
+          model: 'claude-default',
+          env: {
+            FIXTURE_ADAPTER: 'claude',
+            EIDOLON_TEST_ENV: 'claude-env-ok',
+          },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id, environmentId })
+      .expect(201);
+
+    const firstRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Respond with hello.' })
+      .expect(200);
+    expect(firstRun.body.data.status).toBe('completed');
+    expect(firstRun.body.data.resumeState.sessionId).toBe(
+      '11111111-1111-4111-8111-111111111111',
+    );
+    const firstMeta = firstRun.body.data.transcript.find(
+      (entry: any) => entry.data?.type === 'fixture.meta',
+    );
+    expect(firstMeta.data.cwd).toBe(workspace);
+    expect(firstMeta.data.env).toBe('claude-env-ok');
+    expect(firstMeta.data.anthropicKeyPresent).toBe(true);
+    expect(firstMeta.data.hostAnthropicKeyLeaked).toBe(false);
+    expect(firstMeta.data.anthropicAuthTokenPresent).toBe(false);
+    expect(firstMeta.data.anthropicBaseUrl).toBe('https://gateway.example.test');
+    expect(firstMeta.data.codexKeyPresent).toBe(false);
+    expect(firstMeta.data.subprocessScrub).toBe('1');
+    expect(firstMeta.data.args).not.toContain('claude-default');
+    expect(firstMeta.data.args).toEqual(
+      expect.arrayContaining([
+        '--bare',
+        '--safe-mode',
+        '--strict-mcp-config',
+        '--permission-mode',
+        'bypassPermissions',
+        '--tools',
+        'default',
+      ]),
+    );
+
+    const resumed = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Continue the session.' })
+      .expect(200);
+    const resumedMeta = [...resumed.body.data.transcript]
+      .reverse()
+      .find((entry: any) => entry.data?.type === 'fixture.meta');
+    expect(resumedMeta.data.args).toEqual(
+      expect.arrayContaining([
+        '--resume',
+        '11111111-1111-4111-8111-111111111111',
+      ]),
+    );
+  });
+
+  it('uses one isolated Codex home safely across concurrent sessions', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Concurrent Codex Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          env: { FIXTURE_ADAPTER: 'codex' },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const [first, second] = await Promise.all([
+      request(app)
+        .post(`/api/companies/${companyId}/sessions`)
+        .send({ agentId: agent.body.data.id })
+        .expect(201),
+      request(app)
+        .post(`/api/companies/${companyId}/sessions`)
+        .send({ agentId: agent.body.data.id })
+        .expect(201),
+    ]);
+
+    const [firstRun, secondRun] = await Promise.all([
+      request(app)
+        .post(`/api/companies/${companyId}/sessions/${first.body.data.id}/run`)
+        .send({ prompt: 'First concurrent run.' })
+        .expect(200),
+      request(app)
+        .post(`/api/companies/${companyId}/sessions/${second.body.data.id}/run`)
+        .send({ prompt: 'Second concurrent run.' })
+        .expect(200),
+    ]);
+
+    expect(firstRun.body.data.status).toBe('completed');
+    expect(secondRun.body.data.status).toBe('completed');
+    const codexHome = path.join(
+      runtimeRoot,
+      companyId,
+      agent.body.data.id,
+      'codex_local',
+      'codex-home',
+    );
+    expect(firstRun.body.data.resumeState.codexHome).toBe(codexHome);
+    expect(secondRun.body.data.resumeState.codexHome).toBe(codexHome);
+    const firstMeta = firstRun.body.data.transcript.find(
+      (entry: any) => entry.data?.type === 'fixture.meta',
+    );
+    const secondMeta = secondRun.body.data.transcript.find(
+      (entry: any) => entry.data?.type === 'fixture.meta',
+    );
+    expect(firstMeta.data.cwd).toContain(first.body.data.id);
+    expect(secondMeta.data.cwd).toContain(second.body.data.id);
+    expect(firstMeta.data.cwd).not.toBe(secondMeta.data.cwd);
+    await expect(fs.lstat(path.join(codexHome, 'auth.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('isolates local CLI state when an environment is reused by another agent', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('reused-environment');
+    const environmentId = await createManagedEnvironment(workspace);
+    const firstAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'First Environment Owner',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    const secondAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Second Environment Owner',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(firstAgent.body.data.id);
+    authorizeAgent(secondAgent.body.data.id);
+
+    const firstSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: firstAgent.body.data.id, environmentId })
+      .expect(201);
+    const firstRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${firstSession.body.data.id}/run`)
+      .send({ prompt: 'First owner.' })
+      .expect(200);
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${firstSession.body.data.id}/finalize`)
+      .expect(200);
+
+    const secondSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: secondAgent.body.data.id, environmentId })
+      .expect(201);
+    const secondRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${secondSession.body.data.id}/run`)
+      .send({ prompt: 'Second owner.' })
+      .expect(200);
+
+    expect(firstRun.body.data.resumeState.codexHome).toContain(firstAgent.body.data.id);
+    expect(firstRun.body.data.resumeState.codexHome).toContain(environmentId);
+    expect(secondRun.body.data.resumeState.codexHome).toContain(secondAgent.body.data.id);
+    expect(secondRun.body.data.resumeState.codexHome).toContain(environmentId);
+    expect(secondRun.body.data.resumeState.codexHome).not.toBe(
+      firstRun.body.data.resumeState.codexHome,
+    );
+  });
+
+  it('bounds cumulative session transcripts and execution logs', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Bounded Codex Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            FIXTURE_MODE: 'many-lines',
+          },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const execution = await request(app)
+      .post(`/api/companies/${companyId}/agents/${agent.body.data.id}/executions`)
+      .send({})
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({
+        agentId: agent.body.data.id,
+        executionId: execution.body.data.id,
+      })
+      .expect(201);
+    const timestamp = new Date().toISOString();
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({
+        transcript: Array.from({ length: 5_000 }, (_, index) => ({
+          timestamp,
+          stream: 'system' as const,
+          kind: 'text' as const,
+          content: `old transcript ${index}`,
+        })),
+      })
+      .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+    await db.drizzle
+      .update(db.schema.agentExecutions)
+      .set({
+        log: Array.from({ length: 5_000 }, (_, index) => ({
+          timestamp,
+          level: 'info',
+          message: `old log ${index}`,
+        })),
+      })
+      .where(eq(db.schema.agentExecutions.id, execution.body.data.id));
+
+    const completed = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Record bounded output.' })
+      .expect(200);
+    const [recordedExecution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.id, execution.body.data.id));
+
+    expect(completed.body.data.transcript).toHaveLength(5_000);
+    expect(completed.body.data.transcript).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            item: expect.objectContaining({
+              text: expect.stringContaining('Record bounded output.'),
+            }),
+          }),
+        }),
+      ]),
+    );
+    expect(recordedExecution.log).toHaveLength(5_000);
+    expect(recordedExecution.log).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: 'codex_local item.completed' }),
+      ]),
+    );
+  });
+
+  it('rejects tenant-controlled CLI arguments and permission bypasses', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Unsafe Local Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          args: ['--dangerously-bypass-approvals-and-sandbox'],
+          dangerouslyBypassApprovalsAndSandbox: true,
+          env: { FIXTURE_ADAPTER: 'codex' },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    const rejected = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Escape the workspace.' })
+      .expect(200);
+
+    expect(rejected.body.data.status).toBe('failed');
+    expect(rejected.body.data.transcript.at(-1).data.message).toContain(
+      'adapterConfig.args is not allowed',
+    );
+  });
+
+  it('rejects adapter env that can alter the unsandboxed host launcher', async () => {
+    await createCliFixture();
+    vi.stubEnv(
+      'EIDOLON_LOCAL_CLI_ENV_ALLOWLIST',
+      `${process.env.EIDOLON_LOCAL_CLI_ENV_ALLOWLIST},Node_Options,ANTHROPIC_BASE_URL`,
+    );
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Unsafe Environment Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            Node_Options: '--require ./workspace-payload.js',
+          },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    const rejected = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Do not load host code.' })
+      .expect(200);
+
+    expect(rejected.body.data.status).toBe('failed');
+    expect(rejected.body.data.transcript.at(-1).data.message).toContain(
+      'Node_Options',
+    );
+
+    const routingAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Credential Routing Worker',
+        role: 'engineer',
+        adapterId: 'claude_local',
+        adapterConfig: {
+          env: {
+            FIXTURE_ADAPTER: 'claude',
+            ANTHROPIC_BASE_URL: 'https://attacker.example',
+          },
+        },
+      })
+      .expect(201);
+    authorizeAgent(routingAgent.body.data.id);
+    const routingSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: routingAgent.body.data.id })
+      .expect(201);
+    const routingRejected = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${routingSession.body.data.id}/run`)
+      .send({ prompt: 'Do not redirect credentials.' })
+      .expect(200);
+
+    expect(routingRejected.body.data.status).toBe('failed');
+    expect(routingRejected.body.data.transcript.at(-1).data.message).toContain(
+      'ANTHROPIC_BASE_URL',
+    );
+  });
+
+  it('keeps a bounded default timeout when tenant config supplies zero', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Bounded Timeout Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          timeoutSec: 0,
+          env: { FIXTURE_ADAPTER: 'codex' },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    const completed = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Complete with a bounded timeout.' })
+      .expect(200);
+
+    expect(completed.body.data.status).toBe('completed');
+    expect(completed.body.data.transcript.at(-1).data.timeoutSec).toBe(600);
+  });
+
+  it('requires operator authorization before launching a local CLI', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Unauthorized Local Worker',
+        role: 'engineer',
+        adapterId: 'claude_local',
+        adapterConfig: {
+          env: { FIXTURE_ADAPTER: 'claude' },
+        },
+      })
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    const rejected = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Do not launch.' })
+      .expect(200);
+
+    expect(rejected.body.data.status).toBe('failed');
+    expect(rejected.body.data.transcript.at(-1).data.message).toContain(
+      'is not operator-authorized',
+    );
+  });
+
+  it('rejects option-like resume state before invoking Codex', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Resume Guard Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          env: { FIXTURE_ADAPTER: 'codex' },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({
+        agentId: agent.body.data.id,
+        resumeState: { sessionId: '--last' },
+      })
+      .expect(201);
+    const rejected = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Do not resume another session.' })
+      .expect(200);
+
+    expect(rejected.body.data.status).toBe('failed');
+    expect(rejected.body.data.transcript.at(-1).data.message).toBe(
+      'Codex session ID must be a UUID.',
+    );
+  });
+
+  it('requires an operator-managed descendant containment launcher', async () => {
+    await createCliFixture();
+    vi.stubEnv('EIDOLON_LOCAL_CLI_CONTAINMENT_COMMAND', '');
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Uncontained Local Worker',
+        role: 'engineer',
+        adapterId: 'claude_local',
+        adapterConfig: {
+          env: { FIXTURE_ADAPTER: 'claude' },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    const rejected = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Do not launch.' })
+      .expect(200);
+
+    expect(rejected.body.data.status).toBe('failed');
+    expect(rejected.body.data.transcript.at(-1).data.message).toContain(
+      'EIDOLON_LOCAL_CLI_CONTAINMENT_COMMAND',
+    );
+  });
+
+  it('rejects unsupported run adapters without mutating the session', async () => {
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Process Runtime Worker',
+        role: 'engineer',
+        adapterId: 'process:local',
+      })
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+
+    const rejected = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Do not run.' })
+      .expect(400);
+    const [persisted] = await db.drizzle
+      .select()
+      .from(db.schema.agentRuntimeSessions)
+      .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+
+    expect(rejected.body.message).toContain('unsupported run adapter');
+    expect(persisted.status).toBe('running');
+    expect(persisted.transcript).toEqual([]);
+  });
+
+  it('records actionable local CLI failures and enforces timeout grace periods', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('timeout');
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Failing Local Worker',
+        role: 'engineer',
+        adapterId: 'claude_local',
+        adapterConfig: {
+          cwd: workspace,
+          env: {
+            FIXTURE_ADAPTER: 'claude',
+            FIXTURE_MODE: 'fail',
+          },
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    const failed = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Respond with hello.' })
+      .expect(200);
+    const failureDiagnostic = failed.body.data.transcript.at(-1);
+
+    expect(failed.body.data.status).toBe('failed');
+    expect(failureDiagnostic.data.message).toContain('fixture authentication failed');
+    expect(failureDiagnostic.data.exitCode).toBe(3);
+
+    const timeoutAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Timed Out Local Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          cwd: workspace,
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            FIXTURE_MODE: 'timeout',
+          },
+          timeoutSec: 0.05,
+          graceSec: 0.05,
+        },
+      })
+      .expect(201);
+    authorizeAgent(timeoutAgent.body.data.id);
+    const timeoutSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: timeoutAgent.body.data.id })
+      .expect(201);
+    const timedOut = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${timeoutSession.body.data.id}/run`)
+      .send({ prompt: 'Respond with hello.' })
+      .expect(200);
+    const timeoutDiagnostic = timedOut.body.data.transcript.at(-1);
+
+    expect(timedOut.body.data.status).toBe('failed');
+    expect(timeoutDiagnostic.data.timedOut).toBe(true);
+    expect(timeoutDiagnostic.data.message).toContain('configured timeout');
+    expect(timeoutDiagnostic.data.durationMs).toBeLessThan(2_000);
+  });
+
+  it('cleans up background descendants when the CLI exits normally', async () => {
+    await createCliFixture();
+    const workspace = await createWorkspace('background-cleanup');
+    const marker = path.join(workspace, 'background-pid');
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Background Cleanup Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          cwd: workspace,
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            FIXTURE_MARKER: marker,
+            FIXTURE_MODE: 'background',
+          },
+          graceSec: 0.1,
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+
+    const completed = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Clean up descendants.' })
+      .expect(200);
+    expect(completed.body.data.status).toBe('completed');
+    const backgroundPid = Number(await fs.readFile(marker, 'utf8'));
+    expect(Number.isInteger(backgroundPid)).toBe(true);
+    expect(() => process.kill(backgroundPid, 0)).toThrow();
+  });
+
+  it('fences the CLI tree when durable lease heartbeats stop', async () => {
+    const cliFixture = await createCliFixture();
+    const marker = path.join(workspaceRoot, 'lease-expired');
+    const supervisor = spawn(
+      process.execPath,
+      [
+        path.resolve('server/src/services/local-cli-supervisor.mjs'),
+        '0',
+        '1000',
+        cliFixture,
+      ],
+      {
+        cwd: workspaceRoot,
+        env: { PATH: process.env.PATH ?? '' },
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+      },
+    );
+    const stderr: Buffer[] = [];
+    supervisor.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    (supervisor.stdio[3] as Writable).write(String(Date.now()));
+    (supervisor.stdio[4] as Writable).end(JSON.stringify({
+      PATH: process.env.PATH ?? '',
+      FIXTURE_ADAPTER: 'codex',
+      FIXTURE_MARKER: marker,
+      FIXTURE_MODE: 'timeout',
+    }));
+    supervisor.stdin.end();
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        await fs.access(marker);
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    await expect(fs.readFile(marker, 'utf8')).resolves.toBe('started');
+
+    const startedAt = Date.now();
+    const [exitCode] = await Promise.race([
+      once(supervisor, 'exit'),
+      new Promise<never>((_, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error('Supervisor lease watchdog did not exit')),
+          3_000,
+        );
+        timeout.unref();
+      }),
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(Date.now() - startedAt).toBeLessThan(2_500);
+    expect(Buffer.concat(stderr).toString('utf8')).toContain(
+      'lease heartbeat expired',
+    );
+  });
+
+  it('rejects duplicate runs and terminates the active CLI when cancelled', async () => {
+    const cliFixture = await createCliFixture();
+    const earlyExitContainment = path.join(
+      path.dirname(cliFixture),
+      'early-exit-containment',
+    );
+    await fs.writeFile(
+      earlyExitContainment,
+      '#!/bin/sh\n"$@" &\nchild=$!\ntrap "exit 0" TERM\nwait "$child"\n',
+      { mode: 0o755 },
+    );
+    vi.stubEnv('EIDOLON_LOCAL_CLI_CONTAINMENT_COMMAND', earlyExitContainment);
+    const workspace = await createWorkspace('cancellation');
+    const fixtureMarker = path.join(workspace, 'fixture-started');
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Cancellable Local Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: {
+          cwd: workspace,
+          env: {
+            FIXTURE_ADAPTER: 'codex',
+            FIXTURE_MARKER: fixtureMarker,
+            FIXTURE_MODE: 'timeout',
+          },
+          timeoutSec: 30,
+          graceSec: 1,
+        },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({
+        agentId: agent.body.data.id,
+        executionId: (
+          await request(app)
+            .post(`/api/companies/${companyId}/agents/${agent.body.data.id}/executions`)
+            .send({})
+            .expect(201)
+        ).body.data.id,
+      })
+      .expect(201);
+
+    const activeRun = request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Keep running.' })
+      .then((response) => response);
+
+    let observedStatus = '';
+    let observedProcessOwnerId = '';
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const [session] = await db.drizzle
+        .select({
+          status: db.schema.agentRuntimeSessions.status,
+          resumeState: db.schema.agentRuntimeSessions.resumeState,
+        })
+        .from(db.schema.agentRuntimeSessions)
+        .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+      observedStatus = session.status;
+      if (observedStatus === 'running') {
+        observedProcessOwnerId =
+          typeof session.resumeState.processOwnerId === 'string'
+            ? session.resumeState.processOwnerId
+            : '';
+        if (observedProcessOwnerId) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(observedStatus).toBe('running');
+    expect(observedProcessOwnerId).not.toBe('');
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        await fs.access(fixtureMarker);
+        break;
+      } catch {
+        if (attempt === 49) throw new Error('CLI fixture did not start');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
+    const duplicate = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/run`)
+      .send({ prompt: 'Run twice.' })
+      .expect(400);
+    expect(duplicate.body.message).toContain('already running');
+
+    const [cancelled, competingCancellation] = await Promise.all([
+      request(app)
+        .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+        .send({ reason: 'operator stop' })
+        .expect(200),
+      request(app)
+        .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+        .send({ reason: 'competing stop' })
+        .expect(200),
+    ]);
+    expect(cancelled.body.data.status).toBe('cancelling');
+    expect(competingCancellation.body.data.status).toBe('cancelling');
+    expect(['operator stop', 'competing stop']).toContain(
+      cancelled.body.data.cancellationReason,
+    );
+    expect(competingCancellation.body.data.cancellationReason).toBe(
+      cancelled.body.data.cancellationReason,
+    );
+    const repeatedCancellation = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+      .send({})
+      .expect(200);
+    expect(repeatedCancellation.body.data.status).toBe('cancelling');
+    expect(repeatedCancellation.body.data.cancellationReason).toBe(
+      cancelled.body.data.cancellationReason,
+    );
+    expect(repeatedCancellation.body.data.updatedAt).toBe(
+      cancelled.body.data.updatedAt,
+    );
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/finalize`)
+      .expect(400);
+
+    const stoppedRun = await activeRun;
+    expect(stoppedRun.status).toBe(200);
+    expect(stoppedRun.body.data.status).toBe('cancelled');
+    expect(stoppedRun.body.data.transcript.at(-1).data.aborted).toBe(true);
+    const [recordedExecution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.runtimeSessionId, created.body.data.id));
+    expect(recordedExecution.status).toBe('cancelled');
+    expect(recordedExecution.error).toBe(
+      `Runtime session cancelled: ${cancelled.body.data.cancellationReason}`,
+    );
+    expect(recordedExecution.lastUsefulAction).toBe('local_cli_cancelled');
+    expect(recordedExecution.log).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: 'codex_local diagnostic',
+          level: 'error',
+        }),
+      ]),
+    );
+
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({
+        status: 'running',
+        completedAt: null,
+        resumeState: {
+          ...stoppedRun.body.data.resumeState,
+          processOwnerId: observedProcessOwnerId,
+        },
+        updatedAt: new Date(Date.now() - 60_000),
+      })
+      .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+    await db.drizzle
+      .update(db.schema.agentExecutions)
+      .set({
+        status: 'running',
+        completedAt: null,
+      })
+      .where(eq(db.schema.agentExecutions.id, recordedExecution.id));
+
+    const reconciled = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+      .send({ reason: 'orphaned persistence owner' })
+      .expect(200);
+    expect(reconciled.body.data.status).toBe('cancelled');
+  });
+
+  it('reconciles an expired foreign process owner only after its kill deadline', async () => {
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Orphaned Local Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+      })
+      .expect(201);
+    const execution = await request(app)
+      .post(`/api/companies/${companyId}/agents/${agent.body.data.id}/executions`)
+      .send({})
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({
+        agentId: agent.body.data.id,
+        executionId: execution.body.data.id,
+      })
+      .expect(201);
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({
+        status: 'running',
+        adapterConfig: { graceSec: -1 },
+        resumeState: { processOwnerId: 'previous-server-instance' },
+        updatedAt: new Date(Date.now() - 15_000),
+      })
+      .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+
+    const pendingCancellation = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+      .send({ reason: 'stale worker lease' })
+      .expect(200);
+    expect(pendingCancellation.body.data.status).toBe('cancelling');
+
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({ updatedAt: new Date(Date.now() - 41_000) })
+      .where(eq(db.schema.agentRuntimeSessions.id, created.body.data.id));
+    const cancelled = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+      .send({})
+      .expect(200);
+    expect(cancelled.body.data.status).toBe('cancelled');
+    const [cancelledExecution] = await db.drizzle
+      .select()
+      .from(db.schema.agentExecutions)
+      .where(eq(db.schema.agentExecutions.id, execution.body.data.id));
+    expect(cancelledExecution.status).toBe('cancelled');
+    expect(cancelledExecution.error).toBe(
+      'Runtime session cancelled: stale worker lease',
+    );
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/finalize`)
+      .expect(200);
   });
 
   it('stores adapter, skill, routine, and session policy on agents', async () => {
@@ -256,6 +1628,11 @@ describe('Hybrid Jarvis runtime foundation', () => {
       .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/finalize`)
       .expect(200);
     expect(finalized.body.data.status).toBe('finalized');
+    const terminalCancellation = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${created.body.data.id}/cancel`)
+      .send({ reason: 'too late' })
+      .expect(200);
+    expect(terminalCancellation.body.data.status).toBe('finalized');
 
     const [released] = await db.drizzle
       .select()
@@ -283,6 +1660,15 @@ describe('Hybrid Jarvis runtime foundation', () => {
     expect(secondSession.body.data.status).toBe('running');
     expect(stillLeased.status).toBe('leased');
     expect(stillLeased.leaseOwnerAgentId).toBe(agent.body.data.id);
+  });
+
+  it('preserves the runtime session not-found code when finalizing', async () => {
+    const missingId = randomUUID();
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${missingId}/finalize`)
+      .expect(404);
+
+    expect(response.body.code).toBe('RUNTIME_SESSION_NOT_FOUND');
   });
 
   it('installs company skills and assigns them to agents', async () => {

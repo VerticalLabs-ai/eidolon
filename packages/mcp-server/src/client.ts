@@ -274,6 +274,13 @@ export class EidolonClient {
     );
   }
 
+  runSession(companyId: string, sessionId: string, prompt: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/sessions/${sessionId}/run`,
+      { method: "POST", body: { prompt } },
+    );
+  }
+
   cancelSession(companyId: string, sessionId: string, reason?: string) {
     return this.request<Record<string, unknown>>(
       `/api/companies/${companyId}/sessions/${sessionId}/cancel`,

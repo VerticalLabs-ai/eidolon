@@ -122,6 +122,23 @@ describe("EidolonClient", () => {
     });
   });
 
+  it("runs a durable runtime session with a prompt", async () => {
+    const fetchStub = makeFetch(() => ({ body: { data: { status: "completed" } } }));
+    const client = new EidolonClient(baseConfig, fetchStub.fn);
+    const companyId = "11111111-1111-1111-1111-111111111111";
+    const sessionId = "44444444-4444-4444-8444-444444444444";
+
+    await client.runSession(companyId, sessionId, "Respond with hello.");
+
+    expect(fetchStub.calls[0].url).toBe(
+      `http://localhost:3100/api/companies/${companyId}/sessions/${sessionId}/run`,
+    );
+    expect(fetchStub.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(String(fetchStub.calls[0].init.body))).toEqual({
+      prompt: "Respond with hello.",
+    });
+  });
+
   it("skips Authorization when no apiKey is set (local_trusted mode)", async () => {
     const fetchStub = makeFetch(() => ({ body: { data: [] } }));
     const client = new EidolonClient(

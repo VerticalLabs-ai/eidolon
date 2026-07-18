@@ -346,6 +346,28 @@ export function registerEidolonTools(
   );
 
   server.registerTool(
+    "eidolon_run_runtime_session",
+    {
+      title: "Run runtime session",
+      description:
+        "Run a prompt through an existing Codex Local or Claude Local runtime session and persist its structured transcript and resume state.",
+      inputSchema: {
+        companyId: companyIdArg,
+        sessionId: z.string().uuid(),
+        prompt: z.string().min(1).max(100_000),
+      },
+    },
+    async ({ companyId, sessionId, prompt }) =>
+      asJsonContent(
+        await client.runSession(
+          requireCompanyId(config, companyId),
+          sessionId,
+          prompt,
+        ),
+      ),
+  );
+
+  server.registerTool(
     "eidolon_cancel_runtime_session",
     {
       title: "Cancel runtime session",

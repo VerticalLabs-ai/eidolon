@@ -101,6 +101,36 @@ const baseRuntimeCapabilities: ServerAdapterCapabilities = {
 
 const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
   {
+    id: 'codex_local',
+    name: 'Codex Local',
+    kind: 'process',
+    locality: 'local',
+    description: 'Runs the Codex CLI for platform operators through a required external sandbox, with structured transcripts and resumable sessions.',
+    supportedModes: ['on_demand', 'scheduled'],
+    capabilities: {
+      ...baseRuntimeCapabilities,
+      shell: true,
+      filesystem: true,
+      browser: false,
+    },
+    models: [{ id: 'codex-default', label: 'Codex CLI default' }],
+  },
+  {
+    id: 'claude_local',
+    name: 'Claude Local',
+    kind: 'process',
+    locality: 'local',
+    description: 'Runs Claude Code for platform operators through a required external sandbox, with stream-JSON transcripts and resumable sessions.',
+    supportedModes: ['on_demand', 'scheduled'],
+    capabilities: {
+      ...baseRuntimeCapabilities,
+      shell: true,
+      filesystem: true,
+      browser: false,
+    },
+    models: [{ id: 'claude-default', label: 'Claude Code default' }],
+  },
+  {
     id: 'process:local',
     name: 'process',
     kind: 'process',
