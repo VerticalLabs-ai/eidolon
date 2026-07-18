@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import express from 'express';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { spawn } from 'node:child_process';
@@ -10,6 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { createTestApp, createTestDb } from '../test-utils.js';
+import { errorHandler } from '../middleware/error-handler.js';
+import { sessionsRouter } from '../routes/sessions.js';
 import { RuntimeSessionService } from '../services/runtime-sessions.js';
 
 describe('Hybrid Jarvis runtime foundation', () => {
@@ -1311,6 +1314,29 @@ process.stdin.on("end", () => {
       remote.close();
       await once(remote, 'close');
     }
+  });
+
+  it('requires a platform operator to test a runtime adapter', async () => {
+    const guardedApp = express();
+    guardedApp.use((req, _res, next) => {
+      req.user = {
+        id: 'tenant-admin',
+        name: 'Tenant Admin',
+        email: 'tenant-admin@example.test',
+        role: 'user',
+      };
+      next();
+    });
+    guardedApp.use(
+      '/api/companies/:companyId/sessions',
+      sessionsRouter(db),
+    );
+    guardedApp.use(errorHandler);
+
+    const response = await request(guardedApp)
+      .post(`/api/companies/${companyId}/sessions/${randomUUID()}/test`)
+      .expect(403);
+    expect(response.body.code).toBe('RUNTIME_SESSION_OPERATOR_REQUIRED');
   });
 
   it('returns actionable diagnostics for blocked process and remote adapter configs', async () => {
