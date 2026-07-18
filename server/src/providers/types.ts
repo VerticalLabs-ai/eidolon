@@ -80,6 +80,21 @@ export interface AdapterModel {
   capabilitiesOverride?: Partial<ServerAdapterCapabilities>;
 }
 
+export interface ModelDiscoveryConfig {
+  authorization?: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+}
+
+export interface AdapterModelDiscoveryResult {
+  adapter: string;
+  models: AdapterModel[];
+  source: 'live' | 'static';
+  status: 'success' | 'error' | 'unsupported';
+  refreshedAt: string;
+  diagnostic: string;
+}
+
 export interface AIProvider {
   readonly name: string;
   chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult>;
@@ -105,6 +120,7 @@ export interface ServerAdapter extends AIProvider {
   readonly description?: string;
   readonly capabilities: ServerAdapterCapabilities;
   readonly models: AdapterModel[];
+  discoverModels?(config: ModelDiscoveryConfig): Promise<AdapterModel[]>;
 }
 
 export interface ServerAdapterDescriptor {

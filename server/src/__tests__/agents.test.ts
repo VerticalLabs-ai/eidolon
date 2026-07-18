@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { createTestDb, createTestApp } from '../test-utils.js';
@@ -20,6 +20,10 @@ describe('Agents API', () => {
     companyId = res.body.data.id;
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   const agentsUrl = () => `/api/companies/${companyId}/agents`;
   const agentUrl = (id: string) => `${agentsUrl()}/${id}`;
 
@@ -34,6 +38,104 @@ describe('Agents API', () => {
       .expect(201);
     return environment.body.data.id as string;
   };
+
+  describe('POST /api/companies/:companyId/agents/:id/models/refresh', () => {
+    it('uses the agent credential to refresh provider models', async () => {
+      const created = await request(app)
+        .post(agentsUrl())
+        .send({
+          name: 'Discovery Agent',
+          role: 'engineer',
+          provider: 'anthropic',
+          apiKeyEncrypted: 'fixture',
+        })
+        .expect(201);
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: [
+              { id: 'claude-live-1', display_name: 'Claude Live 1' },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const res = await request(app)
+        .post(`${agentUrl(created.body.data.id)}/models/refresh`)
+        .expect(200);
+
+      expect(res.body.data).toMatchObject({
+        adapter: 'anthropic',
+        source: 'live',
+        status: 'success',
+        models: [{ id: 'claude-live-1', label: 'Claude Live 1' }],
+      });
+      expect(String(fetchMock.mock.calls[0][0])).toBe(
+        'https://api.anthropic.com/v1/models?limit=100',
+      );
+      expect(fetchMock.mock.calls[0][1]).toEqual(
+        expect.objectContaining({
+          headers: expect.objectContaining({ 'x-api-key': expect.any(String) }),
+        }),
+      );
+    });
+
+    it('returns the static catalog when no provider credential is stored', async () => {
+      const created = await request(app)
+        .post(agentsUrl())
+        .send({
+          name: 'Fallback Agent',
+          role: 'engineer',
+          provider: 'openai',
+          model: 'gpt-5.4',
+        })
+        .expect(201);
+
+      const res = await request(app)
+        .post(`${agentUrl(created.body.data.id)}/models/refresh`)
+        .expect(200);
+
+      expect(res.body.data.source).toBe('static');
+      expect(res.body.data.status).toBe('error');
+      expect(res.body.data.models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'gpt-5.4' }),
+        ]),
+      );
+      expect(res.body.data.diagnostic).toContain(
+        'OpenAI API key is required',
+      );
+    });
+
+    it('does not reuse a legacy credential without provider provenance', async () => {
+      const created = await request(app)
+        .post(agentsUrl())
+        .send({
+          name: 'Legacy Key Agent',
+          role: 'engineer',
+          provider: 'openai',
+          apiKeyEncrypted: 'fixture',
+          apiKeyProvider: 'openai',
+        })
+        .expect(201);
+      await db.drizzle
+        .update(db.schema.agents)
+        .set({ apiKeyProvider: null })
+        .where(eq(db.schema.agents.id, created.body.data.id));
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const res = await request(app)
+        .post(`${agentUrl(created.body.data.id)}/models/refresh`)
+        .expect(200);
+
+      expect(res.body.data.source).toBe('static');
+      expect(res.body.data.status).toBe('error');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
 
   // ---------------------------------------------------------------------------
   // POST - create agent

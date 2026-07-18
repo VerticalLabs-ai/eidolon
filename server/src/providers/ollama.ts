@@ -6,6 +6,7 @@ import type {
   AdapterModel,
   ChatMessage,
   CompletionResult,
+  ModelDiscoveryConfig,
   ProviderConfig,
   ServerAdapter,
   ServerAdapterCapabilities,
@@ -64,6 +65,72 @@ export class OllamaProvider implements ServerAdapter {
     { id: 'mistral', label: 'Mistral (local)' },
     { id: 'phi4', label: 'Phi 4' },
   ];
+
+  async discoverModels(config: ModelDiscoveryConfig): Promise<AdapterModel[]> {
+    const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
+    const timeoutMs = config.timeoutMs ?? 10_000;
+    const response = await fetch(`${baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama model discovery failed with HTTP ${response.status}`);
+    }
+
+    const data = (await response.json()) as {
+      models?: Array<{ name?: string; model?: string }>;
+    };
+
+    const installedModels = (data.models ?? [])
+      .map((model) => model.name ?? model.model)
+      .filter((id): id is string => Boolean(id));
+    const chatModels: AdapterModel[] = [];
+    let successfulDetailResponses = 0;
+    let firstDetailFailure: string | undefined;
+
+    for (const id of installedModels) {
+      const signal = AbortSignal.timeout(timeoutMs);
+      try {
+        const detailsResponse = await fetch(`${baseUrl}/api/show`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: id }),
+          signal,
+        });
+        if (!detailsResponse.ok) {
+          firstDetailFailure ??= `HTTP ${detailsResponse.status}`;
+          continue;
+        }
+
+        const details = (await detailsResponse.json()) as {
+          capabilities?: string[];
+        };
+        if ((details.capabilities ?? []).includes('completion')) {
+          chatModels.push({ id, label: id });
+        }
+        successfulDetailResponses += 1;
+      } catch (error) {
+        if (signal.aborted) {
+          throw error;
+        }
+        firstDetailFailure ??=
+          error instanceof Error ? error.message : String(error);
+        continue;
+      }
+    }
+
+    if (
+      installedModels.length > 0 &&
+      successfulDetailResponses === 0 &&
+      firstDetailFailure
+    ) {
+      throw new Error(
+        `Ollama /api/show failed for all installed models (first failure: ${firstDetailFailure})`,
+      );
+    }
+
+    return chatModels.sort((left, right) => left.id.localeCompare(right.id));
+  }
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;

@@ -1225,6 +1225,15 @@ export interface RuntimeAdapterDescriptor {
   }>;
 }
 
+export interface AdapterModelDiscoveryResult {
+  adapter: string;
+  models: RuntimeAdapterDescriptor["models"];
+  source: "live" | "static";
+  status: "success" | "error" | "unsupported";
+  refreshedAt: string;
+  diagnostic: string;
+}
+
 export type RuntimeSessionMode =
   | "on_demand"
   | "scheduled"
@@ -1333,6 +1342,12 @@ export interface JarvisRoutineTriggerResult {
 
 export const getRuntimeAdapters = () =>
   request<RuntimeAdapterDescriptor[]>("/runtime/adapters");
+
+export const refreshAgentModels = (companyId: string, agentId: string) =>
+  request<AdapterModelDiscoveryResult>(
+    `/companies/${companyId}/agents/${agentId}/models/refresh`,
+    { method: "POST" },
+  );
 
 export const getRuntimeSessions = (companyId: string) =>
   request<RuntimeSession[]>(`/companies/${companyId}/sessions`);

@@ -7,12 +7,15 @@ import type {
   AdapterModel,
   ChatMessage,
   CompletionResult,
+  ModelDiscoveryConfig,
   ProviderConfig,
   ServerAdapter,
   ServerAdapterCapabilities,
   StreamChunk,
 } from './types.js';
 import { calculateCostCents } from './cost.js';
+
+const DEFAULT_MODELS_URL = 'https://api.openai.com/v1/models';
 
 export class OpenAIProvider implements ServerAdapter {
   readonly name = 'openai';
@@ -50,6 +53,43 @@ export class OpenAIProvider implements ServerAdapter {
     { id: 'o3', label: 'o3', maxContextTokens: 200_000, maxOutputTokens: 100_000 },
     { id: 'o4-mini', label: 'o4-mini', maxContextTokens: 200_000, maxOutputTokens: 65_000 },
   ];
+
+  async discoverModels(config: ModelDiscoveryConfig): Promise<AdapterModel[]> {
+    if (!config.authorization) {
+      throw new Error('OpenAI API key is required to refresh models');
+    }
+
+    const response = await fetch(DEFAULT_MODELS_URL, {
+      headers: { Authorization: `Bearer ${config.authorization}` },
+      signal: AbortSignal.timeout(config.timeoutMs ?? 10_000),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI model discovery failed with HTTP ${response.status}`);
+    }
+
+    const data = (await response.json()) as { data?: Array<{ id?: string }> };
+    return (data.data ?? [])
+      .filter((model): model is { id: string } => {
+        if (typeof model.id !== 'string') {
+          return false;
+        }
+        const compatibilityId = model.id.startsWith('ft:')
+          ? model.id.split(':')[1] ?? ''
+          : model.id;
+        return (
+          /^(?:chat(?:gpt)?-|gpt-(?:3\.5|4|5|audio)|o[134](?:-|$))/.test(
+            compatibilityId,
+          ) &&
+          !/(?:codex|deep-research|image|instruct|realtime|transcribe|tts)/.test(
+            compatibilityId,
+          ) &&
+          !/(?:^|-)pro(?:-|$)/.test(compatibilityId)
+        );
+      })
+      .map((model) => ({ id: model.id, label: model.id }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+  }
 
   async chat(messages: ChatMessage[], config: ProviderConfig): Promise<CompletionResult> {
     if (!config.apiKey) {
