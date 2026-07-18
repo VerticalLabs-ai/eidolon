@@ -115,10 +115,48 @@ describe('Adapter model discovery', () => {
     );
   });
 
+  it('skips individual Ollama model detail failures', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              models: [
+                { name: 'unreachable-model' },
+                { name: 'malformed-model' },
+                { name: 'chat-model' },
+              ],
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockRejectedValueOnce(new Error('Model details are unavailable'))
+        .mockResolvedValueOnce(new Response('not-json', { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ capabilities: ['completion'] }), {
+            status: 200,
+          }),
+        ),
+    );
+
+    const result = await discoverAdapterModels('ollama', {
+      baseUrl: 'http://ollama.internal:11435',
+      timeoutMs: 100,
+    });
+
+    expect(result).toMatchObject({
+      source: 'live',
+      status: 'success',
+      models: [{ id: 'chat-model', label: 'chat-model' }],
+    });
+  });
+
   it('uses only the operator-owned Ollama base URL configuration', () => {
     vi.stubEnv(
       'EIDOLON_OLLAMA_BASE_URL',
-      'http://ollama.internal:11435/',
+      'http://ollama.internal:11435///',
     );
 
     expect(getConfiguredProviderBaseUrl('local')).toBe(
@@ -134,7 +172,20 @@ describe('Adapter model discovery', () => {
     );
 
     expect(() => getConfiguredProviderBaseUrl('ollama')).toThrow(
-      'without embedded credentials',
+      'without credentials, query parameters, or fragments',
+    );
+  });
+
+  it.each([
+    'http://ollama.internal:11435?',
+    'http://ollama.internal:11435?proxy=1',
+    'http://ollama.internal:11435#',
+    'http://ollama.internal:11435#proxy',
+  ])('rejects a non-base Ollama URL: %s', (configured) => {
+    vi.stubEnv('EIDOLON_OLLAMA_BASE_URL', configured);
+
+    expect(() => getConfiguredProviderBaseUrl('ollama')).toThrow(
+      'without credentials, query parameters, or fragments',
     );
   });
 

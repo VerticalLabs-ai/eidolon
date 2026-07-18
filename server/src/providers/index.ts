@@ -55,12 +55,20 @@ export function getConfiguredProviderBaseUrl(name: string): string | undefined {
   }
 
   const url = new URL(configured);
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    configured.includes('?') ||
+    configured.includes('#')
+  ) {
     throw new Error(
-      'EIDOLON_OLLAMA_BASE_URL must be an HTTP(S) URL without embedded credentials',
+      'EIDOLON_OLLAMA_BASE_URL must be an HTTP(S) base URL without credentials, query parameters, or fragments',
     );
   }
-  return configured.replace(/\/$/, '');
+  return configured.replace(/\/+$/, '');
 }
 
 /**

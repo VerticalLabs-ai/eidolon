@@ -87,21 +87,28 @@ export class OllamaProvider implements ServerAdapter {
     const chatModels: AdapterModel[] = [];
 
     for (const id of installedModels) {
-      const detailsResponse = await fetch(`${baseUrl}/api/show`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: id }),
-        signal,
-      });
-      if (!detailsResponse.ok) {
-        continue;
-      }
+      try {
+        const detailsResponse = await fetch(`${baseUrl}/api/show`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: id }),
+          signal,
+        });
+        if (!detailsResponse.ok) {
+          continue;
+        }
 
-      const details = (await detailsResponse.json()) as {
-        capabilities?: string[];
-      };
-      if ((details.capabilities ?? []).includes('completion')) {
-        chatModels.push({ id, label: id });
+        const details = (await detailsResponse.json()) as {
+          capabilities?: string[];
+        };
+        if ((details.capabilities ?? []).includes('completion')) {
+          chatModels.push({ id, label: id });
+        }
+      } catch (error) {
+        if (signal.aborted) {
+          throw error;
+        }
+        continue;
       }
     }
 
