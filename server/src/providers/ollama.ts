@@ -85,6 +85,8 @@ export class OllamaProvider implements ServerAdapter {
       .map((model) => model.name ?? model.model)
       .filter((id): id is string => Boolean(id));
     const chatModels: AdapterModel[] = [];
+    let successfulDetailResponses = 0;
+    let firstDetailFailure: string | undefined;
 
     for (const id of installedModels) {
       const signal = AbortSignal.timeout(timeoutMs);
@@ -96,6 +98,7 @@ export class OllamaProvider implements ServerAdapter {
           signal,
         });
         if (!detailsResponse.ok) {
+          firstDetailFailure ??= `HTTP ${detailsResponse.status}`;
           continue;
         }
 
@@ -105,12 +108,25 @@ export class OllamaProvider implements ServerAdapter {
         if ((details.capabilities ?? []).includes('completion')) {
           chatModels.push({ id, label: id });
         }
+        successfulDetailResponses += 1;
       } catch (error) {
         if (signal.aborted) {
           throw error;
         }
+        firstDetailFailure ??=
+          error instanceof Error ? error.message : String(error);
         continue;
       }
+    }
+
+    if (
+      installedModels.length > 0 &&
+      successfulDetailResponses === 0 &&
+      firstDetailFailure
+    ) {
+      throw new Error(
+        `Ollama /api/show failed for all installed models (first failure: ${firstDetailFailure})`,
+      );
     }
 
     return chatModels.sort((left, right) => left.id.localeCompare(right.id));

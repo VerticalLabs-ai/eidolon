@@ -159,6 +159,37 @@ describe('Adapter model discovery', () => {
     });
   });
 
+  it('surfaces a representative failure when all Ollama details fail', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              models: [{ name: 'first-model' }, { name: 'second-model' }],
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 401 }))
+        .mockResolvedValueOnce(new Response('null', { status: 200 })),
+    );
+
+    const result = await discoverAdapterModels('ollama', {
+      baseUrl: 'http://ollama.internal:11435',
+      timeoutMs: 100,
+    });
+
+    expect(result).toMatchObject({
+      source: 'static',
+      status: 'error',
+    });
+    expect(result.diagnostic).toContain(
+      'Ollama /api/show failed for all installed models (first failure: HTTP 401)',
+    );
+  });
+
   it('uses only the operator-owned Ollama base URL configuration', () => {
     vi.stubEnv(
       'EIDOLON_OLLAMA_BASE_URL',
