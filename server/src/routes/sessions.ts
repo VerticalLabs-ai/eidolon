@@ -76,6 +76,13 @@ export function sessionsRouter(db: DbInstance): Router {
 
   router.post('/:id/test', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    if (req.user?.role !== 'admin') {
+      throw new AppError(
+        403,
+        'RUNTIME_SESSION_OPERATOR_REQUIRED',
+        'Session adapter tests can only be run by a platform operator',
+      );
+    }
     try {
       res.json({ data: await sessions.testSessionAdapter(companyId, id) });
     } catch (error) {
