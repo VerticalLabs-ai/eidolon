@@ -9,10 +9,8 @@ import type { DbInstance } from '../types.js';
 /**
  * Concurrency guarantees for task assignment.
  *
- * The scheduler and TaskAssigner both rely on conditional `UPDATE … WHERE
- * assigneeAgentId IS NULL` to claim an unassigned task atomically. If two
- * workers race for the same task, exactly one must win and the rest must be
- * no-ops — never double-assignment.
+ * Scheduler assignment selects one owner atomically but does not start work.
+ * Execution-scoped checkout is tested separately.
  *
  * better-sqlite3 is synchronous, so JavaScript `Promise.all` plus the event
  * loop actually produces interleaved calls against the same transaction-less
@@ -129,16 +127,11 @@ describe('Task assignment concurrency', () => {
       .from(db.schema.tasks)
       .where(eq(db.schema.tasks.id, taskId));
 
-    expect(task.status).toBe('in_progress');
+    expect(task.status).toBe('todo');
     expect([agentA, agentB]).toContain(task.assigneeAgentId);
 
-    // Exactly one agent should be 'working', the other should remain 'idle'
     const agents = await db.drizzle.select().from(db.schema.agents);
-    const working = agents.filter((a) => a.status === 'working');
-    const idle = agents.filter((a) => a.status === 'idle');
-    expect(working).toHaveLength(1);
-    expect(idle).toHaveLength(1);
-    expect(working[0].id).toBe(task.assigneeAgentId);
+    expect(agents.every((agent) => agent.status === 'idle')).toBe(true);
   });
 
   it('HeartbeatScheduler.wakeAgent: two agents racing a single task yield exactly one assignment', async () => {
@@ -163,12 +156,11 @@ describe('Task assignment concurrency', () => {
       .select()
       .from(db.schema.tasks)
       .where(eq(db.schema.tasks.id, taskId));
-    expect(task.status).toBe('in_progress');
+    expect(task.status).toBe('todo');
     expect([agentA, agentB]).toContain(task.assigneeAgentId);
 
     const agents = await db.drizzle.select().from(db.schema.agents);
-    const workingCount = agents.filter((a) => a.status === 'working').length;
-    expect(workingCount).toBe(1);
+    expect(agents.every((agent) => agent.status === 'idle')).toBe(true);
   });
 
   it('HeartbeatScheduler.wakeAgent: five racers on one task still yield exactly one assignment', async () => {
@@ -191,11 +183,35 @@ describe('Task assignment concurrency', () => {
       .where(eq(db.schema.tasks.id, taskId));
     expect(agentIds).toContain(task.assigneeAgentId);
 
-    const workingAgents = (
-      await db.drizzle.select().from(db.schema.agents)
-    ).filter((a) => a.status === 'working');
-    expect(workingAgents).toHaveLength(1);
-    expect(workingAgents[0].id).toBe(task.assigneeAgentId);
+    const agents = await db.drizzle.select().from(db.schema.agents);
+    expect(agents.every((agent) => agent.status === 'idle')).toBe(true);
+  });
+
+  it('HeartbeatScheduler.runOnce: assigns ownership without starting work or creating an execution', async () => {
+    const taskId = await insertTask({ priority: 'critical' });
+    const agentId = await insertAgent({ name: 'Scheduled' });
+
+    await new HeartbeatScheduler(db).runOnce();
+
+    const [task] = await db.drizzle
+      .select()
+      .from(db.schema.tasks)
+      .where(eq(db.schema.tasks.id, taskId));
+    const [agent] = await db.drizzle
+      .select()
+      .from(db.schema.agents)
+      .where(eq(db.schema.agents.id, agentId));
+    const executions = await db.drizzle.select().from(db.schema.agentExecutions);
+    const checkouts = await db.drizzle.select().from(db.schema.taskCheckouts);
+
+    expect(task).toMatchObject({
+      status: 'todo',
+      assigneeAgentId: agentId,
+      startedAt: null,
+    });
+    expect(agent.status).toBe('idle');
+    expect(executions).toHaveLength(0);
+    expect(checkouts).toHaveLength(0);
   });
 
   it('HeartbeatScheduler.wakeAgent: skips tasks while dependencies remain open', async () => {

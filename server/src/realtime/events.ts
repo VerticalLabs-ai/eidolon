@@ -69,6 +69,7 @@ export interface TaskEvent extends ServerEvent {
     | 'task.created'
     | 'task.updated'
     | 'task.assigned'
+    | 'task.checked_out'
     | 'task.status_changed'
     | 'task.commented'
     | 'task.blocker_resolved'

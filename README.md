@@ -132,7 +132,7 @@ Operators can validate a configured process, HTTP, or OpenClaw session without r
 1. **Create a company** — Define mission and budget.
 2. **Hire agents** — Add agents with specific roles (CEO, CTO, Engineer, etc.). Each agent has its own provider, model, budget, instructions, and capability flags.
 3. **Set goals** — Define OKRs that cascade from mission to tasks.
-4. **Create tasks** — Kanban board with atomic assignment and priority-aware scheduling.
+4. **Create tasks** — Kanban board with priority-aware scheduling. Assignment selects an owner; an execution-scoped checkout is the atomic, auditable transition that starts work.
 5. **Run** — Agents execute via the Observe → Think → Act → Reflect loop with live transcript streaming, budget enforcement, and approval gates on governed actions.
 6. **Monitor** — Inbox surfaces pending approvals, inbound collaborations, and high-signal activity. Navigate with `j`/`k`/`a`/`o`.
 
@@ -160,6 +160,7 @@ All endpoints under `/api`. See the per-route source for full schemas.
 | `POST /api/companies/:id/routines` | Create a scheduled, continuous, or on-demand Jarvis routine |
 | `GET /api/companies/:id/tasks` | List tasks |
 | `POST /api/companies/:id/tasks` | Create task |
+| `POST /api/companies/:id/tasks/:taskId/checkout` | Atomically check out a task for an agent execution |
 | `GET /api/companies/:id/goals` | Goal tree |
 | `GET /api/companies/:id/approvals` | List approvals |
 | `POST /api/companies/:id/approvals/:id/decide` | Approve / reject |

@@ -13,6 +13,7 @@ import { decrypt, encrypt } from "../services/crypto.js";
 import { AgentExecutor } from "../services/agent-executor.js";
 import { AgenticLoop } from "../services/agentic-loop.js";
 import { HeartbeatScheduler } from "../services/scheduler.js";
+import { TaskCheckoutError } from "../services/task-checkout.js";
 import type { DbInstance } from "../types.js";
 import { routeParams } from "../utils/route-params.js";
 
@@ -1094,6 +1095,9 @@ export function agentsRouter(db: DbInstance): Router {
         res.json({ data: result });
       }
     } catch (error) {
+      if (error instanceof TaskCheckoutError) {
+        throw new AppError(error.status, error.code, error.message, error.details);
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new AppError(500, "EXECUTION_FAILED", message);
     }
