@@ -191,7 +191,7 @@ export class TaskCheckoutService {
         .set({
           assigneeAgentId: input.agentId,
           status: 'in_progress',
-          startedAt: task.startedAt ?? now,
+          startedAt: now,
           updatedAt: now,
         })
         .where(

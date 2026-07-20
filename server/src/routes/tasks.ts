@@ -73,8 +73,6 @@ const UpdateTaskBody = z.object({
   actualTokens: z.number().int().nonnegative().nullable().optional(),
   tags: z.array(z.string().min(1).max(50)).optional(),
   dueAt: z.coerce.date().nullable().optional(),
-  startedAt: z.coerce.date().nullable().optional(),
-  completedAt: z.coerce.date().nullable().optional(),
 });
 
 const AssignTaskBody = z.object({
