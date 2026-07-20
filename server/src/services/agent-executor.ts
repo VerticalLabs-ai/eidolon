@@ -14,6 +14,7 @@ import { BudgetEnforcer } from './budget-enforcer.js';
 import { KnowledgeService } from './knowledge.js';
 import { MemoryService } from './memory.js';
 import { retryDueAt } from './execution-retry.js';
+import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
@@ -39,11 +40,13 @@ export class AgentExecutor {
   private budgetEnforcer: BudgetEnforcer;
   private knowledgeService: KnowledgeService;
   private memoryService: MemoryService;
+  private checkoutService: TaskCheckoutService;
 
   constructor(private db: DbInstance) {
     this.budgetEnforcer = new BudgetEnforcer(db);
     this.knowledgeService = new KnowledgeService(db);
     this.memoryService = new MemoryService(db);
+    this.checkoutService = new TaskCheckoutService(db);
   }
 
   /**
@@ -185,11 +188,35 @@ export class AgentExecutor {
       createdAt: now,
     });
 
-    // Update agent status to working
-    await this.db.drizzle
-      .update(agents)
-      .set({ status: 'working', updatedAt: now })
-      .where(eq(agents.id, agentId));
+    try {
+      await this.checkoutService.checkout({
+        companyId,
+        taskId,
+        agentId,
+        executionId: execId,
+        source: 'agent_executor',
+        idempotencyKey: `execution:${execId}`,
+      });
+    } catch (error) {
+      const failedAt = new Date();
+      await this.db.drizzle
+        .update(agentExecutions)
+        .set({
+          status: 'failed',
+          completedAt: failedAt,
+          failureCategory:
+            error instanceof TaskCheckoutError
+              ? error.code.toLowerCase()
+              : 'task_checkout_failed',
+          error: error instanceof Error ? error.message : String(error),
+          lastEventAt: failedAt,
+          livenessStatus: 'stalled',
+          lastUsefulAction: 'task_checkout_failed',
+          nextActionHint: 'retry_with_available_task',
+        })
+        .where(eq(agentExecutions.id, execId));
+      throw error;
+    }
 
     eventBus.emitEvent({
       type: 'execution.started' as any,
@@ -197,12 +224,6 @@ export class AgentExecutor {
       payload: { executionId: execId, agentId, taskId },
       timestamp: now.toISOString(),
     });
-
-    // Update task status to in_progress
-    await this.db.drizzle
-      .update(tasks)
-      .set({ status: 'in_progress', startedAt: now, updatedAt: now })
-      .where(eq(tasks.id, taskId));
 
     // ------------------------------------------------------------------
     // 8. Call the AI provider

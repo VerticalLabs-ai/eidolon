@@ -20,6 +20,7 @@ import { MCPClientService } from './mcp-client.js';
 import { BudgetEnforcer } from './budget-enforcer.js';
 import { decrypt } from './crypto.js';
 import { continuationRetryDueAt, retryDueAt } from './execution-retry.js';
+import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
@@ -123,6 +124,7 @@ export class AgenticLoop {
   private memoryService: MemoryService;
   private mcpService: MCPClientService;
   private budgetEnforcer: BudgetEnforcer;
+  private checkoutService: TaskCheckoutService;
 
   constructor(
     private db: DbInstance,
@@ -133,6 +135,7 @@ export class AgenticLoop {
     this.memoryService = new MemoryService(db);
     this.mcpService = new MCPClientService(db);
     this.budgetEnforcer = new BudgetEnforcer(db);
+    this.checkoutService = new TaskCheckoutService(db);
   }
 
   /**
@@ -263,17 +266,35 @@ export class AgenticLoop {
       createdAt: startedAt,
     });
 
-    // Set agent to working
-    await this.db.drizzle
-      .update(agents)
-      .set({ status: 'working', updatedAt: startedAt })
-      .where(eq(agents.id, agentId));
-
-    // Set task to in_progress
-    await this.db.drizzle
-      .update(tasks)
-      .set({ status: 'in_progress', startedAt, updatedAt: startedAt })
-      .where(eq(tasks.id, taskId));
+    try {
+      await this.checkoutService.checkout({
+        companyId,
+        taskId,
+        agentId,
+        executionId: execId,
+        source: 'agentic_loop',
+        idempotencyKey: `execution:${execId}`,
+      });
+    } catch (error) {
+      const failedAt = new Date();
+      await this.db.drizzle
+        .update(agentExecutions)
+        .set({
+          status: 'failed',
+          completedAt: failedAt,
+          failureCategory:
+            error instanceof TaskCheckoutError
+              ? error.code.toLowerCase()
+              : 'task_checkout_failed',
+          error: error instanceof Error ? error.message : String(error),
+          lastEventAt: failedAt,
+          livenessStatus: 'stalled',
+          lastUsefulAction: 'task_checkout_failed',
+          nextActionHint: 'retry_with_available_task',
+        })
+        .where(eq(agentExecutions.id, execId));
+      throw error;
+    }
 
     eventBus.emitEvent({
       type: 'execution.started',

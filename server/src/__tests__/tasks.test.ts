@@ -20,6 +20,35 @@ describe('Tasks API', () => {
   const tasksUrl = () => `/api/companies/${companyId}/tasks`;
   const taskUrl = (id: string) => `${tasksUrl()}/${id}`;
 
+  async function createCheckedOutTask(
+    title: string,
+    taskFields: Record<string, unknown> = {},
+  ) {
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: `${title} Worker`, role: 'engineer' })
+      .expect(201);
+    const task = await request(app)
+      .post(tasksUrl())
+      .send({ title, status: 'todo', ...taskFields })
+      .expect(201);
+    const execution = await request(app)
+      .post(`/api/companies/${companyId}/agents/${agent.body.data.id}/executions`)
+      .send({ taskId: task.body.data.id })
+      .expect(201);
+
+    const checkout = await request(app)
+      .post(`${taskUrl(task.body.data.id)}/checkout`)
+      .send({
+        agentId: agent.body.data.id,
+        executionId: execution.body.data.id,
+        idempotencyKey: `test-checkout:${execution.body.data.id}`,
+      })
+      .expect(201);
+
+    return checkout.body.data.task;
+  }
+
   // ---------------------------------------------------------------------------
   // POST - create task
   // ---------------------------------------------------------------------------
@@ -71,6 +100,15 @@ describe('Tasks API', () => {
         .expect(201);
 
       expect(res.body.data.status).toBe('timed_out');
+    });
+
+    it('requires checkout instead of creating a task in progress', async () => {
+      const res = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Bypass checkout', status: 'in_progress' })
+        .expect(409);
+
+      expect(res.body.code).toBe('TASK_CHECKOUT_REQUIRED');
     });
 
     it('should auto-increment task numbers', async () => {
@@ -146,7 +184,7 @@ describe('Tasks API', () => {
 
     it('should filter tasks by status', async () => {
       await request(app).post(tasksUrl()).send({ title: 'Backlog', status: 'backlog' });
-      await request(app).post(tasksUrl()).send({ title: 'In Progress', status: 'in_progress' });
+      await createCheckedOutTask('In Progress');
       await request(app).post(tasksUrl()).send({ title: 'Done', status: 'done' });
 
       const res = await request(app)
@@ -229,7 +267,7 @@ describe('Tasks API', () => {
       expect(res.body.data.title).toBe('New Title');
     });
 
-    it('should auto-set startedAt when transitioning to in_progress', async () => {
+    it('requires execution-scoped checkout before transitioning to in_progress', async () => {
       const created = await request(app)
         .post(tasksUrl())
         .send({ title: 'Start Me' });
@@ -240,18 +278,28 @@ describe('Tasks API', () => {
       const res = await request(app)
         .patch(taskUrl(id))
         .send({ status: 'in_progress' })
+        .expect(409);
+
+      expect(res.body.code).toBe('TASK_CHECKOUT_REQUIRED');
+    });
+
+    it('allows an idempotent in_progress PATCH that updates another field', async () => {
+      const created = await createCheckedOutTask('Already running');
+
+      const res = await request(app)
+        .patch(taskUrl(created.id))
+        .send({ title: 'Updated while running', status: 'in_progress' })
         .expect(200);
 
-      expect(res.body.data.status).toBe('in_progress');
-      expect(res.body.data.startedAt).toBeDefined();
-      expect(res.body.data.startedAt).not.toBeNull();
+      expect(res.body.data).toMatchObject({
+        title: 'Updated while running',
+        status: 'in_progress',
+      });
     });
 
     it('should auto-set completedAt when transitioning to done', async () => {
-      const created = await request(app)
-        .post(tasksUrl())
-        .send({ title: 'Complete Me', status: 'in_progress' });
-      const id = created.body.data.id;
+      const created = await createCheckedOutTask('Complete Me');
+      const id = created.id;
 
       const res = await request(app)
         .patch(taskUrl(id))
@@ -380,6 +428,24 @@ describe('Tasks API', () => {
         .expect(200);
 
       expect(res.body.data.assigneeAgentId).toBe(agentId);
+      expect(res.body.data.status).toBe('backlog');
+      expect(res.body.data.startedAt).toBeNull();
+    });
+
+    it('rejects ownership changes through generic PATCH', async () => {
+      const agentRes = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: 'Worker', role: 'engineer' });
+      const taskRes = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Assign through route' });
+
+      const res = await request(app)
+        .patch(taskUrl(taskRes.body.data.id))
+        .send({ assigneeAgentId: agentRes.body.data.id })
+        .expect(400);
+
+      expect(res.body.code).toBe('TASK_ASSIGNMENT_REQUIRED');
     });
 
     it('should 404 for non-existent task', async () => {
@@ -424,7 +490,7 @@ describe('Tasks API', () => {
     it('should group tasks by their status', async () => {
       await request(app).post(tasksUrl()).send({ title: 'B1', status: 'backlog' });
       await request(app).post(tasksUrl()).send({ title: 'B2', status: 'backlog' });
-      await request(app).post(tasksUrl()).send({ title: 'IP1', status: 'in_progress' });
+      await createCheckedOutTask('IP1');
       await request(app).post(tasksUrl()).send({ title: 'D1', status: 'done' });
 
       const res = await request(app)
@@ -576,10 +642,8 @@ describe('Tasks API', () => {
         .post(tasksUrl())
         .send({ title: 'Parent', status: 'todo' });
       const parentId = parent.body.data.id;
-      const child = await request(app)
-        .post(tasksUrl())
-        .send({ title: 'Child', parentId, status: 'in_progress' });
-      const childId = child.body.data.id;
+      const child = await createCheckedOutTask('Child', { parentId });
+      const childId = child.id;
 
       const pause = await request(app)
         .post(`${taskUrl(parentId)}/subtree/pause`)
