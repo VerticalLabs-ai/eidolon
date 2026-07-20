@@ -283,6 +283,24 @@ describe('Tasks API', () => {
       expect(res.body.code).toBe('TASK_CHECKOUT_REQUIRED');
     });
 
+    it('keeps lifecycle timestamps server-controlled', async () => {
+      const created = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Server timestamps only' });
+      const id = created.body.data.id;
+
+      const updated = await request(app)
+        .patch(taskUrl(id))
+        .send({
+          startedAt: '2000-01-01T00:00:00.000Z',
+          completedAt: '2000-01-02T00:00:00.000Z',
+        })
+        .expect(200);
+
+      expect(updated.body.data.startedAt).toBeNull();
+      expect(updated.body.data.completedAt).toBeNull();
+    });
+
     it('allows an idempotent in_progress PATCH that updates another field', async () => {
       const created = await createCheckedOutTask('Already running');
 

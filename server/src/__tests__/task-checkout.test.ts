@@ -214,6 +214,25 @@ describe('Task checkout protocol', () => {
     expect(replay.replayed).toBe(true);
     expect(replay.checkout.id).toBe(first.checkout.id);
 
+    await db.drizzle
+      .update(db.schema.taskCheckouts)
+      .set({
+        status: 'released',
+        releasedAt: new Date(),
+        releaseReason: 'execution_completed',
+        updatedAt: new Date(),
+      })
+      .where(eq(db.schema.taskCheckouts.id, first.checkout.id));
+
+    await expect(service.checkout(checkoutInput)).rejects.toMatchObject({
+      status: 409,
+      code: 'TASK_CHECKOUT_RELEASED',
+      details: {
+        checkoutId: first.checkout.id,
+        checkoutStatus: 'released',
+      },
+    });
+
     const checkouts = await db.drizzle.select().from(db.schema.taskCheckouts);
     const threadItems = await db.drizzle
       .select()
@@ -221,6 +240,41 @@ describe('Task checkout protocol', () => {
       .where(eq(db.schema.taskThreadItems.taskId, taskId));
     expect(checkouts).toHaveLength(1);
     expect(threadItems).toHaveLength(1);
+  });
+
+  it('identifies an execution-scoped uniqueness conflict', async () => {
+    const agentId = await insertAgent('A');
+    const taskId = await insertTask(agentId);
+    const executionId = await insertExecution(agentId, taskId);
+    const service = new TaskCheckoutService(db);
+    const first = await service.checkout(input(taskId, agentId, executionId, 'first-checkout'));
+
+    await db.drizzle
+      .update(db.schema.taskCheckouts)
+      .set({
+        status: 'released',
+        releasedAt: new Date(),
+        releaseReason: 'manual_release',
+        updatedAt: new Date(),
+      })
+      .where(eq(db.schema.taskCheckouts.id, first.checkout.id));
+    await db.drizzle
+      .update(db.schema.tasks)
+      .set({ status: 'todo', startedAt: null, updatedAt: new Date() })
+      .where(eq(db.schema.tasks.id, taskId));
+
+    await expect(
+      service.checkout(input(taskId, agentId, executionId, 'second-checkout')),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'TASK_CHECKOUT_CONFLICT',
+      details: {
+        conflictReason: 'execution_already_checked_out',
+        conflictingTaskId: taskId,
+        conflictingCheckoutStatus: 'released',
+        activeExecutionId: executionId,
+      },
+    });
   });
 
   it('rejects an execution whose task and agent identity do not match', async () => {

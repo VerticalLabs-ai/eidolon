@@ -11,6 +11,7 @@ type TaskCheckoutErrorCode =
   | 'EXECUTION_NOT_FOUND'
   | 'TASK_CHECKOUT_IDENTITY_MISMATCH'
   | 'TASK_CHECKOUT_EXECUTION_NOT_RUNNING'
+  | 'TASK_CHECKOUT_RELEASED'
   | 'TASK_CHECKOUT_CONFLICT';
 
 export class TaskCheckoutError extends Error {
@@ -118,6 +119,20 @@ export class TaskCheckoutService {
         ) {
           throw this.conflict(input, existingReplay);
         }
+        if (existingReplay.status !== 'active') {
+          throw new TaskCheckoutError(
+            409,
+            'TASK_CHECKOUT_RELEASED',
+            `Checkout ${existingReplay.id} has already been released`,
+            {
+              taskId: input.taskId,
+              checkoutId: existingReplay.id,
+              checkoutStatus: existingReplay.status,
+              releasedAt: existingReplay.releasedAt,
+              releaseReason: existingReplay.releaseReason,
+            },
+          );
+        }
         return { checkout: existingReplay, task, threadItem: null, replayed: true };
       }
 
@@ -152,17 +167,29 @@ export class TaskCheckoutService {
         .returning();
 
       if (!checkout) {
-        const [activeCheckout] = await tx
-          .select()
-          .from(taskCheckouts)
-          .where(
-            and(
-              eq(taskCheckouts.companyId, input.companyId),
-              eq(taskCheckouts.taskId, input.taskId),
-              eq(taskCheckouts.status, 'active'),
-            ),
-          )
-          .limit(1);
+        const [[activeCheckout], [executionCheckout]] = await Promise.all([
+          tx
+            .select()
+            .from(taskCheckouts)
+            .where(
+              and(
+                eq(taskCheckouts.companyId, input.companyId),
+                eq(taskCheckouts.taskId, input.taskId),
+                eq(taskCheckouts.status, 'active'),
+              ),
+            )
+            .limit(1),
+          tx
+            .select()
+            .from(taskCheckouts)
+            .where(
+              and(
+                eq(taskCheckouts.companyId, input.companyId),
+                eq(taskCheckouts.executionId, input.executionId),
+              ),
+            )
+            .limit(1),
+        ]);
 
         if (
           activeCheckout &&
@@ -183,7 +210,16 @@ export class TaskCheckoutService {
             replayed: true,
           };
         }
-        throw this.conflict(input, activeCheckout);
+        const conflictingCheckout = activeCheckout ?? executionCheckout;
+        throw this.conflict(input, conflictingCheckout, {
+          conflictReason: activeCheckout
+            ? 'task_already_checked_out'
+            : executionCheckout
+              ? 'execution_already_checked_out'
+              : 'checkout_write_conflict',
+          conflictingTaskId: conflictingCheckout?.taskId ?? null,
+          conflictingCheckoutStatus: conflictingCheckout?.status ?? null,
+        });
       }
 
       const [updatedTask] = await tx
@@ -205,9 +241,14 @@ export class TaskCheckoutService {
         .returning();
 
       if (!updatedTask) {
+        const [currentTask] = await tx
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.id, input.taskId), eq(tasks.companyId, input.companyId)))
+          .limit(1);
         throw this.conflict(input, null, {
-          currentStatus: task.status,
-          currentAssigneeAgentId: task.assigneeAgentId,
+          currentStatus: currentTask?.status ?? null,
+          currentAssigneeAgentId: currentTask?.assigneeAgentId ?? null,
         });
       }
 
