@@ -3,6 +3,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
+import { AppError } from '../middleware/error-handler.js';
 
 type CollaborationType = 'delegation' | 'request_help' | 'review' | 'consensus' | 'escalation';
 
@@ -144,7 +145,15 @@ export class CollaborationService {
    * Escalate a task up the org chart when an agent is blocked.
    */
   async escalate(agentId: string, taskId: string, companyId: string, reason: string) {
-    const { agents, agentCollaborations, tasks, taskHolds, taskThreadItems } = this.db.schema;
+    const {
+      agents,
+      agentExecutions,
+      agentCollaborations,
+      tasks,
+      taskCheckouts,
+      taskHolds,
+      taskThreadItems,
+    } = this.db.schema;
 
     const [agent] = await this.db.drizzle
       .select()
@@ -155,18 +164,45 @@ export class CollaborationService {
     if (!agent) throw new Error(`Agent ${agentId} not found`);
     if (!agent.reportsTo) throw new Error(`Agent ${agentId} has no manager to escalate to`);
 
-    const [task] = await this.db.drizzle
-      .select({ status: tasks.status })
-      .from(tasks)
-      .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
-      .limit(1);
-
-    if (!task) throw new Error(`Task ${taskId} not found`);
-
     const id = randomUUID();
     const now = new Date();
 
     const collab = await this.db.drizzle.transaction(async (tx) => {
+      const [checkoutCandidate] = await tx
+        .select()
+        .from(taskCheckouts)
+        .where(
+          and(
+            eq(taskCheckouts.companyId, companyId),
+            eq(taskCheckouts.taskId, taskId),
+            eq(taskCheckouts.status, 'active'),
+          ),
+        )
+        .limit(1);
+
+      if (checkoutCandidate) {
+        await tx
+          .select({ id: agentExecutions.id })
+          .from(agentExecutions)
+          .where(
+            and(
+              eq(agentExecutions.id, checkoutCandidate.executionId),
+              eq(agentExecutions.companyId, companyId),
+            ),
+          )
+          .limit(1)
+          .for('update');
+      }
+
+      const [task] = await tx
+        .select({ status: tasks.status })
+        .from(tasks)
+        .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
+        .limit(1)
+        .for('update');
+
+      if (!task) throw new Error(`Task ${taskId} not found`);
+
       const [existingHold] = await tx
         .select({ id: taskHolds.id })
         .from(taskHolds)
@@ -182,6 +218,97 @@ export class CollaborationService {
 
       if (existingHold) {
         throw new Error(`Task ${taskId} already has an active pause hold`);
+      }
+
+      const [currentCheckout] = await tx
+        .select({
+          id: taskCheckouts.id,
+          agentId: taskCheckouts.agentId,
+          executionId: taskCheckouts.executionId,
+        })
+        .from(taskCheckouts)
+        .where(
+          and(
+            eq(taskCheckouts.companyId, companyId),
+            eq(taskCheckouts.taskId, taskId),
+            eq(taskCheckouts.status, 'active'),
+          ),
+        )
+        .limit(1);
+
+      if ((checkoutCandidate?.id ?? null) !== (currentCheckout?.id ?? null)) {
+        throw new AppError(
+          409,
+          'TASK_CHECKOUT_CONFLICT',
+          `Task ${taskId} checkout changed during escalation; retry`,
+        );
+      }
+      if (currentCheckout && currentCheckout.agentId !== agentId) {
+        throw new AppError(
+          409,
+          'TASK_CHECKOUT_CONFLICT',
+          `Task ${taskId} is checked out by another agent`,
+        );
+      }
+
+      const [activeCheckout] = currentCheckout
+        ? await tx
+            .select()
+            .from(taskCheckouts)
+            .where(
+              and(
+                eq(taskCheckouts.id, currentCheckout.id),
+                eq(taskCheckouts.companyId, companyId),
+                eq(taskCheckouts.taskId, taskId),
+                eq(taskCheckouts.agentId, agentId),
+                eq(taskCheckouts.status, 'active'),
+              ),
+            )
+            .limit(1)
+            .for('update')
+        : [];
+
+      if (currentCheckout && !activeCheckout) {
+        throw new AppError(
+          409,
+          'TASK_CHECKOUT_CONFLICT',
+          `Task ${taskId} checkout changed during escalation; retry`,
+        );
+      }
+
+      let holdPreviousStatus = task.status;
+      if (activeCheckout) {
+        await tx
+          .update(taskCheckouts)
+          .set({
+            status: 'released',
+            releasedAt: now,
+            releaseReason: `blocked: ${reason}`,
+            updatedAt: now,
+          })
+          .where(eq(taskCheckouts.id, activeCheckout.id));
+
+        await tx
+          .update(tasks)
+          .set({
+            status: 'todo',
+            startedAt: null,
+            completedAt: null,
+            updatedAt: now,
+          })
+          .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)));
+
+        await tx
+          .update(agentExecutions)
+          .set({ status: 'cancelled', completedAt: now, updatedAt: now })
+          .where(
+            and(
+              eq(agentExecutions.id, activeCheckout.executionId),
+              eq(agentExecutions.companyId, companyId),
+              eq(agentExecutions.status, 'running'),
+            ),
+          );
+        holdPreviousStatus = 'todo';
       }
 
       const [createdCollab] = await tx
@@ -206,7 +333,7 @@ export class CollaborationService {
         taskId,
         action: 'pause',
         status: 'active',
-        previousStatus: task.status,
+        previousStatus: holdPreviousStatus,
         reason,
         createdAt: now,
         updatedAt: now,
@@ -221,9 +348,16 @@ export class CollaborationService {
           kind: 'comment',
           authorAgentId: agentId,
           content: `Escalated and paused: ${reason}`,
-          payload: { collaborationId: id, reason },
+          payload: {
+            event: 'task_blocked',
+            collaborationId: id,
+            reason,
+            checkoutId: activeCheckout?.id ?? null,
+            executionId: activeCheckout?.executionId ?? null,
+          },
           status: 'answered',
           idempotencyKey: `escalation:${id}`,
+          relatedExecutionId: activeCheckout?.executionId ?? null,
           createdAt: now,
           updatedAt: now,
         })

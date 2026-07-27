@@ -85,6 +85,12 @@ const CheckoutTaskBody = z.object({
   idempotencyKey: z.string().min(1).max(255),
 });
 
+const ReleaseTaskBody = z.object({
+  agentId: z.string().uuid(),
+  executionId: z.string().uuid(),
+  reason: z.string().min(1).max(10_000),
+});
+
 const AddCommentBody = z.object({
   authorAgentId: z.string().uuid().nullable().default(null),
   authorUserId: z.string().uuid().nullable().default(null),
@@ -791,6 +797,33 @@ export function tasksRouter(db: DbInstance): Router {
       const taskIds = subtree.map((task) => task.id);
       if (taskIds.length === 0) return { inserted: [], taskIds };
 
+      await tx
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.companyId, companyId), inArray(tasks.id, [...taskIds].sort())))
+        .orderBy(tasks.id)
+        .for('update');
+
+      const [activeCheckout] = await tx
+        .select({ taskId: taskCheckouts.taskId, executionId: taskCheckouts.executionId })
+        .from(taskCheckouts)
+        .where(
+          and(
+            eq(taskCheckouts.companyId, companyId),
+            inArray(taskCheckouts.taskId, taskIds),
+            eq(taskCheckouts.status, 'active'),
+          ),
+        )
+        .limit(1);
+      if (activeCheckout) {
+        throw new AppError(
+          409,
+          'TASK_PAUSE_CONFLICT',
+          `Task ${activeCheckout.taskId} has active execution ${activeCheckout.executionId}`,
+          activeCheckout,
+        );
+      }
+
       const existingHolds = await tx
         .select({ taskId: taskHolds.taskId })
         .from(taskHolds)
@@ -1036,6 +1069,28 @@ export function tasksRouter(db: DbInstance): Router {
         executionId: body.executionId,
         source: 'api',
         idempotencyKey: body.idempotencyKey,
+      });
+      res.status(result.replayed ? 200 : 201).json({ data: result });
+    } catch (error) {
+      if (error instanceof TaskCheckoutError) {
+        throw new AppError(error.status, error.code, error.message, error.details);
+      }
+      throw error;
+    }
+  });
+
+  // POST /api/companies/:companyId/tasks/:id/release
+  router.post('/:id/release', validate(ReleaseTaskBody), async (req, res) => {
+    const body = req.body as z.infer<typeof ReleaseTaskBody>;
+    const { id, companyId } = routeParams(req);
+
+    try {
+      const result = await checkoutService.release({
+        companyId,
+        taskId: id,
+        agentId: body.agentId,
+        executionId: body.executionId,
+        reason: body.reason,
       });
       res.status(result.replayed ? 200 : 201).json({ data: result });
     } catch (error) {

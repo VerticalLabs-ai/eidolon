@@ -43,6 +43,13 @@
       "when": 1784505600000,
       "tag": "0005_task_checkout_protocol",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785172663102,
+      "tag": "0006_task_checkout_lifecycle_guards",
+      "breakpoints": true
     }
   ]
 }

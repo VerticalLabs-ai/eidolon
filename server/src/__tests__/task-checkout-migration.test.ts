@@ -1,0 +1,170 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { PGlite } from '@electric-sql/pglite';
+import { and, eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/pglite';
+import { migrate } from 'drizzle-orm/pglite/migrator';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as schema from '@eidolon/db';
+
+const sourceMigrations = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../packages/db/drizzle',
+);
+
+describe('task checkout lifecycle migration', () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  it('reconciles terminal executions that already have active checkouts', async () => {
+    const migrationsFolder = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-migrations-'));
+    tempDirs.push(migrationsFolder);
+    await fs.mkdir(path.join(migrationsFolder, 'meta'));
+
+    const journal = JSON.parse(
+      await fs.readFile(path.join(sourceMigrations, 'meta/_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: Array<Record<string, unknown>> };
+    const migrationFiles = (await fs.readdir(sourceMigrations))
+      .filter((file) => /^000[0-5]_.*\.sql$/.test(file))
+      .sort();
+    await Promise.all(
+      migrationFiles.map((file) =>
+        fs.copyFile(path.join(sourceMigrations, file), path.join(migrationsFolder, file)),
+      ),
+    );
+    await fs.writeFile(
+      path.join(migrationsFolder, 'meta/_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, 6) }, null, 2),
+    );
+
+    const client = new PGlite();
+    const migrationDb = drizzle(client);
+    try {
+      await migrate(migrationDb, { migrationsFolder });
+
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const taskId = randomUUID();
+      const executionId = randomUUID();
+      const checkoutId = randomUUID();
+      const now = new Date();
+      await migrationDb.insert(schema.companies).values({
+        id: companyId,
+        name: 'Upgrade Checkout Corp',
+        status: 'active',
+        budgetMonthlyCents: 100_000,
+        spentMonthlyCents: 0,
+        settings: {},
+        createdAt: now,
+        updatedAt: now,
+      });
+      await migrationDb.insert(schema.agents).values({
+        id: agentId,
+        companyId,
+        name: 'Upgrade Worker',
+        role: 'engineer',
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+        status: 'working',
+        capabilities: [],
+        config: {},
+        metadata: {},
+        permissions: [],
+        toolsEnabled: [],
+        allowedDomains: [],
+        maxConcurrentTasks: 1,
+        heartbeatIntervalSeconds: 0,
+        executionTimeoutSeconds: 600,
+        autoAssignTasks: 1,
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await migrationDb.insert(schema.tasks).values({
+        id: taskId,
+        companyId,
+        title: 'Existing checked-out work',
+        type: 'feature',
+        status: 'in_progress',
+        priority: 'high',
+        assigneeAgentId: agentId,
+        dependencies: [],
+        tags: [],
+        startedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await migrationDb.insert(schema.agentExecutions).values({
+        id: executionId,
+        companyId,
+        agentId,
+        taskId,
+        status: 'completed',
+        startedAt: now,
+        completedAt: now,
+        executionMode: 'single',
+        createdAt: now,
+        updatedAt: now,
+      });
+      await migrationDb.insert(schema.taskCheckouts).values({
+        id: checkoutId,
+        companyId,
+        taskId,
+        agentId,
+        executionId,
+        source: 'api',
+        status: 'active',
+        idempotencyKey: `upgrade:${executionId}`,
+        claimedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      await fs.copyFile(
+        path.join(sourceMigrations, '0006_task_checkout_lifecycle_guards.sql'),
+        path.join(migrationsFolder, '0006_task_checkout_lifecycle_guards.sql'),
+      );
+      await fs.writeFile(
+        path.join(migrationsFolder, 'meta/_journal.json'),
+        JSON.stringify(journal, null, 2),
+      );
+      await migrate(migrationDb, { migrationsFolder });
+
+      const [[checkout], [task], [agent], evidence] = await Promise.all([
+        migrationDb
+          .select()
+          .from(schema.taskCheckouts)
+          .where(eq(schema.taskCheckouts.id, checkoutId)),
+        migrationDb.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)),
+        migrationDb.select().from(schema.agents).where(eq(schema.agents.id, agentId)),
+        migrationDb
+          .select()
+          .from(schema.taskThreadItems)
+          .where(
+            and(
+              eq(schema.taskThreadItems.taskId, taskId),
+              eq(schema.taskThreadItems.relatedExecutionId, executionId),
+            ),
+          ),
+      ]);
+      expect(checkout.status).toBe('released');
+      expect(task.status).toBe('review');
+      expect(agent.status).toBe('idle');
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0].payload).toMatchObject({
+        event: 'task_checkout_released',
+        checkoutId,
+        executionId,
+      });
+    } finally {
+      await client.close();
+    }
+  });
+});

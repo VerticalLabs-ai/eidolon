@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { createTestDb, createTestApp } from '../test-utils.js';
 
@@ -313,11 +314,81 @@ describe('Tasks API', () => {
         title: 'Updated while running',
         status: 'in_progress',
       });
+
+      const dependency = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Late dependency', status: 'todo' })
+        .expect(201);
+      const dependencyConflict = await request(app)
+        .patch(taskUrl(created.id))
+        .send({ dependencies: [dependency.body.data.id] })
+        .expect(409);
+      expect(dependencyConflict.body.code).toBe('TASK_CHECKOUT_CONFLICT');
+    });
+
+    it('rejects direct reassignment while a checkout is active', async () => {
+      const created = await createCheckedOutTask('Keep checkout owner');
+      const replacement = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: 'Replacement Worker', role: 'engineer' })
+        .expect(201);
+
+      await expect(
+        db.drizzle
+          .update(db.schema.tasks)
+          .set({ assigneeAgentId: replacement.body.data.id })
+          .where(eq(db.schema.tasks.id, created.id)),
+      ).rejects.toBeDefined();
+
+      const [unchanged] = await db.drizzle
+        .select({ assigneeAgentId: db.schema.tasks.assigneeAgentId })
+        .from(db.schema.tasks)
+        .where(eq(db.schema.tasks.id, created.id));
+      expect(unchanged.assigneeAgentId).toBe(created.assigneeAgentId);
+    });
+
+    it('rejects deleting a dependency required by an active checkout', async () => {
+      const dependency = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Required dependency', status: 'done' })
+        .expect(201);
+      await createCheckedOutTask('Depends on completed work', {
+        dependencies: [dependency.body.data.id],
+      });
+
+      await expect(
+        db.drizzle
+          .delete(db.schema.tasks)
+          .where(eq(db.schema.tasks.id, dependency.body.data.id)),
+      ).rejects.toBeDefined();
+
+      const [preserved] = await db.drizzle
+        .select({ id: db.schema.tasks.id })
+        .from(db.schema.tasks)
+        .where(eq(db.schema.tasks.id, dependency.body.data.id));
+      expect(preserved.id).toBe(dependency.body.data.id);
     });
 
     it('should auto-set completedAt when transitioning to done', async () => {
       const created = await createCheckedOutTask('Complete Me');
       const id = created.id;
+
+      const conflict = await request(app)
+        .patch(taskUrl(id))
+        .send({ status: 'done' })
+        .expect(409);
+      expect(conflict.body.code).toBe('TASK_CHECKOUT_CONFLICT');
+
+      const [execution] = await db.drizzle
+        .select()
+        .from(db.schema.agentExecutions)
+        .where(eq(db.schema.agentExecutions.taskId, id));
+      await request(app)
+        .patch(
+          `/api/companies/${companyId}/agents/${created.assigneeAgentId}/executions/${execution.id}`,
+        )
+        .send({ status: 'completed' })
+        .expect(200);
 
       const res = await request(app)
         .patch(taskUrl(id))
@@ -660,8 +731,11 @@ describe('Tasks API', () => {
         .post(tasksUrl())
         .send({ title: 'Parent', status: 'todo' });
       const parentId = parent.body.data.id;
-      const child = await createCheckedOutTask('Child', { parentId });
-      const childId = child.id;
+      const child = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Child', status: 'todo', parentId })
+        .expect(201);
+      const childId = child.body.data.id;
 
       const pause = await request(app)
         .post(`${taskUrl(parentId)}/subtree/pause`)
@@ -686,7 +760,25 @@ describe('Tasks API', () => {
       const restoredParent = await request(app).get(taskUrl(parentId)).expect(200);
       const restoredChild = await request(app).get(taskUrl(childId)).expect(200);
       expect(restoredParent.body.data.status).toBe('todo');
-      expect(restoredChild.body.data.status).toBe('in_progress');
+      expect(restoredChild.body.data.status).toBe('todo');
+    });
+
+    it('rejects pausing a subtree while a descendant has an active checkout', async () => {
+      const parent = await request(app)
+        .post(tasksUrl())
+        .send({ title: 'Parent', status: 'todo' })
+        .expect(201);
+      const child = await createCheckedOutTask('Active Child', { parentId: parent.body.data.id });
+
+      const pause = await request(app)
+        .post(`${taskUrl(parent.body.data.id)}/subtree/pause`)
+        .send({ reason: 'Operator pause' })
+        .expect(409);
+
+      expect(pause.body).toMatchObject({
+        code: 'TASK_PAUSE_CONFLICT',
+        details: { taskId: child.id },
+      });
     });
 
     it('should treat repeated subtree pause as idempotent', async () => {
