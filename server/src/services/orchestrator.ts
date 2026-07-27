@@ -91,8 +91,6 @@ export class Orchestrator {
       .update(tasks)
       .set({
         assigneeAgentId: agentId,
-        status: "in_progress",
-        startedAt: now,
         updatedAt: now,
       })
       .where(
@@ -119,17 +117,6 @@ export class Orchestrator {
         taskId: assigned.id,
         previousAssignee: null,
         newAssignee: agentId,
-      },
-      timestamp: now.toISOString(),
-    });
-
-    eventBus.emitEvent({
-      type: "task.status_changed",
-      companyId: agent.companyId,
-      payload: {
-        taskId: assigned.id,
-        previousStatus: "todo",
-        newStatus: "in_progress",
       },
       timestamp: now.toISOString(),
     });

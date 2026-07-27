@@ -5,6 +5,10 @@ import { randomUUID } from 'node:crypto';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
+import {
+  TaskCheckoutError,
+  TaskCheckoutService,
+} from '../services/task-checkout.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
@@ -69,12 +73,22 @@ const UpdateTaskBody = z.object({
   actualTokens: z.number().int().nonnegative().nullable().optional(),
   tags: z.array(z.string().min(1).max(50)).optional(),
   dueAt: z.coerce.date().nullable().optional(),
-  startedAt: z.coerce.date().nullable().optional(),
-  completedAt: z.coerce.date().nullable().optional(),
 });
 
 const AssignTaskBody = z.object({
   agentId: z.string().uuid(),
+});
+
+const CheckoutTaskBody = z.object({
+  agentId: z.string().uuid(),
+  executionId: z.string().uuid(),
+  idempotencyKey: z.string().min(1).max(255),
+});
+
+const ReleaseTaskBody = z.object({
+  agentId: z.string().uuid(),
+  executionId: z.string().uuid(),
+  reason: z.string().min(1).max(10_000),
 });
 
 const AddCommentBody = z.object({
@@ -117,12 +131,14 @@ const TaskListQuery = z.object({
 
 export function tasksRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
+  const checkoutService = new TaskCheckoutService(db);
   const {
     tasks,
     agents,
     approvals,
     agentExecutions,
     taskThreadItems,
+    taskCheckouts,
     taskHolds,
   } = db.schema;
 
@@ -596,6 +612,14 @@ export function tasksRouter(db: DbInstance): Router {
     const companyId = routeParams(req).companyId;
     const now = new Date();
 
+    if (body.status === 'in_progress') {
+      throw new AppError(
+        409,
+        'TASK_CHECKOUT_REQUIRED',
+        'Create the task as pending, then use the task checkout endpoint to start work',
+      );
+    }
+
     // Auto-increment task number per company
     const [{ maxNum }] = await db.drizzle
       .select({ maxNum: sql<number>`coalesce(max(${tasks.taskNumber}), 0)` })
@@ -678,11 +702,23 @@ export function tasksRouter(db: DbInstance): Router {
 
     const statusChanged = body.status && body.status !== existing.status;
 
+    if (statusChanged && body.status === 'in_progress') {
+      throw new AppError(
+        409,
+        'TASK_CHECKOUT_REQUIRED',
+        'Use the task checkout endpoint to start work',
+      );
+    }
+    if (body.assigneeAgentId !== undefined) {
+      throw new AppError(
+        400,
+        'TASK_ASSIGNMENT_REQUIRED',
+        'Use the task assignment endpoint to change ownership',
+      );
+    }
+
     // Auto-set timestamps on status transitions
     const extraFields: Record<string, unknown> = {};
-    if (body.status === 'in_progress' && !existing.startedAt) {
-      extraFields.startedAt = new Date();
-    }
     if (body.status === 'done' && !existing.completedAt) {
       extraFields.completedAt = new Date();
     }
@@ -760,6 +796,33 @@ export function tasksRouter(db: DbInstance): Router {
       const subtree = await fetchSubtree(companyId, id, tx);
       const taskIds = subtree.map((task) => task.id);
       if (taskIds.length === 0) return { inserted: [], taskIds };
+
+      await tx
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.companyId, companyId), inArray(tasks.id, [...taskIds].sort())))
+        .orderBy(tasks.id)
+        .for('update');
+
+      const [activeCheckout] = await tx
+        .select({ taskId: taskCheckouts.taskId, executionId: taskCheckouts.executionId })
+        .from(taskCheckouts)
+        .where(
+          and(
+            eq(taskCheckouts.companyId, companyId),
+            inArray(taskCheckouts.taskId, taskIds),
+            eq(taskCheckouts.status, 'active'),
+          ),
+        )
+        .limit(1);
+      if (activeCheckout) {
+        throw new AppError(
+          409,
+          'TASK_PAUSE_CONFLICT',
+          `Task ${activeCheckout.taskId} has active execution ${activeCheckout.executionId}`,
+          activeCheckout,
+        );
+      }
 
       const existingHolds = await tx
         .select({ taskId: taskHolds.taskId })
@@ -942,11 +1005,42 @@ export function tasksRouter(db: DbInstance): Router {
       throw new AppError(404, 'TASK_NOT_FOUND', `Task ${id} not found`);
     }
 
+    const [agent] = await db.drizzle
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId)))
+      .limit(1);
+
+    if (!agent) {
+      throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${body.agentId} not found`);
+    }
+
     const [updated] = await db.drizzle
       .update(tasks)
       .set({ assigneeAgentId: body.agentId, updatedAt: new Date() })
-      .where(eq(tasks.id, id))
+      .where(
+        and(
+          eq(tasks.id, id),
+          eq(tasks.companyId, companyId),
+          inArray(tasks.status, ['backlog', 'todo']),
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM ${taskCheckouts}
+            WHERE ${taskCheckouts.companyId} = ${companyId}
+              AND ${taskCheckouts.taskId} = ${id}
+              AND ${taskCheckouts.status} = 'active'
+          )`,
+        ),
+      )
       .returning();
+
+    if (!updated) {
+      throw new AppError(
+        409,
+        'TASK_ASSIGNMENT_CONFLICT',
+        `Task ${id} is not available for assignment`,
+      );
+    }
 
     eventBus.emitEvent({
       type: 'task.assigned',
@@ -960,6 +1054,51 @@ export function tasksRouter(db: DbInstance): Router {
     });
 
     res.json({ data: updated });
+  });
+
+  // POST /api/companies/:companyId/tasks/:id/checkout
+  router.post('/:id/checkout', validate(CheckoutTaskBody), async (req, res) => {
+    const body = req.body as z.infer<typeof CheckoutTaskBody>;
+    const { id, companyId } = routeParams(req);
+
+    try {
+      const result = await checkoutService.checkout({
+        companyId,
+        taskId: id,
+        agentId: body.agentId,
+        executionId: body.executionId,
+        source: 'api',
+        idempotencyKey: body.idempotencyKey,
+      });
+      res.status(result.replayed ? 200 : 201).json({ data: result });
+    } catch (error) {
+      if (error instanceof TaskCheckoutError) {
+        throw new AppError(error.status, error.code, error.message, error.details);
+      }
+      throw error;
+    }
+  });
+
+  // POST /api/companies/:companyId/tasks/:id/release
+  router.post('/:id/release', validate(ReleaseTaskBody), async (req, res) => {
+    const body = req.body as z.infer<typeof ReleaseTaskBody>;
+    const { id, companyId } = routeParams(req);
+
+    try {
+      const result = await checkoutService.release({
+        companyId,
+        taskId: id,
+        agentId: body.agentId,
+        executionId: body.executionId,
+        reason: body.reason,
+      });
+      res.status(result.replayed ? 200 : 201).json({ data: result });
+    } catch (error) {
+      if (error instanceof TaskCheckoutError) {
+        throw new AppError(error.status, error.code, error.message, error.details);
+      }
+      throw error;
+    }
   });
 
   // POST /api/companies/:companyId/tasks/:id/comments

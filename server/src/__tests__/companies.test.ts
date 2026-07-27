@@ -302,7 +302,7 @@ describe('Companies API', () => {
         .send({ title: 'Task 1' });
       await request(app)
         .post(`/api/companies/${companyId}/tasks`)
-        .send({ title: 'Task 2', status: 'in_progress' });
+        .send({ title: 'Task 2', status: 'todo' });
 
       const res = await request(app)
         .get(`/api/companies/${companyId}/dashboard`)

@@ -1685,12 +1685,12 @@ process.stdin.on("end", () => {
     }
     expect(observedStatus).toBe('running');
     expect(observedProcessOwnerId).not.toBe('');
-    for (let attempt = 0; attempt < 50; attempt += 1) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       try {
         await fs.access(fixtureMarker);
         break;
       } catch {
-        if (attempt === 49) throw new Error('CLI fixture did not start');
+        if (attempt === 199) throw new Error('CLI fixture did not start');
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     }

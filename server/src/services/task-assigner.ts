@@ -1,4 +1,4 @@
-import { eq, and, sql, ne, isNull, inArray } from 'drizzle-orm';
+import { eq, and, sql, ne, isNull, inArray, or } from 'drizzle-orm';
 import type { agents as agentsTable } from '@eidolon/db';
 import logger from '../utils/logger.js';
 import eventBus from '../realtime/events.js';
@@ -201,10 +201,11 @@ export class TaskAssigner {
         and(
           eq(tasks.companyId, agent.companyId),
           inArray(tasks.status, ['todo', 'backlog']),
-          isNull(tasks.assigneeAgentId),
+          or(isNull(tasks.assigneeAgentId), eq(tasks.assigneeAgentId, agent.id)),
         ),
       )
       .orderBy(
+        sql`CASE WHEN ${tasks.assigneeAgentId} = ${agent.id} THEN 0 ELSE 1 END`,
         sql`CASE ${tasks.priority}
           WHEN 'critical' THEN 0
           WHEN 'high' THEN 1
@@ -294,14 +295,21 @@ export class TaskAssigner {
 
     const confirmedNextTaskId = nextTaskId;
     const confirmedNextTaskStatus = nextTaskStatus;
+    const selectedTask = candidateTasks.find((task) => task.id === confirmedNextTaskId)!;
+
+    if (selectedTask.assigneeAgentId === agent.id) {
+      await this.db.drizzle
+        .update(agents)
+        .set({ lastHeartbeatAt: now, updatedAt: now })
+        .where(eq(agents.id, agent.id));
+      return { assigned: true, taskId: selectedTask.id };
+    }
 
     const assignedTask = await this.db.drizzle.transaction(async (tx) => {
       const [task] = await tx
         .update(tasks)
         .set({
           assigneeAgentId: agent.id,
-          status: 'in_progress',
-          startedAt: now,
           updatedAt: now,
         })
         .where(
@@ -320,7 +328,6 @@ export class TaskAssigner {
       await tx
         .update(agents)
         .set({
-          status: 'working',
           lastHeartbeatAt: now,
           updatedAt: now,
         })
@@ -338,19 +345,12 @@ export class TaskAssigner {
     }
 
     eventBus.emitEvent({
-      type: 'agent.status_changed',
-      companyId: agent.companyId,
-      payload: { agentId: agent.id, status: 'working', taskId: assignedTask.id },
-      timestamp: now.toISOString(),
-    });
-
-    eventBus.emitEvent({
-      type: 'task.updated',
+      type: 'task.assigned',
       companyId: agent.companyId,
       payload: {
         taskId: assignedTask.id,
-        status: 'in_progress',
-        assigneeAgentId: agent.id,
+        previousAssignee: null,
+        newAssignee: agent.id,
       },
       timestamp: now.toISOString(),
     });
@@ -369,17 +369,15 @@ export class TaskAssigner {
   }
 
   async assignTask(taskId: string, agentId: string): Promise<void> {
-    const { agents, tasks } = this.db.schema;
+    const { tasks } = this.db.schema;
     const now = new Date();
 
-    // Atomic assignment: only assign if the task is not already assigned.
-    // This prevents two concurrent calls from double-assigning the same task.
-    const result = await this.db.drizzle
+    // Assignment selects an owner but does not prove execution has started.
+    // Checkout is the only operation allowed to move the task in progress.
+    const [task] = await this.db.drizzle
       .update(tasks)
       .set({
         assigneeAgentId: agentId,
-        status: 'in_progress',
-        startedAt: now,
         updatedAt: now,
       })
       .where(
@@ -395,39 +393,15 @@ export class TaskAssigner {
               AND task_holds.action = 'pause'
           )`,
         ),
-      );
+      )
+      .returning();
 
-    // Fetch updated task for the event payload
-    const [task] = await this.db.drizzle
-      .select()
-      .from(tasks)
-      .where(eq(tasks.id, taskId))
-      .limit(1);
+    if (!task) return;
 
-    if (!task || task.assigneeAgentId !== agentId) return;
-
-    // Update agent status to working
-    await this.db.drizzle
-      .update(agents)
-      .set({
-        status: 'working',
-        lastHeartbeatAt: now,
-        updatedAt: now,
-      })
-      .where(eq(agents.id, agentId));
-
-    // Emit events
     eventBus.emitEvent({
       type: 'task.assigned',
       companyId: task.companyId,
-      payload: { taskId, assigneeAgentId: agentId },
-      timestamp: now.toISOString(),
-    });
-
-    eventBus.emitEvent({
-      type: 'agent.status_changed',
-      companyId: task.companyId,
-      payload: { agentId, status: 'working', taskId },
+      payload: { taskId, previousAssignee: null, newAssignee: agentId },
       timestamp: now.toISOString(),
     });
 

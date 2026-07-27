@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { RuntimeSessionService } from './runtime-sessions.js';
+import { TaskCheckoutService } from './task-checkout.js';
 import type { DbInstance } from '../types.js';
 
 export type RoutineTriggerStatus =
@@ -19,9 +20,11 @@ type RoutineTriggerWork = {
 
 export class RoutineTriggerService {
   private sessions: RuntimeSessionService;
+  private checkouts: TaskCheckoutService;
 
   constructor(private db: DbInstance) {
     this.sessions = new RuntimeSessionService(db);
+    this.checkouts = new TaskCheckoutService(db);
   }
 
   async trigger(companyId: string, routineId: string) {
@@ -44,12 +47,22 @@ export class RoutineTriggerService {
 
     let session = null;
     if (result.execution) {
+      const execution = result.execution;
       try {
+        const checkout = await this.checkouts.checkout({
+          companyId,
+          taskId: result.task.id,
+          agentId: execution.agentId,
+          executionId: execution.id,
+          source: 'routine',
+          idempotencyKey: `execution:${execution.id}`,
+        });
+        result = { ...result, task: checkout.task };
         session = await this.sessions.createSession({
           companyId,
-          agentId: result.execution.agentId,
+          agentId: execution.agentId,
           taskId: result.task.id,
-          executionId: result.execution.id,
+          executionId: execution.id,
           mode: 'manual',
           resumeState: {
             routineId: result.routine.id,
@@ -104,7 +117,7 @@ export class RoutineTriggerService {
       const taskId = randomUUID();
       const executionId = routine.agentId ? randomUUID() : null;
       const triggerId = randomUUID();
-      const taskStatus = routine.agentId ? 'in_progress' : 'backlog';
+      const taskStatus = routine.agentId ? 'todo' : 'backlog';
 
       const [task] = await tx
         .insert(tasks)
@@ -120,7 +133,6 @@ export class RoutineTriggerService {
           taskNumber,
           identifier,
           tags: ['jarvis-routine', routine.jarvisMode],
-          startedAt: routine.agentId ? now : null,
           createdAt: now,
           updatedAt: now,
         })

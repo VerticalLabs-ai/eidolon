@@ -21,6 +21,18 @@ export class AppError extends Error {
   }
 }
 
+function findDatabaseError(err: unknown): Record<string, unknown> | null {
+  let current = err;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const candidate = current as Record<string, unknown>;
+    if (candidate.code === "P0001") {
+      return candidate;
+    }
+    current = candidate.cause;
+  }
+  return null;
+}
+
 export function notFound(
   _req: Request,
   _res: Response,
@@ -57,6 +69,27 @@ export function errorHandler(
       code: err.code,
       message: err.message,
       ...(err.details !== undefined ? { details: err.details } : {}),
+    } satisfies ApiError);
+    return;
+  }
+
+  const databaseError = findDatabaseError(err);
+  const databaseMessage =
+    typeof databaseError?.message === "string" ? databaseError.message : "";
+  if (
+    databaseError?.code === "P0001" &&
+    (databaseMessage.includes("TASK_CHECKOUT_ACTIVE") ||
+      databaseMessage.includes("TASK_DEPENDENCY_ACTIVE"))
+  ) {
+    res.status(409).json({
+      status: 409,
+      code: "TASK_CHECKOUT_CONFLICT",
+      message: databaseMessage.includes("TASK_DEPENDENCY_ACTIVE")
+        ? "A checked-out task still depends on this completed task"
+        : "Release or terminate the active execution before changing task status",
+      ...(typeof databaseError.detail === "string"
+        ? { details: { reason: databaseError.detail } }
+        : {}),
     } satisfies ApiError);
     return;
   }
