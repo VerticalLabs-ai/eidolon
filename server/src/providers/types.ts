@@ -104,6 +104,24 @@ export interface AIProvider {
 export type ServerAdapterKind = 'provider' | 'process' | 'http' | 'mcp' | 'openjarvis-local';
 export type ServerAdapterLocality = 'cloud' | 'local' | 'hybrid';
 export type ServerAdapterMode = 'on_demand' | 'scheduled' | 'continuous';
+export type ServerAdapterConfigFieldType =
+  | 'text'
+  | 'url'
+  | 'number'
+  | 'boolean'
+  | 'string-list';
+
+export interface ServerAdapterConfigField {
+  key: string;
+  label: string;
+  type: ServerAdapterConfigFieldType;
+  required?: boolean;
+  description?: string;
+  placeholder?: string;
+  defaultValue?: string | number | boolean | readonly string[];
+  min?: number;
+  max?: number;
+}
 
 /**
  * ServerAdapter is the canonical shape for anything the platform can invoke as
@@ -132,4 +150,9 @@ export interface ServerAdapterDescriptor {
   supportedModes: readonly ServerAdapterMode[];
   capabilities: ServerAdapterCapabilities;
   models: AdapterModel[];
+  operations: {
+    run: boolean;
+    test: boolean;
+  };
+  configFields: readonly ServerAdapterConfigField[];
 }

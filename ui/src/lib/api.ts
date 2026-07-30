@@ -1208,6 +1208,25 @@ export interface RuntimeAdapterCapabilities {
   energyTelemetry: boolean;
 }
 
+export type RuntimeAdapterConfigFieldType =
+  | "text"
+  | "url"
+  | "number"
+  | "boolean"
+  | "string-list";
+
+export interface RuntimeAdapterConfigField {
+  key: string;
+  label: string;
+  type: RuntimeAdapterConfigFieldType;
+  required?: boolean;
+  description?: string;
+  placeholder?: string;
+  defaultValue?: string | number | boolean | readonly string[];
+  min?: number;
+  max?: number;
+}
+
 export interface RuntimeAdapterDescriptor {
   id: string;
   name: string;
@@ -1223,6 +1242,11 @@ export interface RuntimeAdapterDescriptor {
     maxOutputTokens?: number;
     capabilitiesOverride?: Partial<RuntimeAdapterCapabilities>;
   }>;
+  operations?: {
+    run: boolean;
+    test: boolean;
+  };
+  configFields?: readonly RuntimeAdapterConfigField[];
 }
 
 export interface AdapterModelDiscoveryResult {
@@ -1271,6 +1295,12 @@ export interface RuntimeSession {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RuntimeAdapterDiagnostic extends Record<string, unknown> {
+  ok: boolean;
+  adapterId: string;
+  message: string;
 }
 
 export interface CompanySkill {
@@ -1370,6 +1400,22 @@ export const createRuntimeSession = (
     method: "POST",
     body: JSON.stringify(data),
   });
+
+export const testRuntimeSession = (companyId: string, sessionId: string) =>
+  request<RuntimeAdapterDiagnostic>(
+    `/companies/${companyId}/sessions/${sessionId}/test`,
+    { method: "POST" },
+  );
+
+export const runRuntimeSession = (
+  companyId: string,
+  sessionId: string,
+  prompt: string,
+) =>
+  request<RuntimeSession>(
+    `/companies/${companyId}/sessions/${sessionId}/run`,
+    { method: "POST", body: JSON.stringify({ prompt }) },
+  );
 
 export const cancelRuntimeSession = (
   companyId: string,

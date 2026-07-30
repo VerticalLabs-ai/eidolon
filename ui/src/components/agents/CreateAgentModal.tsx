@@ -3,7 +3,13 @@ import { Modal } from "@/components/ui/Modal";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { useCreateAgent, useAgents } from "@/lib/hooks";
+import { AdapterConfigFields } from "@/components/runtime/AdapterConfigFields";
+import { useCreateAgent, useAgents, useRuntimeAdapters } from "@/lib/hooks";
+import {
+  configForAdapter,
+  validateAdapterConfig,
+  type RuntimeAdapterConfig,
+} from "@/lib/runtime-adapters";
 import {
   MODELS_BY_PROVIDER,
   PROVIDER_ICONS,
@@ -11,6 +17,7 @@ import {
   normalizeProvider,
 } from "@/lib/ai-catalog";
 import { clsx } from "clsx";
+import { toast } from "sonner";
 
 interface CreateAgentModalProps {
   open: boolean;
@@ -114,9 +121,12 @@ export function CreateAgentModal({
   const [temperature, setTemperature] = useState("0.3");
   const [maxTokens, setMaxTokens] = useState("8192");
   const [reportsTo, setReportsTo] = useState("");
+  const [adapterId, setAdapterId] = useState("");
+  const [adapterConfig, setAdapterConfig] = useState<RuntimeAdapterConfig>({});
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const { data: agents } = useAgents(companyId);
+  const { data: runtimeAdapters = [] } = useRuntimeAdapters();
   const mutation = useCreateAgent(companyId);
 
   const modelOptions = MODELS_BY_PROVIDER[normalizeProvider(provider)] ?? [];
@@ -152,15 +162,23 @@ export function CreateAgentModal({
       })),
     [agents],
   );
+  const selectedAdapter = runtimeAdapters.find((adapter) => adapter.id === adapterId);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const configError = validateAdapterConfig(selectedAdapter, adapterConfig);
+    if (configError) {
+      toast.error(configError);
+      return;
+    }
     mutation.mutate(
       {
         name,
         role: ROLE_TO_AGENT_ROLE[role] ?? "custom",
         title,
         provider: normalizeProvider(provider),
+        adapterId: adapterId || undefined,
+        adapterConfig: adapterId ? adapterConfig : undefined,
         model,
         reportsTo: reportsTo || undefined,
         systemPrompt: systemPrompt || undefined,
@@ -195,6 +213,8 @@ export function CreateAgentModal({
     setTemperature("0.3");
     setMaxTokens("8192");
     setReportsTo("");
+    setAdapterId("");
+    setAdapterConfig({});
     setShowAdvanced(false);
   };
 
@@ -265,6 +285,42 @@ export function CreateAgentModal({
           value={model}
           onChange={(e) => setModel(e.target.value)}
         />
+
+        <div className="space-y-3 border-t border-border pt-4">
+          <Select
+            label="Runtime adapter"
+            options={[
+              { value: "", label: "Use provider default" },
+              ...runtimeAdapters
+                .filter((adapter) => adapter.operations?.run)
+                .map((adapter) => ({
+                  value: adapter.id,
+                  label: `${adapter.name} (${adapter.locality})`,
+                })),
+            ]}
+            value={adapterId}
+            onChange={(event) => {
+              const nextAdapterId = event.target.value;
+              const nextAdapter = runtimeAdapters.find(
+                (adapter) => adapter.id === nextAdapterId,
+              );
+              setAdapterId(nextAdapterId);
+              setAdapterConfig(configForAdapter(nextAdapter, {}));
+            }}
+          />
+          {selectedAdapter ? (
+            <>
+              <p className="text-xs text-text-primary/70">
+                {selectedAdapter.description}
+              </p>
+              <AdapterConfigFields
+                fields={selectedAdapter.configFields ?? []}
+                value={adapterConfig}
+                onChange={setAdapterConfig}
+              />
+            </>
+          ) : null}
+        </div>
 
         <Input
           label="Monthly Budget ($)"

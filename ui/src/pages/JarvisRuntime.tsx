@@ -22,6 +22,7 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input, Select, Textarea } from "@/components/ui/Input";
+import { AdapterConfigFields } from "@/components/runtime/AdapterConfigFields";
 import { PageTransition } from "@/components/ui/PageTransition";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSession } from "@/lib/auth";
@@ -35,6 +36,8 @@ import {
   useJarvisRoutines,
   useRuntimeAdapters,
   useRuntimeSessions,
+  useRunRuntimeSession,
+  useTestRuntimeSession,
   useTriggerJarvisRoutine,
   useWakeAgent,
   useCancelRuntimeSession,
@@ -45,10 +48,16 @@ import type {
   JarvisRoutine,
   JarvisRoutineTriggerResult,
   RuntimeAdapterDescriptor,
+  RuntimeAdapterDiagnostic,
   RuntimeSession,
   RuntimeSessionMode,
   RuntimeSessionStatus,
 } from "@/lib/api";
+import {
+  configForAdapter,
+  validateAdapterConfig,
+  type RuntimeAdapterConfig,
+} from "@/lib/runtime-adapters";
 
 const sessionModeOptions: Array<{ value: RuntimeSessionMode; label: string }> = [
   { value: "on_demand", label: "On demand" },
@@ -110,6 +119,17 @@ function formatDateTime(value: string | null | undefined): string {
 
 function toLabel(value: string): string {
   return value.replace(/[-_]/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
+}
+
+function transcriptEntryText(entry: Record<string, unknown>): string {
+  if (typeof entry.content === "string") return entry.content;
+  if (entry.data && typeof entry.data === "object") {
+    const data = entry.data as Record<string, unknown>;
+    if (typeof data.message === "string") return data.message;
+    if (typeof data.text === "string") return data.text;
+    return JSON.stringify(data, null, 2);
+  }
+  return JSON.stringify(entry, null, 2);
 }
 
 function statusVariant(status: RuntimeSessionStatus): BadgeTone {
@@ -452,64 +472,212 @@ function AdapterRow({ adapter }: { adapter: RuntimeAdapterDescriptor }) {
 
 function SessionRow({
   session,
+  adapter,
   agentName,
+  companyId,
   onCancel,
   onFinalize,
   cancelling,
   finalizing,
+  canOperate,
 }: {
   session: RuntimeSession;
+  adapter: RuntimeAdapterDescriptor | undefined;
   agentName: string;
+  companyId: string;
   onCancel: () => void;
   onFinalize: () => void;
   cancelling: boolean;
   finalizing: boolean;
+  canOperate: boolean;
 }) {
+  const [showRunPrompt, setShowRunPrompt] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [diagnostic, setDiagnostic] = useState<RuntimeAdapterDiagnostic | null>(null);
+  const [runResult, setRunResult] = useState<RuntimeSession | null>(null);
+  const [cancelArmed, setCancelArmed] = useState(false);
+  const testSession = useTestRuntimeSession(companyId);
+  const runSession = useRunRuntimeSession(companyId);
   const canCancel = session.status === "queued" || session.status === "running";
   const canFinalize =
     session.finalizeRequired &&
     !session.finalizedAt &&
     finalizableSessionStatuses.has(session.status);
+  const canTest = canOperate && adapter?.operations?.test === true;
+  const canRun =
+    canOperate &&
+    adapter?.operations?.run === true &&
+    !["running", "cancelling", "cancelled", "finalizing", "finalized"].includes(
+      session.status,
+    );
+
+  useEffect(() => {
+    if (!cancelArmed) return;
+    const timeout = window.setTimeout(() => setCancelArmed(false), 5_000);
+    return () => window.clearTimeout(timeout);
+  }, [cancelArmed]);
+
+  function handleTest() {
+    setDiagnostic(null);
+    testSession.mutate(session.id, {
+      onSuccess: (result) => {
+        setDiagnostic(result);
+        if (result.ok) toast.success(result.message);
+        else toast.warning(result.message);
+      },
+      onError: (error) => toast.error(errorMessage(error)),
+    });
+  }
+
+  function handleRun(event: FormEvent) {
+    event.preventDefault();
+    const trimmedPrompt = prompt.trim();
+    if (!trimmedPrompt) {
+      toast.error("Enter a prompt before running the session");
+      return;
+    }
+    runSession.mutate(
+      { sessionId: session.id, prompt: trimmedPrompt },
+      {
+        onSuccess: (result) => {
+          setRunResult(result);
+          toast.success("Runtime prompt completed");
+          setPrompt("");
+          setShowRunPrompt(false);
+        },
+        onError: (error) => toast.error(errorMessage(error)),
+      },
+    );
+  }
+
+  function handleCancel() {
+    if (!cancelArmed) {
+      setCancelArmed(true);
+      return;
+    }
+    setCancelArmed(false);
+    onCancel();
+  }
+
+  const transcript = runResult?.transcript ?? session.transcript;
 
   return (
-    <div className="flex flex-col gap-3 border-b border-white/[0.06] p-4 last:border-b-0 xl:flex-row xl:items-center xl:justify-between">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="truncate text-sm font-semibold text-text-primary font-display">
-            {agentName}
+    <div className="border-b border-white/[0.06] p-4 last:border-b-0">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-semibold text-text-primary font-display">
+              {agentName}
+            </p>
+            <Badge variant={statusVariant(session.status)}>{toLabel(session.status)}</Badge>
+            <Badge variant="low">{toLabel(session.mode)}</Badge>
+          </div>
+          <p className="mt-1 text-xs text-text-secondary">
+            Run {compactId(session.runId)} via {session.adapterId} - updated {formatDateTime(session.updatedAt)}
           </p>
-          <Badge variant={statusVariant(session.status)}>{toLabel(session.status)}</Badge>
-          <Badge variant="low">{toLabel(session.mode)}</Badge>
+          {session.cancellationReason && (
+            <p className="mt-1 text-xs text-error">{session.cancellationReason}</p>
+          )}
         </div>
-        <p className="mt-1 text-xs text-text-secondary">
-          Run {compactId(session.runId)} via {session.adapterId} - updated {formatDateTime(session.updatedAt)}
+        <div className="flex flex-wrap gap-2">
+          {canTest ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Activity className="h-3.5 w-3.5" />}
+              loading={testSession.isPending}
+              disabled={runSession.isPending}
+              onClick={handleTest}
+            >
+              Test adapter
+            </Button>
+          ) : null}
+          {canOperate && adapter?.operations?.run ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Play className="h-3.5 w-3.5" />}
+              disabled={!canRun || testSession.isPending}
+              onClick={() => setShowRunPrompt((visible) => !visible)}
+            >
+              Run prompt
+            </Button>
+          ) : null}
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<ShieldCheck className="h-3.5 w-3.5" />}
+            disabled={!canFinalize}
+            loading={finalizing}
+            onClick={onFinalize}
+          >
+            Finalize
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            icon={<PauseCircle className="h-3.5 w-3.5" />}
+            disabled={!canCancel}
+            loading={cancelling}
+            onClick={handleCancel}
+          >
+            {cancelArmed ? "Confirm cancel" : "Cancel"}
+          </Button>
+        </div>
+      </div>
+      {diagnostic ? (
+        <p
+          className={clsx(
+            "mt-3 rounded-lg border px-3 py-2 text-xs",
+            diagnostic.ok
+              ? "border-success/20 bg-success/10 text-success"
+              : "border-warning/20 bg-warning/10 text-warning",
+          )}
+        >
+          {diagnostic.message}
         </p>
-        {session.cancellationReason && (
-          <p className="mt-1 text-xs text-error">{session.cancellationReason}</p>
-        )}
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          variant="secondary"
-          size="sm"
-          icon={<ShieldCheck className="h-3.5 w-3.5" />}
-          disabled={!canFinalize}
-          loading={finalizing}
-          onClick={onFinalize}
-        >
-          Finalize
-        </Button>
-        <Button
-          variant="danger"
-          size="sm"
-          icon={<PauseCircle className="h-3.5 w-3.5" />}
-          disabled={!canCancel}
-          loading={cancelling}
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
-      </div>
+      ) : null}
+      {showRunPrompt ? (
+        <form onSubmit={handleRun} className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <Input
+            aria-label={`Prompt for ${agentName}`}
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder="Describe the work for this runtime session"
+            disabled={runSession.isPending}
+            className="sm:min-w-[320px]"
+          />
+          <Button
+            type="submit"
+            loading={runSession.isPending}
+            disabled={!prompt.trim() || testSession.isPending}
+          >
+            Run now
+          </Button>
+        </form>
+      ) : null}
+      {transcript.length ? (
+        <div className="mt-3 rounded-lg border border-white/[0.06] bg-surface/50">
+          <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-2">
+            <p className="text-xs font-semibold text-text-primary font-display">
+              Latest runtime output
+            </p>
+            <Badge variant="low" className="shrink-0 whitespace-nowrap">
+              {transcript.length} {transcript.length === 1 ? "entry" : "entries"}
+            </Badge>
+          </div>
+          <div className="max-h-64 space-y-2 overflow-auto p-3">
+            {transcript.slice(-20).map((entry, index) => (
+              <pre
+                key={`${String(entry.timestamp ?? "entry")}-${index}`}
+                className="whitespace-pre-wrap break-words rounded-md bg-black/20 px-3 py-2 font-mono text-[11px] leading-relaxed text-text-primary/80"
+              >
+                {transcriptEntryText(entry)}
+              </pre>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -532,6 +700,7 @@ function RuntimeLauncher({
   const { companyId } = useParams();
   const [selectedAdapterId, setSelectedAdapterId] = useState("");
   const [mode, setMode] = useState<RuntimeSessionMode>("on_demand");
+  const [adapterConfig, setAdapterConfig] = useState<RuntimeAdapterConfig>({});
   const createSession = useCreateRuntimeSession(companyId!);
   const wakeAgent = useWakeAgent(companyId!);
 
@@ -563,6 +732,20 @@ function RuntimeLauncher({
     }
   }, [availableSessionModeOptions, mode]);
 
+  useEffect(() => {
+    const persistedConfig =
+      selectedAgent?.adapterId === effectiveAdapterId
+        ? selectedAgent.adapterConfig
+        : {};
+    setAdapterConfig(configForAdapter(effectiveAdapter, persistedConfig));
+  }, [
+    effectiveAdapter?.id,
+    effectiveAdapterId,
+    selectedAgent?.adapterConfig,
+    selectedAgent?.adapterId,
+    selectedAgent?.id,
+  ]);
+
   function handleCreateSession(event: FormEvent) {
     event.preventDefault();
     if (sessionControlsDisabled) {
@@ -573,11 +756,21 @@ function RuntimeLauncher({
       toast.error("Choose an agent before creating a runtime session");
       return;
     }
+    if (!effectiveAdapter?.operations?.run) {
+      toast.error("Choose an adapter that supports runtime execution");
+      return;
+    }
+    const configError = validateAdapterConfig(effectiveAdapter, adapterConfig);
+    if (configError) {
+      toast.error(configError);
+      return;
+    }
 
     createSession.mutate(
       {
         agentId: selectedAgentId,
-        adapterId: selectedAdapterId || selectedAgent?.adapterId || undefined,
+        adapterId: effectiveAdapterId || undefined,
+        adapterConfig,
         mode,
       },
       {
@@ -650,6 +843,29 @@ function RuntimeLauncher({
           disabled={sessionControlsDisabled}
           options={availableSessionModeOptions}
         />
+        {effectiveAdapter ? (
+          <div className="space-y-3 border-t border-white/[0.08] pt-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <p className="min-w-0 flex-1 text-xs text-text-primary/70">
+                {effectiveAdapter.description}
+              </p>
+              <div className="flex gap-1.5">
+                <Badge variant={effectiveAdapter.operations?.test ? "info" : "low"}>
+                  {effectiveAdapter.operations?.test ? "Test" : "No test"}
+                </Badge>
+                <Badge variant={effectiveAdapter.operations?.run ? "success" : "warning"}>
+                  {effectiveAdapter.operations?.run ? "Runnable" : "Not runnable"}
+                </Badge>
+              </div>
+            </div>
+            <AdapterConfigFields
+              fields={effectiveAdapter.configFields ?? []}
+              value={adapterConfig}
+              onChange={setAdapterConfig}
+              disabled={sessionControlsDisabled || createSession.isPending}
+            />
+          </div>
+        ) : null}
         <div className="flex flex-wrap gap-2 pt-1">
           <Button
             type="button"
@@ -664,7 +880,7 @@ function RuntimeLauncher({
           <Button
             type="submit"
             icon={<TerminalSquare className="h-3.5 w-3.5" />}
-            disabled={sessionControlsDisabled}
+            disabled={sessionControlsDisabled || !effectiveAdapter?.operations?.run}
             loading={createSession.isPending}
           >
             Start session
@@ -1014,6 +1230,7 @@ export function JarvisRuntime() {
     session?.user.role,
     session?.session.activeOrganizationRole,
   );
+  const canOperateRuntime = session?.user.role === "admin";
   const { data: agents = [] } = useAgents(companyId);
   const adaptersQuery = useRuntimeAdapters();
   const sessionsQuery = useRuntimeSessions(companyId, isAdmin);
@@ -1109,7 +1326,9 @@ export function JarvisRuntime() {
                   Durable runs with cancellation and finalize gates.
                 </p>
               </div>
-              <Badge variant="low">{sessions.length} total</Badge>
+              <Badge variant="low" className="shrink-0 whitespace-nowrap">
+                {sessions.length} total
+              </Badge>
             </div>
             {!isAdmin ? (
               <AdminRequiredPanel title="Runtime sessions require admin access" />
@@ -1130,9 +1349,19 @@ export function JarvisRuntime() {
                   <SessionRow
                     key={session.id}
                     session={session}
+                    adapter={adapters.find(
+                      (adapter) => adapter.id === session.adapterId,
+                    )}
                     agentName={agentNameById.get(session.agentId) ?? compactId(session.agentId)}
-                    cancelling={cancelSession.isPending}
-                    finalizing={finalizeSession.isPending}
+                    companyId={companyId!}
+                    cancelling={
+                      cancelSession.isPending &&
+                      cancelSession.variables?.sessionId === session.id
+                    }
+                    finalizing={
+                      finalizeSession.isPending && finalizeSession.variables === session.id
+                    }
+                    canOperate={canOperateRuntime}
                     onCancel={() =>
                       cancelSession.mutate(
                         { sessionId: session.id, reason: "Cancelled from Jarvis Runtime" },

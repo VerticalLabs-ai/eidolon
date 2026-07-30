@@ -229,19 +229,55 @@ process.stdin.on("end", () => {
     expect(ids).toContain('openclaw:webhook');
     expect(ids).toContain('mcp:tool-runtime');
     expect(ids).toContain('openjarvis:local');
-    expect(
-      res.body.data.find((adapter: any) => adapter.id === 'codex_local')
-        .capabilities.browser,
-    ).toBe(false);
-    expect(
-      res.body.data.find((adapter: any) => adapter.id === 'claude_local')
-        .capabilities.browser,
-    ).toBe(false);
+    const codex = res.body.data.find((adapter: any) => adapter.id === 'codex_local');
+    expect(codex.capabilities.browser).toBe(false);
+    expect(codex.operations).toEqual({ run: true, test: false });
+
+    const claude = res.body.data.find((adapter: any) => adapter.id === 'claude_local');
+    expect(claude.capabilities.browser).toBe(false);
+    expect(claude.operations).toEqual({ run: true, test: false });
+
+    const processAdapter = res.body.data.find(
+      (adapter: any) => adapter.id === 'process:local',
+    );
+    expect(processAdapter.operations).toEqual({ run: true, test: true });
+    expect(processAdapter.configFields.map((field: any) => field.key)).toEqual([
+      'command',
+      'args',
+    ]);
+
+    const httpAdapter = res.body.data.find(
+      (adapter: any) => adapter.id === 'http:remote',
+    );
+    expect(httpAdapter.operations).toEqual({ run: true, test: true });
+    expect(httpAdapter.configFields.map((field: any) => field.key)).toEqual([
+      'url',
+      'timeoutSec',
+      'responseFields',
+    ]);
+
+    const openClaw = res.body.data.find(
+      (adapter: any) => adapter.id === 'openclaw:webhook',
+    );
+    expect(openClaw.operations).toEqual({ run: true, test: true });
+    expect(openClaw.configFields.map((field: any) => field.key)).toEqual([
+      'url',
+      'agentId',
+      'deliver',
+      'timeoutSec',
+    ]);
+
+    const anthropic = res.body.data.find(
+      (adapter: any) => adapter.id === 'provider:anthropic',
+    );
+    expect(anthropic.operations).toEqual({ run: false, test: false });
+    expect(anthropic.configFields).toEqual([]);
 
     const openJarvis = res.body.data.find((adapter: any) => adapter.id === 'openjarvis:local');
     expect(openJarvis.capabilities.voice).toBe(true);
     expect(openJarvis.capabilities.browser).toBe(true);
     expect(openJarvis.supportedModes).toContain('continuous');
+    expect(openJarvis.operations).toEqual({ run: false, test: false });
   });
 
   it('runs and resumes Codex locally with isolated state and structured transcripts', async () => {

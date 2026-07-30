@@ -42,13 +42,20 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { BudgetGauge } from "@/components/dashboard/BudgetGauge";
 import { TaskCard } from "@/components/tasks/TaskCard";
+import { AdapterConfigFields } from "@/components/runtime/AdapterConfigFields";
 import {
   PROVIDER_OPTIONS,
   getModelOptions,
   normalizeProvider,
 } from "@/lib/ai-catalog";
 import { TranscriptView } from "@/components/agents/TranscriptView";
+import {
+  configForAdapter,
+  validateAdapterConfig,
+  type RuntimeAdapterConfig,
+} from "@/lib/runtime-adapters";
 import { clsx } from "clsx";
+import { toast } from "sonner";
 
 const INSTRUCTION_TEMPLATES: Record<string, string> = {
   engineering: `# Engineering Agent Instructions
@@ -561,7 +568,12 @@ function ConfigTab({
   const [budgetDollars, setBudgetDollars] = useState(
     String((agent.budgetMonthlyCents ?? 0) / 100),
   );
+  const [adapterId, setAdapterId] = useState(agent.adapterId ?? "");
+  const [adapterConfig, setAdapterConfig] = useState<RuntimeAdapterConfig>(
+    agent.adapterConfig ?? {},
+  );
   const [saved, setSaved] = useState(false);
+  const { data: runtimeAdapters = [] } = useRuntimeAdapters();
   const refreshModels = useRefreshAgentModels(companyId, agent.id);
   const persistedProvider = normalizeProvider(agent.provider);
   const persistedModel = agent.model ?? "";
@@ -572,6 +584,9 @@ function ConfigTab({
     refreshModels.data.adapter === persistedAdapter
       ? refreshModels.data
       : undefined;
+  const selectedAdapter = runtimeAdapters.find(
+    (adapter) => adapter.id === adapterId,
+  );
 
   const modelOptions = useMemo(() => {
     const discovered =
@@ -597,9 +612,20 @@ function ConfigTab({
   }, [activeDiscovery, model, persistedProvider, provider]);
 
   const handleSave = () => {
+    const configError = validateAdapterConfig(selectedAdapter, adapterConfig);
+    if (configError) {
+      toast.error(configError);
+      return;
+    }
+
+    const normalizedProvider = normalizeProvider(provider);
     const data: Record<string, unknown> = {
-      provider: normalizeProvider(provider),
+      provider: normalizedProvider,
       model,
+      adapterId:
+        adapterId ||
+        `provider:${normalizedProvider === "local" ? "ollama" : normalizedProvider}`,
+      adapterConfig: adapterId ? adapterConfig : {},
       temperature,
       maxTokens: parseInt(maxTokens, 10),
       maxConcurrentTasks: parseInt(maxConcurrentTasks, 10),
@@ -740,6 +766,63 @@ function ConfigTab({
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="glass rounded-xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-white/[0.06]">
+          <h3 className="font-display text-sm font-semibold text-text-primary tracking-wide">
+            Runtime Adapter
+          </h3>
+          <p className="mt-1 text-xs text-text-secondary">
+            Choose how this agent executes. Only server-approved, non-secret fields are shown.
+          </p>
+        </div>
+        <div className="p-6 space-y-4">
+          <Select
+            label="Adapter"
+            options={[
+              { value: "", label: "Use provider default" },
+              ...runtimeAdapters.map((adapter) => ({
+                value: adapter.id,
+                label: `${adapter.name} (${adapter.locality})`,
+              })),
+            ]}
+            value={adapterId}
+            onChange={(event) => {
+              const nextAdapterId = event.target.value;
+              const nextAdapter = runtimeAdapters.find(
+                (adapter) => adapter.id === nextAdapterId,
+              );
+              const persistedConfig =
+                nextAdapterId === agent.adapterId ? agent.adapterConfig : {};
+              setAdapterId(nextAdapterId);
+              setAdapterConfig(configForAdapter(nextAdapter, persistedConfig));
+            }}
+          />
+          {selectedAdapter ? (
+            <>
+              <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-white/[0.06] bg-surface/40 px-3 py-2.5">
+                <p className="min-w-0 flex-1 text-xs text-text-primary/70">
+                  {selectedAdapter.description}
+                </p>
+                <div className="flex gap-1.5">
+                  <Badge variant={selectedAdapter.operations?.test ? "info" : "low"}>
+                    {selectedAdapter.operations?.test ? "Test available" : "No test"}
+                  </Badge>
+                  <Badge variant={selectedAdapter.operations?.run ? "success" : "low"}>
+                    {selectedAdapter.operations?.run ? "Run available" : "No run"}
+                  </Badge>
+                </div>
+              </div>
+              <AdapterConfigFields
+                fields={selectedAdapter.configFields ?? []}
+                value={adapterConfig}
+                onChange={setAdapterConfig}
+                disabled={updateAgent.isPending}
+              />
+            </>
+          ) : null}
         </div>
       </div>
 
