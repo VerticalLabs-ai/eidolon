@@ -152,20 +152,25 @@ export class RuntimeSessionService {
         ? existingExecutionEnvironmentId
         : input.environmentId;
 
+    // The diff base is captured for whichever environment may be leased below, which includes an
+    // environment inherited from the execution. A missing inherited environment is left to the
+    // lease path so it keeps surfacing as a deterministic 404 instead of a generic error.
     let leaseBaseSha: string | null = null;
-    if (input.environmentId) {
+    if (environmentId) {
       const [environment] = await this.db.drizzle
         .select({ workspacePath: executionEnvironments.workspacePath })
         .from(executionEnvironments)
         .where(
           and(
-            eq(executionEnvironments.id, input.environmentId),
+            eq(executionEnvironments.id, environmentId),
             eq(executionEnvironments.companyId, input.companyId),
           ),
         )
         .limit(1);
-      if (!environment) throw new Error(`Environment ${input.environmentId} not found`);
-      if (environment.workspacePath) {
+      if (!environment && input.environmentId) {
+        throw new Error(`Environment ${input.environmentId} not found`);
+      }
+      if (environment?.workspacePath) {
         try {
           leaseBaseSha = await captureWorkspaceHead(environment.workspacePath);
         } catch (error) {

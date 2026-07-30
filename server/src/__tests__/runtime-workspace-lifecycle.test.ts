@@ -1,10 +1,16 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import fs, { realpath } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { createTestApp, createTestDb } from '../test-utils.js';
 import { RuntimeSessionService } from '../services/runtime-sessions.js';
+
+const execFileAsync = promisify(execFile);
 
 describe('runtime workspace lease binding', () => {
   let db: Awaited<ReturnType<typeof createTestDb>>;
@@ -143,6 +149,67 @@ describe('runtime workspace lease binding', () => {
       expect(environment).toEqual(expect.objectContaining({ status: 'available', leaseId: null }));
     } finally {
       vi.unstubAllEnvs();
+    }
+  });
+
+  it('captures a diff base when it leases an inherited Git workspace', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-runtime-lease-'));
+    vi.stubEnv('EIDOLON_WORKSPACE_ROOT', workspaceRoot);
+    try {
+      const repository = path.join(workspaceRoot, companyId, 'inherited-repo');
+      await fs.mkdir(repository, { recursive: true });
+      await execFileAsync('git', ['init'], { cwd: repository });
+      await execFileAsync('git', ['config', 'user.email', 'tests@eidolon.local'], { cwd: repository });
+      await execFileAsync('git', ['config', 'user.name', 'Eidolon Tests'], { cwd: repository });
+      await fs.writeFile(path.join(repository, 'tracked.txt'), 'before\n');
+      await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repository });
+      await execFileAsync('git', ['commit', '-m', 'initial'], { cwd: repository });
+      const { stdout: head } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repository });
+
+      const inherited = await request(app)
+        .post(`/api/companies/${companyId}/environments`)
+        .send({ name: 'Inherited Git Workspace', workspacePath: 'inherited-repo', branchName: 'main' })
+        .expect(201);
+      const inheritedEnvironmentId = inherited.body.data.id as string;
+
+      const now = new Date();
+      const executionId = randomUUID();
+      await db.drizzle.insert(db.schema.agentExecutions).values({
+        id: executionId,
+        companyId,
+        agentId,
+        environmentId: inheritedEnvironmentId,
+        status: 'running',
+        startedAt: now,
+        executionMode: 'single',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const session = await new RuntimeSessionService(db).createSession({
+        companyId,
+        agentId,
+        executionId,
+        adapterId: 'process:local',
+        adapterConfig: { command: 'echo' },
+      });
+      expect(session.environmentId).toBe(inheritedEnvironmentId);
+      expect(session.environmentLeaseId).toEqual(expect.any(String));
+
+      // Without a base SHA the workspace diff endpoint would always fail with
+      // WORKSPACE_DIFF_BASE_UNAVAILABLE for inherited leases.
+      const [environment] = await db.drizzle
+        .select()
+        .from(db.schema.executionEnvironments)
+        .where(eq(db.schema.executionEnvironments.id, inheritedEnvironmentId));
+      expect(environment.leaseBaseSha).toBe(head.trim());
+
+      await request(app)
+        .get(`/api/companies/${companyId}/environments/${inheritedEnvironmentId}/diff`)
+        .expect(200);
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
   });
 
