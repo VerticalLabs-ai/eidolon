@@ -155,7 +155,20 @@ export async function materializeLocalAgentSkills(
     throw new Error(`Cannot materialize company skill "${skill.name}": ${reason}.`);
   }
 
-  const skillsRoot = await prepareSkillsRoot(input.runtimePaths);
+  let skillsRoot: string;
+  try {
+    skillsRoot = await prepareSkillsRoot(input.runtimePaths);
+  } catch (error) {
+    const now = new Date();
+    for (const { assignment } of activeRows) {
+      await input.db.drizzle
+        .update(agentSkills)
+        .set({ syncStatus: 'failed', materializedPath: null, updatedAt: now })
+        .where(eq(agentSkills.id, assignment.id));
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to prepare local skill root: ${message}`);
+  }
   for (const { assignment, skill } of activeRows) {
     try {
       const materializedPath = await writeSkillDocument(
