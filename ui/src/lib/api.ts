@@ -47,6 +47,11 @@ async function request<T>(
 
 // ── Types (match server response shapes) ─────────────────────────────────
 
+export interface ApiResponse<T> {
+  data: T;
+  meta?: unknown;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -222,13 +227,29 @@ export interface Project {
   companyId: string;
   name: string;
   description: string | null;
-  status: string;
+  status: ProjectStatus;
+  repoUrl: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
+export type ProjectStatus = "planning" | "active" | "completed" | "archived";
+
+export interface CreateProjectInput {
+  name: string;
+  description?: string;
+  status: ProjectStatus;
+  repoUrl: string | null;
+}
+
 export const getProjects = (companyId: string) =>
   request<Project[]>(`/companies/${companyId}/projects`);
+
+export const createProject = (companyId: string, data: CreateProjectInput) =>
+  request<ApiResponse<Project>>(`/companies/${companyId}/projects`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 
 // ── Agents ───────────────────────────────────────────────────────────────
 

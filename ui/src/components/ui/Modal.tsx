@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { clsx } from "clsx";
 import { motion, AnimatePresence } from "framer-motion";
@@ -9,6 +9,7 @@ interface ModalProps {
   title: string;
   children: ReactNode;
   className?: string;
+  dismissible?: boolean;
 }
 
 const backdropVariants = {
@@ -35,8 +36,16 @@ const panelVariants = {
   },
 };
 
-export function Modal({ open, onClose, title, children, className }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  className,
+  dismissible = true,
+}: ModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -63,12 +72,16 @@ export function Modal({ open, onClose, title, children, className }: ModalProps)
       {open && (
         <dialog
           ref={dialogRef}
+          aria-labelledby={titleId}
           className={clsx(
-            "m-auto max-h-[85vh] w-full max-w-lg rounded-2xl bg-transparent p-0 text-text-primary backdrop:bg-transparent open:flex open:items-center open:justify-center",
+            "m-auto max-h-[85vh] w-full max-w-[calc(100vw-2rem)] rounded-2xl bg-transparent p-0 text-text-primary backdrop:bg-transparent open:flex open:items-center open:justify-center sm:max-w-lg",
             className,
           )}
-          onClick={(e) => {
-            if (e.target === dialogRef.current) onClose();
+          onCancel={(event) => {
+            if (!dismissible) event.preventDefault();
+          }}
+          onClick={(event) => {
+            if (dismissible && event.target === dialogRef.current) onClose();
           }}
         >
           {/* Animated backdrop */}
@@ -79,7 +92,7 @@ export function Modal({ open, onClose, title, children, className }: ModalProps)
             animate="visible"
             exit="hidden"
             transition={{ duration: 0.15 }}
-            onClick={onClose}
+            onClick={dismissible ? onClose : undefined}
           />
 
           {/* Animated content panel */}
@@ -91,10 +104,13 @@ export function Modal({ open, onClose, title, children, className }: ModalProps)
             exit="exit"
           >
             <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
-              <h2 className="text-base font-semibold font-display">{title}</h2>
+              <h2 id={titleId} className="text-base font-semibold font-display">
+                {title}
+              </h2>
               <button
                 onClick={onClose}
-                className="rounded-lg p-1.5 text-text-secondary hover:text-neon-cyan hover:bg-white/[0.05] transition-all duration-300 cursor-pointer"
+                disabled={!dismissible}
+                className="rounded-lg p-1.5 text-text-secondary hover:text-neon-cyan hover:bg-white/[0.05] transition-all duration-300 cursor-pointer disabled:pointer-events-none disabled:opacity-40"
                 aria-label="Close"
               >
                 <X className="h-4 w-4" />

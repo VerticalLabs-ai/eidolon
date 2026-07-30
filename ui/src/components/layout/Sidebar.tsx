@@ -1,4 +1,5 @@
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
+import { useProjectCreation } from "@/components/projects/ProjectCreationProvider";
 import { useCompanies, useInbox, useProjects } from "@/lib/hooks";
 import { useWebSocket } from "@/lib/ws";
 import { clsx } from "clsx";
@@ -166,6 +167,7 @@ function CompanyIconRail() {
 function ProjectsSection({ base, onClose }: { base: string; onClose: () => void }) {
   const { companyId } = useParams();
   const { data: projects } = useProjects(companyId);
+  const { openProjectCreation } = useProjectCreation();
 
   return (
     <div>
@@ -174,7 +176,11 @@ function ProjectsSection({ base, onClose }: { base: string; onClose: () => void 
           Projects
         </p>
         <button
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary hover:text-accent hover:bg-accent/[0.05] transition-all duration-200 cursor-pointer"
+          onClick={(event) => {
+            openProjectCreation(event.currentTarget);
+            onClose();
+          }}
+          className="flex min-h-8 items-center gap-1 rounded px-2 py-1 text-[10px] font-medium text-text-secondary hover:text-accent hover:bg-accent/[0.05] transition-all duration-200 cursor-pointer"
           title="New project"
         >
           <Plus className="h-3 w-3" />
