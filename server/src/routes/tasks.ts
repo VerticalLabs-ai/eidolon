@@ -231,7 +231,15 @@ export function tasksRouter(db: DbInstance): Router {
     }
   }
 
-  async function createThreadItem(values: typeof taskThreadItems.$inferInsert) {
+  /**
+   * Insert a thread item, reporting whether the row was newly created or is an
+   * idempotency replay of an existing row. Callers that emit realtime events
+   * must gate emission on `created` so replays don't broadcast duplicates.
+   */
+  async function insertThreadItem(values: typeof taskThreadItems.$inferInsert): Promise<{
+    row: typeof taskThreadItems.$inferSelect;
+    created: boolean;
+  }> {
     const now = new Date();
     const insertValues = {
       id: randomUUID(),
@@ -250,7 +258,7 @@ export function tasksRouter(db: DbInstance): Router {
         })
         .returning();
 
-      if (created) return created;
+      if (created) return { row: created, created: true };
 
       const [existing] = await db.drizzle
         .select()
@@ -264,13 +272,18 @@ export function tasksRouter(db: DbInstance): Router {
         )
         .limit(1);
 
-      if (existing) return existing;
+      if (existing) return { row: existing, created: false };
     }
 
     const [row] = await db.drizzle
       .insert(taskThreadItems)
       .values(insertValues)
       .returning();
+    return { row, created: true };
+  }
+
+  async function createThreadItem(values: typeof taskThreadItems.$inferInsert) {
+    const { row } = await insertThreadItem(values);
     return row;
   }
 
@@ -415,7 +428,7 @@ export function tasksRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     await getTaskOrThrow(companyId, id);
 
-    const row = await createThreadItem({
+    const { row, created } = await insertThreadItem({
       companyId,
       taskId: id,
       kind: 'comment',
@@ -427,12 +440,16 @@ export function tasksRouter(db: DbInstance): Router {
       idempotencyKey: body.idempotencyKey ?? null,
     });
 
-    eventBus.emitEvent({
-      type: 'task.commented',
-      companyId,
-      payload: { taskId: id, item: row },
-      timestamp: new Date().toISOString(),
-    });
+    // Idempotency replays return the existing comment; emitting again would
+    // broadcast duplicate realtime updates for a single persisted comment.
+    if (created) {
+      eventBus.emitEvent({
+        type: 'task.commented',
+        companyId,
+        payload: { taskId: id, item: row },
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     res.status(201).json({ data: row });
   });

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { createTestDb, createTestApp } from '../test-utils.js';
+import eventBus from '../realtime/events.js';
 
 describe('Tasks API', () => {
   let app: ReturnType<typeof createTestApp>;
@@ -606,6 +607,12 @@ describe('Tasks API', () => {
         .send({ title: 'Discuss Me' });
       const taskId = taskRes.body.data.id;
 
+      const commentEvents: unknown[] = [];
+      const onEvent = (event: { type: string }) => {
+        if (event.type === 'task.commented') commentEvents.push(event);
+      };
+      eventBus.onEvent(onEvent);
+
       const created = await request(app)
         .post(`${taskUrl(taskId)}/thread/comments`)
         .send({
@@ -623,6 +630,9 @@ describe('Tasks API', () => {
         .expect(201);
 
       expect(duplicate.body.data.id).toBe(created.body.data.id);
+
+      eventBus.off('event', onEvent);
+      expect(commentEvents).toHaveLength(1);
 
       const res = await request(app)
         .get(`${taskUrl(taskId)}/thread`)
