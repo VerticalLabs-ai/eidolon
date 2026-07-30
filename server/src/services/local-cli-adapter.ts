@@ -935,7 +935,7 @@ export async function runLocalCliAdapter(
     : null;
   const adapterRuntimeHome = localRuntimePaths?.adapterRuntimeHome ?? runtimeAdapterHome(input);
   const codexHome = localRuntimePaths?.codexHome ?? null;
-  await fs.mkdir(adapterRuntimeHome, { recursive: true });
+  await fs.mkdir(adapterRuntimeHome, { recursive: true, mode: 0o700 });
   env.HOME = adapterRuntimeHome;
   env.USERPROFILE = adapterRuntimeHome;
   env.XDG_CACHE_HOME = path.join(adapterRuntimeHome, '.cache');
@@ -943,7 +943,7 @@ export async function runLocalCliAdapter(
 
   if (input.adapterId === 'codex_local') {
     const managedCodexHome = codexHome!;
-    await fs.mkdir(managedCodexHome, { recursive: true });
+    await fs.mkdir(managedCodexHome, { recursive: true, mode: 0o700 });
     if (await pathExists(path.join(managedCodexHome, 'auth.json'))) {
       throw new Error(
         'Codex file credentials are not allowed in the agent runtime. Remove codex-home/auth.json and use the operator-owned Codex gateway token helper instead.',

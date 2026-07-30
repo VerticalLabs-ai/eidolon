@@ -6,6 +6,7 @@ import type { DbInstance } from '../types.js';
 import type { LocalCliRuntimePaths } from './local-cli-adapter.js';
 
 const SAFE_SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MANAGED_SKILLS_MANIFEST = '.eidolon-managed-skills.json';
 
 interface MaterializeLocalAgentSkillsInput {
   db: DbInstance;
@@ -68,6 +69,7 @@ async function writeSkillDocument(
   const relativeDirectory = path.relative(skillsRoot, skillDirectory);
   if (
     !relativeDirectory ||
+    relativeDirectory === '..' ||
     relativeDirectory.startsWith(`..${path.sep}`) ||
     path.isAbsolute(relativeDirectory)
   ) {
@@ -102,6 +104,72 @@ async function writeSkillDocument(
   return skillDirectory;
 }
 
+async function readManagedSkillNames(skillsRoot: string): Promise<Set<string>> {
+  const manifestPath = path.join(skillsRoot, MANAGED_SKILLS_MANIFEST);
+  try {
+    const stats = await fs.lstat(manifestPath);
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error('Local managed-skills manifest must be a regular file.');
+    }
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as {
+      version?: unknown;
+      skills?: unknown;
+    };
+    if (
+      manifest.version !== 1 ||
+      !Array.isArray(manifest.skills) ||
+      manifest.skills.some(
+        (name) => typeof name !== 'string' || !SAFE_SKILL_NAME.test(name) || name.length > 64,
+      )
+    ) {
+      throw new Error('Local managed-skills manifest is invalid.');
+    }
+    return new Set(manifest.skills as string[]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set();
+    if (error instanceof SyntaxError) {
+      throw new Error('Local managed-skills manifest is invalid JSON.');
+    }
+    throw error;
+  }
+}
+
+async function writeManagedSkillNames(
+  skillsRoot: string,
+  skillNames: Set<string>,
+): Promise<void> {
+  const target = path.join(skillsRoot, MANAGED_SKILLS_MANIFEST);
+  const document = `${JSON.stringify({ version: 1, skills: Array.from(skillNames).sort() })}\n`;
+  try {
+    const stats = await fs.lstat(target);
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error('Local managed-skills manifest must be a regular file.');
+    }
+    if (await fs.readFile(target, 'utf8') === document) return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  const temporary = path.join(skillsRoot, `.managed-skills.${randomUUID()}.tmp`);
+  try {
+    await fs.writeFile(temporary, document, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    await fs.rename(temporary, target);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
+async function removeRevokedManagedSkills(
+  skillsRoot: string,
+  previousNames: Set<string>,
+  validNames: Set<string>,
+): Promise<void> {
+  for (const skillName of previousNames) {
+    if (validNames.has(skillName)) continue;
+    await fs.rm(path.join(skillsRoot, skillName), { recursive: true, force: true });
+  }
+}
+
 export async function materializeLocalAgentSkills(
   input: MaterializeLocalAgentSkillsInput,
 ): Promise<void> {
@@ -123,7 +191,6 @@ export async function materializeLocalAgentSkills(
       ),
     );
   const activeRows = rows.filter(({ assignment }) => assignment.syncStatus !== 'disabled');
-  if (activeRows.length === 0) return;
 
   const duplicateNames = new Set<string>();
   const seenNames = new Set<string>();
@@ -138,7 +205,31 @@ export async function materializeLocalAgentSkills(
     skill.trustLevel !== 'markdown_only' ||
     duplicateNames.has(skill.name),
   );
+  const validationFailureIds = new Set(
+    validationFailures.map(({ assignment }) => assignment.id),
+  );
+  const validRows = activeRows.filter(
+    ({ assignment }) => !validationFailureIds.has(assignment.id),
+  );
+  const validNames = new Set(validRows.map(({ skill }) => skill.name));
+  const skillsRoot = await prepareSkillsRoot(input.runtimePaths);
+  const previousManagedNames = await readManagedSkillNames(skillsRoot);
+  await removeRevokedManagedSkills(skillsRoot, previousManagedNames, validNames);
+
+  const disabledRows = rows.filter(({ assignment }) => assignment.syncStatus === 'disabled');
+  for (const { assignment } of disabledRows) {
+    if (assignment.materializedPath === null) continue;
+    await input.db.drizzle
+      .update(agentSkills)
+      .set({ materializedPath: null, updatedAt: new Date() })
+      .where(eq(agentSkills.id, assignment.id));
+  }
+
   if (validationFailures.length > 0) {
+    await writeManagedSkillNames(
+      skillsRoot,
+      new Set(Array.from(previousManagedNames).filter((name) => validNames.has(name))),
+    );
     const now = new Date();
     for (const { assignment } of validationFailures) {
       await input.db.drizzle
@@ -155,8 +246,7 @@ export async function materializeLocalAgentSkills(
     throw new Error(`Cannot materialize company skill "${skill.name}": ${reason}.`);
   }
 
-  const skillsRoot = await prepareSkillsRoot(input.runtimePaths);
-  for (const { assignment, skill } of activeRows) {
+  for (const { assignment, skill } of validRows) {
     try {
       const materializedPath = await writeSkillDocument(
         skillsRoot,
@@ -182,4 +272,5 @@ export async function materializeLocalAgentSkills(
       throw new Error(`Failed to materialize company skill "${skill.name}": ${message}`);
     }
   }
+  await writeManagedSkillNames(skillsRoot, validNames);
 }

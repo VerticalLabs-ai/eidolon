@@ -2602,6 +2602,92 @@ process.stdin.on("end", () => {
     expect(assignments.map((assignment) => assignment.syncStatus)).toEqual(['failed', 'failed']);
   });
 
+  it('removes disabled and deleted Eidolon-managed skills without pruning unmanaged skills', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Revocable Skill Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'revocable-briefing',
+        content: '# Revocable briefing',
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Materialize once.' })
+      .expect(200);
+    const skillsRoot = path.join(
+      runtimeRoot,
+      companyId,
+      agent.body.data.id,
+      'codex_local',
+      'codex-home',
+      'skills',
+    );
+    const managedDirectory = path.join(skillsRoot, 'revocable-briefing');
+    const unmanagedDirectory = path.join(skillsRoot, 'operator-skill');
+    await fs.mkdir(unmanagedDirectory);
+    await fs.writeFile(path.join(unmanagedDirectory, 'SKILL.md'), '# Operator skill');
+
+    await db.drizzle
+      .update(db.schema.agentSkills)
+      .set({ syncStatus: 'disabled' })
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    const disabledRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Apply disablement.' })
+      .expect(200);
+    const disabledMeta = [...disabledRun.body.data.transcript]
+      .reverse()
+      .find((entry: any) => entry.data?.type === 'fixture.meta');
+    expect(disabledMeta.data.skillFiles).not.toContain('revocable-briefing/SKILL.md');
+    await expect(fs.lstat(managedDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.readFile(path.join(unmanagedDirectory, 'SKILL.md'), 'utf8')).resolves.toBe(
+      '# Operator skill',
+    );
+    const [disabledAssignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    expect(disabledAssignment.materializedPath).toBeNull();
+
+    await db.drizzle
+      .update(db.schema.agentSkills)
+      .set({ syncStatus: 'pending' })
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Materialize again.' })
+      .expect(200);
+    await db.drizzle
+      .delete(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    const deletedRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Apply deletion.' })
+      .expect(200);
+    const deletedMeta = [...deletedRun.body.data.transcript]
+      .reverse()
+      .find((entry: any) => entry.data?.type === 'fixture.meta');
+    expect(deletedMeta.data.skillFiles).not.toContain('revocable-briefing/SKILL.md');
+    await expect(fs.lstat(managedDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.lstat(unmanagedDirectory)).resolves.toBeTruthy();
+  });
+
   it('creates and triggers Jarvis routines', async () => {
     const agent = await request(app)
       .post(`/api/companies/${companyId}/agents`)
