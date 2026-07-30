@@ -91,6 +91,22 @@ export function useProjects(companyId: string | undefined) {
   });
 }
 
+export function useCreateProject(companyId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: api.CreateProjectInput) =>
+      unwrap<api.Project>(await api.createProject(companyId, data)),
+    onSuccess: (project) => {
+      qc.setQueryData<api.Project[]>(["projects", companyId], (current) => [
+        project,
+        ...(current?.filter((item) => item.id !== project.id) ?? []),
+      ]);
+      qc.invalidateQueries({ queryKey: ["projects", companyId] });
+    },
+  });
+}
+
 // ── Agents ───────────────────────────────────────────────────────────────
 
 export function useAgents(companyId: string | undefined) {

@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useProjectCreation } from "@/components/projects/ProjectCreationProvider";
 
 const statusVariant: Record<string, "default" | "success" | "warning" | "info" | "error"> = {
   active: "success",
@@ -17,6 +18,7 @@ const statusVariant: Record<string, "default" | "success" | "warning" | "info" |
 export function ProjectList() {
   const { companyId } = useParams();
   const { data: projects, isLoading } = useProjects(companyId);
+  const { openProjectCreation } = useProjectCreation();
 
   return (
     <div className="p-6 lg:p-8 space-y-6">
@@ -33,7 +35,12 @@ export function ProjectList() {
             {projects?.length ?? 0} project{(projects?.length ?? 0) !== 1 ? "s" : ""}
           </p>
         </div>
-        <Button icon={<Plus className="h-3.5 w-3.5" />}>New Project</Button>
+        <Button
+          onClick={(event) => openProjectCreation(event.currentTarget)}
+          icon={<Plus className="h-3.5 w-3.5" />}
+        >
+          New Project
+        </Button>
       </div>
 
       {/* Content */}
@@ -49,7 +56,12 @@ export function ProjectList() {
           title="No projects yet"
           description="Create your first project to organize tasks and goals."
           action={
-            <Button icon={<Plus className="h-3.5 w-3.5" />}>New Project</Button>
+            <Button
+              onClick={(event) => openProjectCreation(event.currentTarget)}
+              icon={<Plus className="h-3.5 w-3.5" />}
+            >
+              New Project
+            </Button>
           }
         />
       ) : (
