@@ -882,10 +882,6 @@ function RoutineRow({
   );
 }
 
-// Mirrors the server-side company skill name contract in POST /skills/install.
-const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const SKILL_NAME_HINT = "Use lowercase letters, numbers, and single hyphens (max 64 characters)";
-
 function SkillPanel({ agents }: { agents: Agent[] }) {
   const { companyId } = useParams();
   const { data: skills, isLoading, isError, error } = useCompanySkills(companyId);
@@ -897,24 +893,15 @@ function SkillPanel({ agents }: { agents: Agent[] }) {
     "# Skill: Daily Briefing\n\nSummarize urgent approvals, active sessions, blocked work, and follow-up commitments. Return concise action items.",
   );
 
-  const trimmedName = name.trim();
-  const nameError = trimmedName && (!SKILL_NAME_PATTERN.test(trimmedName) || trimmedName.length > 64)
-    ? SKILL_NAME_HINT
-    : undefined;
-
   function handleInstall(event: FormEvent) {
     event.preventDefault();
     if (isError) {
       toast.error("Skill controls are unavailable");
       return;
     }
-    if (!trimmedName || nameError) {
-      toast.error(`Skill name is invalid. ${SKILL_NAME_HINT}.`);
-      return;
-    }
     installSkill.mutate(
       {
-        name: trimmedName,
+        name,
         source,
         provenance: "manual",
         trustLevel: "markdown_only",
@@ -990,15 +977,7 @@ function SkillPanel({ agents }: { agents: Agent[] }) {
         <h3 className="text-sm font-semibold text-text-primary font-display">
           Install skill
         </h3>
-        <Input
-          label="Name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          error={nameError}
-          maxLength={64}
-          autoCapitalize="none"
-          spellCheck={false}
-        />
+        <Input label="Name" value={name} onChange={(event) => setName(event.target.value)} />
         <Input label="Source" value={source} onChange={(event) => setSource(event.target.value)} />
         <Select
           label="Assign to agent"
@@ -1018,7 +997,7 @@ function SkillPanel({ agents }: { agents: Agent[] }) {
         <Button
           type="submit"
           loading={installSkill.isPending}
-          disabled={isError || !trimmedName || Boolean(nameError)}
+          disabled={isError}
           icon={<FileCode2 className="h-3.5 w-3.5" />}
         >
           Install skill
