@@ -212,9 +212,23 @@ export async function materializeLocalAgentSkills(
     ({ assignment }) => !validationFailureIds.has(assignment.id),
   );
   const validNames = new Set(validRows.map(({ skill }) => skill.name));
-  const skillsRoot = await prepareSkillsRoot(input.runtimePaths);
-  const previousManagedNames = await readManagedSkillNames(skillsRoot);
-  await removeRevokedManagedSkills(skillsRoot, previousManagedNames, validNames);
+  let skillsRoot: string;
+  let previousManagedNames: Set<string>;
+  try {
+    skillsRoot = await prepareSkillsRoot(input.runtimePaths);
+    previousManagedNames = await readManagedSkillNames(skillsRoot);
+    await removeRevokedManagedSkills(skillsRoot, previousManagedNames, validNames);
+  } catch (error) {
+    const now = new Date();
+    for (const { assignment } of activeRows) {
+      await input.db.drizzle
+        .update(agentSkills)
+        .set({ syncStatus: 'failed', materializedPath: null, updatedAt: now })
+        .where(eq(agentSkills.id, assignment.id));
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to prepare local skill root: ${message}`);
+  }
 
   const disabledRows = rows.filter(({ assignment }) => assignment.syncStatus === 'disabled');
   for (const { assignment } of disabledRows) {

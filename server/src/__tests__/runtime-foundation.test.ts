@@ -2602,6 +2602,58 @@ process.stdin.on("end", () => {
     expect(assignments.map((assignment) => assignment.syncStatus)).toEqual(['failed', 'failed']);
   });
 
+  it('persists sync failure when the native skill root cannot be prepared', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Blocked Native Home Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'blocked-home-skill',
+        content: '# Blocked home skill',
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-native-home-outside-'));
+    tempDirs.push(outside);
+    const adapterHome = path.join(
+      runtimeRoot,
+      companyId,
+      agent.body.data.id,
+      'codex_local',
+    );
+    await fs.mkdir(adapterHome, { recursive: true });
+    await fs.symlink(outside, path.join(adapterHome, 'codex-home'), 'dir');
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+
+    const run = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Do not follow the native-home symlink.' })
+      .expect(200);
+
+    expect(run.body.data.status).toBe('failed');
+    expect(run.body.data.transcript[0].data.message).toContain(
+      'Failed to prepare local skill root: Native CLI home must be a real directory',
+    );
+    const [assignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    expect(assignment.syncStatus).toBe('failed');
+    expect(assignment.materializedPath).toBeNull();
+  });
+
   it('removes disabled and deleted Eidolon-managed skills without pruning unmanaged skills', async () => {
     await createCliFixture();
     const agent = await request(app)
