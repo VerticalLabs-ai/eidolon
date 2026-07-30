@@ -81,6 +81,28 @@ describe('workspace diff inspection', () => {
     expect(result.truncated).toBe(true);
   });
 
+  it('never reports partial paths from truncated status output', async () => {
+    const { directory, baseSha } = await createRepository();
+    const expectedPaths = new Set<string>();
+    for (let index = 0; index < 40; index += 1) {
+      const name = `untracked-${String(index).padStart(2, '0')}-${'name'.repeat(8)}.txt`;
+      expectedPaths.add(name);
+      await writeFile(join(directory, name), 'contents\n');
+    }
+
+    const result = await inspectWorkspaceDiff({
+      workspacePath: directory,
+      baseSha,
+      maxOutputBytes: 512,
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.files.length).toBeLessThan(expectedPaths.size);
+    for (const file of result.files) {
+      expect(expectedPaths.has(file.path)).toBe(true);
+    }
+  });
+
   it('times out and terminates an unresponsive Git subprocess', async () => {
     const { directory, baseSha } = await createRepository();
     const fakeBin = await mkdtemp(join(tmpdir(), 'eidolon-fake-git-'));

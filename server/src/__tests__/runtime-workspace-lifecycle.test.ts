@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
@@ -73,6 +74,54 @@ describe('runtime workspace lease binding', () => {
       status: 'leased',
       leaseId: secondSession.body.data.environmentLeaseId,
     }));
+  });
+
+  it('finalizes a session that never bound a workspace lease', async () => {
+    const created = await createSession();
+    const sessionId = created.body.data.id as string;
+    const leaseId = created.body.data.environmentLeaseId as string;
+    // Sessions created before workspace leases existed have a NULL lease id.
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({ environmentLeaseId: null })
+      .where(eq(db.schema.agentRuntimeSessions.id, sessionId));
+
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${sessionId}/finalize`)
+      .expect(200);
+
+    const [environment] = await db.drizzle
+      .select()
+      .from(db.schema.executionEnvironments)
+      .where(eq(db.schema.executionEnvironments.id, environmentId));
+    expect(environment).toEqual(expect.objectContaining({ status: 'leased', leaseId }));
+  });
+
+  it('creates a session for an inherited environment that has no active lease', async () => {
+    const now = new Date();
+    const executionId = randomUUID();
+    await db.drizzle.insert(db.schema.agentExecutions).values({
+      id: executionId,
+      companyId,
+      agentId,
+      environmentId,
+      status: 'running',
+      startedAt: now,
+      executionMode: 'single',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const session = await new RuntimeSessionService(db).createSession({
+      companyId,
+      agentId,
+      executionId,
+      adapterId: 'process:local',
+      adapterConfig: { command: 'echo' },
+    });
+
+    expect(session.environmentId).toBe(environmentId);
+    expect(session.environmentLeaseId).toBeNull();
   });
 
   it('does not finalize or release a lease after a concurrent run claim', async () => {

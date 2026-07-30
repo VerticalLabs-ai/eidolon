@@ -223,6 +223,11 @@ export async function requireActiveWorkspaceLease(
   return requireActiveWorkspaceLeaseWithClient(db, db.drizzle, input);
 }
 
+/**
+ * Looks up an active lease owned by the given agent/execution tuple, returning `null` when
+ * there is none. Callers that must fence on an owned lease should use
+ * {@link requireActiveWorkspaceLeaseWithClient} instead.
+ */
 export async function findActiveWorkspaceLeaseForOwnerWithClient(
   db: DbInstance,
   client: WorkspaceClient,
@@ -247,10 +252,7 @@ export async function findActiveWorkspaceLeaseForOwnerWithClient(
       ),
     )
     .limit(1);
-  if (!environment?.leaseId) {
-    throw new AppError(409, 'WORKSPACE_LEASE_EXPIRED', `Environment ${input.environmentId} has no active owned lease`);
-  }
-  return environment;
+  return environment?.leaseId ? environment : null;
 }
 
 export async function requireActiveWorkspaceLeaseWithClient(

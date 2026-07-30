@@ -255,8 +255,24 @@ export async function captureWorkspaceHead(workspacePath: string): Promise<strin
   return captureResolvedWorkspaceHead(resolvedPath);
 }
 
-function parseStatus(output: string, files: Map<string, MutableWorkspaceDiffFile>): void {
+/**
+ * Splits NUL-terminated git output into records. When the output was truncated by the byte
+ * limit the trailing record is incomplete (a partial path), so it is discarded rather than
+ * reported as a real file. Complete output always ends with a NUL, so the dropped entry is
+ * an empty string in that case.
+ */
+function splitNulRecords(output: string, truncated: boolean): string[] {
   const fields = output.split('\0');
+  if (truncated) fields.pop();
+  return fields;
+}
+
+function parseStatus(
+  output: string,
+  files: Map<string, MutableWorkspaceDiffFile>,
+  truncated: boolean,
+): void {
+  const fields = splitNulRecords(output, truncated);
   for (let index = 0; index < fields.length; index += 1) {
     const field = fields[index];
     if (!field || field.length < 4) continue;
@@ -280,8 +296,12 @@ function parseStatus(output: string, files: Map<string, MutableWorkspaceDiffFile
   }
 }
 
-function parseNameStatus(output: string, files: Map<string, MutableWorkspaceDiffFile>): void {
-  const fields = output.split('\0');
+function parseNameStatus(
+  output: string,
+  files: Map<string, MutableWorkspaceDiffFile>,
+  truncated: boolean,
+): void {
+  const fields = splitNulRecords(output, truncated);
   for (let index = 0; index < fields.length; ) {
     const status = fields[index++];
     if (!status) continue;
@@ -403,8 +423,8 @@ export async function inspectWorkspaceDiff({
   ]);
 
   const files = new Map<string, MutableWorkspaceDiffFile>();
-  parseStatus(status.stdout, files);
-  parseNameStatus(nameStatus.stdout, files);
+  parseStatus(status.stdout, files, status.stdoutTruncated);
+  parseNameStatus(nameStatus.stdout, files, nameStatus.stdoutTruncated);
   const fileList = [...files.values()]
     .sort((left, right) => left.sortPath.localeCompare(right.sortPath))
     .map(({ sortPath: _sortPath, ...file }) => file);

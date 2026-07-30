@@ -198,6 +198,9 @@ export class RuntimeSessionService {
         });
         environmentLeaseId = leased.leaseId;
       } else if (environmentId) {
+        // The environment was inherited (from the task/execution) rather than requested, so an
+        // absent or expired lease must not block session creation. The session is simply created
+        // without a lease binding and `runSession` acquires one when the workspace is needed.
         const leased = await findActiveWorkspaceLeaseForOwnerWithClient(this.db, tx, {
           companyId: input.companyId,
           environmentId,
@@ -205,7 +208,7 @@ export class RuntimeSessionService {
           executionId: input.executionId ?? null,
           now,
         });
-        environmentLeaseId = leased.leaseId;
+        environmentLeaseId = leased?.leaseId ?? null;
       }
 
       const [created] = await tx
@@ -942,10 +945,10 @@ export class RuntimeSessionService {
         throw new Error(`Session ${sessionId} is already being updated`);
       }
 
-      if (updated.environmentId) {
-        if (!updated.environmentLeaseId) {
-          throw new Error(`Session ${sessionId} has no workspace lease`);
-        }
+      // Sessions created before workspace leases existed (and sessions that inherited an
+      // environment without acquiring a lease) have a NULL lease id. They must still finalize;
+      // there is simply no lease of theirs to release.
+      if (updated.environmentId && updated.environmentLeaseId) {
         const [lease] = await tx
           .select({
             leaseId: executionEnvironments.leaseId,
