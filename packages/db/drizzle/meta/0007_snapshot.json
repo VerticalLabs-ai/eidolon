@@ -2555,19 +2555,6 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "workspace_lifecycle_events_environment_id_execution_environments_id_fk": {
-          "name": "workspace_lifecycle_events_environment_id_execution_environments_id_fk",
-          "tableFrom": "workspace_lifecycle_events",
-          "tableTo": "execution_environments",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "workspace_lifecycle_events_actor_agent_id_agents_id_fk": {
           "name": "workspace_lifecycle_events_actor_agent_id_agents_id_fk",
           "tableFrom": "workspace_lifecycle_events",

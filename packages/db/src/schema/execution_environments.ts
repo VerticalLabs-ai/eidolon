@@ -59,9 +59,10 @@ export const workspaceLifecycleEvents = pgTable(
     companyId: text('company_id')
       .notNull()
       .references(() => companies.id, { onDelete: 'cascade' }),
-    environmentId: text('environment_id')
-      .notNull()
-      .references(() => executionEnvironments.id, { onDelete: 'cascade' }),
+    // This trail is append-only and must outlive the environment it describes, so the
+    // environment id is recorded as a plain value rather than a cascading foreign key.
+    // Per-tenant cleanup still happens through the cascading company reference above.
+    environmentId: text('environment_id').notNull(),
     leaseId: text('lease_id'),
     eventType: text('event_type', {
       enum: ['created', 'leased', 'released', 'finalized', 'recovered'],

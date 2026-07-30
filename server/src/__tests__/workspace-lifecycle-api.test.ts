@@ -74,7 +74,9 @@ describe('managed workspace lifecycle API', () => {
       .post(`/api/companies/${companyId}/environments/${environmentId}/heartbeat`)
       .send({ agentId, executionId, leaseId: lease.body.data.leaseId })
       .expect(200);
-    expect(new Date(heartbeat.body.data.leaseExpiresAt).getTime()).toBeGreaterThan(
+    // Expiry is `now + fixed TTL` at millisecond precision, so a heartbeat handled inside the
+    // same millisecond as the lease legitimately produces an identical expiry.
+    expect(new Date(heartbeat.body.data.leaseExpiresAt).getTime()).toBeGreaterThanOrEqual(
       new Date(lease.body.data.leaseExpiresAt).getTime(),
     );
 
