@@ -98,6 +98,24 @@ describe('Execution Environments API', () => {
       .expect(409);
   });
 
+  it('should not expose lease tokens when listing environments', async () => {
+    const { agentId, environmentId } = await createAgentAndEnvironment();
+    const executionId = await createExecution(agentId);
+    const lease = await request(app)
+      .post(`${environmentsUrl()}/${environmentId}/lease`)
+      .send({ agentId, executionId })
+      .expect(200);
+    expect(lease.body.data.leaseId).toBeTruthy();
+
+    const listed = await request(app).get(environmentsUrl()).expect(200);
+    const listedEnvironment = listed.body.data.find((row: { id: string }) => row.id === environmentId);
+
+    expect(listedEnvironment).toBeDefined();
+    expect(listedEnvironment).not.toHaveProperty('leaseId');
+    expect(listedEnvironment.leaseState).toBe('active');
+    expect(JSON.stringify(listed.body)).not.toContain(lease.body.data.leaseId);
+  });
+
   it('should reject release by non-owner with 409', async () => {
     const { agentId, environmentId } = await createAgentAndEnvironment();
     const executionId = await createExecution(agentId);
