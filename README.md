@@ -178,6 +178,8 @@ vercel integration add clerk
 vercel env pull .env.local --yes
 ```
 
+Set `NODEJS_HELPERS=0` for Vercel Production, Preview, and Development. Eidolon uses Express for request parsing and response helpers, so Vercel's injected Node compatibility helpers are redundant and can emit Node deprecation warnings on authenticated API requests.
+
 Rate-limiting is opt-in via `RATE_LIMIT_ENABLED=1` (or automatic when `NODE_ENV=production`).
 
 ## Releases
