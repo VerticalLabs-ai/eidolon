@@ -62,6 +62,30 @@ describe('managed workspace lifecycle', () => {
     ]));
   });
 
+  it('rejects leases for owners that no longer exist without leaking a database error', async () => {
+    await expect(leaseWorkspace(db, {
+      companyId,
+      environmentId,
+      agentId: '00000000-0000-0000-0000-000000000000',
+      executionId: null,
+      baseSha: null,
+    })).rejects.toMatchObject({ status: 404, code: 'AGENT_NOT_FOUND' });
+
+    await expect(leaseWorkspace(db, {
+      companyId,
+      environmentId,
+      agentId,
+      executionId: '00000000-0000-0000-0000-000000000000',
+      baseSha: null,
+    })).rejects.toMatchObject({ status: 404, code: 'EXECUTION_NOT_FOUND' });
+
+    const [environment] = await db.drizzle
+      .select({ status: db.schema.executionEnvironments.status })
+      .from(db.schema.executionEnvironments)
+      .where(eq(db.schema.executionEnvironments.id, environmentId));
+    expect(environment.status).toBe('available');
+  });
+
   it('renews only the exact active lease', async () => {
     const leasedAt = new Date('2026-07-30T12:00:00.000Z');
     const leased = await leaseWorkspace(db, {

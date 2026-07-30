@@ -165,6 +165,11 @@ export function environmentsRouter(db: DbInstance): Router {
         workspacePath: executionEnvironments.workspacePath,
         branchName: executionEnvironments.branchName,
         runtimeUrl: executionEnvironments.runtimeUrl,
+        leaseOwnerAgentId: executionEnvironments.leaseOwnerAgentId,
+        leaseOwnerExecutionId: executionEnvironments.leaseOwnerExecutionId,
+        leasedAt: executionEnvironments.leasedAt,
+        leaseHeartbeatAt: executionEnvironments.leaseHeartbeatAt,
+        leaseExpiresAt: executionEnvironments.leaseExpiresAt,
         releasedAt: executionEnvironments.releasedAt,
         metadata: executionEnvironments.metadata,
         createdAt: executionEnvironments.createdAt,
@@ -181,7 +186,18 @@ export function environmentsRouter(db: DbInstance): Router {
       .from(executionEnvironments)
       .where(eq(executionEnvironments.companyId, companyId));
 
-    res.json({ data: rows, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
+    // leaseId is a fencing token that authorizes heartbeat/release, so it is never listed;
+    // callers get the derived lease state instead.
+    const listedAt = new Date();
+    const data = rows.map((row) => ({
+      ...row,
+      leaseState: deriveWorkspaceLeaseState(
+        { status: row.status, leaseId: 'redacted', leaseExpiresAt: row.leaseExpiresAt },
+        listedAt,
+      ),
+    }));
+
+    res.json({ data, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
   });
 
   router.post('/', validate(CreateEnvironmentBody), async (req, res) => {
@@ -291,10 +307,12 @@ export function environmentsRouter(db: DbInstance): Router {
       workspacePath: await revalidateWorkspacePathContainment(companyId, row.workspacePath),
     };
 
+    // The lease token is returned to the caller that minted it, never broadcast to subscribers.
+    const { leaseId: _leaseToken, ...broadcastRow } = safeRow;
     eventBus.emitEvent({
       type: 'environment.leased',
       companyId,
-      payload: { environment: safeRow },
+      payload: { environment: broadcastRow },
       timestamp: now.toISOString(),
     });
 

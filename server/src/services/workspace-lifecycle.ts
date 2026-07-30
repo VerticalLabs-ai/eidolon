@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, lte } from 'drizzle-orm';
+import { and, eq, exists, gt, isNull, lte } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../middleware/error-handler.js';
 import type { DbInstance } from '../types.js';
@@ -88,10 +88,33 @@ export async function leaseWorkspaceWithClient(
   client: WorkspaceClient,
   input: LeaseWorkspaceInput,
 ) {
-  const { agentExecutions, executionEnvironments } = db.schema;
+  const { agentExecutions, agents, executionEnvironments } = db.schema;
   const now = input.now ?? new Date();
   const leaseId = randomUUID();
   const leaseExpiresAt = new Date(now.getTime() + WORKSPACE_LEASE_TTL_MS);
+
+  // Lease owners are foreign keys, so their existence is enforced in the same statement
+  // that writes them. Otherwise a concurrent delete turns leasing into an FK violation.
+  const agentExistsPredicate = exists(
+    client
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))),
+  );
+  const executionExistsPredicate = input.executionId
+    ? exists(
+        client
+          .select({ id: agentExecutions.id })
+          .from(agentExecutions)
+          .where(
+            and(
+              eq(agentExecutions.id, input.executionId),
+              eq(agentExecutions.companyId, input.companyId),
+              eq(agentExecutions.agentId, input.agentId),
+            ),
+          ),
+      )
+    : undefined;
 
   const [environment] = await client
     .update(executionEnvironments)
@@ -112,6 +135,8 @@ export async function leaseWorkspaceWithClient(
         eq(executionEnvironments.id, input.environmentId),
         eq(executionEnvironments.companyId, input.companyId),
         eq(executionEnvironments.status, 'available'),
+        agentExistsPredicate,
+        executionExistsPredicate,
       ),
     )
     .returning();
@@ -130,6 +155,37 @@ export async function leaseWorkspaceWithClient(
     if (!existing) {
       throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${input.environmentId} not found`);
     }
+
+    const [agent] = await client
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+      .limit(1);
+    if (!agent) {
+      throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${input.agentId} not found`);
+    }
+
+    if (input.executionId) {
+      const [execution] = await client
+        .select({ id: agentExecutions.id })
+        .from(agentExecutions)
+        .where(
+          and(
+            eq(agentExecutions.id, input.executionId),
+            eq(agentExecutions.companyId, input.companyId),
+            eq(agentExecutions.agentId, input.agentId),
+          ),
+        )
+        .limit(1);
+      if (!execution) {
+        throw new AppError(
+          404,
+          'EXECUTION_NOT_FOUND',
+          `Execution ${input.executionId} not found for agent ${input.agentId}`,
+        );
+      }
+    }
+
     throw new AppError(409, 'WORKSPACE_LEASE_CONFLICT', `Environment ${input.environmentId} is already leased`);
   }
 
