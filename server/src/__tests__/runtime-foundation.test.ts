@@ -77,6 +77,20 @@ process.stdin.on("end", () => {
     process.exit(3);
   }
   const args = process.argv.slice(2);
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const skillRoot = adapter === "codex"
+    ? path.join(process.env.CODEX_HOME, "skills")
+    : path.join(process.env.HOME, ".claude", "skills");
+  let skillFiles = [];
+  try {
+    skillFiles = fs.readdirSync(skillRoot).flatMap((name) => {
+      const skillFile = path.join(skillRoot, name, "SKILL.md");
+      return fs.existsSync(skillFile)
+        ? [path.relative(skillRoot, skillFile).split(path.sep).join("/")]
+        : [];
+    });
+  } catch {}
   const resumeIndex = adapter === "codex"
     ? args.indexOf("resume")
     : args.indexOf("--resume");
@@ -112,6 +126,7 @@ process.stdin.on("end", () => {
     hostCodexKeyLeaked:
       process.env.CODEX_API_KEY === "fixture-codex-key",
     subprocessScrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB || null,
+    skillFiles,
     args,
   }));
   if (mode === "unicode") {
@@ -601,6 +616,14 @@ process.stdin.on("end", () => {
       })
       .expect(201);
     authorizeAgent(agent.body.data.id);
+    await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'concurrent-briefing',
+        content: '# Concurrent briefing\nRemain deterministic.',
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
     const [first, second] = await Promise.all([
       request(app)
         .post(`/api/companies/${companyId}/sessions`)
@@ -643,6 +666,15 @@ process.stdin.on("end", () => {
     expect(firstMeta.data.cwd).toContain(first.body.data.id);
     expect(secondMeta.data.cwd).toContain(second.body.data.id);
     expect(firstMeta.data.cwd).not.toBe(secondMeta.data.cwd);
+    expect(firstMeta.data.skillFiles).toContain('concurrent-briefing/SKILL.md');
+    expect(secondMeta.data.skillFiles).toContain('concurrent-briefing/SKILL.md');
+    await expect(
+      fs.readFile(path.join(codexHome, 'skills', 'concurrent-briefing', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('Remain deterministic.');
+    expect(
+      (await fs.readdir(path.join(codexHome, 'skills', 'concurrent-briefing')))
+        .filter((name) => name.endsWith('.tmp')),
+    ).toEqual([]);
     await expect(fs.lstat(path.join(codexHome, 'auth.json'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
@@ -2286,6 +2318,461 @@ process.stdin.on("end", () => {
     expect(assignment.syncStatus).toBe('pending');
     expect(assignment.materializedPath).toBeNull();
     expect(assignment.lastSyncedAt).toBeNull();
+  });
+
+  it('materializes assigned company skills before Codex and Claude local execution', async () => {
+    await createCliFixture();
+
+    for (const adapterId of ['codex_local', 'claude_local'] as const) {
+      const fixtureAdapter = adapterId === 'codex_local' ? 'codex' : 'claude';
+      const skillName = `${fixtureAdapter}-briefing`;
+      const agent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: `${fixtureAdapter} skill worker`,
+          role: 'engineer',
+          adapterId,
+          adapterConfig: { env: { FIXTURE_ADAPTER: fixtureAdapter } },
+        })
+        .expect(201);
+      authorizeAgent(agent.body.data.id);
+      const installed = await request(app)
+        .post(`/api/companies/${companyId}/skills/install`)
+        .send({
+          name: skillName,
+          content: `# ${fixtureAdapter} briefing\nSummarize assigned work.`,
+          metadata: { description: `Brief work for ${fixtureAdapter}` },
+          agentIds: [agent.body.data.id],
+        })
+        .expect(201);
+      const session = await request(app)
+        .post(`/api/companies/${companyId}/sessions`)
+        .send({ agentId: agent.body.data.id })
+        .expect(201);
+
+      const run = await request(app)
+        .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+        .send({ prompt: 'Use the assigned briefing skill.' })
+        .expect(200);
+
+      expect(run.body.data.status).toBe('completed');
+      const meta = run.body.data.transcript.find(
+        (entry: any) => entry.data?.type === 'fixture.meta',
+      );
+      expect(meta.data.skillFiles).toContain(`${skillName}/SKILL.md`);
+      const [assignment] = await db.drizzle
+        .select()
+        .from(db.schema.agentSkills)
+        .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+      expect(assignment.syncStatus).toBe('synced');
+      expect(assignment.lastSyncedAt).toBeTruthy();
+      expect(assignment.materializedPath).toBe(
+        await fs.realpath(path.join(
+          runtimeRoot,
+          companyId,
+          agent.body.data.id,
+          adapterId,
+          ...(adapterId === 'codex_local' ? ['codex-home'] : ['.claude']),
+          'skills',
+          skillName,
+        )),
+      );
+      await expect(
+        fs.readFile(path.join(assignment.materializedPath!, 'SKILL.md'), 'utf8'),
+      ).resolves.toBe([
+        '---',
+        `name: ${JSON.stringify(skillName)}`,
+        `description: ${JSON.stringify(`Brief work for ${fixtureAdapter}`)}`,
+        '---',
+        '',
+        `# ${fixtureAdapter} briefing`,
+        'Summarize assigned work.',
+        '',
+      ].join('\n'));
+    }
+  });
+
+  it('refreshes changed skill content without rewriting identical native files', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Idempotent Skill Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const installBody = {
+      name: 'idempotent-briefing',
+      version: '1.0.0',
+      content: '# Briefing\nFirst version.',
+      agentIds: [agent.body.data.id],
+    };
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send(installBody)
+      .expect(201);
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'First run.' })
+      .expect(200);
+    const [firstAssignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    const skillFile = path.join(firstAssignment.materializedPath!, 'SKILL.md');
+    const firstStats = await fs.stat(skillFile);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Second run.' })
+      .expect(200);
+    expect((await fs.stat(skillFile)).mtimeMs).toBe(firstStats.mtimeMs);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({ ...installBody, content: '# Briefing\nSecond version.' })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Refresh the skill.' })
+      .expect(200);
+    await expect(fs.readFile(skillFile, 'utf8')).resolves.toContain('Second version.');
+  });
+
+  it('blocks unsupported or unsafe company skills before local CLI execution', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Untrusted Skill Worker',
+        role: 'engineer',
+        adapterId: 'claude_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'claude' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'untrusted-script',
+        trustLevel: 'scripts_executables',
+        content: '# Script\nRun an executable.',
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+
+    const run = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Do not launch.' })
+      .expect(200);
+
+    expect(run.body.data.status).toBe('failed');
+    expect(run.body.data.transcript).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ data: expect.objectContaining({ type: 'fixture.meta' }) }),
+      ]),
+    );
+    expect(run.body.data.transcript[0].data.message).toContain(
+      'trust level "scripts_executables"',
+    );
+    const [assignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    expect(assignment.syncStatus).toBe('failed');
+    expect(assignment.materializedPath).toBeNull();
+
+    const unsafeAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Unsafe Name Skill Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(unsafeAgent.body.data.id);
+    const unsafeInstalled = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: '../escape',
+        content: '# Escape',
+        agentIds: [unsafeAgent.body.data.id],
+      })
+      .expect(201);
+    const unsafeSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: unsafeAgent.body.data.id })
+      .expect(201);
+    const unsafeRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${unsafeSession.body.data.id}/run`)
+      .send({ prompt: 'Do not materialize an unsafe name.' })
+      .expect(200);
+    expect(unsafeRun.body.data.status).toBe('failed');
+    expect(unsafeRun.body.data.transcript[0].data.message).toContain(
+      'name must contain only lowercase letters, numbers, and single hyphens',
+    );
+    const [unsafeAssignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, unsafeInstalled.body.data.assignments[0].id));
+    expect(unsafeAssignment.syncStatus).toBe('failed');
+    expect(unsafeAssignment.materializedPath).toBeNull();
+  });
+
+  it('refuses symlinked native skill packages without touching the link target', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Symlink Skill Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'contained-skill',
+        content: '# Contained skill',
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-skill-outside-'));
+    tempDirs.push(outside);
+    const outsideFile = path.join(outside, 'SKILL.md');
+    await fs.writeFile(outsideFile, 'outside sentinel');
+    const skillDirectory = path.join(
+      runtimeRoot,
+      companyId,
+      agent.body.data.id,
+      'codex_local',
+      'codex-home',
+      'skills',
+      'contained-skill',
+    );
+    await fs.mkdir(path.dirname(skillDirectory), { recursive: true });
+    await fs.symlink(outside, skillDirectory, 'dir');
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+
+    const run = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Do not follow the symlink.' })
+      .expect(200);
+
+    expect(run.body.data.status).toBe('failed');
+    expect(run.body.data.transcript[0].data.message).toContain(
+      'Skill directory for "contained-skill" must be a real directory',
+    );
+    await expect(fs.readFile(outsideFile, 'utf8')).resolves.toBe('outside sentinel');
+    const [assignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    expect(assignment.syncStatus).toBe('failed');
+  });
+
+  it('rejects ambiguous assigned skill versions before local CLI execution', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Versioned Skill Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    for (const version of ['1.0.0', '2.0.0']) {
+      await request(app)
+        .post(`/api/companies/${companyId}/skills/install`)
+        .send({
+          name: 'versioned-briefing',
+          version,
+          content: `# Briefing ${version}`,
+          agentIds: [agent.body.data.id],
+        })
+        .expect(201);
+    }
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+
+    const run = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Do not choose a version implicitly.' })
+      .expect(200);
+
+    expect(run.body.data.status).toBe('failed');
+    expect(run.body.data.transcript[0].data.message).toContain(
+      'multiple assigned versions share this name',
+    );
+    const assignments = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(
+        and(
+          eq(db.schema.agentSkills.companyId, companyId),
+          eq(db.schema.agentSkills.agentId, agent.body.data.id),
+        ),
+      );
+    expect(assignments.map((assignment) => assignment.syncStatus)).toEqual(['failed', 'failed']);
+  });
+
+  it('persists sync failure when the native skill root cannot be prepared', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Blocked Native Home Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'blocked-home-skill',
+        content: '# Blocked home skill',
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-native-home-outside-'));
+    tempDirs.push(outside);
+    const adapterHome = path.join(
+      runtimeRoot,
+      companyId,
+      agent.body.data.id,
+      'codex_local',
+    );
+    await fs.mkdir(adapterHome, { recursive: true });
+    await fs.symlink(outside, path.join(adapterHome, 'codex-home'), 'dir');
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+
+    const run = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Do not follow the native-home symlink.' })
+      .expect(200);
+
+    expect(run.body.data.status).toBe('failed');
+    expect(run.body.data.transcript[0].data.message).toContain(
+      'Failed to prepare local skill root: Native CLI home must be a real directory',
+    );
+    const [assignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    expect(assignment.syncStatus).toBe('failed');
+    expect(assignment.materializedPath).toBeNull();
+  });
+
+  it('removes disabled and deleted Eidolon-managed skills without pruning unmanaged skills', async () => {
+    await createCliFixture();
+    const agent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Revocable Skill Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(agent.body.data.id);
+    const installed = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: 'revocable-briefing',
+        content: '# Revocable briefing',
+        agentIds: [agent.body.data.id],
+      })
+      .expect(201);
+    const session = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: agent.body.data.id })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Materialize once.' })
+      .expect(200);
+    const skillsRoot = path.join(
+      runtimeRoot,
+      companyId,
+      agent.body.data.id,
+      'codex_local',
+      'codex-home',
+      'skills',
+    );
+    const managedDirectory = path.join(skillsRoot, 'revocable-briefing');
+    const unmanagedDirectory = path.join(skillsRoot, 'operator-skill');
+    await fs.mkdir(unmanagedDirectory);
+    await fs.writeFile(path.join(unmanagedDirectory, 'SKILL.md'), '# Operator skill');
+
+    await db.drizzle
+      .update(db.schema.agentSkills)
+      .set({ syncStatus: 'disabled' })
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    const disabledRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Apply disablement.' })
+      .expect(200);
+    const disabledMeta = [...disabledRun.body.data.transcript]
+      .reverse()
+      .find((entry: any) => entry.data?.type === 'fixture.meta');
+    expect(disabledMeta.data.skillFiles).not.toContain('revocable-briefing/SKILL.md');
+    await expect(fs.lstat(managedDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.readFile(path.join(unmanagedDirectory, 'SKILL.md'), 'utf8')).resolves.toBe(
+      '# Operator skill',
+    );
+    const [disabledAssignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    expect(disabledAssignment.materializedPath).toBeNull();
+
+    await db.drizzle
+      .update(db.schema.agentSkills)
+      .set({ syncStatus: 'pending' })
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Materialize again.' })
+      .expect(200);
+    await db.drizzle
+      .delete(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
+    const deletedRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${session.body.data.id}/run`)
+      .send({ prompt: 'Apply deletion.' })
+      .expect(200);
+    const deletedMeta = [...deletedRun.body.data.transcript]
+      .reverse()
+      .find((entry: any) => entry.data?.type === 'fixture.meta');
+    expect(deletedMeta.data.skillFiles).not.toContain('revocable-briefing/SKILL.md');
+    await expect(fs.lstat(managedDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.lstat(unmanagedDirectory)).resolves.toBeTruthy();
   });
 
   it('creates and triggers Jarvis routines', async () => {
