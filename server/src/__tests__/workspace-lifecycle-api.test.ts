@@ -102,6 +102,8 @@ describe('managed workspace lifecycle API', () => {
       'leased',
       'created',
     ]);
+    expect(events.body.data.every((event: Record<string, unknown>) => !('leaseId' in event))).toBe(true);
+    expect(JSON.stringify(events.body)).not.toContain(lease.body.data.leaseId);
     expect(events.body.meta.total).toBe(2);
   });
 

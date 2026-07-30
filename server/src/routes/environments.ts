@@ -167,6 +167,7 @@ export function environmentsRouter(db: DbInstance): Router {
         runtimeUrl: executionEnvironments.runtimeUrl,
         leaseOwnerAgentId: executionEnvironments.leaseOwnerAgentId,
         leaseOwnerExecutionId: executionEnvironments.leaseOwnerExecutionId,
+        leaseId: executionEnvironments.leaseId,
         leasedAt: executionEnvironments.leasedAt,
         leaseHeartbeatAt: executionEnvironments.leaseHeartbeatAt,
         leaseExpiresAt: executionEnvironments.leaseExpiresAt,
@@ -189,13 +190,16 @@ export function environmentsRouter(db: DbInstance): Router {
     // leaseId is a fencing token that authorizes heartbeat/release, so it is never listed;
     // callers get the derived lease state instead.
     const listedAt = new Date();
-    const data = rows.map((row) => ({
-      ...row,
-      leaseState: deriveWorkspaceLeaseState(
-        { status: row.status, leaseId: 'redacted', leaseExpiresAt: row.leaseExpiresAt },
-        listedAt,
-      ),
-    }));
+    const data = rows.map((row) => {
+      const { leaseId, ...safeRow } = row;
+      return {
+        ...safeRow,
+        leaseState: deriveWorkspaceLeaseState(
+          { status: row.status, leaseId, leaseExpiresAt: row.leaseExpiresAt },
+          listedAt,
+        ),
+      };
+    });
 
     res.json({ data, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
   });
@@ -406,7 +410,8 @@ export function environmentsRouter(db: DbInstance): Router {
           eq(workspaceLifecycleEvents.companyId, companyId),
         )),
     ]);
-    res.json({ data: rows, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
+    const data = rows.map(({ leaseId: _leaseToken, ...event }) => event);
+    res.json({ data, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
   });
 
   router.get('/:id/diff', async (req, res) => {
