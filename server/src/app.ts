@@ -48,6 +48,10 @@ export function createApp(db: DbInstance): express.Express {
   const app = express();
   const { requireAuth, requireOrgMember } = createAuthMiddleware();
 
+  // Vercel overwrites forwarded IP headers before invoking the function.
+  // Trust only that single proxy hop; direct/self-hosted deployments stay untrusted.
+  if (process.env.VERCEL === '1') app.set('trust proxy', 1);
+
   // ---------------------------------------------------------------------------
   // CORS (must come before everything so preflight OPTIONS work)
   // ---------------------------------------------------------------------------
