@@ -43,6 +43,124 @@ describe('task checkout lifecycle migration', () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
+  it('repairs a production schema missing agent execution update timestamps', async () => {
+    const migrationsThroughSeven = await createMigrationsFolderThrough(7);
+    const migrationsThroughEight = await createMigrationsFolderThrough(8);
+    tempDirs.push(migrationsThroughSeven, migrationsThroughEight);
+
+    const client = new PGlite();
+    const migrationDb = drizzle(client);
+    try {
+      await migrate(migrationDb, { migrationsFolder: migrationsThroughSeven });
+      await migrationDb.execute(sql`
+        DROP TRIGGER IF EXISTS "agent_executions_set_updated_at" ON "agent_executions"
+      `);
+      await migrationDb.execute(sql`
+        ALTER TABLE "agent_executions" DROP COLUMN "updated_at"
+      `);
+
+      await migrate(migrationDb, { migrationsFolder: migrationsThroughEight });
+
+      const columns = await migrationDb.execute<{
+        data_type: string;
+        datetime_precision: number | null;
+        is_nullable: string;
+        column_default: string | null;
+      }>(sql`
+        SELECT data_type, datetime_precision, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_name = 'agent_executions' AND column_name = 'updated_at'
+      `);
+      const triggers = await migrationDb.execute<{
+        action_timing: string;
+        event_manipulation: string;
+        action_statement: string;
+      }>(sql`
+        SELECT action_timing, event_manipulation, action_statement
+        FROM information_schema.triggers
+        WHERE event_object_table = 'agent_executions'
+          AND trigger_name = 'agent_executions_set_updated_at'
+      `);
+
+      expect(columns.rows).toEqual([
+        expect.objectContaining({
+          data_type: 'timestamp with time zone',
+          datetime_precision: 3,
+          is_nullable: 'NO',
+          column_default: expect.stringContaining('now()'),
+        }),
+      ]);
+      expect(triggers.rows).toEqual([
+        expect.objectContaining({
+          action_timing: 'BEFORE',
+          event_manipulation: 'UPDATE',
+          action_statement: expect.stringContaining('set_agent_executions_updated_at'),
+        }),
+      ]);
+
+      // The trigger must actually maintain updated_at, not merely exist.
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const executionId = randomUUID();
+      const staleTimestamp = new Date('2026-01-01T00:00:00.000Z');
+      await migrationDb.insert(schema.companies).values({
+        id: companyId,
+        name: 'Repair Timestamps Corp',
+        status: 'active',
+        budgetMonthlyCents: 100_000,
+        spentMonthlyCents: 0,
+        settings: {},
+        createdAt: staleTimestamp,
+        updatedAt: staleTimestamp,
+      });
+      await migrationDb.insert(schema.agents).values({
+        id: agentId,
+        companyId,
+        name: 'Repair Timestamps Worker',
+        role: 'engineer',
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+        status: 'working',
+        capabilities: [],
+        config: {},
+        metadata: {},
+        permissions: [],
+        toolsEnabled: [],
+        allowedDomains: [],
+        maxConcurrentTasks: 1,
+        heartbeatIntervalSeconds: 0,
+        executionTimeoutSeconds: 600,
+        autoAssignTasks: 1,
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+        createdAt: staleTimestamp,
+        updatedAt: staleTimestamp,
+      });
+      await migrationDb.insert(schema.agentExecutions).values({
+        id: executionId,
+        companyId,
+        agentId,
+        status: 'running',
+        startedAt: staleTimestamp,
+        executionMode: 'single',
+        createdAt: staleTimestamp,
+        updatedAt: staleTimestamp,
+      });
+
+      await migrationDb.execute(sql`
+        UPDATE "agent_executions" SET "status" = 'completed' WHERE "id" = ${executionId}
+      `);
+
+      const [execution] = await migrationDb
+        .select()
+        .from(schema.agentExecutions)
+        .where(eq(schema.agentExecutions.id, executionId));
+      expect(execution.updatedAt.getTime()).toBeGreaterThan(staleTimestamp.getTime());
+    } finally {
+      await client.close();
+    }
+  });
+
   it('reconciles terminal executions that already have active checkouts', async () => {
     const migrationsFolder = await createMigrationsFolderThrough(5);
     tempDirs.push(migrationsFolder);
