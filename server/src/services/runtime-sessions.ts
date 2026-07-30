@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { DbInstance } from '../types.js';
 import eventBus from '../realtime/events.js';
@@ -18,6 +18,15 @@ import {
   runRemoteRuntimeAdapter,
   testRemoteRuntimeAdapter,
 } from './remote-runtime-adapter.js';
+import { captureWorkspaceHead, WorkspaceDiffError } from './workspace-diff.js';
+import {
+  findActiveWorkspaceLeaseForOwnerWithClient,
+  leaseWorkspaceWithClient,
+  releaseWorkspaceLeaseWithClient,
+  renewWorkspaceLease,
+  renewWorkspaceLeaseWithClient,
+  requireActiveWorkspaceLease,
+} from './workspace-lifecycle.js';
 
 export interface CreateRuntimeSessionInput {
   companyId: string;
@@ -143,6 +152,38 @@ export class RuntimeSessionService {
         ? existingExecutionEnvironmentId
         : input.environmentId;
 
+    // The diff base is captured for whichever environment may be leased below, which includes an
+    // environment inherited from the execution. A missing inherited environment is left to the
+    // lease path so it keeps surfacing as a deterministic 404 instead of a generic error.
+    let leaseBaseSha: string | null = null;
+    if (environmentId) {
+      const [environment] = await this.db.drizzle
+        .select({ workspacePath: executionEnvironments.workspacePath })
+        .from(executionEnvironments)
+        .where(
+          and(
+            eq(executionEnvironments.id, environmentId),
+            eq(executionEnvironments.companyId, input.companyId),
+          ),
+        )
+        .limit(1);
+      if (!environment && input.environmentId) {
+        throw new Error(`Environment ${input.environmentId} not found`);
+      }
+      if (environment?.workspacePath) {
+        try {
+          leaseBaseSha = await captureWorkspaceHead(environment.workspacePath);
+        } catch (error) {
+          if (
+            !(error instanceof WorkspaceDiffError) ||
+            !['WORKSPACE_PATH_NOT_FOUND', 'WORKSPACE_NOT_GIT_REPOSITORY'].includes(error.code)
+          ) {
+            throw error;
+          }
+        }
+      }
+    }
+
     const adapterId =
       input.adapterId ??
       (typeof agent.adapterId === 'string' && agent.adapterId.length > 0
@@ -150,29 +191,36 @@ export class RuntimeSessionService {
         : defaultRuntimeAdapterId(agent.provider));
 
     const [session] = await this.db.drizzle.transaction(async (tx) => {
+      let environmentLeaseId: string | null = null;
       if (input.environmentId) {
-        const [leased] = await tx
-          .update(executionEnvironments)
-          .set({
-            status: 'leased',
-            leaseOwnerAgentId: input.agentId,
-            leaseOwnerExecutionId: input.executionId ?? null,
-            leasedAt: now,
-            releasedAt: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(executionEnvironments.id, input.environmentId),
-              eq(executionEnvironments.companyId, input.companyId),
-              eq(executionEnvironments.status, 'available'),
-            ),
-          )
-          .returning();
-
-        if (!leased) {
-          throw new Error(`Environment ${input.environmentId} is not available`);
-        }
+        const leased = await leaseWorkspaceWithClient(this.db, tx, {
+          companyId: input.companyId,
+          environmentId: input.environmentId,
+          agentId: input.agentId,
+          executionId: input.executionId ?? null,
+          baseSha: leaseBaseSha,
+          now,
+        });
+        environmentLeaseId = leased.leaseId;
+      } else if (environmentId) {
+        // An inherited environment is still fenced: reuse the caller's active lease or acquire
+        // the available environment in this transaction so the resulting session is runnable.
+        const activeLease = await findActiveWorkspaceLeaseForOwnerWithClient(this.db, tx, {
+          companyId: input.companyId,
+          environmentId,
+          agentId: input.agentId,
+          executionId: input.executionId ?? null,
+          now,
+        });
+        const leased = activeLease ?? await leaseWorkspaceWithClient(this.db, tx, {
+          companyId: input.companyId,
+          environmentId,
+          agentId: input.agentId,
+          executionId: input.executionId ?? null,
+          baseSha: leaseBaseSha,
+          now,
+        });
+        environmentLeaseId = leased.leaseId;
       }
 
       const [created] = await tx
@@ -184,6 +232,7 @@ export class RuntimeSessionService {
           taskId: input.taskId ?? null,
           executionId: input.executionId ?? null,
           environmentId: environmentId ?? null,
+          environmentLeaseId,
           runId: randomUUID(),
           adapterId,
           adapterConfig: input.adapterConfig ?? agent.adapterConfig ?? {},
@@ -250,6 +299,18 @@ export class RuntimeSessionService {
     }
     if (['cancelling', 'cancelled', 'finalizing', 'finalized'].includes(session.status)) {
       throw new Error(`Session ${sessionId} cannot run while ${session.status}`);
+    }
+    if (session.environmentId) {
+      if (!session.environmentLeaseId) {
+        throw new Error(`Session ${sessionId} has no workspace lease`);
+      }
+      await requireActiveWorkspaceLease(this.db, {
+        companyId,
+        environmentId: session.environmentId,
+        agentId: session.agentId,
+        executionId: session.executionId,
+        leaseId: session.environmentLeaseId,
+      });
     }
 
     const [environment] = session.environmentId
@@ -322,6 +383,16 @@ export class RuntimeSessionService {
               ),
             );
         }
+        if (updated && session.environmentId && session.environmentLeaseId) {
+          await renewWorkspaceLeaseWithClient(this.db, tx, {
+            companyId,
+            environmentId: session.environmentId,
+            agentId: session.agentId,
+            executionId: session.executionId,
+            leaseId: session.environmentLeaseId,
+            now: startedAt,
+          });
+        }
         return updated;
       });
       if (!claimed) throw new Error(`Session ${sessionId} is already being updated`);
@@ -375,7 +446,19 @@ export class RuntimeSessionService {
             )
             .returning({ id: agentRuntimeSessions.id });
           if (!heartbeat) abortController.abort();
-          else lastHeartbeatAt = heartbeatAt.getTime();
+          else {
+            if (session.environmentId && session.environmentLeaseId) {
+              await renewWorkspaceLease(this.db, {
+                companyId,
+                environmentId: session.environmentId,
+                agentId: session.agentId,
+                executionId: session.executionId,
+                leaseId: session.environmentLeaseId,
+                now: heartbeatAt,
+              });
+            }
+            lastHeartbeatAt = heartbeatAt.getTime();
+          }
         }
       } catch {
         // A local process must not outlive Eidolon's ability to verify its
@@ -860,34 +943,51 @@ export class RuntimeSessionService {
           completedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(agentRuntimeSessions.id, sessionId), eq(agentRuntimeSessions.companyId, companyId)))
+        .where(
+          and(
+            eq(agentRuntimeSessions.id, sessionId),
+            eq(agentRuntimeSessions.companyId, companyId),
+            eq(agentRuntimeSessions.status, existing.status),
+            eq(agentRuntimeSessions.updatedAt, existing.updatedAt),
+          ),
+        )
         .returning();
 
-      if (updated.environmentId) {
-        const leaseOwnerExecutionPredicate = updated.executionId
-          ? eq(executionEnvironments.leaseOwnerExecutionId, updated.executionId)
-          : isNull(executionEnvironments.leaseOwnerExecutionId);
-        const leaseStartedAt = updated.startedAt ?? now;
+      if (!updated) {
+        throw new Error(`Session ${sessionId} is already being updated`);
+      }
 
-        await tx
-          .update(executionEnvironments)
-          .set({
-            status: 'available',
-            leaseOwnerAgentId: null,
-            leaseOwnerExecutionId: null,
-            releasedAt: now,
-            updatedAt: now,
+      // Sessions created before workspace leases existed (and sessions that inherited an
+      // environment without acquiring a lease) have a NULL lease id. They must still finalize;
+      // there is simply no lease of theirs to release.
+      if (updated.environmentId && updated.environmentLeaseId) {
+        const [lease] = await tx
+          .select({
+            leaseId: executionEnvironments.leaseId,
+            leasedAt: executionEnvironments.leasedAt,
           })
+          .from(executionEnvironments)
           .where(
             and(
               eq(executionEnvironments.id, updated.environmentId),
               eq(executionEnvironments.companyId, companyId),
-              eq(executionEnvironments.status, 'leased'),
-              eq(executionEnvironments.leaseOwnerAgentId, updated.agentId),
-              leaseOwnerExecutionPredicate,
-              eq(executionEnvironments.leasedAt, leaseStartedAt),
             ),
-          );
+          )
+          .limit(1);
+        const sessionAcquiredLease =
+          lease?.leaseId === updated.environmentLeaseId &&
+          lease.leasedAt?.getTime() === updated.startedAt?.getTime();
+        if (sessionAcquiredLease) {
+          await releaseWorkspaceLeaseWithClient(this.db, tx, {
+            companyId,
+            environmentId: updated.environmentId,
+            agentId: updated.agentId,
+            executionId: updated.executionId,
+            leaseId: updated.environmentLeaseId,
+            eventType: 'finalized',
+            now,
+          });
+        }
       }
 
       return updated;

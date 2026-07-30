@@ -88,6 +88,8 @@ describe('Runtime snapshot API', () => {
       recoveryTasks: 0,
       recentErrors: 0,
       environmentLeases: 0,
+      activeEnvironmentLeases: 0,
+      staleEnvironmentLeases: 0,
     });
     expect(res.body.data.running).toEqual([]);
     expect(res.body.data.retrying).toEqual([]);
@@ -164,7 +166,10 @@ describe('Runtime snapshot API', () => {
         workspacePath: '/tmp/eidolon-runtime-test',
         leaseOwnerAgentId: agentId,
         leaseOwnerExecutionId: runningExecutionId,
+        leaseId: randomUUID(),
         leasedAt: now,
+        leaseHeartbeatAt: now,
+        leaseExpiresAt: new Date(now.getTime() + 30_000),
       }),
       makeEnvironment(now, {
         id: secondEnvironmentId,
@@ -173,7 +178,10 @@ describe('Runtime snapshot API', () => {
         workspacePath: '/tmp/eidolon-runtime-test-2',
         leaseOwnerAgentId: agentId,
         leaseOwnerExecutionId: retryExecutionId,
+        leaseId: randomUUID(),
         leasedAt: new Date(now.getTime() - 1_000),
+        leaseHeartbeatAt: new Date(now.getTime() - 31_000),
+        leaseExpiresAt: new Date(now.getTime() - 1_000),
       }),
     ]);
 
@@ -191,6 +199,8 @@ describe('Runtime snapshot API', () => {
       recoveryTasks: 1,
       recentErrors: 1,
       environmentLeases: 2,
+      activeEnvironmentLeases: 1,
+      staleEnvironmentLeases: 1,
     });
     expect(snapshot.running[0]).toEqual(expect.objectContaining({
       executionId: runningExecutionId,
@@ -225,7 +235,9 @@ describe('Runtime snapshot API', () => {
     expect(snapshot.environmentLeases[0]).toEqual(expect.objectContaining({
       id: environmentId,
       leaseOwnerExecutionId: runningExecutionId,
+      leaseState: 'active',
     }));
+    expect(snapshot.environmentLeases[0]).not.toHaveProperty('leaseId');
     expect(snapshot.pagination.environmentLeases.total).toBe(2);
 
     const pagedPastEnd = await request(app)

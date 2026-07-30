@@ -22,6 +22,7 @@ export const agentRuntimeSessions = pgTable(
     taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
     executionId: text('execution_id').references(() => agentExecutions.id, { onDelete: 'set null' }),
     environmentId: text('environment_id').references(() => executionEnvironments.id, { onDelete: 'set null' }),
+    environmentLeaseId: text('environment_lease_id'),
     runId: text('run_id').notNull(),
     adapterId: text('adapter_id').notNull(),
     adapterConfig: jsonb('adapter_config')
@@ -63,6 +64,7 @@ export const agentRuntimeSessions = pgTable(
     index('idx_agent_runtime_sessions_company_status').on(table.companyId, table.status),
     index('idx_agent_runtime_sessions_agent').on(table.agentId, table.createdAt),
     index('idx_agent_runtime_sessions_environment').on(table.environmentId),
+    index('idx_agent_runtime_sessions_environment_lease').on(table.environmentId, table.environmentLeaseId),
   ],
 );
 

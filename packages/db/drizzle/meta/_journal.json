@@ -50,6 +50,13 @@
       "when": 1785172663102,
       "tag": "0006_task_checkout_lifecycle_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785430692334,
+      "tag": "0007_good_tenebrous",
+      "breakpoints": true
     }
   ]
 }
