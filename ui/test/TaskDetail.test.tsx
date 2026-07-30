@@ -14,6 +14,16 @@ const mocks = vi.hoisted(() => ({
   subtreeMutate: vi.fn(),
   decideApprovalMutate: vi.fn(),
   markInboxReadMutate: vi.fn(() => Promise.resolve({})),
+  threadRefetch: vi.fn(),
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: mocks.toastError,
+    success: mocks.toastSuccess,
+  },
 }));
 
 vi.mock("@/lib/hooks", () => ({
@@ -89,7 +99,13 @@ describe("TaskDetail", () => {
     vi.clearAllMocks();
     mocks.useTask.mockReturnValue({ data: task, isLoading: false });
     mocks.useTasks.mockReturnValue({ data: [] });
-    mocks.useTaskThread.mockReturnValue({ data: [] });
+    mocks.useTaskThread.mockReturnValue({
+      data: [],
+      error: null,
+      isError: false,
+      isFetching: false,
+      refetch: mocks.threadRefetch,
+    });
   });
 
   it("renders loading skeleton when task is loading", () => {
@@ -228,8 +244,50 @@ describe("TaskDetail", () => {
     await user.click(screen.getByRole("button", { name: "Add comment" }));
 
     expect(mocks.addCommentMutate).toHaveBeenCalledWith(
-      { taskId: "task-1", content: "Restart with smaller batch." },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
+      {
+        taskId: "task-1",
+        content: "Restart with smaller batch.",
+        idempotencyKey: expect.any(String),
+      },
+      expect.objectContaining({
+        onError: expect.any(Function),
+        onSuccess: expect.any(Function),
+      }),
+    );
+  });
+
+  it("shows thread read failures and lets the operator retry", async () => {
+    const user = userEvent.setup();
+    mocks.useTaskThread.mockReturnValue({
+      data: [],
+      error: new Error("Request failed: Internal Server Error"),
+      isError: true,
+      isFetching: false,
+      refetch: mocks.threadRefetch,
+    });
+
+    renderTaskDetail();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load the task thread");
+    expect(screen.queryByText("No comments, approvals, or execution events yet.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry thread" }));
+    expect(mocks.threadRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the comment draft when read-after-write confirmation fails", async () => {
+    const user = userEvent.setup();
+    mocks.addCommentMutate.mockImplementation((_args, options) => {
+      options.onError(new Error("Comment reached the server but could not be confirmed."));
+    });
+
+    renderTaskDetail();
+    const comment = screen.getByLabelText("Comment");
+    await user.type(comment, "Keep this draft.");
+    await user.click(screen.getByRole("button", { name: "Add comment" }));
+
+    expect(comment).toHaveValue("Keep this draft.");
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.stringContaining("Comment was not confirmed"),
     );
   });
 

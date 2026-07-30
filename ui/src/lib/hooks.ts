@@ -181,10 +181,22 @@ export function useCreateTask(companyId: string) {
 export function useAddTaskComment(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: { taskId: string; content: string }) =>
-      api.addTaskComment(companyId, args.taskId, args.content),
-    onSuccess: (_data, args) => {
-      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId, "thread"] });
+    mutationFn: async (args: { taskId: string; content: string; idempotencyKey: string }) => {
+      const created = unwrap<api.TaskThreadItem>(
+        await api.addTaskComment(companyId, args.taskId, args.content, args.idempotencyKey),
+      );
+      const thread = unwrap<api.TaskThreadItem[]>(
+        await api.getTaskThread(companyId, args.taskId),
+      );
+      if (thread.filter((item) => item.id === created.id).length !== 1) {
+        throw new Error(
+          "Comment reached the server but could not be confirmed. Your draft is still here; retry after reloading the thread.",
+        );
+      }
+      return thread;
+    },
+    onSuccess: (thread, args) => {
+      qc.setQueryData(["tasks", companyId, args.taskId, "thread"], thread);
     },
   });
 }

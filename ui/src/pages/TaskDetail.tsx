@@ -90,7 +90,13 @@ export function TaskDetail() {
   const { companyId, taskId } = useParams();
   const [searchParams] = useSearchParams();
   const { data: task, isLoading } = useTask(companyId, taskId);
-  const { data: thread = [] } = useTaskThread(companyId, taskId);
+  const {
+    data: thread = [],
+    error: threadError,
+    isError: isThreadError,
+    isFetching: isThreadFetching,
+    refetch: refetchThread,
+  } = useTaskThread(companyId, taskId);
   const updateTask = useUpdateTask(companyId!);
   const addComment = useAddTaskComment(companyId!);
   const respondInteraction = useRespondTaskInteraction(companyId!);
@@ -98,6 +104,7 @@ export function TaskDetail() {
   const decideApproval = useDecideApproval(companyId!);
   const markInboxRead = useMarkInboxRead(companyId!);
   const markInboxReadRef = useRef(markInboxRead.mutateAsync);
+  const pendingCommentRef = useRef<{ content: string; idempotencyKey: string } | null>(null);
   const pendingInboxItemRef = useRef<string | null>(null);
   markInboxReadRef.current = markInboxRead.mutateAsync;
   const [comment, setComment] = useState("");
@@ -176,9 +183,22 @@ export function TaskDetail() {
   const submitComment = () => {
     const content = comment.trim();
     if (!content) return;
+    const pendingComment = pendingCommentRef.current?.content === content
+      ? pendingCommentRef.current
+      : { content, idempotencyKey: crypto.randomUUID() };
+    pendingCommentRef.current = pendingComment;
     addComment.mutate(
-      { taskId: task.id, content },
-      { onSuccess: () => setComment("") },
+      { taskId: task.id, ...pendingComment },
+      {
+        onSuccess: () => {
+          pendingCommentRef.current = null;
+          setComment("");
+        },
+        onError: (error) => {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          toast.error(`Comment was not confirmed: ${message}`);
+        },
+      },
     );
   };
   const clearFormAnswer = (interactionId: string) => {
@@ -320,7 +340,22 @@ export function TaskDetail() {
               </h3>
             </div>
             <div className="divide-y divide-white/[0.06]">
-              {sortedThread.length === 0 ? (
+              {isThreadError ? (
+                <div className="space-y-3 p-6 text-sm" role="alert">
+                  <p className="font-medium text-error">Could not load the task thread.</p>
+                  <p className="text-text-secondary">
+                    {threadError instanceof Error ? threadError.message : "Try loading the thread again."}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={isThreadFetching}
+                    onClick={() => void refetchThread()}
+                  >
+                    Retry thread
+                  </Button>
+                </div>
+              ) : sortedThread.length === 0 ? (
                 <p className="p-6 text-center text-sm text-text-secondary">
                   No comments, approvals, or execution events yet.
                 </p>

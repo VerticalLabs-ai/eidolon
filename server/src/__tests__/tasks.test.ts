@@ -606,23 +606,35 @@ describe('Tasks API', () => {
         .send({ title: 'Discuss Me' });
       const taskId = taskRes.body.data.id;
 
-      await request(app)
+      const created = await request(app)
         .post(`${taskUrl(taskId)}/thread/comments`)
-        .send({ content: 'Operator context for the agent.' })
+        .send({
+          content: 'Operator context for the agent.',
+          idempotencyKey: 'operator-comment-1',
+        })
         .expect(201);
+
+      const duplicate = await request(app)
+        .post(`${taskUrl(taskId)}/thread/comments`)
+        .send({
+          content: 'Operator context for the agent.',
+          idempotencyKey: 'operator-comment-1',
+        })
+        .expect(201);
+
+      expect(duplicate.body.data.id).toBe(created.body.data.id);
 
       const res = await request(app)
         .get(`${taskUrl(taskId)}/thread`)
         .expect(200);
 
-      expect(res.body.data).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            kind: 'comment',
-            content: 'Operator context for the agent.',
-          }),
-        ]),
-      );
+      const comments = res.body.data.filter((item: any) => item.kind === 'comment');
+      expect(comments).toEqual([
+        expect.objectContaining({
+          id: created.body.data.id,
+          content: 'Operator context for the agent.',
+        }),
+      ]);
     });
 
     it('should make suggested-task decisions idempotent and create child tasks once', async () => {

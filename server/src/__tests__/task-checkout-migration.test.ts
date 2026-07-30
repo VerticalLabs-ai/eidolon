@@ -43,6 +43,43 @@ describe('task checkout lifecycle migration', () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
+  it('repairs a production schema missing agent execution update timestamps', async () => {
+    const migrationsThroughSeven = await createMigrationsFolderThrough(7);
+    const migrationsThroughEight = await createMigrationsFolderThrough(8);
+    tempDirs.push(migrationsThroughSeven, migrationsThroughEight);
+
+    const client = new PGlite();
+    const migrationDb = drizzle(client);
+    try {
+      await migrate(migrationDb, { migrationsFolder: migrationsThroughSeven });
+      await migrationDb.execute(sql`
+        DROP TRIGGER IF EXISTS "agent_executions_set_updated_at" ON "agent_executions"
+      `);
+      await migrationDb.execute(sql`
+        ALTER TABLE "agent_executions" DROP COLUMN "updated_at"
+      `);
+
+      await migrate(migrationDb, { migrationsFolder: migrationsThroughEight });
+
+      const columns = await migrationDb.execute<{ column_name: string }>(sql`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'agent_executions' AND column_name = 'updated_at'
+      `);
+      const triggers = await migrationDb.execute<{ trigger_name: string }>(sql`
+        SELECT trigger_name
+        FROM information_schema.triggers
+        WHERE event_object_table = 'agent_executions'
+          AND trigger_name = 'agent_executions_set_updated_at'
+      `);
+
+      expect(columns.rows).toHaveLength(1);
+      expect(triggers.rows).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
+  });
+
   it('reconciles terminal executions that already have active checkouts', async () => {
     const migrationsFolder = await createMigrationsFolderThrough(5);
     tempDirs.push(migrationsFolder);
