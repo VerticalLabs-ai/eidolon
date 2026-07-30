@@ -47,6 +47,11 @@ async function request<T>(
 
 // ── Types (match server response shapes) ─────────────────────────────────
 
+export interface ApiResponse<T> {
+  data: T;
+  meta?: unknown;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -241,7 +246,7 @@ export const getProjects = (companyId: string) =>
   request<Project[]>(`/companies/${companyId}/projects`);
 
 export const createProject = (companyId: string, data: CreateProjectInput) =>
-  request<Project>(`/companies/${companyId}/projects`, {
+  request<ApiResponse<Project>>(`/companies/${companyId}/projects`, {
     method: "POST",
     body: JSON.stringify(data),
   });
