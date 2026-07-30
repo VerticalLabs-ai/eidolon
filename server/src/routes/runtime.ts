@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import logger from '../utils/logger.js';
+import { deriveWorkspaceLeaseState } from '../services/workspace-lifecycle.js';
 
 const RUNTIME_TOTALS_WINDOW_DAYS = 30;
 const RUNTIME_TOTALS_CACHE_TTL_MS = 15_000;
@@ -358,6 +359,8 @@ export function runtimeRouter(db: DbInstance): Router {
             leaseOwnerAgentId: executionEnvironments.leaseOwnerAgentId,
             leaseOwnerExecutionId: executionEnvironments.leaseOwnerExecutionId,
             leasedAt: executionEnvironments.leasedAt,
+            leaseHeartbeatAt: executionEnvironments.leaseHeartbeatAt,
+            leaseExpiresAt: executionEnvironments.leaseExpiresAt,
           })
           .from(executionEnvironments)
           .where(leasedEnvironmentsWhere)
@@ -365,7 +368,11 @@ export function runtimeRouter(db: DbInstance): Router {
           .limit(query.environmentLeaseLimit)
           .offset(query.environmentLeaseOffset),
         db.drizzle
-          .select({ total: sql<number>`count(*)` })
+          .select({
+            total: sql<number>`count(*)`,
+            active: sql<number>`count(*) filter (where ${executionEnvironments.leaseExpiresAt} > ${generatedAt})`,
+            stale: sql<number>`count(*) filter (where ${executionEnvironments.leaseExpiresAt} is null or ${executionEnvironments.leaseExpiresAt} <= ${generatedAt})`,
+          })
           .from(executionEnvironments)
           .where(leasedEnvironmentsWhere),
       ]);
@@ -419,6 +426,8 @@ export function runtimeRouter(db: DbInstance): Router {
             recoveryTasks: recoveryTotal,
             recentErrors: recentErrorsTotal,
             environmentLeases: environmentLeaseTotal,
+            activeEnvironmentLeases: Number(environmentLeaseCount?.active ?? 0),
+            staleEnvironmentLeases: Number(environmentLeaseCount?.stale ?? 0),
           },
           pageSize: {
             running: running.length,
@@ -482,7 +491,14 @@ export function runtimeRouter(db: DbInstance): Router {
           })),
           environmentLeases: environmentLeases.map((row) => ({
             ...row,
+            leaseState: deriveWorkspaceLeaseState({
+              status: row.status,
+              leaseId: 'redacted',
+              leaseExpiresAt: row.leaseExpiresAt,
+            }, generatedAt),
             leasedAt: row.leasedAt?.toISOString() ?? null,
+            leaseHeartbeatAt: row.leaseHeartbeatAt?.toISOString() ?? null,
+            leaseExpiresAt: row.leaseExpiresAt?.toISOString() ?? null,
           })),
         },
       });

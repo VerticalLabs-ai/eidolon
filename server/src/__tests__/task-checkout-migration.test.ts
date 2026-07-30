@@ -133,7 +133,7 @@ describe('task checkout lifecycle migration', () => {
       );
       await fs.writeFile(
         path.join(migrationsFolder, 'meta/_journal.json'),
-        JSON.stringify(journal, null, 2),
+        JSON.stringify({ ...journal, entries: journal.entries.slice(0, 7) }, null, 2),
       );
       await migrate(migrationDb, { migrationsFolder });
 

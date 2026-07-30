@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, eq, exists, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -10,6 +10,19 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import {
+  deriveWorkspaceLeaseState,
+  leaseWorkspace,
+  recordWorkspaceLifecycleEventWithClient,
+  recoverWorkspaceLease,
+  releaseWorkspaceLease,
+  renewWorkspaceLease,
+} from '../services/workspace-lifecycle.js';
+import {
+  captureWorkspaceHead,
+  inspectWorkspaceDiff,
+  WorkspaceDiffError,
+} from '../services/workspace-diff.js';
 
 const CreateEnvironmentBody = z.object({
   name: z.string().min(1).max(255),
@@ -27,13 +40,21 @@ const LeaseEnvironmentBody = z.object({
 const ReleaseEnvironmentBody = z.object({
   agentId: z.string().uuid(),
   executionId: z.string().uuid(),
+  leaseId: z.string().uuid(),
 });
+
+const HeartbeatEnvironmentBody = ReleaseEnvironmentBody;
 
 const AssignEnvironmentBody = z.object({
   agentId: z.string().uuid(),
 });
 
 const EnvironmentListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+const EnvironmentEventsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -129,7 +150,7 @@ async function normalizeWorkspacePath(companyId: string, workspacePath?: string)
 
 export function environmentsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { executionEnvironments, agents, agentExecutions } = db.schema;
+  const { executionEnvironments, workspaceLifecycleEvents, agents, agentExecutions } = db.schema;
 
   router.get('/', validate(EnvironmentListQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
@@ -155,22 +176,32 @@ export function environmentsRouter(db: DbInstance): Router {
     const companyId = routeParams(req).companyId;
     const now = new Date();
 
-    const [row] = await db.drizzle
-      .insert(executionEnvironments)
-      .values({
-        id: randomUUID(),
+    const workspacePath = await normalizeWorkspacePath(companyId, body.workspacePath);
+    const row = await db.drizzle.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(executionEnvironments)
+        .values({
+          id: randomUUID(),
+          companyId,
+          name: body.name,
+          provider: 'local',
+          status: 'available',
+          workspacePath,
+          branchName: body.branchName ?? null,
+          runtimeUrl: body.runtimeUrl ?? null,
+          metadata: body.metadata,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+      await recordWorkspaceLifecycleEventWithClient(db, tx, {
         companyId,
-        name: body.name,
-        provider: 'local',
-        status: 'available',
-        workspacePath: await normalizeWorkspacePath(companyId, body.workspacePath),
-        branchName: body.branchName ?? null,
-        runtimeUrl: body.runtimeUrl ?? null,
-        metadata: body.metadata,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+        environmentId: created.id,
+        eventType: 'created',
+        now,
+      });
+      return created;
+    });
 
     eventBus.emitEvent({
       type: 'environment.created',
@@ -186,88 +217,14 @@ export function environmentsRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof LeaseEnvironmentBody>;
     const { id, companyId } = routeParams(req);
     const now = new Date();
-
-    const row = await db.drizzle.transaction(async (tx) => {
-      const [leased] = await tx
-        .update(executionEnvironments)
-        .set({
-          status: 'leased',
-          leaseOwnerAgentId: body.agentId,
-          leaseOwnerExecutionId: body.executionId,
-          leasedAt: now,
-          releasedAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(executionEnvironments.id, id),
-            eq(executionEnvironments.companyId, companyId),
-            eq(executionEnvironments.status, 'available'),
-            exists(
-              tx
-                .select({ id: agents.id })
-                .from(agents)
-                .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId))),
-            ),
-            exists(
-              tx
-                .select({ id: agentExecutions.id })
-                .from(agentExecutions)
-                .where(
-                  and(
-                    eq(agentExecutions.id, body.executionId),
-                    eq(agentExecutions.agentId, body.agentId),
-                    eq(agentExecutions.companyId, companyId),
-                  ),
-                ),
-            ),
-          ),
-        )
-        .returning();
-
-      if (leased) {
-        await tx
-          .update(agentExecutions)
-          .set({ environmentId: leased.id, lastEventAt: now })
-          .where(
-            and(
-              eq(agentExecutions.id, body.executionId),
-              eq(agentExecutions.companyId, companyId),
-              eq(agentExecutions.agentId, body.agentId),
-            ),
-          );
-      }
-
-      return leased ?? null;
-    });
-
-    if (!row) {
-      const [agent] = await db.drizzle
+    const [agent, execution, environment] = await Promise.all([
+      db.drizzle
         .select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.id, body.agentId), eq(agents.companyId, companyId)))
-        .limit(1);
-
-      if (!agent) {
-        throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${body.agentId} not found`);
-      }
-
-      const [environment] = await db.drizzle
-        .select({ id: executionEnvironments.id })
-        .from(executionEnvironments)
-        .where(
-          and(
-            eq(executionEnvironments.id, id),
-            eq(executionEnvironments.companyId, companyId),
-          ),
-        )
-        .limit(1);
-
-      if (!environment) {
-        throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
-      }
-
-      const [execution] = await db.drizzle
+        .limit(1)
+        .then(([row]) => row),
+      db.drizzle
         .select({ id: agentExecutions.id })
         .from(agentExecutions)
         .where(
@@ -277,14 +234,44 @@ export function environmentsRouter(db: DbInstance): Router {
             eq(agentExecutions.agentId, body.agentId),
           ),
         )
-        .limit(1);
-
-      if (!execution) {
-        throw new AppError(404, 'EXECUTION_NOT_FOUND', `Execution ${body.executionId} not found for agent ${body.agentId}`);
-      }
-
-      throw new AppError(409, 'ENVIRONMENT_NOT_AVAILABLE', `Environment ${id} is not available`);
+        .limit(1)
+        .then(([row]) => row),
+      db.drizzle
+        .select({ workspacePath: executionEnvironments.workspacePath })
+        .from(executionEnvironments)
+        .where(and(eq(executionEnvironments.id, id), eq(executionEnvironments.companyId, companyId)))
+        .limit(1)
+        .then(([row]) => row),
+    ]);
+    if (!agent) throw new AppError(404, 'AGENT_NOT_FOUND', `Agent ${body.agentId} not found`);
+    if (!execution) {
+      throw new AppError(404, 'EXECUTION_NOT_FOUND', `Execution ${body.executionId} not found for agent ${body.agentId}`);
     }
+    if (!environment) throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
+
+    const workspacePath = await revalidateWorkspacePathContainment(companyId, environment.workspacePath);
+    let baseSha: string | null = null;
+    if (workspacePath) {
+      try {
+        baseSha = await captureWorkspaceHead(workspacePath);
+      } catch (error) {
+        if (
+          !(error instanceof WorkspaceDiffError) ||
+          !['WORKSPACE_PATH_NOT_FOUND', 'WORKSPACE_NOT_GIT_REPOSITORY'].includes(error.code)
+        ) {
+          throw error;
+        }
+      }
+    }
+
+    const row = await leaseWorkspace(db, {
+      companyId,
+      environmentId: id,
+      agentId: body.agentId,
+      executionId: body.executionId,
+      baseSha,
+      now,
+    });
 
     const safeRow = {
       ...row,
@@ -305,66 +292,14 @@ export function environmentsRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof ReleaseEnvironmentBody>;
     const { id, companyId } = routeParams(req);
     const now = new Date();
-
-    const row = await db.drizzle.transaction(async (tx) => {
-      const [released] = await tx
-        .update(executionEnvironments)
-        .set({
-          status: 'available',
-          leaseOwnerAgentId: null,
-          leaseOwnerExecutionId: null,
-          releasedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(executionEnvironments.id, id),
-            eq(executionEnvironments.companyId, companyId),
-            eq(executionEnvironments.status, 'leased'),
-            eq(executionEnvironments.leaseOwnerAgentId, body.agentId),
-            eq(executionEnvironments.leaseOwnerExecutionId, body.executionId),
-          ),
-        )
-        .returning();
-
-      if (released) {
-        await tx
-          .update(agentExecutions)
-          .set({ environmentId: null, lastEventAt: now })
-          .where(
-            and(
-              eq(agentExecutions.id, body.executionId),
-              eq(agentExecutions.companyId, companyId),
-              eq(agentExecutions.agentId, body.agentId),
-            ),
-          );
-      }
-
-      return released ?? null;
+    const row = await releaseWorkspaceLease(db, {
+      companyId,
+      environmentId: id,
+      agentId: body.agentId,
+      executionId: body.executionId,
+      leaseId: body.leaseId,
+      now,
     });
-
-    if (!row) {
-      const [environment] = await db.drizzle
-        .select({ id: executionEnvironments.id })
-        .from(executionEnvironments)
-        .where(
-          and(
-            eq(executionEnvironments.id, id),
-            eq(executionEnvironments.companyId, companyId),
-          ),
-        )
-        .limit(1);
-
-      if (!environment) {
-        throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
-      }
-
-      throw new AppError(
-        409,
-        'ENVIRONMENT_LEASE_OWNER_MISMATCH',
-        `Environment ${id} can only be released by its lease owner`,
-      );
-    }
 
     const safeRow = {
       ...row,
@@ -379,6 +314,105 @@ export function environmentsRouter(db: DbInstance): Router {
     });
 
     res.json({ data: safeRow });
+  });
+
+  router.post('/:id/heartbeat', validate(HeartbeatEnvironmentBody), async (req, res) => {
+    const body = req.body as z.infer<typeof HeartbeatEnvironmentBody>;
+    const { id, companyId } = routeParams(req);
+    const row = await renewWorkspaceLease(db, {
+      companyId,
+      environmentId: id,
+      agentId: body.agentId,
+      executionId: body.executionId,
+      leaseId: body.leaseId,
+    });
+    res.json({ data: row });
+  });
+
+  router.post('/:id/recover', async (req, res) => {
+    const { id, companyId } = routeParams(req);
+    const row = await recoverWorkspaceLease(db, { companyId, environmentId: id });
+    eventBus.emitEvent({
+      type: 'environment.recovered' as any,
+      companyId,
+      payload: { environment: row },
+      timestamp: new Date().toISOString(),
+    });
+    res.json({ data: row });
+  });
+
+  router.get('/:id/events', validate(EnvironmentEventsQuery, 'query'), async (req, res) => {
+    const { id, companyId } = routeParams(req);
+    const query = (req as any).validated.query as z.infer<typeof EnvironmentEventsQuery>;
+    const environment = await db.drizzle
+      .select({ id: executionEnvironments.id })
+      .from(executionEnvironments)
+      .where(and(eq(executionEnvironments.id, id), eq(executionEnvironments.companyId, companyId)))
+      .limit(1)
+      .then(([row]) => row);
+    if (!environment) throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
+
+    const [rows, [{ total }]] = await Promise.all([
+      db.drizzle
+        .select()
+        .from(workspaceLifecycleEvents)
+        .where(and(
+          eq(workspaceLifecycleEvents.environmentId, id),
+          eq(workspaceLifecycleEvents.companyId, companyId),
+        ))
+        .orderBy(desc(workspaceLifecycleEvents.createdAt))
+        .limit(query.limit)
+        .offset(query.offset),
+      db.drizzle
+        .select({ total: sql<number>`count(*)` })
+        .from(workspaceLifecycleEvents)
+        .where(and(
+          eq(workspaceLifecycleEvents.environmentId, id),
+          eq(workspaceLifecycleEvents.companyId, companyId),
+        )),
+    ]);
+    res.json({ data: rows, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
+  });
+
+  router.get('/:id/diff', async (req, res) => {
+    const { id, companyId } = routeParams(req);
+    const environment = await db.drizzle
+      .select()
+      .from(executionEnvironments)
+      .where(and(eq(executionEnvironments.id, id), eq(executionEnvironments.companyId, companyId)))
+      .limit(1)
+      .then(([row]) => row);
+    if (!environment) throw new AppError(404, 'ENVIRONMENT_NOT_FOUND', `Environment ${id} not found`);
+    const workspacePath = await revalidateWorkspacePathContainment(companyId, environment.workspacePath);
+    if (!workspacePath) {
+      throw new AppError(404, 'WORKSPACE_PATH_NOT_FOUND', `Environment ${id} does not have a workspace path`);
+    }
+    if (!environment.leaseBaseSha) {
+      throw new AppError(409, 'WORKSPACE_DIFF_BASE_UNAVAILABLE', `Environment ${id} has no captured diff base`);
+    }
+
+    try {
+      const diff = await inspectWorkspaceDiff({ workspacePath, baseSha: environment.leaseBaseSha });
+      res.json({
+        data: {
+          environmentId: id,
+          leaseState: deriveWorkspaceLeaseState(environment),
+          branch: environment.branchName,
+          ...diff,
+          generatedAt: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof WorkspaceDiffError)) throw error;
+      const status = error.code === 'WORKSPACE_PATH_NOT_FOUND'
+        ? 404
+        : error.code === 'WORKSPACE_NOT_GIT_REPOSITORY'
+          ? 422
+          : error.code === 'WORKSPACE_DIFF_BASE_UNAVAILABLE'
+            ? 409
+            : 500;
+      throw new AppError(status, error.code, error.message);
+    }
   });
 
   router.post('/:id/assign', validate(AssignEnvironmentBody), async (req, res) => {

@@ -2025,6 +2025,7 @@ process.stdin.on("end", () => {
       .send({})
       .expect(201);
     const previousLeaseAt = new Date(Date.now() - 60_000);
+    const existingLeaseId = randomUUID();
 
     await db.drizzle
       .update(db.schema.agentExecutions)
@@ -2036,7 +2037,10 @@ process.stdin.on("end", () => {
         status: 'leased',
         leaseOwnerAgentId: agent.body.data.id,
         leaseOwnerExecutionId: execution.body.data.id,
+        leaseId: existingLeaseId,
         leasedAt: previousLeaseAt,
+        leaseHeartbeatAt: new Date(),
+        leaseExpiresAt: new Date(Date.now() + 30_000),
       })
       .where(eq(db.schema.executionEnvironments.id, environment.body.data.id));
 
@@ -2050,6 +2054,7 @@ process.stdin.on("end", () => {
 
     expect(session.body.data.adapterConfig).toEqual({ preset: 'desktop-assistant' });
     expect(session.body.data.environmentId).toBe(environment.body.data.id);
+    expect(session.body.data.environmentLeaseId).toBe(existingLeaseId);
 
     const nullEnvironmentSession = await request(app)
       .post(`/api/companies/${companyId}/sessions`)

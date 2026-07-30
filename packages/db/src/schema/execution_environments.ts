@@ -25,7 +25,11 @@ export const executionEnvironments = pgTable(
     runtimeUrl: text('runtime_url'),
     leaseOwnerAgentId: text('lease_owner_agent_id').references(() => agents.id, { onDelete: 'set null' }),
     leaseOwnerExecutionId: text('lease_owner_execution_id').references(() => agentExecutions.id, { onDelete: 'set null' }),
+    leaseId: text('lease_id'),
     leasedAt: timestamp('leased_at', { mode: 'date', precision: 3, withTimezone: true }),
+    leaseHeartbeatAt: timestamp('lease_heartbeat_at', { mode: 'date', precision: 3, withTimezone: true }),
+    leaseExpiresAt: timestamp('lease_expires_at', { mode: 'date', precision: 3, withTimezone: true }),
+    leaseBaseSha: text('lease_base_sha'),
     releasedAt: timestamp('released_at', { mode: 'date', precision: 3, withTimezone: true }),
     metadata: jsonb('metadata')
       .notNull()
@@ -42,5 +46,39 @@ export const executionEnvironments = pgTable(
     index('idx_execution_environments_company').on(table.companyId, table.status),
     index('idx_execution_environments_lease').on(table.leaseOwnerAgentId),
     index('idx_execution_environments_execution').on(table.leaseOwnerExecutionId),
+    index('idx_execution_environments_lease_expiry').on(table.companyId, table.status, table.leaseExpiresAt),
+  ],
+);
+
+export const workspaceLifecycleEvents = pgTable(
+  'workspace_lifecycle_events',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => randomUUID()),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'cascade' }),
+    environmentId: text('environment_id')
+      .notNull()
+      .references(() => executionEnvironments.id, { onDelete: 'cascade' }),
+    leaseId: text('lease_id'),
+    eventType: text('event_type', {
+      enum: ['created', 'leased', 'released', 'finalized', 'recovered'],
+    }).notNull(),
+    actorAgentId: text('actor_agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    actorExecutionId: text('actor_execution_id').references(() => agentExecutions.id, { onDelete: 'set null' }),
+    metadata: jsonb('metadata')
+      .notNull()
+      .$type<Record<string, unknown>>()
+      .default({}),
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index('idx_workspace_lifecycle_events_environment').on(table.environmentId, table.createdAt),
+    index('idx_workspace_lifecycle_events_company').on(table.companyId, table.createdAt),
+    index('idx_workspace_lifecycle_events_lease').on(table.leaseId),
   ],
 );

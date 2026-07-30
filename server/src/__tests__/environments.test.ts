@@ -101,7 +101,7 @@ describe('Execution Environments API', () => {
   it('should reject release by non-owner with 409', async () => {
     const { agentId, environmentId } = await createAgentAndEnvironment();
     const executionId = await createExecution(agentId);
-    await request(app)
+    const lease = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
       .send({ agentId, executionId })
       .expect(200);
@@ -112,7 +112,11 @@ describe('Execution Environments API', () => {
     const otherExecutionId = await createExecution(otherAgent.body.data.id);
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
-      .send({ agentId: otherAgent.body.data.id, executionId: otherExecutionId })
+      .send({
+        agentId: otherAgent.body.data.id,
+        executionId: otherExecutionId,
+        leaseId: lease.body.data.leaseId,
+      })
       .expect(409);
   });
 
@@ -138,13 +142,13 @@ describe('Execution Environments API', () => {
   it('should release environment successfully', async () => {
     const { agentId, environmentId } = await createAgentAndEnvironment();
     const executionId = await createExecution(agentId);
-    await request(app)
+    const lease = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
       .send({ agentId, executionId })
       .expect(200);
     const released = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
-      .send({ agentId, executionId })
+      .send({ agentId, executionId, leaseId: lease.body.data.leaseId })
       .expect(200);
 
     expect(released.body.data.status).toBe('available');
@@ -158,19 +162,23 @@ describe('Execution Environments API', () => {
       .send({})
       .expect(201);
 
-    await request(app)
+    const lease = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/lease`)
       .send({ agentId, executionId: execution.body.data.id })
       .expect(200);
 
     await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
-      .send({ agentId, executionId: '00000000-0000-0000-0000-000000000000' })
+      .send({
+        agentId,
+        executionId: '00000000-0000-0000-0000-000000000000',
+        leaseId: lease.body.data.leaseId,
+      })
       .expect(409);
 
     const released = await request(app)
       .post(`${environmentsUrl()}/${environmentId}/release`)
-      .send({ agentId, executionId: execution.body.data.id })
+      .send({ agentId, executionId: execution.body.data.id, leaseId: lease.body.data.leaseId })
       .expect(200);
     expect(released.body.data.status).toBe('available');
   });
