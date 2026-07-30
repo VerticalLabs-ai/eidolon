@@ -77,7 +77,6 @@ WHERE
 		)
 	);--> statement-breakpoint
 ALTER TABLE "workspace_lifecycle_events" ADD CONSTRAINT "workspace_lifecycle_events_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_lifecycle_events" ADD CONSTRAINT "workspace_lifecycle_events_environment_id_execution_environments_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."execution_environments"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_lifecycle_events" ADD CONSTRAINT "workspace_lifecycle_events_actor_agent_id_agents_id_fk" FOREIGN KEY ("actor_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_lifecycle_events" ADD CONSTRAINT "workspace_lifecycle_events_actor_execution_id_agent_executions_id_fk" FOREIGN KEY ("actor_execution_id") REFERENCES "public"."agent_executions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_workspace_lifecycle_events_environment" ON "workspace_lifecycle_events" USING btree ("environment_id","created_at");--> statement-breakpoint

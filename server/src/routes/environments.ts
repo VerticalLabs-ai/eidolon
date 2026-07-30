@@ -361,7 +361,13 @@ export function environmentsRouter(db: DbInstance): Router {
       executionId: body.executionId,
       leaseId: body.leaseId,
     });
-    res.json({ data: row });
+
+    const safeRow = {
+      ...row,
+      workspacePath: await revalidateWorkspacePathContainment(companyId, row.workspacePath),
+    };
+
+    res.json({ data: safeRow });
   });
 
   router.post('/:id/recover', async (req, res) => {
@@ -371,13 +377,19 @@ export function environmentsRouter(db: DbInstance): Router {
       environmentId: id,
       recoveredByUserId: req.user?.id ?? null,
     });
+
+    const safeRow = {
+      ...row,
+      workspacePath: await revalidateWorkspacePathContainment(companyId, row.workspacePath),
+    };
+
     eventBus.emitEvent({
       type: 'environment.recovered' as any,
       companyId,
-      payload: { environment: row },
+      payload: { environment: safeRow },
       timestamp: new Date().toISOString(),
     });
-    res.json({ data: row });
+    res.json({ data: safeRow });
   });
 
   router.get('/:id/events', validate(EnvironmentEventsQuery, 'query'), async (req, res) => {

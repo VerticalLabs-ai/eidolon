@@ -135,6 +135,21 @@ describe('workspace diff inspection', () => {
     expect(() => process.kill(childPid, 0)).toThrow();
   });
 
+  it('reports an unrunnable Git binary as an execution failure, not a workspace problem', async () => {
+    const { directory } = await createRepository();
+    const emptyBin = await mkdtemp(join(tmpdir(), 'eidolon-empty-bin-'));
+    temporaryDirectories.push(emptyBin);
+    const originalPath = process.env.PATH;
+    process.env.PATH = emptyBin;
+    try {
+      await expect(captureWorkspaceHead(directory)).rejects.toMatchObject({
+        code: 'WORKSPACE_DIFF_COMMAND_UNAVAILABLE',
+      } satisfies Partial<WorkspaceDiffError>);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it('disables repository-configured external diff and textconv commands', async () => {
     const { directory, baseSha } = await createRepository();
     const markerPath = join(directory, 'external-diff-ran');

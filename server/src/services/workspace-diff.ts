@@ -13,6 +13,7 @@ export type WorkspaceDiffErrorCode =
   | 'WORKSPACE_NOT_GIT_REPOSITORY'
   | 'WORKSPACE_DIFF_BASE_UNAVAILABLE'
   | 'WORKSPACE_DIFF_COMMAND_TIMED_OUT'
+  | 'WORKSPACE_DIFF_COMMAND_UNAVAILABLE'
   | 'WORKSPACE_DIFF_COMMAND_FAILED';
 
 export class WorkspaceDiffError extends Error {
@@ -155,7 +156,7 @@ async function runGit(
         if (forceKillTimer) clearTimeout(forceKillTimer);
         reject(
           new WorkspaceDiffError(
-            'WORKSPACE_DIFF_COMMAND_FAILED',
+            'WORKSPACE_DIFF_COMMAND_UNAVAILABLE',
             `Unable to run git: ${error.message}`,
             error,
           ),
@@ -180,6 +181,19 @@ async function runGit(
       });
     });
   });
+}
+
+/**
+ * Distinguishes "git itself could not run" from "git ran and reported something about the
+ * workspace". Only the latter may be mapped onto workspace domain errors; execution failures are
+ * infrastructure problems and must surface unchanged so callers report them as 5xx.
+ */
+function isGitExecutionFailure(error: unknown): boolean {
+  return (
+    error instanceof WorkspaceDiffError &&
+    (error.code === 'WORKSPACE_DIFF_COMMAND_TIMED_OUT' ||
+      error.code === 'WORKSPACE_DIFF_COMMAND_UNAVAILABLE')
+  );
 }
 
 async function resolveWorkspaceRoot(
@@ -213,7 +227,7 @@ async function resolveWorkspaceRoot(
       throw new Error('workspace path is nested inside another repository');
     }
   } catch (error) {
-    if (error instanceof WorkspaceDiffError && error.code === 'WORKSPACE_DIFF_COMMAND_TIMED_OUT') {
+    if (isGitExecutionFailure(error)) {
       throw error;
     }
     throw new WorkspaceDiffError(
@@ -239,7 +253,7 @@ async function captureResolvedWorkspaceHead(
     );
     return result.stdout.trim();
   } catch (error) {
-    if (error instanceof WorkspaceDiffError && error.code === 'WORKSPACE_DIFF_COMMAND_TIMED_OUT') {
+    if (isGitExecutionFailure(error)) {
       throw error;
     }
     throw new WorkspaceDiffError(
@@ -353,7 +367,7 @@ export async function inspectWorkspaceDiff({
     );
     canonicalBaseSha = base.stdout.trim();
   } catch (error) {
-    if (error instanceof WorkspaceDiffError && error.code === 'WORKSPACE_DIFF_COMMAND_TIMED_OUT') {
+    if (isGitExecutionFailure(error)) {
       throw error;
     }
     throw new WorkspaceDiffError(

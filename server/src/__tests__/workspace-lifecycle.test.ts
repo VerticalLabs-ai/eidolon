@@ -62,6 +62,19 @@ describe('managed workspace lifecycle', () => {
     ]));
   });
 
+  it('keeps the audit trail after the environment it describes is deleted', async () => {
+    await leaseWorkspace(db, { companyId, environmentId, agentId, executionId, baseSha: null });
+    await db.drizzle
+      .delete(db.schema.executionEnvironments)
+      .where(eq(db.schema.executionEnvironments.id, environmentId));
+
+    const events = await db.drizzle
+      .select()
+      .from(db.schema.workspaceLifecycleEvents)
+      .where(eq(db.schema.workspaceLifecycleEvents.environmentId, environmentId));
+    expect(events.map((event) => event.eventType).sort()).toEqual(['created', 'leased']);
+  });
+
   it('rejects leases for owners that no longer exist without leaking a database error', async () => {
     await expect(leaseWorkspace(db, {
       companyId,
