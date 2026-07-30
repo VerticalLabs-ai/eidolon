@@ -613,38 +613,40 @@ describe('Tasks API', () => {
       };
       eventBus.onEvent(onEvent);
 
-      const created = await request(app)
-        .post(`${taskUrl(taskId)}/thread/comments`)
-        .send({
-          content: 'Operator context for the agent.',
-          idempotencyKey: 'operator-comment-1',
-        })
-        .expect(201);
+      try {
+        const created = await request(app)
+          .post(`${taskUrl(taskId)}/thread/comments`)
+          .send({
+            content: 'Operator context for the agent.',
+            idempotencyKey: 'operator-comment-1',
+          })
+          .expect(201);
 
-      const duplicate = await request(app)
-        .post(`${taskUrl(taskId)}/thread/comments`)
-        .send({
-          content: 'Operator context for the agent.',
-          idempotencyKey: 'operator-comment-1',
-        })
-        .expect(201);
+        const duplicate = await request(app)
+          .post(`${taskUrl(taskId)}/thread/comments`)
+          .send({
+            content: 'Operator context for the agent.',
+            idempotencyKey: 'operator-comment-1',
+          })
+          .expect(201);
 
-      expect(duplicate.body.data.id).toBe(created.body.data.id);
+        expect(duplicate.body.data.id).toBe(created.body.data.id);
+        expect(commentEvents).toHaveLength(1);
 
-      eventBus.off('event', onEvent);
-      expect(commentEvents).toHaveLength(1);
+        const res = await request(app)
+          .get(`${taskUrl(taskId)}/thread`)
+          .expect(200);
 
-      const res = await request(app)
-        .get(`${taskUrl(taskId)}/thread`)
-        .expect(200);
-
-      const comments = res.body.data.filter((item: any) => item.kind === 'comment');
-      expect(comments).toEqual([
-        expect.objectContaining({
-          id: created.body.data.id,
-          content: 'Operator context for the agent.',
-        }),
-      ]);
+        const comments = res.body.data.filter((item: any) => item.kind === 'comment');
+        expect(comments).toEqual([
+          expect.objectContaining({
+            id: created.body.data.id,
+            content: 'Operator context for the agent.',
+          }),
+        ]);
+      } finally {
+        eventBus.off('event', onEvent);
+      }
     });
 
     it('should make suggested-task decisions idempotent and create child tasks once', async () => {
