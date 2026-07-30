@@ -9,7 +9,14 @@ import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
 const InstallSkillBody = z.object({
-  name: z.string().min(1).max(255),
+  name: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(
+      /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+      'Skill name must contain only lowercase letters, numbers, and single hyphens',
+    ),
   version: z.string().min(1).max(100).default('1.0.0'),
   source: z.string().min(1).max(2000).default('manual'),
   provenance: z.enum(['bundled', 'catalog', 'runtime', 'adapter', 'github', 'manual']).default('manual'),

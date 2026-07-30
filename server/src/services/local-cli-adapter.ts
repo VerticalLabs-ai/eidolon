@@ -98,6 +98,12 @@ export interface RunLocalCliAdapterInput {
   leaseHeartbeatAt: () => number;
 }
 
+export interface LocalCliRuntimePaths {
+  adapterRuntimeHome: string;
+  codexHome: string | null;
+  skillsRoot: string;
+}
+
 export interface LocalCliRunResult {
   ok: boolean;
   exitCode: number | null;
@@ -119,6 +125,43 @@ export function isProcessRuntimeAdapterId(
   value: string,
 ): value is typeof PROCESS_RUNTIME_ADAPTER_ID {
   return value === PROCESS_RUNTIME_ADAPTER_ID;
+}
+
+export function localCliRuntimePaths(input: {
+  adapterId: LocalCliAdapterId;
+  companyId: string;
+  agentId: string;
+  environmentId?: string | null;
+}): LocalCliRuntimePaths {
+  const adapterRuntimeHome = runtimeAdapterHome(input);
+  const codexHome = input.adapterId === 'codex_local'
+    ? path.join(adapterRuntimeHome, 'codex-home')
+    : null;
+  return {
+    adapterRuntimeHome,
+    codexHome,
+    skillsRoot: codexHome
+      ? path.join(codexHome, 'skills')
+      : path.join(adapterRuntimeHome, '.claude', 'skills'),
+  };
+}
+
+function runtimeAdapterHome(input: {
+  adapterId: string;
+  companyId: string;
+  agentId: string;
+  environmentId?: string | null;
+}): string {
+  const runtimeRoot = path.resolve(
+    expandHome(process.env.EIDOLON_RUNTIME_HOME ?? path.join(os.homedir(), '.eidolon', 'runtime')),
+  );
+  return path.join(
+    runtimeRoot,
+    input.companyId,
+    input.agentId,
+    ...(input.environmentId ? [input.environmentId] : []),
+    input.adapterId,
+  );
 }
 
 function asString(value: unknown, fallback = ''): string {
@@ -882,32 +925,31 @@ export async function runLocalCliAdapter(
     }
   }
 
-  const runtimeRoot = path.resolve(
-    expandHome(process.env.EIDOLON_RUNTIME_HOME ?? path.join(os.homedir(), '.eidolon', 'runtime')),
-  );
-  const adapterRuntimeHome = path.join(
-    runtimeRoot,
-    input.companyId,
-    input.agentId,
-    ...(input.environmentId ? [input.environmentId] : []),
-    input.adapterId,
-  );
+  const localRuntimePaths = isLocalCliAdapterId(input.adapterId)
+    ? localCliRuntimePaths({
+        adapterId: input.adapterId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        environmentId: input.environmentId,
+      })
+    : null;
+  const adapterRuntimeHome = localRuntimePaths?.adapterRuntimeHome ?? runtimeAdapterHome(input);
+  const codexHome = localRuntimePaths?.codexHome ?? null;
   await fs.mkdir(adapterRuntimeHome, { recursive: true });
   env.HOME = adapterRuntimeHome;
   env.USERPROFILE = adapterRuntimeHome;
   env.XDG_CACHE_HOME = path.join(adapterRuntimeHome, '.cache');
   env.XDG_CONFIG_HOME = path.join(adapterRuntimeHome, '.config');
 
-  let codexHome: string | null = null;
   if (input.adapterId === 'codex_local') {
-    codexHome = path.join(adapterRuntimeHome, 'codex-home');
-    await fs.mkdir(codexHome, { recursive: true });
-    if (await pathExists(path.join(codexHome, 'auth.json'))) {
+    const managedCodexHome = codexHome!;
+    await fs.mkdir(managedCodexHome, { recursive: true });
+    if (await pathExists(path.join(managedCodexHome, 'auth.json'))) {
       throw new Error(
         'Codex file credentials are not allowed in the agent runtime. Remove codex-home/auth.json and use the operator-owned Codex gateway token helper instead.',
       );
     }
-    env.CODEX_HOME = codexHome;
+    env.CODEX_HOME = managedCodexHome;
   }
 
   const resumeState = asRecord(input.resumeState);

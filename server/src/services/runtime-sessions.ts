@@ -6,11 +6,13 @@ import {
   isLocalCliAdapterId,
   isProcessRuntimeAdapterId,
   LOCAL_CLI_SUPERVISOR_LEASE_TIMEOUT_MS,
+  localCliRuntimePaths,
   normalizeLocalCliGraceSec,
   runLocalCliAdapter,
   testProcessRuntimeAdapter,
   type LocalCliTranscriptEntry,
 } from './local-cli-adapter.js';
+import { materializeLocalAgentSkills } from './local-skill-materializer.js';
 import {
   isRemoteRuntimeAdapterId,
   runRemoteRuntimeAdapter,
@@ -390,6 +392,19 @@ export class RuntimeSessionService {
         void abortIfSessionStopped();
       }, 250);
       cancellationPoll.unref?.();
+      if (isLocalCliAdapterId(session.adapterId)) {
+        await materializeLocalAgentSkills({
+          db: this.db,
+          companyId,
+          agentId: session.agentId,
+          runtimePaths: localCliRuntimePaths({
+            adapterId: session.adapterId,
+            companyId,
+            agentId: session.agentId,
+            environmentId: session.environmentId,
+          }),
+        });
+      }
       const result = isRemoteRuntimeAdapterId(session.adapterId)
         ? await runRemoteRuntimeAdapter({
             adapterId: session.adapterId,
