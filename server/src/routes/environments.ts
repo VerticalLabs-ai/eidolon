@@ -156,7 +156,20 @@ export function environmentsRouter(db: DbInstance): Router {
     const companyId = routeParams(req).companyId;
     const query = (req as any).validated.query as z.infer<typeof EnvironmentListQuery>;
     const rows = await db.drizzle
-      .select()
+      .select({
+        id: executionEnvironments.id,
+        companyId: executionEnvironments.companyId,
+        name: executionEnvironments.name,
+        provider: executionEnvironments.provider,
+        status: executionEnvironments.status,
+        workspacePath: executionEnvironments.workspacePath,
+        branchName: executionEnvironments.branchName,
+        runtimeUrl: executionEnvironments.runtimeUrl,
+        releasedAt: executionEnvironments.releasedAt,
+        metadata: executionEnvironments.metadata,
+        createdAt: executionEnvironments.createdAt,
+        updatedAt: executionEnvironments.updatedAt,
+      })
       .from(executionEnvironments)
       .where(eq(executionEnvironments.companyId, companyId))
       .orderBy(executionEnvironments.createdAt)
