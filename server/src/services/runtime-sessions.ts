@@ -198,17 +198,24 @@ export class RuntimeSessionService {
         });
         environmentLeaseId = leased.leaseId;
       } else if (environmentId) {
-        // The environment was inherited (from the task/execution) rather than requested, so an
-        // absent or expired lease must not block session creation. The session is simply created
-        // without a lease binding and `runSession` acquires one when the workspace is needed.
-        const leased = await findActiveWorkspaceLeaseForOwnerWithClient(this.db, tx, {
+        // An inherited environment is still fenced: reuse the caller's active lease or acquire
+        // the available environment in this transaction so the resulting session is runnable.
+        const activeLease = await findActiveWorkspaceLeaseForOwnerWithClient(this.db, tx, {
           companyId: input.companyId,
           environmentId,
           agentId: input.agentId,
           executionId: input.executionId ?? null,
           now,
         });
-        environmentLeaseId = leased?.leaseId ?? null;
+        const leased = activeLease ?? await leaseWorkspaceWithClient(this.db, tx, {
+          companyId: input.companyId,
+          environmentId,
+          agentId: input.agentId,
+          executionId: input.executionId ?? null,
+          baseSha: leaseBaseSha,
+          now,
+        });
+        environmentLeaseId = leased.leaseId;
       }
 
       const [created] = await tx

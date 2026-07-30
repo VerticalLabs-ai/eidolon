@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
@@ -97,9 +98,14 @@ describe('runtime workspace lease binding', () => {
     expect(environment).toEqual(expect.objectContaining({ status: 'leased', leaseId }));
   });
 
-  it('creates a session for an inherited environment that has no active lease', async () => {
+  it('acquires an inherited available environment so the created session can run', async () => {
     const now = new Date();
     const executionId = randomUUID();
+    const command = await realpath('/bin/echo');
+    vi.stubEnv('EIDOLON_PROCESS_COMMAND_ALLOWLIST_JSON', JSON.stringify([[command]]));
+    vi.stubEnv('EIDOLON_LOCAL_CLI_ALLOWED_AGENTS', `${companyId}:${agentId}`);
+    vi.stubEnv('EIDOLON_LOCAL_CLI_CONTAINMENT_COMMAND', command);
+    vi.stubEnv('EIDOLON_LOCAL_CLI_CONTAINMENT_ARGS_JSON', '[]');
     await db.drizzle.insert(db.schema.agentExecutions).values({
       id: executionId,
       companyId,
@@ -117,11 +123,27 @@ describe('runtime workspace lease binding', () => {
       agentId,
       executionId,
       adapterId: 'process:local',
-      adapterConfig: { command: 'echo' },
+      adapterConfig: { command },
     });
 
     expect(session.environmentId).toBe(environmentId);
-    expect(session.environmentLeaseId).toBeNull();
+    expect(session.environmentLeaseId).toEqual(expect.any(String));
+
+    try {
+      const completed = await new RuntimeSessionService(db).runSession(companyId, session.id, {
+        prompt: 'Run with the inherited workspace.',
+      });
+      expect(completed.status, JSON.stringify(completed.transcript)).toBe('completed');
+
+      await new RuntimeSessionService(db).finalizeSession(companyId, session.id);
+      const [environment] = await db.drizzle
+        .select()
+        .from(db.schema.executionEnvironments)
+        .where(eq(db.schema.executionEnvironments.id, environmentId));
+      expect(environment).toEqual(expect.objectContaining({ status: 'available', leaseId: null }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('does not finalize or release a lease after a concurrent run claim', async () => {
