@@ -116,6 +116,8 @@ function descriptorFromAdapter(adapter: ServerAdapter): ServerAdapterDescriptor 
     supportedModes: adapter.supportedModes ?? ['on_demand'],
     capabilities: adapter.capabilities,
     models: adapter.models,
+    operations: { run: false, test: false },
+    configFields: [],
   };
 }
 
@@ -155,6 +157,8 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
       browser: false,
     },
     models: [{ id: 'codex-default', label: 'Codex CLI default' }],
+    operations: { run: true, test: false },
+    configFields: [],
   },
   {
     id: 'claude_local',
@@ -170,6 +174,8 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
       browser: false,
     },
     models: [{ id: 'claude-default', label: 'Claude Code default' }],
+    operations: { run: true, test: false },
+    configFields: [],
   },
   {
     id: 'process:local',
@@ -185,6 +191,23 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
       sessionResume: false,
     },
     models: [{ id: 'process-command', label: 'Process command' }],
+    operations: { run: true, test: true },
+    configFields: [
+      {
+        key: 'command',
+        label: 'Command',
+        type: 'text',
+        required: true,
+        description: 'Absolute executable path approved by the server operator.',
+        placeholder: '/usr/bin/node',
+      },
+      {
+        key: 'args',
+        label: 'Arguments',
+        type: 'string-list',
+        description: 'Ordered command arguments. The complete command must match an operator-approved preset.',
+      },
+    ],
   },
   {
     id: 'http:remote',
@@ -202,6 +225,31 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
       sessionResume: false,
     },
     models: [{ id: 'http-endpoint', label: 'HTTP endpoint' }],
+    operations: { run: true, test: true },
+    configFields: [
+      {
+        key: 'url',
+        label: 'URL',
+        type: 'url',
+        required: true,
+        description: 'HTTP endpoint whose origin is approved by the server operator.',
+        placeholder: 'https://agent.example.com/run',
+      },
+      {
+        key: 'timeoutSec',
+        label: 'Timeout (seconds)',
+        type: 'number',
+        defaultValue: 30,
+        min: 1,
+        max: 300,
+      },
+      {
+        key: 'responseFields',
+        label: 'Response fields',
+        type: 'string-list',
+        description: 'Optional top-level response fields to retain in the runtime result.',
+      },
+    ],
   },
   {
     id: 'openclaw:webhook',
@@ -221,6 +269,37 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
       sessionResume: false,
     },
     models: [{ id: 'openclaw-agent', label: 'OpenClaw agent' }],
+    operations: { run: true, test: true },
+    configFields: [
+      {
+        key: 'url',
+        label: 'URL',
+        type: 'url',
+        required: true,
+        description: 'OpenClaw webhook URL whose origin is approved by the server operator.',
+        placeholder: 'https://openclaw.example.com/hooks/agent',
+      },
+      {
+        key: 'agentId',
+        label: 'Agent ID',
+        type: 'text',
+        defaultValue: 'main',
+      },
+      {
+        key: 'deliver',
+        label: 'Deliver response',
+        type: 'boolean',
+        defaultValue: true,
+      },
+      {
+        key: 'timeoutSec',
+        label: 'Timeout (seconds)',
+        type: 'number',
+        defaultValue: 30,
+        min: 1,
+        max: 300,
+      },
+    ],
   },
   {
     id: 'mcp:tool-runtime',
@@ -236,6 +315,8 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
       filesystem: false,
     },
     models: [{ id: 'mcp-tool', label: 'MCP tool' }],
+    operations: { run: false, test: false },
+    configFields: [],
   },
   {
     id: 'openjarvis:local',
@@ -259,6 +340,8 @@ const runtimeOnlyAdapters: ServerAdapterDescriptor[] = [
       { id: 'scheduled-monitor', label: 'OpenJarvis Scheduled Monitor' },
       { id: 'code-assistant', label: 'OpenJarvis Code Assistant' },
     ],
+    operations: { run: false, test: false },
+    configFields: [],
   },
 ];
 

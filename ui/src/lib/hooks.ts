@@ -993,6 +993,30 @@ export function useCreateRuntimeSession(companyId: string) {
   });
 }
 
+export function useTestRuntimeSession(companyId: string) {
+  return useMutation({
+    mutationFn: async (sessionId: string) =>
+      unwrap<api.RuntimeAdapterDiagnostic>(
+        await api.testRuntimeSession(companyId, sessionId),
+      ),
+  });
+}
+
+export function useRunRuntimeSession(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { sessionId: string; prompt: string }) =>
+      unwrap<api.RuntimeSession>(
+        await api.runRuntimeSession(companyId, args.sessionId, args.prompt),
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+      qc.invalidateQueries({ queryKey: ["agents", companyId] });
+      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
+    },
+  });
+}
+
 export function useCancelRuntimeSession(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
