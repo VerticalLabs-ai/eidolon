@@ -334,7 +334,12 @@ export async function releaseWorkspaceLeaseWithClient(
 
 export async function recoverWorkspaceLease(
   db: DbInstance,
-  input: { companyId: string; environmentId: string; now?: Date },
+  input: {
+    companyId: string;
+    environmentId: string;
+    recoveredByUserId?: string | null;
+    now?: Date;
+  },
 ) {
   const { agentExecutions, executionEnvironments } = db.schema;
   const now = input.now ?? new Date();
@@ -416,9 +421,12 @@ export async function recoverWorkspaceLease(
       environmentId: input.environmentId,
       leaseId: stale.leaseId,
       eventType: 'recovered',
-      actorAgentId: stale.leaseOwnerAgentId,
-      actorExecutionId: stale.leaseOwnerExecutionId,
-      metadata: { expiredAt: stale.leaseExpiresAt?.toISOString() ?? null },
+      metadata: {
+        expiredAt: stale.leaseExpiresAt?.toISOString() ?? null,
+        formerOwnerAgentId: stale.leaseOwnerAgentId,
+        formerOwnerExecutionId: stale.leaseOwnerExecutionId,
+        recoveredByUserId: input.recoveredByUserId ?? null,
+      },
       now,
     });
     return environment;

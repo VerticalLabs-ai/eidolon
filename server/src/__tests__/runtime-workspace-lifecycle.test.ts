@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { createTestApp, createTestDb } from '../test-utils.js';
+import { RuntimeSessionService } from '../services/runtime-sessions.js';
 
 describe('runtime workspace lease binding', () => {
   let db: Awaited<ReturnType<typeof createTestDb>>;
@@ -72,5 +73,94 @@ describe('runtime workspace lease binding', () => {
       status: 'leased',
       leaseId: secondSession.body.data.environmentLeaseId,
     }));
+  });
+
+  it('does not finalize or release a lease after a concurrent run claim', async () => {
+    const created = await createSession();
+    const sessionId = created.body.data.id as string;
+    const leaseId = created.body.data.environmentLeaseId as string;
+    const completedAt = new Date('2026-07-30T18:00:00.000Z');
+    await db.drizzle
+      .update(db.schema.agentRuntimeSessions)
+      .set({ status: 'completed', completedAt, updatedAt: completedAt })
+      .where(eq(db.schema.agentRuntimeSessions.id, sessionId));
+
+    const originalTransaction = db.drizzle.transaction.bind(db.drizzle);
+    let injectedRunClaim = false;
+    const runningAt = new Date(completedAt.getTime() + 1);
+    const transactionSpy = vi.spyOn(db.drizzle, 'transaction').mockImplementation((async (
+      callback: (tx: any) => Promise<unknown>,
+      config?: unknown,
+    ) => {
+      try {
+        return await originalTransaction(async (tx: any) => {
+          const wrapQuery = (query: any, selectsSession = false): any => new Proxy(query, {
+            get(target, property) {
+              const value = Reflect.get(target, property, target);
+              if (typeof value !== 'function') return value;
+              if (property === 'then') return value.bind(target);
+              return (...args: any[]) => {
+                const next = value.apply(target, args);
+                const nextSelectsSession = selectsSession || (
+                  property === 'from' && args[0] === db.schema.agentRuntimeSessions
+                );
+                if (property === 'limit' && nextSelectsSession && !injectedRunClaim) {
+                  return Promise.resolve(next).then(async (rows) => {
+                    injectedRunClaim = true;
+                    await tx
+                      .update(db.schema.agentRuntimeSessions)
+                      .set({ status: 'running', updatedAt: runningAt })
+                      .where(eq(db.schema.agentRuntimeSessions.id, sessionId));
+                    return rows;
+                  });
+                }
+                return next && typeof next === 'object'
+                  ? wrapQuery(next, nextSelectsSession)
+                  : next;
+              };
+            },
+          });
+          const wrappedTx = new Proxy(tx, {
+            get(target, property) {
+              if (property === 'select') {
+                return (...args: any[]) => wrapQuery(target.select(...args));
+              }
+              const value = Reflect.get(target, property, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+          return callback(wrappedTx);
+        }, config as never);
+      } catch (error) {
+        if (injectedRunClaim) {
+          await db.drizzle
+            .update(db.schema.agentRuntimeSessions)
+            .set({ status: 'running', updatedAt: runningAt })
+            .where(eq(db.schema.agentRuntimeSessions.id, sessionId));
+        }
+        throw error;
+      }
+    }) as any);
+
+    try {
+      await expect(
+        new RuntimeSessionService(db).finalizeSession(companyId, sessionId),
+      ).rejects.toThrow(`Session ${sessionId} is already being updated`);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    const [[session], [environment]] = await Promise.all([
+      db.drizzle
+        .select()
+        .from(db.schema.agentRuntimeSessions)
+        .where(eq(db.schema.agentRuntimeSessions.id, sessionId)),
+      db.drizzle
+        .select()
+        .from(db.schema.executionEnvironments)
+        .where(eq(db.schema.executionEnvironments.id, environmentId)),
+    ]);
+    expect(session.status).toBe('running');
+    expect(environment).toEqual(expect.objectContaining({ status: 'leased', leaseId }));
   });
 });

@@ -928,8 +928,19 @@ export class RuntimeSessionService {
           completedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(agentRuntimeSessions.id, sessionId), eq(agentRuntimeSessions.companyId, companyId)))
+        .where(
+          and(
+            eq(agentRuntimeSessions.id, sessionId),
+            eq(agentRuntimeSessions.companyId, companyId),
+            eq(agentRuntimeSessions.status, existing.status),
+            eq(agentRuntimeSessions.updatedAt, existing.updatedAt),
+          ),
+        )
         .returning();
+
+      if (!updated) {
+        throw new Error(`Session ${sessionId} is already being updated`);
+      }
 
       if (updated.environmentId) {
         if (!updated.environmentLeaseId) {

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -79,6 +79,38 @@ describe('workspace diff inspection', () => {
     expect(Buffer.byteLength(result.patch)).toBeLessThanOrEqual(512);
     expect(result.patchTruncated).toBe(true);
     expect(result.truncated).toBe(true);
+  });
+
+  it('times out and terminates an unresponsive Git subprocess', async () => {
+    const { directory, baseSha } = await createRepository();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'eidolon-fake-git-'));
+    temporaryDirectories.push(fakeBin);
+    const pidPath = join(fakeBin, 'git.pid');
+    const fakeGitPath = join(fakeBin, 'git');
+    await writeFile(
+      fakeGitPath,
+      `#!/bin/sh\nprintf '%s' "$$" > "${pidPath}"\ntrap '' TERM\nwhile true; do /bin/sleep 1; done\n`,
+    );
+    await chmod(fakeGitPath, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = fakeBin;
+    const startedAt = Date.now();
+    try {
+      await expect(inspectWorkspaceDiff({
+        workspacePath: directory,
+        baseSha,
+        commandTimeoutMs: 500,
+      })).rejects.toMatchObject({
+        code: 'WORKSPACE_DIFF_COMMAND_TIMED_OUT',
+      } satisfies Partial<WorkspaceDiffError>);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const childPid = Number(await readFile(pidPath, 'utf8'));
+    expect(() => process.kill(childPid, 0)).toThrow();
   });
 
   it('disables repository-configured external diff and textconv commands', async () => {

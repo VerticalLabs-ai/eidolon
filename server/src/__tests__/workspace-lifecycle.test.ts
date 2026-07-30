@@ -113,6 +113,7 @@ describe('managed workspace lifecycle', () => {
     const recovered = await recoverWorkspaceLease(db, {
       companyId,
       environmentId,
+      recoveredByUserId: 'operator-user-id',
       now: new Date(leased.leaseExpiresAt!.getTime() + 1),
     });
     expect(recovered).toEqual(expect.objectContaining({ status: 'available', leaseId: null }));
@@ -129,15 +130,25 @@ describe('managed workspace lifecycle', () => {
     expect(execution.environmentId).toBeNull();
 
     const events = await db.drizzle
-      .select({ type: db.schema.workspaceLifecycleEvents.eventType })
+      .select()
       .from(db.schema.workspaceLifecycleEvents)
       .where(eq(db.schema.workspaceLifecycleEvents.environmentId, environmentId));
-    expect(events.map((event) => event.type)).toEqual(expect.arrayContaining([
+    expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
       'created',
       'leased',
       'recovered',
     ]));
     expect(events).toHaveLength(3);
+    expect(events.find((event) => event.eventType === 'recovered')).toEqual(expect.objectContaining({
+      actorAgentId: null,
+      actorExecutionId: null,
+      metadata: {
+        expiredAt: leased.leaseExpiresAt!.toISOString(),
+        formerOwnerAgentId: agentId,
+        formerOwnerExecutionId: executionId,
+        recoveredByUserId: 'operator-user-id',
+      },
+    }));
   });
 
   it('prevents an old token from releasing a newer lease', async () => {

@@ -21,6 +21,47 @@ SET
 	"lease_heartbeat_at" = COALESCE("leased_at", now()),
 	"lease_expires_at" = now() + interval '5 minutes'
 WHERE "status" = 'leased' AND "lease_id" IS NULL;--> statement-breakpoint
+INSERT INTO "workspace_lifecycle_events" (
+	"id",
+	"company_id",
+	"environment_id",
+	"lease_id",
+	"event_type",
+	"metadata",
+	"created_at"
+)
+SELECT
+	gen_random_uuid()::text,
+	"environment"."company_id",
+	"environment"."id",
+	NULL,
+	'created',
+	jsonb_build_object('migration', '0007', 'backfilled', true),
+	"environment"."created_at"
+FROM "execution_environments" AS "environment";--> statement-breakpoint
+INSERT INTO "workspace_lifecycle_events" (
+	"id",
+	"company_id",
+	"environment_id",
+	"lease_id",
+	"event_type",
+	"actor_agent_id",
+	"actor_execution_id",
+	"metadata",
+	"created_at"
+)
+SELECT
+	gen_random_uuid()::text,
+	"environment"."company_id",
+	"environment"."id",
+	"environment"."lease_id",
+	'leased',
+	"environment"."lease_owner_agent_id",
+	"environment"."lease_owner_execution_id",
+	jsonb_build_object('migration', '0007', 'backfilled', true),
+	COALESCE("environment"."leased_at", "environment"."lease_heartbeat_at", now())
+FROM "execution_environments" AS "environment"
+WHERE "environment"."status" = 'leased' AND "environment"."lease_id" IS NOT NULL;--> statement-breakpoint
 UPDATE "agent_runtime_sessions" AS "session"
 SET "environment_lease_id" = "environment"."lease_id"
 FROM "execution_environments" AS "environment"

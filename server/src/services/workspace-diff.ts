@@ -4,12 +4,15 @@ import { spawn } from 'node:child_process';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_ERROR_BYTES = 16 * 1024;
+const DEFAULT_GIT_COMMAND_TIMEOUT_MS = 10_000;
+const GIT_COMMAND_KILL_GRACE_MS = 250;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40,64}$/i;
 
 export type WorkspaceDiffErrorCode =
   | 'WORKSPACE_PATH_NOT_FOUND'
   | 'WORKSPACE_NOT_GIT_REPOSITORY'
   | 'WORKSPACE_DIFF_BASE_UNAVAILABLE'
+  | 'WORKSPACE_DIFF_COMMAND_TIMED_OUT'
   | 'WORKSPACE_DIFF_COMMAND_FAILED';
 
 export class WorkspaceDiffError extends Error {
@@ -50,6 +53,7 @@ export interface InspectWorkspaceDiffOptions {
   workspacePath: string;
   baseSha: string;
   maxOutputBytes?: number;
+  commandTimeoutMs?: number;
 }
 
 interface GitResult {
@@ -81,6 +85,7 @@ async function runGit(
   workspacePath: string,
   args: readonly string[],
   maxOutputBytes: number,
+  commandTimeoutMs = DEFAULT_GIT_COMMAND_TIMEOUT_MS,
 ): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', [...args], {
@@ -95,6 +100,30 @@ async function runGit(
     let stderrBytes = 0;
     let stdoutTruncated = false;
     let stderrTruncated = false;
+    let settled = false;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      callback();
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      settle(() => {
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), GIT_COMMAND_KILL_GRACE_MS);
+        forceKillTimer.unref?.();
+        reject(
+          new WorkspaceDiffError(
+            'WORKSPACE_DIFF_COMMAND_TIMED_OUT',
+            `git ${args[0] ?? ''} exceeded the ${commandTimeoutMs}ms command timeout`,
+          ),
+        );
+      });
+    }, commandTimeoutMs);
+    timeoutTimer.unref?.();
 
     const collect = (
       chunk: Buffer,
@@ -122,32 +151,41 @@ async function runGit(
       stderrTruncated ||= result.truncated;
     });
     child.on('error', (error) => {
-      reject(
-        new WorkspaceDiffError(
-          'WORKSPACE_DIFF_COMMAND_FAILED',
-          `Unable to run git: ${error.message}`,
-          error,
-        ),
-      );
-    });
-    child.on('close', (code, signal) => {
-      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
-      const stderr = Buffer.concat(stderrChunks).toString('utf8');
-      if (code !== 0) {
+      settle(() => {
+        if (forceKillTimer) clearTimeout(forceKillTimer);
         reject(
           new WorkspaceDiffError(
             'WORKSPACE_DIFF_COMMAND_FAILED',
-            `git ${args[0] ?? ''} failed (${signal ?? code}): ${stderr.trim() || 'unknown error'}`,
+            `Unable to run git: ${error.message}`,
+            error,
           ),
         );
-        return;
-      }
-      resolve({ stdout, stderr, stdoutTruncated, stderrTruncated });
+      });
+    });
+    child.on('close', (code, signal) => {
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      settle(() => {
+        const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+        const stderr = Buffer.concat(stderrChunks).toString('utf8');
+        if (code !== 0) {
+          reject(
+            new WorkspaceDiffError(
+              'WORKSPACE_DIFF_COMMAND_FAILED',
+              `git ${args[0] ?? ''} failed (${signal ?? code}): ${stderr.trim() || 'unknown error'}`,
+            ),
+          );
+          return;
+        }
+        resolve({ stdout, stderr, stdoutTruncated, stderrTruncated });
+      });
     });
   });
 }
 
-async function resolveWorkspaceRoot(workspacePath: string): Promise<string> {
+async function resolveWorkspaceRoot(
+  workspacePath: string,
+  commandTimeoutMs = DEFAULT_GIT_COMMAND_TIMEOUT_MS,
+): Promise<string> {
   let resolvedPath: string;
   try {
     await access(workspacePath, fsConstants.R_OK);
@@ -168,12 +206,16 @@ async function resolveWorkspaceRoot(workspacePath: string): Promise<string> {
       resolvedPath,
       ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel'],
       DEFAULT_MAX_OUTPUT_BYTES,
+      commandTimeoutMs,
     );
     const repositoryRoot = await realpath(result.stdout.trim());
     if (repositoryRoot !== resolvedPath) {
       throw new Error('workspace path is nested inside another repository');
     }
   } catch (error) {
+    if (error instanceof WorkspaceDiffError && error.code === 'WORKSPACE_DIFF_COMMAND_TIMED_OUT') {
+      throw error;
+    }
     throw new WorkspaceDiffError(
       'WORKSPACE_NOT_GIT_REPOSITORY',
       `Workspace is not a Git repository root: ${resolvedPath}`,
@@ -184,15 +226,22 @@ async function resolveWorkspaceRoot(workspacePath: string): Promise<string> {
   return resolvedPath;
 }
 
-async function captureResolvedWorkspaceHead(workspacePath: string): Promise<string> {
+async function captureResolvedWorkspaceHead(
+  workspacePath: string,
+  commandTimeoutMs = DEFAULT_GIT_COMMAND_TIMEOUT_MS,
+): Promise<string> {
   try {
     const result = await runGit(
       workspacePath,
       ['-c', 'core.fsmonitor=false', 'rev-parse', '--verify', 'HEAD^{commit}'],
       DEFAULT_MAX_OUTPUT_BYTES,
+      commandTimeoutMs,
     );
     return result.stdout.trim();
   } catch (error) {
+    if (error instanceof WorkspaceDiffError && error.code === 'WORKSPACE_DIFF_COMMAND_TIMED_OUT') {
+      throw error;
+    }
     throw new WorkspaceDiffError(
       'WORKSPACE_DIFF_BASE_UNAVAILABLE',
       `Workspace HEAD is unavailable: ${workspacePath}`,
@@ -257,12 +306,16 @@ export async function inspectWorkspaceDiff({
   workspacePath,
   baseSha,
   maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES,
+  commandTimeoutMs = DEFAULT_GIT_COMMAND_TIMEOUT_MS,
 }: InspectWorkspaceDiffOptions): Promise<WorkspaceDiffResult> {
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) {
     throw new RangeError('maxOutputBytes must be a positive integer');
   }
+  if (!Number.isSafeInteger(commandTimeoutMs) || commandTimeoutMs <= 0) {
+    throw new RangeError('commandTimeoutMs must be a positive integer');
+  }
 
-  const resolvedPath = await resolveWorkspaceRoot(workspacePath);
+  const resolvedPath = await resolveWorkspaceRoot(workspacePath, commandTimeoutMs);
   if (!GIT_SHA_PATTERN.test(baseSha)) {
     throw new WorkspaceDiffError(
       'WORKSPACE_DIFF_BASE_UNAVAILABLE',
@@ -276,9 +329,13 @@ export async function inspectWorkspaceDiff({
       resolvedPath,
       ['-c', 'core.fsmonitor=false', 'rev-parse', '--verify', `${baseSha}^{commit}`],
       DEFAULT_MAX_OUTPUT_BYTES,
+      commandTimeoutMs,
     );
     canonicalBaseSha = base.stdout.trim();
   } catch (error) {
+    if (error instanceof WorkspaceDiffError && error.code === 'WORKSPACE_DIFF_COMMAND_TIMED_OUT') {
+      throw error;
+    }
     throw new WorkspaceDiffError(
       'WORKSPACE_DIFF_BASE_UNAVAILABLE',
       `Workspace diff base is unavailable: ${baseSha}`,
@@ -286,13 +343,14 @@ export async function inspectWorkspaceDiff({
     );
   }
 
-  const headSha = await captureResolvedWorkspaceHead(resolvedPath);
+  const headSha = await captureResolvedWorkspaceHead(resolvedPath, commandTimeoutMs);
   const sharedArgs = ['-c', 'core.fsmonitor=false'] as const;
   const [status, nameStatus, stats, patch] = await Promise.all([
     runGit(
       resolvedPath,
       [...sharedArgs, 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
       maxOutputBytes,
+      commandTimeoutMs,
     ),
     runGit(
       resolvedPath,
@@ -308,6 +366,7 @@ export async function inspectWorkspaceDiff({
         '--',
       ],
       maxOutputBytes,
+      commandTimeoutMs,
     ),
     runGit(
       resolvedPath,
@@ -323,6 +382,7 @@ export async function inspectWorkspaceDiff({
         '--',
       ],
       maxOutputBytes,
+      commandTimeoutMs,
     ),
     runGit(
       resolvedPath,
@@ -338,6 +398,7 @@ export async function inspectWorkspaceDiff({
         '--',
       ],
       maxOutputBytes,
+      commandTimeoutMs,
     ),
   ]);
 

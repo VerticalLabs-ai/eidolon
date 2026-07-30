@@ -331,7 +331,11 @@ export function environmentsRouter(db: DbInstance): Router {
 
   router.post('/:id/recover', async (req, res) => {
     const { id, companyId } = routeParams(req);
-    const row = await recoverWorkspaceLease(db, { companyId, environmentId: id });
+    const row = await recoverWorkspaceLease(db, {
+      companyId,
+      environmentId: id,
+      recoveredByUserId: req.user?.id ?? null,
+    });
     eventBus.emitEvent({
       type: 'environment.recovered' as any,
       companyId,

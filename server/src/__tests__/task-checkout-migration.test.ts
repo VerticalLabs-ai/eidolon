@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +15,27 @@ const sourceMigrations = path.resolve(
   '../../../packages/db/drizzle',
 );
 
+async function createMigrationsFolderThrough(lastMigrationNumber: number): Promise<string> {
+  const migrationsFolder = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-migrations-'));
+  await fs.mkdir(path.join(migrationsFolder, 'meta'));
+  const journal = JSON.parse(
+    await fs.readFile(path.join(sourceMigrations, 'meta/_journal.json'), 'utf8'),
+  ) as { version: string; dialect: string; entries: Array<Record<string, unknown>> };
+  const migrationFiles = (await fs.readdir(sourceMigrations))
+    .filter((file) => /^\d{4}_.*\.sql$/.test(file) && Number(file.slice(0, 4)) <= lastMigrationNumber)
+    .sort();
+  await Promise.all(
+    migrationFiles.map((file) =>
+      fs.copyFile(path.join(sourceMigrations, file), path.join(migrationsFolder, file)),
+    ),
+  );
+  await fs.writeFile(
+    path.join(migrationsFolder, 'meta/_journal.json'),
+    JSON.stringify({ ...journal, entries: journal.entries.slice(0, lastMigrationNumber + 1) }, null, 2),
+  );
+  return migrationsFolder;
+}
+
 describe('task checkout lifecycle migration', () => {
   const tempDirs: string[] = [];
 
@@ -23,25 +44,12 @@ describe('task checkout lifecycle migration', () => {
   });
 
   it('reconciles terminal executions that already have active checkouts', async () => {
-    const migrationsFolder = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-migrations-'));
+    const migrationsFolder = await createMigrationsFolderThrough(5);
     tempDirs.push(migrationsFolder);
-    await fs.mkdir(path.join(migrationsFolder, 'meta'));
 
     const journal = JSON.parse(
       await fs.readFile(path.join(sourceMigrations, 'meta/_journal.json'), 'utf8'),
     ) as { version: string; dialect: string; entries: Array<Record<string, unknown>> };
-    const migrationFiles = (await fs.readdir(sourceMigrations))
-      .filter((file) => /^000[0-5]_.*\.sql$/.test(file))
-      .sort();
-    await Promise.all(
-      migrationFiles.map((file) =>
-        fs.copyFile(path.join(sourceMigrations, file), path.join(migrationsFolder, file)),
-      ),
-    );
-    await fs.writeFile(
-      path.join(migrationsFolder, 'meta/_journal.json'),
-      JSON.stringify({ ...journal, entries: journal.entries.slice(0, 6) }, null, 2),
-    );
 
     const client = new PGlite();
     const migrationDb = drizzle(client);
@@ -163,6 +171,136 @@ describe('task checkout lifecycle migration', () => {
         checkoutId,
         executionId,
       });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('backfills lifecycle events for workspaces leased before migration 0007', async () => {
+    const migrationsFolder = await createMigrationsFolderThrough(6);
+    tempDirs.push(migrationsFolder);
+    const journal = JSON.parse(
+      await fs.readFile(path.join(sourceMigrations, 'meta/_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: Array<Record<string, unknown>> };
+    const client = new PGlite();
+    const migrationDb = drizzle(client);
+    try {
+      await migrate(migrationDb, { migrationsFolder });
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const executionId = randomUUID();
+      const environmentId = randomUUID();
+      const createdAt = new Date('2026-07-01T12:00:00.000Z');
+      const leasedAt = new Date('2026-07-30T12:00:00.000Z');
+      await migrationDb.insert(schema.companies).values({
+        id: companyId,
+        name: 'Upgrade Workspace Corp',
+        status: 'active',
+        budgetMonthlyCents: 100_000,
+        spentMonthlyCents: 0,
+        settings: {},
+        createdAt,
+        updatedAt: leasedAt,
+      });
+      await migrationDb.insert(schema.agents).values({
+        id: agentId,
+        companyId,
+        name: 'Upgrade Workspace Agent',
+        role: 'engineer',
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+        status: 'working',
+        capabilities: [],
+        config: {},
+        metadata: {},
+        permissions: [],
+        toolsEnabled: [],
+        allowedDomains: [],
+        maxConcurrentTasks: 1,
+        heartbeatIntervalSeconds: 0,
+        executionTimeoutSeconds: 600,
+        autoAssignTasks: 1,
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+        createdAt,
+        updatedAt: leasedAt,
+      });
+      await migrationDb.insert(schema.agentExecutions).values({
+        id: executionId,
+        companyId,
+        agentId,
+        status: 'running',
+        startedAt: leasedAt,
+        executionMode: 'single',
+        createdAt: leasedAt,
+        updatedAt: leasedAt,
+      });
+      await migrationDb.execute(sql`
+        INSERT INTO "execution_environments" (
+          "id",
+          "company_id",
+          "name",
+          "provider",
+          "status",
+          "lease_owner_agent_id",
+          "lease_owner_execution_id",
+          "leased_at",
+          "metadata",
+          "created_at",
+          "updated_at"
+        ) VALUES (
+          ${environmentId},
+          ${companyId},
+          'Existing Leased Workspace',
+          'local',
+          'leased',
+          ${agentId},
+          ${executionId},
+          ${leasedAt},
+          ${JSON.stringify({})}::jsonb,
+          ${createdAt},
+          ${leasedAt}
+        )
+      `);
+
+      await fs.copyFile(
+        path.join(sourceMigrations, '0007_good_tenebrous.sql'),
+        path.join(migrationsFolder, '0007_good_tenebrous.sql'),
+      );
+      await fs.writeFile(
+        path.join(migrationsFolder, 'meta/_journal.json'),
+        JSON.stringify({ ...journal, entries: journal.entries.slice(0, 8) }, null, 2),
+      );
+      await migrate(migrationDb, { migrationsFolder });
+
+      const [[environment], events] = await Promise.all([
+        migrationDb
+          .select()
+          .from(schema.executionEnvironments)
+          .where(eq(schema.executionEnvironments.id, environmentId)),
+        migrationDb
+          .select()
+          .from(schema.workspaceLifecycleEvents)
+          .where(eq(schema.workspaceLifecycleEvents.environmentId, environmentId)),
+      ]);
+      expect(environment.leaseId).toEqual(expect.any(String));
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'created',
+          leaseId: null,
+          actorAgentId: null,
+          actorExecutionId: null,
+          metadata: { migration: '0007', backfilled: true },
+        }),
+        expect.objectContaining({
+          eventType: 'leased',
+          leaseId: environment.leaseId,
+          actorAgentId: agentId,
+          actorExecutionId: executionId,
+          metadata: { migration: '0007', backfilled: true },
+        }),
+      ]));
+      expect(events).toHaveLength(2);
     } finally {
       await client.close();
     }
