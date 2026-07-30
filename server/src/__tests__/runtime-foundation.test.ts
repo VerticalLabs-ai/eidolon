@@ -86,7 +86,9 @@ process.stdin.on("end", () => {
   try {
     skillFiles = fs.readdirSync(skillRoot).flatMap((name) => {
       const skillFile = path.join(skillRoot, name, "SKILL.md");
-      return fs.existsSync(skillFile) ? [path.relative(skillRoot, skillFile)] : [];
+      return fs.existsSync(skillFile)
+        ? [path.relative(skillRoot, skillFile).split(path.sep).join("/")]
+        : [];
     });
   } catch {}
   const resumeIndex = adapter === "codex"
@@ -2446,10 +2448,6 @@ process.stdin.on("end", () => {
 
   it('blocks unsupported or unsafe company skills before local CLI execution', async () => {
     await createCliFixture();
-    await request(app)
-      .post(`/api/companies/${companyId}/skills/install`)
-      .send({ name: '../escape', content: '# Escape' })
-      .expect(400);
     const agent = await request(app)
       .post(`/api/companies/${companyId}/agents`)
       .send({
@@ -2494,6 +2492,43 @@ process.stdin.on("end", () => {
       .where(eq(db.schema.agentSkills.id, installed.body.data.assignments[0].id));
     expect(assignment.syncStatus).toBe('failed');
     expect(assignment.materializedPath).toBeNull();
+
+    const unsafeAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: 'Unsafe Name Skill Worker',
+        role: 'engineer',
+        adapterId: 'codex_local',
+        adapterConfig: { env: { FIXTURE_ADAPTER: 'codex' } },
+      })
+      .expect(201);
+    authorizeAgent(unsafeAgent.body.data.id);
+    const unsafeInstalled = await request(app)
+      .post(`/api/companies/${companyId}/skills/install`)
+      .send({
+        name: '../escape',
+        content: '# Escape',
+        agentIds: [unsafeAgent.body.data.id],
+      })
+      .expect(201);
+    const unsafeSession = await request(app)
+      .post(`/api/companies/${companyId}/sessions`)
+      .send({ agentId: unsafeAgent.body.data.id })
+      .expect(201);
+    const unsafeRun = await request(app)
+      .post(`/api/companies/${companyId}/sessions/${unsafeSession.body.data.id}/run`)
+      .send({ prompt: 'Do not materialize an unsafe name.' })
+      .expect(200);
+    expect(unsafeRun.body.data.status).toBe('failed');
+    expect(unsafeRun.body.data.transcript[0].data.message).toContain(
+      'name must contain only lowercase letters, numbers, and single hyphens',
+    );
+    const [unsafeAssignment] = await db.drizzle
+      .select()
+      .from(db.schema.agentSkills)
+      .where(eq(db.schema.agentSkills.id, unsafeInstalled.body.data.assignments[0].id));
+    expect(unsafeAssignment.syncStatus).toBe('failed');
+    expect(unsafeAssignment.materializedPath).toBeNull();
   });
 
   it('refuses symlinked native skill packages without touching the link target', async () => {
