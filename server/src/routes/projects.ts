@@ -7,18 +7,23 @@ import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
+const repoUrlSchema = z.string().url().refine(
+  (value) => ['http:', 'https:'].includes(new URL(value).protocol),
+  'Repo URL must start with http(s)',
+);
+
 const CreateProjectBody = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(5000).optional(),
   status: z.enum(['planning', 'active', 'completed', 'archived']).default('planning'),
-  repoUrl: z.string().url().nullable().default(null),
+  repoUrl: repoUrlSchema.nullable().default(null),
 });
 
 const UpdateProjectBody = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().max(5000).nullable().optional(),
   status: z.enum(['planning', 'active', 'completed', 'archived']).optional(),
-  repoUrl: z.string().url().nullable().optional(),
+  repoUrl: repoUrlSchema.nullable().optional(),
 });
 
 const ProjectListQuery = z.object({

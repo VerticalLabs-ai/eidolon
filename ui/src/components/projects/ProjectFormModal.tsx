@@ -26,7 +26,12 @@ const projectSchema = z.object({
   status: z.enum(["planning", "active", "completed"]),
   repoUrl: z.union([
     z.literal(""),
-    z.url("Enter a complete repository URL, such as https://github.com/org/repo."),
+    z
+      .url("Enter a complete repository URL, such as https://github.com/org/repo.")
+      .refine(
+        (value) => ["http:", "https:"].includes(new URL(value).protocol),
+        "Repository URL must start with http(s).",
+      ),
   ]),
 });
 

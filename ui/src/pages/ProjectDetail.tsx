@@ -27,6 +27,14 @@ const statusVariant: Record<string, "default" | "success" | "warning" | "info" |
   archived: "default",
 };
 
+function isSafeRepoUrl(value: string): boolean {
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
 export function ProjectDetail() {
   const { companyId, projectId } = useParams();
   const navigate = useNavigate();
@@ -105,11 +113,11 @@ export function ProjectDetail() {
                 {project.description}
               </p>
             )}
-            {project.repoUrl && (
+            {project.repoUrl && isSafeRepoUrl(project.repoUrl) && (
               <a
                 href={project.repoUrl}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 className="mt-1 inline-flex max-w-full items-center gap-1 text-xs text-accent hover:underline"
               >
                 <span className="truncate">{project.repoUrl}</span>
