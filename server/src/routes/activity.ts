@@ -1,31 +1,60 @@
-import { Router } from 'express';
-import { eq, desc, sql } from 'drizzle-orm';
+import { Router, type Request } from 'express';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import type { EidolonEvent } from '../realtime/events.js';
 
 const ActivityQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  projectId: z.string().uuid().optional(),
 });
+
+type ActivityQueryParams = z.infer<typeof ActivityQuery>;
+type ValidatedActivityRequest = Request & {
+  validated: { query: ActivityQueryParams };
+};
 
 export function activityRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const { activityLog } = db.schema;
 
   // GET /api/companies/:companyId/activity
-  router.get('/', async (req, res) => {
+  router.get('/', validate(ActivityQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
-    const parsed = ActivityQuery.safeParse(req.query);
-    const query = parsed.success ? parsed.data : { limit: 50, offset: 0 };
+    const query = (req as ValidatedActivityRequest).validated.query;
+    const projectScope = query.projectId
+      ? or(
+          and(
+            eq(activityLog.entityType, 'project'),
+            eq(activityLog.entityId, query.projectId),
+          ),
+          and(
+            sql`${activityLog.action} like 'project.%'`,
+            sql`${activityLog.metadata}->'project'->>'id' = ${query.projectId}`,
+          ),
+          and(
+            sql`${activityLog.action} like 'task.%'`,
+            sql`${activityLog.metadata}->'task'->>'projectId' = ${query.projectId}`,
+          ),
+          and(
+            sql`${activityLog.action} like 'task.%'`,
+            sql`${activityLog.metadata}->>'projectId' = ${query.projectId}`,
+          ),
+        )
+      : undefined;
+    const where = projectScope
+      ? and(eq(activityLog.companyId, companyId), projectScope)
+      : eq(activityLog.companyId, companyId);
 
     const rows = await db.drizzle
       .select()
       .from(activityLog)
-      .where(eq(activityLog.companyId, companyId))
+      .where(where)
       .orderBy(desc(activityLog.createdAt))
       .limit(query.limit)
       .offset(query.offset);
@@ -33,7 +62,7 @@ export function activityRouter(db: DbInstance): Router {
     const [{ total }] = await db.drizzle
       .select({ total: sql<number>`count(*)` })
       .from(activityLog)
-      .where(eq(activityLog.companyId, companyId));
+      .where(where);
 
     res.json({
       data: rows,
@@ -42,6 +71,68 @@ export function activityRouter(db: DbInstance): Router {
   });
 
   return router;
+}
+
+export function activityRecordFromEvent(event: EidolonEvent) {
+  const payload = event.payload as Record<string, any>;
+  let actorType: 'agent' | 'user' | 'system' = 'system';
+  let actorId = 'system';
+  let entityType = 'unknown';
+  let entityId = event.companyId;
+
+  if (event.type.startsWith('agent.')) {
+    entityType = 'agent';
+    entityId = payload.agentId ?? payload.agent?.id ?? event.companyId;
+  } else if (event.type.startsWith('project.')) {
+    entityType = 'project';
+    entityId = payload.projectId ?? payload.project?.id ?? event.companyId;
+  } else if (event.type.startsWith('task.')) {
+    entityType = 'task';
+    entityId = payload.taskId ?? payload.task?.id ?? event.companyId;
+  } else if (event.type.startsWith('company.')) {
+    entityType = 'company';
+    entityId = event.companyId;
+  } else if (event.type.startsWith('goal.')) {
+    entityType = 'goal';
+    entityId = payload.goalId ?? payload.goal?.id ?? event.companyId;
+  } else if (event.type.startsWith('workflow.')) {
+    entityType = 'workflow';
+    entityId = payload.workflowId ?? payload.workflow?.id ?? event.companyId;
+  } else if (event.type.startsWith('message.')) {
+    entityType = 'message';
+    entityId = payload.message?.id ?? event.companyId;
+    actorType = 'agent';
+    actorId = payload.message?.fromAgentId ?? 'system';
+  } else if (event.type.startsWith('cost.') || event.type.startsWith('budget.')) {
+    entityType = 'budget';
+    entityId = payload.costEvent?.id ?? payload.alert?.id ?? event.companyId;
+  }
+
+  const entityName = payload.project?.name ?? payload.task?.title ?? payload.goal?.title;
+  const descriptions: Record<string, string> = {
+    'project.created': 'Project created',
+    'project.updated': 'Project updated',
+    'project.deleted': 'Project archived',
+    'task.created': 'Task created',
+    'task.updated': 'Task updated',
+    'task.cancelled': 'Task cancelled',
+    'goal.created': 'Goal created',
+    'goal.updated': 'Goal updated',
+    'goal.deleted': 'Goal deleted',
+  };
+  const description = descriptions[event.type] ?? `${event.type.replaceAll('.', ' ')} event`;
+
+  return {
+    companyId: event.companyId,
+    actorType,
+    actorId,
+    action: event.type,
+    entityType,
+    entityId,
+    description: entityName ? `${description}: ${entityName}` : description,
+    metadata: event.payload as Record<string, unknown>,
+    createdAt: new Date(event.timestamp),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -53,47 +144,7 @@ export function setupActivityLogger(db: DbInstance): void {
 
   eventBus.onEvent(async (event) => {
     try {
-      let actorType: 'agent' | 'user' | 'system' = 'system';
-      let actorId = 'system';
-      let entityType = 'unknown';
-      let entityId = event.companyId;
-
-      if (event.type.startsWith('agent.')) {
-        entityType = 'agent';
-        entityId = (event.payload as any).agentId ?? (event.payload as any).agent?.id ?? event.companyId;
-      } else if (event.type.startsWith('task.')) {
-        entityType = 'task';
-        entityId = (event.payload as any).taskId ?? (event.payload as any).task?.id ?? event.companyId;
-      } else if (event.type.startsWith('company.')) {
-        entityType = 'company';
-        entityId = event.companyId;
-      } else if (event.type.startsWith('goal.')) {
-        entityType = 'goal';
-        entityId = (event.payload as any).goalId ?? (event.payload as any).goal?.id ?? event.companyId;
-      } else if (event.type.startsWith('workflow.')) {
-        entityType = 'workflow';
-        entityId = (event.payload as any).workflowId ?? (event.payload as any).workflow?.id ?? event.companyId;
-      } else if (event.type.startsWith('message.')) {
-        entityType = 'message';
-        entityId = (event.payload as any).message?.id ?? event.companyId;
-        actorType = 'agent';
-        actorId = (event.payload as any).message?.fromAgentId ?? 'system';
-      } else if (event.type.startsWith('cost.') || event.type.startsWith('budget.')) {
-        entityType = 'budget';
-        entityId = (event.payload as any).costEvent?.id ?? (event.payload as any).alert?.id ?? event.companyId;
-      }
-
-      await db.drizzle.insert(activityLog).values({
-        companyId: event.companyId,
-        actorType,
-        actorId,
-        action: event.type,
-        entityType,
-        entityId,
-        description: `${event.type} event`,
-        metadata: event.payload as Record<string, unknown>,
-        createdAt: new Date(event.timestamp),
-      });
+      await db.drizzle.insert(activityLog).values(activityRecordFromEvent(event));
     } catch (err) {
       // Activity logging should never break the application
       logger.debug({ err }, 'Failed to log activity event');

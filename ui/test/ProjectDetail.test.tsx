@@ -49,6 +49,11 @@ vi.mock("@/lib/hooks", () => ({
 
 vi.mock("@/pages/TaskBoard", () => ({ TaskBoard: () => <div>Issue board</div> }));
 vi.mock("@/pages/GoalTree", () => ({ GoalTree: () => <div>Goal tree</div> }));
+vi.mock("@/components/projects/ProjectActivity", () => ({
+  ProjectActivity: ({ companyId, projectId }: { companyId: string; projectId: string }) => (
+    <div>Activity for {companyId}/{projectId}</div>
+  ),
+}));
 vi.mock("sonner", () => ({ toast: { success: mocks.successToast } }));
 
 function renderDetail() {
@@ -82,6 +87,15 @@ describe("ProjectDetail lifecycle controls", () => {
     renderDetail();
 
     expect(screen.queryByRole("link", { name: /javascript:/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the persisted activity view for this project", async () => {
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+
+    expect(screen.getByText("Activity for company-1/project-1")).toBeInTheDocument();
   });
 
   it("edits all operator fields through the shared form with keyboard submission", async () => {

@@ -6,6 +6,7 @@ import {
   useArchiveProject,
   useCreateProject,
   useProject,
+  useProjectActivity,
   useUpdateProject,
 } from "../src/lib/hooks";
 
@@ -13,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   archiveProject: vi.fn(),
   createProject: vi.fn(),
   getProject: vi.fn(),
+  getProjectActivity: vi.fn(),
   updateProject: vi.fn(),
 }));
 
@@ -21,6 +23,7 @@ vi.mock("../src/lib/api", async () => ({
   archiveProject: apiMocks.archiveProject,
   createProject: apiMocks.createProject,
   getProject: apiMocks.getProject,
+  getProjectActivity: apiMocks.getProjectActivity,
   updateProject: apiMocks.updateProject,
 }));
 
@@ -79,6 +82,27 @@ describe("useCreateProject", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual(createdProject);
     expect(apiMocks.getProject).toHaveBeenCalledWith("company-1", "project-1");
+  });
+
+  it("loads a bounded page of persisted project activity", async () => {
+    const activityPage = {
+      data: [],
+      meta: { total: 0, limit: 20, offset: 40 },
+    };
+    apiMocks.getProjectActivity.mockResolvedValue(activityPage);
+    const { result } = renderHook(
+      () => useProjectActivity("company-1", "project-1", 20, 40),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(activityPage);
+    expect(apiMocks.getProjectActivity).toHaveBeenCalledWith(
+      "company-1",
+      "project-1",
+      20,
+      40,
+    );
   });
 
   it("updates list and detail caches with the persisted project", async () => {
