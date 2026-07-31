@@ -9,6 +9,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { ProjectFormModal } from "@/components/projects/ProjectFormModal";
+import { isHttpUrl } from "@/lib/urls";
 import { TaskBoard } from "@/pages/TaskBoard";
 import { GoalTree } from "@/pages/GoalTree";
 import type { Tab } from "@/components/ui/Tabs";
@@ -26,14 +27,6 @@ const statusVariant: Record<string, "default" | "success" | "warning" | "info" |
   completed: "success",
   archived: "default",
 };
-
-function isSafeRepoUrl(value: string): boolean {
-  try {
-    return ["http:", "https:"].includes(new URL(value).protocol);
-  } catch {
-    return false;
-  }
-}
 
 export function ProjectDetail() {
   const { companyId, projectId } = useParams();
@@ -85,6 +78,8 @@ export function ProjectDetail() {
     );
   }
 
+  const repoUrl = project.repoUrl && isHttpUrl(project.repoUrl) ? project.repoUrl : null;
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -113,14 +108,14 @@ export function ProjectDetail() {
                 {project.description}
               </p>
             )}
-            {project.repoUrl && isSafeRepoUrl(project.repoUrl) && (
+            {repoUrl && (
               <a
-                href={project.repoUrl}
+                href={repoUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="mt-1 inline-flex max-w-full items-center gap-1 text-xs text-accent hover:underline"
               >
-                <span className="truncate">{project.repoUrl}</span>
+                <span className="truncate">{repoUrl}</span>
                 <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
               </a>
             )}

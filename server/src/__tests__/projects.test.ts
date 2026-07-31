@@ -45,10 +45,12 @@ describe('Projects API', () => {
   });
 
   it('rejects an invalid repository URL without persisting a project', async () => {
-    await request(app)
-      .post(`/api/companies/${companyId}/projects`)
-      .send({ name: 'Invalid repository', repoUrl: 'not-a-url' })
-      .expect(400);
+    for (const repoUrl of ['not-a-url', 'javascript:alert(document.domain)']) {
+      await request(app)
+        .post(`/api/companies/${companyId}/projects`)
+        .send({ name: 'Invalid repository', repoUrl })
+        .expect(400);
+    }
 
     const list = await request(app)
       .get(`/api/companies/${companyId}/projects`)
@@ -115,7 +117,7 @@ describe('Projects API', () => {
 
     await request(app)
       .patch(`/api/companies/${companyId}/projects/${created.body.data.id}`)
-      .send({ name: 'Do not persist', repoUrl: 'not-a-url' })
+      .send({ name: 'Do not persist', repoUrl: 'javascript:alert(document.domain)' })
       .expect(400);
 
     await request(app)

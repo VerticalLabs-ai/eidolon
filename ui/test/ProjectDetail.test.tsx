@@ -74,6 +74,14 @@ describe("ProjectDetail lifecycle controls", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    project.repoUrl = "https://github.com/vertical-labs/eidolon";
+  });
+
+  it("does not render a persisted unsafe repository URL as a link", () => {
+    project.repoUrl = "javascript:alert(document.domain)";
+    renderDetail();
+
+    expect(screen.queryByRole("link", { name: /javascript:/ })).not.toBeInTheDocument();
   });
 
   it("edits all operator fields through the shared form with keyboard submission", async () => {

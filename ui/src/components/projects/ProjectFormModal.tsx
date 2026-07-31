@@ -4,6 +4,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { useCreateProject, useUpdateProject } from "@/lib/hooks";
+import { isHttpUrl } from "@/lib/urls";
 import type { Project, ProjectStatus } from "@/lib/api";
 
 interface ProjectFormModalProps {
@@ -28,10 +29,7 @@ const projectSchema = z.object({
     z.literal(""),
     z
       .url("Enter a complete repository URL, such as https://github.com/org/repo.")
-      .refine(
-        (value) => ["http:", "https:"].includes(new URL(value).protocol),
-        "Repository URL must start with http(s).",
-      ),
+      .refine(isHttpUrl, "Repository URL must start with http:// or https://."),
   ]),
 });
 

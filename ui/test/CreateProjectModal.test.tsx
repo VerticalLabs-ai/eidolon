@@ -73,6 +73,30 @@ describe("CreateProjectModal", () => {
     expect(mocks.createProject).not.toHaveBeenCalled();
   });
 
+  it("rejects repository URLs with executable schemes", async () => {
+    const user = userEvent.setup();
+    render(
+      <CreateProjectModal
+        open
+        companyId="company-1"
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Project name"), "Runtime reliability");
+    await user.type(
+      screen.getByLabelText("Repository URL"),
+      "javascript:alert(document.domain)",
+    );
+    await user.click(screen.getByRole("button", { name: "Create Project" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Repository URL must start with http:// or https://.",
+    );
+    expect(mocks.createProject).not.toHaveBeenCalled();
+  });
+
   it("locks dismissal and fields while creation is pending", () => {
     mocks.isPending = true;
     const onClose = vi.fn();
