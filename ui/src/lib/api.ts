@@ -216,6 +216,7 @@ export interface TaskFilters {
   status?: string;
   priority?: string;
   assigneeId?: string;
+  projectId?: string;
 }
 
 // ── Companies ────────────────────────────────────────────────────────────
@@ -351,6 +352,7 @@ export const getTasks = (companyId: string, filters?: TaskFilters) => {
   if (filters?.status) params.set("status", filters.status);
   if (filters?.priority) params.set("priority", filters.priority);
   if (filters?.assigneeId) params.set("assigneeId", filters.assigneeId);
+  if (filters?.projectId) params.set("project", filters.projectId);
   const qs = params.toString();
   return request<Task[]>(`/companies/${companyId}/tasks${qs ? `?${qs}` : ""}`);
 };
@@ -366,6 +368,7 @@ export const createTask = (
     priority?: string;
     type?: string;
     assigneeAgentId?: string;
+    projectId?: string;
     parentId?: string;
     dependencies?: string[];
   },
