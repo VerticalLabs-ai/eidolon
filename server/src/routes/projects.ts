@@ -7,14 +7,17 @@ import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
+// Userinfo is rejected alongside non-http(s) schemes: a credential-bearing URL such as
+// https://token@host/org/repo would be persisted and rendered verbatim, leaking the secret.
 const HttpUrl = z.string().url().refine((value) => {
   try {
-    const protocol = new URL(value).protocol;
-    return protocol === 'http:' || protocol === 'https:';
+    const url = new URL(value);
+    const isHttpProtocol = url.protocol === 'http:' || url.protocol === 'https:';
+    return isHttpProtocol && url.username === '' && url.password === '';
   } catch {
     return false;
   }
-}, 'Repository URL must start with http:// or https://');
+}, 'Repository URL must start with http:// or https:// and must not embed credentials');
 
 const CreateProjectBody = z.object({
   name: z.string().min(1).max(255),

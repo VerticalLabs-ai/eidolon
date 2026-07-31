@@ -45,7 +45,11 @@ describe('Projects API', () => {
   });
 
   it('rejects an invalid repository URL without persisting a project', async () => {
-    for (const repoUrl of ['not-a-url', 'javascript:alert(document.domain)']) {
+    for (const repoUrl of [
+      'not-a-url',
+      'javascript:alert(document.domain)',
+      'https://token@github.com/org/repo',
+    ]) {
       await request(app)
         .post(`/api/companies/${companyId}/projects`)
         .send({ name: 'Invalid repository', repoUrl })

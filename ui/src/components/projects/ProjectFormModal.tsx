@@ -29,7 +29,10 @@ const projectSchema = z.object({
     z.literal(""),
     z
       .url("Enter a complete repository URL, such as https://github.com/org/repo.")
-      .refine(isHttpUrl, "Repository URL must start with http:// or https://."),
+      .refine(
+        isHttpUrl,
+        "Use an http(s) repository URL without embedded credentials, such as https://github.com/org/repo.",
+      ),
   ]),
 });
 
