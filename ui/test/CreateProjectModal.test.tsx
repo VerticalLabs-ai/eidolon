@@ -76,6 +76,7 @@ describe("CreateProjectModal", () => {
   it.each([
     ["executable schemes", "javascript:alert(document.domain)"],
     ["embedded credentials", "https://token@github.com/org/repo"],
+    ["an empty userinfo section", "https://@github.com/org/repo"],
   ])("rejects repository URLs with %s", async (_label, value) => {
     const user = userEvent.setup();
     render(

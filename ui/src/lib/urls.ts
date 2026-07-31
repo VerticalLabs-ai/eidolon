@@ -7,8 +7,17 @@ export function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
     const isHttpProtocol = url.protocol === "http:" || url.protocol === "https:";
-    return isHttpProtocol && url.username === "" && url.password === "";
+    if (!isHttpProtocol || url.username !== "" || url.password !== "") return false;
+    // URL parsing discards an empty userinfo section, so https://@host and
+    // https://:@host would survive the username/password check above.
+    return !rawAuthority(value, url.protocol).includes("@");
   } catch {
     return false;
   }
+}
+
+/** Authority of the raw input, before URL parsing normalizes empty userinfo away. */
+function rawAuthority(value: string, protocol: string): string {
+  const afterScheme = value.trim().slice(protocol.length).replace(/^[/\\]*/, "");
+  return afterScheme.split(/[/\\?#]/, 1)[0] ?? "";
 }

@@ -13,7 +13,12 @@ const HttpUrl = z.string().url().refine((value) => {
   try {
     const url = new URL(value);
     const isHttpProtocol = url.protocol === 'http:' || url.protocol === 'https:';
-    return isHttpProtocol && url.username === '' && url.password === '';
+    if (!isHttpProtocol || url.username !== '' || url.password !== '') return false;
+    // URL parsing discards an empty userinfo section, so https://@host and
+    // https://:@host would survive the username/password check above.
+    const afterScheme = value.trim().slice(url.protocol.length).replace(/^[/\\]*/, '');
+    const authority = afterScheme.split(/[/\\?#]/, 1)[0] ?? '';
+    return !authority.includes('@');
   } catch {
     return false;
   }
