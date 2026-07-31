@@ -5,6 +5,7 @@ import { useWebSocket } from "@/lib/ws";
 import { clsx } from "clsx";
 import { motion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
+import { useEffect } from "react";
 import {
   BarChart3,
   BookOpen,
@@ -115,9 +116,9 @@ function CompanyIconRail() {
   }
 
   return (
-    <div className="flex h-full w-12 shrink-0 flex-col items-center border-r border-white/[0.06] bg-surface/60 py-3 gap-2">
+    <div className="flex h-full w-14 shrink-0 flex-col items-center gap-2 border-r border-white/[0.06] bg-surface/60 py-3 lg:w-12">
       {/* Eidolon logo at top */}
-      <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-xl bg-accent/15">
+      <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 lg:h-9 lg:w-9">
         <Zap className="h-4 w-4 text-accent" />
       </div>
 
@@ -131,10 +132,12 @@ function CompanyIconRail() {
           return (
             <button
               key={company.id}
+              type="button"
               onClick={() => navigate(`/company/${company.id}`)}
               title={company.name}
+              aria-label={`Switch to ${company.name}`}
               className={clsx(
-                "relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-bold transition-all duration-300 cursor-pointer",
+                "relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-sm font-bold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:h-9 lg:w-9",
                 isActive
                   ? "ring-2 ring-accent ring-offset-2 ring-offset-surface scale-105"
                   : "hover:scale-105 hover:brightness-125",
@@ -152,9 +155,11 @@ function CompanyIconRail() {
 
       {/* Add company button */}
       <button
+        type="button"
         onClick={() => navigate("/")}
         title="Add new company"
-        className="mt-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-dashed border-white/[0.12] text-text-secondary hover:text-accent hover:border-accent/40 hover:bg-accent/[0.05] transition-all duration-300 cursor-pointer"
+        aria-label="Add new company"
+        className="mt-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-dashed border-white/[0.12] text-text-secondary transition-colors hover:border-accent/40 hover:bg-accent/[0.05] hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:h-9 lg:w-9"
       >
         <Plus className="h-4 w-4" />
       </button>
@@ -176,11 +181,12 @@ function ProjectsSection({ base, onClose }: { base: string; onClose: () => void 
           Projects
         </p>
         <button
+          type="button"
           onClick={(event) => {
             openProjectCreation(event.currentTarget);
             onClose();
           }}
-          className="flex min-h-8 items-center gap-1 rounded px-2 py-1 text-[10px] font-medium text-text-secondary hover:text-accent hover:bg-accent/[0.05] transition-all duration-200 cursor-pointer"
+          className="flex min-h-11 items-center gap-1 rounded px-2 py-1 text-[10px] font-medium text-text-secondary transition-colors hover:bg-accent/[0.05] hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-8"
           title="New project"
         >
           <Plus className="h-3 w-3" />
@@ -195,7 +201,7 @@ function ProjectsSection({ base, onClose }: { base: string; onClose: () => void 
             onClick={onClose}
             className={({ isActive }) =>
               clsx(
-                "group relative flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-all duration-300",
+                "group relative flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-0",
                 isActive
                   ? "text-accent bg-accent/[0.08]"
                   : "text-text-secondary hover:text-text-primary hover:bg-white/[0.04]",
@@ -243,6 +249,29 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
     inbox: inboxUnread,
   };
 
+  useEffect(() => {
+    if (!open) return;
+
+    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const previousOverflow = document.body.style.overflow;
+    const syncScrollLock = () => {
+      document.body.style.overflow = desktopQuery.matches ? previousOverflow : "hidden";
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !desktopQuery.matches) onClose();
+    };
+
+    syncScrollLock();
+    desktopQuery.addEventListener("change", syncScrollLock);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      desktopQuery.removeEventListener("change", syncScrollLock);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose, open]);
+
   return (
     <>
       {/* Mobile overlay */}
@@ -250,13 +279,15 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
         <div
           className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
           onClick={onClose}
+          aria-hidden="true"
         />
       )}
 
       {/* Sidebar shell: icon rail + nav panel */}
       <div
+        id="app-sidebar"
         className={clsx(
-          "fixed inset-y-0 left-0 z-50 flex transition-transform duration-300 lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex shadow-2xl shadow-black/60 transition-transform duration-200 motion-reduce:transition-none lg:static lg:translate-x-0 lg:shadow-none",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -264,7 +295,7 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
         <CompanyIconRail />
 
         {/* Main navigation panel */}
-        <aside className="flex w-[212px] flex-col glass border-r border-white/[0.06]">
+        <aside aria-label="Primary navigation" className="glass flex w-[212px] flex-col border-r border-white/[0.06]">
           {/* Header */}
           <div className="flex h-14 items-center justify-between border-b border-white/[0.06] px-4">
             <div className="min-w-0">
@@ -274,8 +305,9 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
               <p className="text-[10px] text-text-secondary">AI Company Runtime</p>
             </div>
             <button
+              type="button"
               onClick={onClose}
-              className="rounded-lg p-1 text-text-secondary hover:text-accent hover:bg-white/[0.05] transition-all duration-200 lg:hidden cursor-pointer"
+              className="flex h-11 w-11 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-white/[0.05] hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:hidden"
               aria-label="Close sidebar"
             >
               <X className="h-4 w-4" />
@@ -384,7 +416,7 @@ function NavSectionGroup({
                 onClick={onClose}
                 className={({ isActive }) =>
                   clsx(
-                    "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-300",
+                    "group relative flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-0",
                     isActive
                       ? "text-accent bg-accent/[0.08]"
                       : "text-text-secondary hover:text-text-primary hover:bg-white/[0.04]",

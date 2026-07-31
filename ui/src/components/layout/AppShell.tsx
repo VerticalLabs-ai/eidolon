@@ -1,14 +1,6 @@
-import { useState } from "react";
-import { Outlet, useParams, NavLink } from "react-router-dom";
-import {
-  Menu,
-  LayoutDashboard,
-  Bot,
-  ListTodo,
-  BarChart3,
-  Settings,
-} from "lucide-react";
-import { clsx } from "clsx";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Outlet, useParams } from "react-router-dom";
+import { Menu } from "lucide-react";
 import { Toaster } from "sonner";
 import { Sidebar } from "./Sidebar";
 import { useCompany } from "@/lib/hooks";
@@ -18,20 +10,36 @@ import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { CommandPalette } from "@/components/ui/CommandPalette";
 import { ProjectCreationProvider } from "@/components/projects/ProjectCreationProvider";
 
-const mobileNavItems = [
-  { to: "", icon: LayoutDashboard, label: "Home", end: true },
-  { to: "/agents", icon: Bot, label: "Agents" },
-  { to: "/issues", icon: ListTodo, label: "Issues" },
-  { to: "/analytics", icon: BarChart3, label: "Stats" },
-  { to: "/settings", icon: Settings, label: "Settings" },
-];
-
 export function AppShell() {
   const { companyId } = useParams();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const sidebarWasOpenRef = useRef(false);
   const { data: company } = useCompany(companyId);
   const { status } = useWebSocket(companyId);
-  const base = `/company/${companyId}`;
+
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  useEffect(() => {
+    const wasOpen = sidebarWasOpenRef.current;
+    sidebarWasOpenRef.current = sidebarOpen;
+    if (!wasOpen || sidebarOpen) return;
+
+    const timeout = window.setTimeout(() => {
+      const active = document.activeElement;
+      const openDialog = document.querySelector("dialog[open]");
+      if (active && openDialog?.contains(active)) return;
+      if (
+        !active
+        || active === document.body
+        || (active instanceof Element && active.closest("#app-sidebar"))
+      ) {
+        menuButtonRef.current?.focus({ preventScroll: true });
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [sidebarOpen]);
 
   // Wire WebSocket events to toast notifications
   useEventToasts(companyId);
@@ -54,18 +62,21 @@ export function AppShell() {
         <Sidebar
           companyName={company?.name}
           open={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
+          onClose={closeSidebar}
         />
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Minimal top bar */}
-          <header className="flex h-12 items-center justify-between border-b border-white/[0.04] bg-surface/80 backdrop-blur-md px-4 lg:px-6">
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/[0.04] bg-surface/80 px-4 backdrop-blur-md sm:px-6">
             <div className="flex items-center gap-3">
               <button
+                ref={menuButtonRef}
+                type="button"
                 onClick={() => setSidebarOpen(true)}
-                className="rounded-lg p-1.5 text-text-secondary hover:text-neon-cyan hover:bg-white/[0.05] transition-all duration-300 lg:hidden cursor-pointer"
-              aria-label="Open sidebar"
-              data-project-creation-focus-fallback
+                className="flex h-11 w-11 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-white/[0.05] hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:hidden"
+                aria-label="Open sidebar"
+                aria-controls="app-sidebar"
+                aria-expanded={sidebarOpen}
+                data-project-creation-focus-fallback
               >
                 <Menu className="h-5 w-5" />
               </button>
@@ -88,36 +99,13 @@ export function AppShell() {
             </div>
           </header>
 
-          {/* Main content with grid background */}
           <main
-            className="flex-1 overflow-y-auto pb-20 lg:pb-0 grid-bg"
+            className="grid-bg flex-1 overflow-y-auto"
             data-project-creation-focus-fallback
             tabIndex={-1}
           >
             <Outlet />
           </main>
-
-          {/* Mobile bottom nav - glass with neon active states */}
-          <nav className="fixed bottom-0 left-0 right-0 z-30 flex h-16 items-center justify-around glass border-t border-white/[0.06] lg:hidden">
-            {mobileNavItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={`${base}${item.to}`}
-                end={item.end}
-                className={({ isActive }) =>
-                  clsx(
-                    "flex flex-col items-center gap-0.5 px-3 py-1.5 text-[10px] font-medium transition-all duration-300",
-                    isActive
-                      ? "text-neon-cyan drop-shadow-[0_0_8px_rgba(0,243,255,0.5)]"
-                      : "text-text-secondary",
-                  )
-                }
-              >
-                <item.icon className="h-5 w-5" />
-                {item.label}
-              </NavLink>
-            ))}
-          </nav>
         </div>
       </div>
     </ProjectCreationProvider>
