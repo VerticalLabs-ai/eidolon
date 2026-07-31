@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +24,17 @@ vi.mock("@/lib/ws", () => ({
 }));
 
 describe("project creation controls", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    });
+  });
 
   it("opens the shared workflow from the sidebar", async () => {
     const user = userEvent.setup();
@@ -58,5 +68,26 @@ describe("project creation controls", () => {
     await user.click(buttons[0]);
     await user.click(buttons[1]);
     expect(mocks.openProjectCreation).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes the mobile drawer with Escape and restores page scrolling", () => {
+    const onClose = vi.fn();
+    const { unmount } = render(
+      <MemoryRouter initialEntries={["/company/company-1/goals"]}>
+        <Routes>
+          <Route
+            path="/company/:companyId/goals"
+            element={<Sidebar companyName="Test Company" open onClose={onClose} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(document.body.style.overflow).toBe("hidden");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
+
+    unmount();
+    expect(document.body.style.overflow).toBe("");
   });
 });
