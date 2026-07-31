@@ -5,6 +5,7 @@ import { CreateProjectModal } from "../src/components/projects/CreateProjectModa
 
 const mocks = vi.hoisted(() => ({
   createProject: vi.fn(),
+  updateProject: vi.fn(),
   reset: vi.fn(),
   isPending: false,
 }));
@@ -14,6 +15,11 @@ vi.mock("@/lib/hooks", () => ({
     mutate: mocks.createProject,
     reset: mocks.reset,
     isPending: mocks.isPending,
+  }),
+  useUpdateProject: () => ({
+    mutate: mocks.updateProject,
+    reset: mocks.reset,
+    isPending: false,
   }),
 }));
 

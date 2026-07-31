@@ -1,16 +1,27 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useCreateProject } from "../src/lib/hooks";
+import {
+  useArchiveProject,
+  useCreateProject,
+  useProject,
+  useUpdateProject,
+} from "../src/lib/hooks";
 
 const apiMocks = vi.hoisted(() => ({
+  archiveProject: vi.fn(),
   createProject: vi.fn(),
+  getProject: vi.fn(),
+  updateProject: vi.fn(),
 }));
 
 vi.mock("../src/lib/api", async () => ({
   ...(await vi.importActual<typeof import("../src/lib/api")>("../src/lib/api")),
+  archiveProject: apiMocks.archiveProject,
   createProject: apiMocks.createProject,
+  getProject: apiMocks.getProject,
+  updateProject: apiMocks.updateProject,
 }));
 
 const createdProject = {
@@ -59,5 +70,64 @@ describe("useCreateProject", () => {
     expect(queryClient.getQueryData(["projects", "company-1"]))
       .toEqual([createdProject]);
     expect(queryClient.getQueryState(["projects", "company-1"])?.isInvalidated).toBe(true);
+  });
+
+  it("loads one project into a canonical detail cache", async () => {
+    apiMocks.getProject.mockResolvedValue({ data: createdProject });
+    const { result } = renderHook(() => useProject("company-1", "project-1"), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(createdProject);
+    expect(apiMocks.getProject).toHaveBeenCalledWith("company-1", "project-1");
+  });
+
+  it("updates list and detail caches with the persisted project", async () => {
+    const updatedProject = {
+      ...createdProject,
+      name: "Runtime reliability verified",
+      status: "completed" as const,
+    };
+    queryClient.setQueryData(["projects", "company-1"], [createdProject]);
+    queryClient.setQueryData(["projects", "company-1", "project-1"], createdProject);
+    apiMocks.updateProject.mockResolvedValue({ data: updatedProject });
+    const { result } = renderHook(() => useUpdateProject("company-1"), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        projectId: "project-1",
+        data: { name: "Runtime reliability verified", status: "completed" },
+      });
+    });
+
+    expect(apiMocks.updateProject).toHaveBeenCalledWith(
+      "company-1",
+      "project-1",
+      expect.objectContaining({ status: "completed" }),
+    );
+    expect(queryClient.getQueryData(["projects", "company-1", "project-1"]))
+      .toEqual(updatedProject);
+    expect(queryClient.getQueryData(["projects", "company-1"]))
+      .toEqual([updatedProject]);
+    expect(queryClient.getQueryState(["projects", "company-1"])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["projects", "company-1", "project-1"])?.isInvalidated)
+      .toBe(true);
+  });
+
+  it("marks the canonical project archived in both caches", async () => {
+    const archivedProject = { ...createdProject, status: "archived" as const };
+    queryClient.setQueryData(["projects", "company-1"], [createdProject]);
+    queryClient.setQueryData(["projects", "company-1", "project-1"], createdProject);
+    apiMocks.archiveProject.mockResolvedValue({ data: archivedProject });
+    const { result } = renderHook(() => useArchiveProject("company-1"), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({ projectId: "project-1" });
+    });
+
+    expect(apiMocks.archiveProject).toHaveBeenCalledWith("company-1", "project-1");
+    expect(queryClient.getQueryData(["projects", "company-1", "project-1"]))
+      .toEqual(archivedProject);
+    expect(queryClient.getQueryData(["projects", "company-1"]))
+      .toEqual([archivedProject]);
   });
 });

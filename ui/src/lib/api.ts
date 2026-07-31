@@ -259,13 +259,37 @@ export interface CreateProjectInput {
   repoUrl: string | null;
 }
 
+export interface UpdateProjectInput {
+  name?: string;
+  description?: string | null;
+  status?: ProjectStatus;
+  repoUrl?: string | null;
+}
+
 export const getProjects = (companyId: string) =>
   request<Project[]>(`/companies/${companyId}/projects`);
+
+export const getProject = (companyId: string, projectId: string) =>
+  request<ApiResponse<Project>>(`/companies/${companyId}/projects/${projectId}`);
 
 export const createProject = (companyId: string, data: CreateProjectInput) =>
   request<ApiResponse<Project>>(`/companies/${companyId}/projects`, {
     method: "POST",
     body: JSON.stringify(data),
+  });
+
+export const updateProject = (
+  companyId: string,
+  projectId: string,
+  data: UpdateProjectInput,
+) => request<ApiResponse<Project>>(`/companies/${companyId}/projects/${projectId}`, {
+  method: "PATCH",
+  body: JSON.stringify(data),
+});
+
+export const archiveProject = (companyId: string, projectId: string) =>
+  request<ApiResponse<Project>>(`/companies/${companyId}/projects/${projectId}`, {
+    method: "DELETE",
   });
 
 // ── Agents ───────────────────────────────────────────────────────────────

@@ -55,4 +55,77 @@ describe('Projects API', () => {
       .expect(200);
     expect(list.body.data).toEqual([]);
   });
+
+  it('updates and soft-archives a project with durable detail reads', async () => {
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Lifecycle draft', status: 'planning', repoUrl: null })
+      .expect(201);
+    const projectId = created.body.data.id;
+
+    await request(app)
+      .patch(`/api/companies/${companyId}/projects/${projectId}`)
+      .send({
+        name: 'Lifecycle verified',
+        description: 'Prove edits survive a canonical detail reload.',
+        status: 'active',
+        repoUrl: 'https://github.com/vertical-labs/eidolon',
+      })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toEqual(expect.objectContaining({
+          id: projectId,
+          name: 'Lifecycle verified',
+          status: 'active',
+          repoUrl: 'https://github.com/vertical-labs/eidolon',
+        }));
+      });
+
+    await request(app)
+      .get(`/api/companies/${companyId}/projects/${projectId}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toEqual(expect.objectContaining({
+          id: projectId,
+          name: 'Lifecycle verified',
+          description: 'Prove edits survive a canonical detail reload.',
+        }));
+      });
+
+    await request(app)
+      .delete(`/api/companies/${companyId}/projects/${projectId}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toEqual(expect.objectContaining({ id: projectId, status: 'archived' }));
+      });
+
+    await request(app)
+      .get(`/api/companies/${companyId}/projects/${projectId}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toEqual(expect.objectContaining({ id: projectId, status: 'archived' }));
+      });
+  });
+
+  it('rejects an invalid repository URL during an update without changing the project', async () => {
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Keep canonical state', status: 'planning', repoUrl: null })
+      .expect(201);
+
+    await request(app)
+      .patch(`/api/companies/${companyId}/projects/${created.body.data.id}`)
+      .send({ name: 'Do not persist', repoUrl: 'not-a-url' })
+      .expect(400);
+
+    await request(app)
+      .get(`/api/companies/${companyId}/projects/${created.body.data.id}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toEqual(expect.objectContaining({
+          name: 'Keep canonical state',
+          repoUrl: null,
+        }));
+      });
+  });
 });
