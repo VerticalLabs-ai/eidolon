@@ -9,6 +9,7 @@ interface CreateTaskModalProps {
   open: boolean;
   onClose: () => void;
   companyId: string;
+  projectId?: string;
 }
 
 const priorityOptions = [
@@ -26,7 +27,7 @@ const typeOptions = [
   { value: "epic", label: "Epic" },
 ];
 
-export function CreateTaskModal({ open, onClose, companyId }: CreateTaskModalProps) {
+export function CreateTaskModal({ open, onClose, companyId, projectId }: CreateTaskModalProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<Task["priority"]>("medium");
@@ -37,7 +38,7 @@ export function CreateTaskModal({ open, onClose, companyId }: CreateTaskModalPro
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     mutation.mutate(
-      { title, description, priority, type },
+      { title, description, priority, type, ...(projectId ? { projectId } : {}) },
       {
         onSuccess: () => {
           onClose();

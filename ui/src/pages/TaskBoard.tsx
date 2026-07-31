@@ -29,8 +29,11 @@ const priorityOptions = [
 ];
 
 export function TaskBoard() {
-  const { companyId } = useParams();
-  const { data: tasks, isLoading } = useTasks(companyId);
+  const { companyId, projectId } = useParams();
+  const { data: tasks, isLoading } = useTasks(
+    companyId,
+    projectId ? { projectId } : undefined,
+  );
   const updateTask = useUpdateTask(companyId!);
   const [modalOpen, setModalOpen] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState("");
@@ -183,6 +186,7 @@ export function TaskBoard() {
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         companyId={companyId!}
+        projectId={projectId}
       />
     </div>
     </PageTransition>
