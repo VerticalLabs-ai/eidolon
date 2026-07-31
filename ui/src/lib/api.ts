@@ -142,8 +142,8 @@ export interface Goal {
   companyId: string;
   title: string;
   description: string | null;
-  level: string;
-  status: string;
+  level: GoalLevel;
+  status: GoalStatus;
   parentId: string | null;
   ownerAgentId: string | null;
   progress: number;
@@ -152,6 +152,23 @@ export interface Goal {
   createdAt: string;
   updatedAt: string;
 }
+
+export type GoalLevel = "company" | "department" | "team" | "individual";
+export type GoalStatus = "draft" | "active" | "completed" | "cancelled";
+
+export interface CreateGoalInput {
+  title: string;
+  description?: string;
+  level: GoalLevel;
+  status: GoalStatus;
+  parentId: string | null;
+  ownerAgentId: string | null;
+  progress: number;
+}
+
+export type UpdateGoalInput = Partial<
+  Omit<CreateGoalInput, "description"> & { description: string | null }
+>;
 
 export interface Message {
   id: string;
@@ -425,20 +442,15 @@ export const restoreTaskSubtree = (companyId: string, taskId: string) =>
 export const getGoals = (companyId: string) =>
   request<Goal[]>(`/companies/${companyId}/goals`);
 
-export const createGoal = (
-  companyId: string,
-  data: {
-    title: string;
-    description?: string;
-    level?: string;
-    status?: string;
-    parentId?: string;
-    ownerAgentId?: string;
-    progress?: number;
-  },
-) =>
-  request<Goal>(`/companies/${companyId}/goals`, {
+export const createGoal = (companyId: string, data: CreateGoalInput) =>
+  request<ApiResponse<Goal>>(`/companies/${companyId}/goals`, {
     method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateGoal = (companyId: string, goalId: string, data: UpdateGoalInput) =>
+  request<ApiResponse<Goal>>(`/companies/${companyId}/goals/${goalId}`, {
+    method: "PATCH",
     body: JSON.stringify(data),
   });
 
