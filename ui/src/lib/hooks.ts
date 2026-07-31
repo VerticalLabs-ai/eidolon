@@ -91,6 +91,17 @@ export function useProjects(companyId: string | undefined) {
   });
 }
 
+export function useProject(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["projects", companyId, projectId],
+    queryFn: async () => unwrap<api.Project>(await api.getProject(companyId!, projectId!)),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
 export function useCreateProject(companyId: string) {
   const qc = useQueryClient();
 
@@ -103,6 +114,45 @@ export function useCreateProject(companyId: string) {
         ...(current?.filter((item) => item.id !== project.id) ?? []),
       ]);
       qc.invalidateQueries({ queryKey: ["projects", companyId] });
+    },
+  });
+}
+
+export function useUpdateProject(companyId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      data,
+    }: {
+      projectId: string;
+      data: api.UpdateProjectInput;
+    }) => unwrap<api.Project>(await api.updateProject(companyId, projectId, data)),
+    onSuccess: (project) => {
+      qc.setQueryData(["projects", companyId, project.id], project);
+      qc.setQueryData<api.Project[]>(["projects", companyId], (current) =>
+        current?.map((item) => item.id === project.id ? project : item),
+      );
+      qc.invalidateQueries({ queryKey: ["projects", companyId] });
+      qc.invalidateQueries({ queryKey: ["projects", companyId, project.id] });
+    },
+  });
+}
+
+export function useArchiveProject(companyId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ projectId }: { projectId: string }) =>
+      unwrap<api.Project>(await api.archiveProject(companyId, projectId)),
+    onSuccess: (project) => {
+      qc.setQueryData(["projects", companyId, project.id], project);
+      qc.setQueryData<api.Project[]>(["projects", companyId], (current) =>
+        current?.map((item) => item.id === project.id ? project : item),
+      );
+      qc.invalidateQueries({ queryKey: ["projects", companyId] });
+      qc.invalidateQueries({ queryKey: ["projects", companyId, project.id] });
     },
   });
 }

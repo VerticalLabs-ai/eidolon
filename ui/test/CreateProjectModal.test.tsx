@@ -5,6 +5,7 @@ import { CreateProjectModal } from "../src/components/projects/CreateProjectModa
 
 const mocks = vi.hoisted(() => ({
   createProject: vi.fn(),
+  updateProject: vi.fn(),
   reset: vi.fn(),
   isPending: false,
 }));
@@ -14,6 +15,11 @@ vi.mock("@/lib/hooks", () => ({
     mutate: mocks.createProject,
     reset: mocks.reset,
     isPending: mocks.isPending,
+  }),
+  useUpdateProject: () => ({
+    mutate: mocks.updateProject,
+    reset: mocks.reset,
+    isPending: false,
   }),
 }));
 
@@ -64,6 +70,30 @@ describe("CreateProjectModal", () => {
       "Enter a complete repository URL, such as https://github.com/org/repo.",
     );
     expect(repositoryUrl).toHaveAttribute("aria-describedby", error.id);
+    expect(mocks.createProject).not.toHaveBeenCalled();
+  });
+
+  it("rejects repository URLs with executable schemes", async () => {
+    const user = userEvent.setup();
+    render(
+      <CreateProjectModal
+        open
+        companyId="company-1"
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Project name"), "Runtime reliability");
+    await user.type(
+      screen.getByLabelText("Repository URL"),
+      "javascript:alert(document.domain)",
+    );
+    await user.click(screen.getByRole("button", { name: "Create Project" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Repository URL must start with http:// or https://.",
+    );
     expect(mocks.createProject).not.toHaveBeenCalled();
   });
 
