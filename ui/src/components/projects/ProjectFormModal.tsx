@@ -71,7 +71,9 @@ export function ProjectFormModal({
     setRepoUrl(project?.repoUrl ?? "");
     setErrors({});
     setSubmitError(null);
-  }, [open, project]);
+    // Initialize once per opened project: a background refetch of the project query
+    // changes the object identity, and re-running here would discard operator input.
+  }, [open, project?.id]);
 
   function resetForm() {
     setName("");
