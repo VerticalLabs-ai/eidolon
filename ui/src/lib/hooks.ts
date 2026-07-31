@@ -442,6 +442,20 @@ export function useActivity(companyId: string | undefined) {
   });
 }
 
+export function useProjectActivity(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  limit: number,
+  offset: number,
+) {
+  return useQuery({
+    queryKey: ["activity", companyId, "project", projectId, limit, offset],
+    queryFn: () => api.getProjectActivity(companyId!, projectId!, limit, offset),
+    enabled: !!companyId && !!projectId,
+    refetchInterval: 15_000,
+  });
+}
+
 // ── Org Chart ────────────────────────────────────────────────────────────
 
 export function useOrgChart(companyId: string | undefined) {

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { Activity, Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil } from "lucide-react";
+import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { useArchiveProject, useProject } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
@@ -9,6 +9,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { ProjectFormModal } from "@/components/projects/ProjectFormModal";
+import { ProjectActivity } from "@/components/projects/ProjectActivity";
 import { isHttpUrl } from "@/lib/urls";
 import { TaskBoard } from "@/pages/TaskBoard";
 import { GoalTree } from "@/pages/GoalTree";
@@ -152,13 +153,7 @@ export function ProjectDetail() {
         {activeTab === "issues" && <TaskBoard />}
         {activeTab === "goals" && <GoalTree />}
         {activeTab === "activity" && (
-          <div className="flex h-full items-center justify-center p-6">
-            <EmptyState
-              icon={<Activity className="h-6 w-6" />}
-              title="No activity yet"
-              description="Project activity, updates, and events will appear here."
-            />
-          </div>
+          <ProjectActivity key={project.id} companyId={companyId ?? ""} projectId={project.id} />
         )}
       </div>
 

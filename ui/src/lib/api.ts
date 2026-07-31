@@ -207,6 +207,11 @@ export interface Activity {
   createdAt: string;
 }
 
+export interface ActivityPage {
+  data: Activity[];
+  meta: { total: number; limit: number; offset: number };
+}
+
 export interface TaskFilters {
   status?: string;
   priority?: string;
@@ -504,6 +509,20 @@ export const getAnalyticsCosts = (companyId: string) =>
 
 export const getActivity = (companyId: string) =>
   request<Activity[]>(`/companies/${companyId}/activity`);
+
+export const getProjectActivity = (
+  companyId: string,
+  projectId: string,
+  limit: number,
+  offset: number,
+) => {
+  const query = new URLSearchParams({
+    projectId,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<ActivityPage>(`/companies/${companyId}/activity?${query}`);
+};
 
 // ── Org Chart ────────────────────────────────────────────────────────────
 
