@@ -8,7 +8,7 @@ import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
 const CreateGoalBody = z.object({
-  title: z.string().min(1).max(500),
+  title: z.string().trim().min(1).max(500),
   description: z.string().max(5000).optional(),
   level: z.enum(['company', 'department', 'team', 'individual']).default('company'),
   status: z.enum(['draft', 'active', 'completed', 'cancelled']).default('draft'),
@@ -20,7 +20,7 @@ const CreateGoalBody = z.object({
 });
 
 const UpdateGoalBody = z.object({
-  title: z.string().min(1).max(500).optional(),
+  title: z.string().trim().min(1).max(500).optional(),
   description: z.string().max(5000).nullable().optional(),
   level: z.enum(['company', 'department', 'team', 'individual']).optional(),
   status: z.enum(['draft', 'active', 'completed', 'cancelled']).optional(),
@@ -31,9 +31,103 @@ const UpdateGoalBody = z.object({
   metrics: z.record(z.unknown()).optional(),
 });
 
+type GoalLevel = z.infer<typeof CreateGoalBody>['level'];
+
+const GOAL_LEVEL_RANK: Record<GoalLevel, number> = {
+  company: 0,
+  department: 1,
+  team: 2,
+  individual: 3,
+};
+
 export function goalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { goals } = db.schema;
+  const { agents, goals } = db.schema;
+
+  async function validateGoalReferences({
+    companyId,
+    goalId,
+    ownerAgentId,
+    parentId,
+    level,
+  }: {
+    companyId: string;
+    goalId?: string;
+    ownerAgentId?: string | null;
+    parentId?: string | null;
+    level?: GoalLevel;
+  }) {
+    if (parentId !== undefined || (goalId && level !== undefined)) {
+      const companyGoals = await db.drizzle
+        .select({ id: goals.id, parentId: goals.parentId, level: goals.level })
+        .from(goals)
+        .where(eq(goals.companyId, companyId));
+      const goalsById = new Map(companyGoals.map((goal) => [goal.id, goal]));
+
+      if (parentId !== undefined && parentId !== null) {
+        const parent = goalsById.get(parentId);
+        if (!parent) {
+          throw new AppError(
+            400,
+            'GOAL_PARENT_INVALID',
+            'Choose a parent goal from this company.',
+          );
+        }
+
+        let ancestorId: string | null = parentId;
+        const visited = new Set<string>();
+        while (ancestorId) {
+          if (ancestorId === goalId || visited.has(ancestorId)) {
+            throw new AppError(
+              400,
+              'GOAL_PARENT_CYCLE',
+              'A goal cannot be its own parent or a child of one of its descendants.',
+            );
+          }
+          visited.add(ancestorId);
+          ancestorId = goalsById.get(ancestorId)?.parentId ?? null;
+        }
+
+        if (level !== undefined && GOAL_LEVEL_RANK[level] <= GOAL_LEVEL_RANK[parent.level]) {
+          throw new AppError(
+            400,
+            'GOAL_LEVEL_INVALID',
+            'A child goal must use a level below its parent.',
+          );
+        }
+      }
+
+      if (
+        goalId
+        && level !== undefined
+        && companyGoals.some(
+          (goal) => goal.parentId === goalId && GOAL_LEVEL_RANK[goal.level] <= GOAL_LEVEL_RANK[level],
+        )
+      ) {
+        throw new AppError(
+          400,
+          'GOAL_LEVEL_INVALID',
+          'A parent goal must use a level above each child.',
+        );
+      }
+    }
+
+    if (ownerAgentId !== undefined && ownerAgentId !== null) {
+      const [owner] = await db.drizzle
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, ownerAgentId), eq(agents.companyId, companyId)))
+        .limit(1);
+
+      if (!owner) {
+        throw new AppError(
+          400,
+          'GOAL_OWNER_INVALID',
+          'Choose an owner from this company.',
+        );
+      }
+    }
+  }
 
   // GET /api/companies/:companyId/goals
   router.get('/', async (req, res) => {
@@ -77,6 +171,13 @@ export function goalsRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof CreateGoalBody>;
     const companyId = routeParams(req).companyId;
     const now = new Date();
+
+    await validateGoalReferences({
+      companyId,
+      ownerAgentId: body.ownerAgentId,
+      parentId: body.parentId,
+      level: body.level,
+    });
 
     const [row] = await db.drizzle
       .insert(goals)
@@ -140,13 +241,24 @@ export function goalsRouter(db: DbInstance): Router {
       throw new AppError(404, 'GOAL_NOT_FOUND', `Goal ${id} not found`);
     }
 
+    const relationChanged = body.parentId !== undefined || body.level !== undefined;
+    await validateGoalReferences({
+      companyId,
+      goalId: id,
+      ownerAgentId: body.ownerAgentId,
+      parentId: relationChanged
+        ? body.parentId !== undefined ? body.parentId : existing.parentId
+        : undefined,
+      level: relationChanged ? body.level ?? existing.level : undefined,
+    });
+
     const progressChanged =
       body.progress !== undefined && body.progress !== existing.progress;
 
     const [updated] = await db.drizzle
       .update(goals)
       .set({ ...body, updatedAt: new Date() })
-      .where(eq(goals.id, id))
+      .where(and(eq(goals.id, id), eq(goals.companyId, companyId)))
       .returning();
 
     if (progressChanged) {

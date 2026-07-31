@@ -299,6 +299,35 @@ export function useGoalTree(companyId: string | undefined) {
   return useGoals(companyId);
 }
 
+export function useCreateGoal(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: api.CreateGoalInput) =>
+      unwrap<api.Goal>(await api.createGoal(companyId, data)),
+    onSuccess: (goal) => {
+      qc.setQueryData<api.Goal[]>(["goals", companyId], (current) => [
+        ...(current ?? []),
+        goal,
+      ]);
+      qc.invalidateQueries({ queryKey: ["goals", companyId] });
+    },
+  });
+}
+
+export function useUpdateGoal(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ goalId, data }: { goalId: string; data: api.UpdateGoalInput }) =>
+      unwrap<api.Goal>(await api.updateGoal(companyId, goalId, data)),
+    onSuccess: (goal) => {
+      qc.setQueryData<api.Goal[]>(["goals", companyId], (current) =>
+        current?.map((item) => item.id === goal.id ? goal : item) ?? [goal],
+      );
+      qc.invalidateQueries({ queryKey: ["goals", companyId] });
+    },
+  });
+}
+
 // ── Messages ─────────────────────────────────────────────────────────────
 
 export function useMessages(companyId: string | undefined) {
