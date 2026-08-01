@@ -1,0 +1,122 @@
+# Canonical VerticalLabs PR naming + Linear linkage gate.
+#
+# Contract:
+#   title  : <type>[(scope)][!]: <Description> [TEAM-NNN] [optional-tags]
+#   branch : team-nnn-kebab-description        (bare Linear slug, VER-487)
+#   body   : a standalone "Closes TEAM-NNN" line matching the title's ID
+#
+# This file is intentionally identical across every actively-maintained
+# VerticalLabs repo — copy it verbatim when starting a new project. It has no
+# external actions and no checkout, so it runs in a few seconds on any runner.
+name: PR naming
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-naming-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate PR title, branch, and Linear link
+    runs-on: ubuntu-latest
+    # Automated dependency and release PRs have no Linear issue behind them.
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      !startsWith(github.head_ref, 'dependabot/') &&
+      !startsWith(github.head_ref, 'renovate/') &&
+      !startsWith(github.head_ref, 'release/')
+    steps:
+      - name: Validate
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BRANCH: ${{ github.head_ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_CREATED: ${{ github.event.pull_request.created_at }}
+          # A branch cannot be renamed on an open PR without recreating it and
+          # losing its review history, so PRs opened before this gate landed are
+          # exempt from the branch rule (title and closing line are still
+          # enforced -- both are editable in place). Org-wide constant so the
+          # file stays byte-identical across repos; self-expiring as old PRs
+          # drain. Do not bump it to excuse new work.
+          GRANDFATHER_BEFORE: "2026-08-02"
+        run: |
+          set -euo pipefail
+
+          types='feat|fix|chore|refactor|docs|test|perf|build|ci|revert|style'
+          # Trailing [lowercase-tags] are allowed after the Linear ID so
+          # repo automation flags (e.g. kamp's [skip-bulletin]) keep working.
+          title_re="^(${types})(\([a-zA-Z0-9._/-]+\))?!?: [A-Z0-9].+ \[([A-Z][A-Z0-9]{1,4})-([1-9][0-9]*)\]([[:space:]]+\[[a-z0-9][a-z0-9-]*\])*\$"
+          id_re='\[[A-Z][A-Z0-9]{1,4}-[0-9]+\]'
+
+          # GitHub annotations are line-oriented: only the first line of an
+          # ::error:: is captured in the Checks summary, so the headline goes in
+          # the annotation and the remaining guidance is printed as plain log.
+          fail() {
+            local line first=1
+            while IFS= read -r line; do
+              line="${line#"${line%%[![:space:]]*}"}"
+              if (( first )); then
+                echo "::error::${line}"
+                first=0
+              else
+                echo "  ${line}"
+              fi
+            done <<<"$1"
+            echo
+            echo "  title : $PR_TITLE"
+            echo "  branch: $PR_BRANCH"
+            exit 1
+          }
+
+          if [[ ! "$PR_TITLE" =~ $title_re ]]; then
+            fail "PR title must be '<type>: <Description> [TEAM-NNN]'.
+            type is one of: ${types} (an optional (scope) and ! are allowed)
+            the description must start with a capital letter or digit
+            the Linear ID must be bracketed, e.g. [GXC-398], and is the last
+            component apart from optional trailing [lowercase-tags]
+            example: chore(analytics): Upgrade PostHog SDKs to latest [GXC-398]"
+          fi
+
+          team="${BASH_REMATCH[3]}"
+          number="${BASH_REMATCH[4]}"
+
+          # A greedy description can swallow a first ID and leave a second as the
+          # match, which makes it ambiguous which issue the PR closes. Multi-issue
+          # PRs pick a primary and reference the rest in the body.
+          if [[ "$(grep -oE "$id_re" <<<"$PR_TITLE" | wc -l | tr -d ' ')" != "1" ]]; then
+            fail "The Linear ID must appear exactly once in the PR title."
+          fi
+
+          # Underscores are permitted inside description segments: Linear's own
+          # gitBranchName derives from the issue title, so an issue naming a repo
+          # like plate_evaluator yields pla-812-...-in-plate_evaluator. Rejecting
+          # that would make "copy Linear's slug verbatim" contradict the gate.
+          slug="$(tr '[:upper:]' '[:lower:]' <<<"$team")-${number}"
+          if [[ ! "$PR_BRANCH" =~ ^${slug}(-[a-z0-9_]+)+$ ]]; then
+            if [[ "$PR_CREATED" < "$GRANDFATHER_BEFORE" ]]; then
+              echo "::warning::Branch '$PR_BRANCH' predates the naming gate (opened $PR_CREATED) and is exempt. New PRs must branch as ${slug}-<kebab-case-description>."
+            else
+              fail "Branch must be the bare Linear slug: ${slug}-<kebab-case-description>.
+              Copy it verbatim from Linear's 'Copy git branch name' (VER-487).
+              No type/ prefix, all lowercase."
+            fi
+          fi
+
+          # Drives Linear's auto-transition on merge. Accept Closes/Fixes/Resolves
+          # and require at least one match rather than exactly one -- review bots
+          # rewrite PR bodies, and an exactly-one rule fails on their duplicates.
+          if ! awk -v want="$team-$number" '
+                { sub(/\r$/, ""); sub(/[ \t]+$/, "") }
+                $0 ~ ("^(Closes|Fixes|Resolves) " want "$") { found = 1 }
+                END { exit !found }' <<<"$PR_BODY"; then
+            fail "PR body needs a standalone line: Closes ${team}-${number}
+            (Fixes/Resolves also accepted). This is what transitions the Linear issue on merge."
+          fi
+
+          echo "OK: ${PR_TITLE}"
