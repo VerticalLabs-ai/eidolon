@@ -38,7 +38,7 @@ const ProjectListQuery = z.object({
 
 export function projectsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { projects, tasks } = db.schema;
+  const { projects, tasks, goals } = db.schema;
 
   // GET /api/companies/:companyId/projects - list all projects for a company
   router.get('/', validate(ProjectListQuery, 'query'), async (req, res) => {
@@ -97,8 +97,15 @@ export function projectsRouter(db: DbInstance): Router {
         ),
       );
 
-    // Goal count - goals table does not have projectId yet, so we return 0
-    const goalCount = 0;
+    const [{ goalCount }] = await db.drizzle
+      .select({ goalCount: sql<number>`count(*)` })
+      .from(goals)
+      .where(
+        and(
+          eq(goals.companyId, companyId),
+          eq(goals.projectId, id),
+        ),
+      );
 
     // Agent count - count distinct assignee agents from tasks in this project
     const [{ agentCount }] = await db.drizzle
@@ -118,7 +125,7 @@ export function projectsRouter(db: DbInstance): Router {
       data: {
         ...row,
         taskCount: Number(taskCount),
-        goalCount,
+        goalCount: Number(goalCount),
         agentCount: Number(agentCount),
       },
     });

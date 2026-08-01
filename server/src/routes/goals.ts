@@ -13,6 +13,7 @@ const CreateGoalBody = z.object({
   level: z.enum(['company', 'department', 'team', 'individual']).default('company'),
   status: z.enum(['draft', 'active', 'completed', 'cancelled']).default('draft'),
   parentId: z.string().uuid().nullable().default(null),
+  projectId: z.string().uuid().nullable().default(null),
   ownerAgentId: z.string().uuid().nullable().default(null),
   progress: z.number().int().min(0).max(100).default(0),
   targetDate: z.coerce.date().nullable().default(null),
@@ -25,6 +26,7 @@ const UpdateGoalBody = z.object({
   level: z.enum(['company', 'department', 'team', 'individual']).optional(),
   status: z.enum(['draft', 'active', 'completed', 'cancelled']).optional(),
   parentId: z.string().uuid().nullable().optional(),
+  projectId: z.string().uuid().nullable().optional(),
   ownerAgentId: z.string().uuid().nullable().optional(),
   progress: z.number().int().min(0).max(100).optional(),
   targetDate: z.coerce.date().nullable().optional(),
@@ -42,7 +44,11 @@ const GOAL_LEVEL_RANK: Record<GoalLevel, number> = {
 
 export function goalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { agents, goals } = db.schema;
+  const { agents, goals, projects } = db.schema;
+
+  const GoalListQuery = z.object({
+    project: z.string().uuid().optional(),
+  });
 
   async function validateGoalReferences({
     companyId,
@@ -50,13 +56,31 @@ export function goalsRouter(db: DbInstance): Router {
     ownerAgentId,
     parentId,
     level,
+    projectId,
   }: {
     companyId: string;
     goalId?: string;
     ownerAgentId?: string | null;
     parentId?: string | null;
     level?: GoalLevel;
+    projectId?: string | null;
   }) {
+    if (projectId !== undefined && projectId !== null) {
+      const [project] = await db.drizzle
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+        .limit(1);
+
+      if (!project) {
+        throw new AppError(
+          400,
+          'GOAL_PROJECT_INVALID',
+          'Choose a project from this company.',
+        );
+      }
+    }
+
     if (parentId !== undefined || (goalId && level !== undefined)) {
       const companyGoals = await db.drizzle
         .select({ id: goals.id, parentId: goals.parentId, level: goals.level })
@@ -130,21 +154,29 @@ export function goalsRouter(db: DbInstance): Router {
   }
 
   // GET /api/companies/:companyId/goals
-  router.get('/', async (req, res) => {
+  router.get('/', validate(GoalListQuery, 'query'), async (req, res) => {
+    const query = req.query as unknown as z.infer<typeof GoalListQuery>;
+    const conditions = [eq(goals.companyId, routeParams(req).companyId)];
+    if (query.project) conditions.push(eq(goals.projectId, query.project));
+
     const rows = await db.drizzle
       .select()
       .from(goals)
-      .where(eq(goals.companyId, routeParams(req).companyId));
+      .where(and(...conditions));
     res.json({ data: rows });
   });
 
   // GET /api/companies/:companyId/goals/tree
-  router.get('/tree', async (req, res) => {
+  router.get('/tree', validate(GoalListQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
+    const query = req.query as unknown as z.infer<typeof GoalListQuery>;
+    const conditions = [eq(goals.companyId, companyId)];
+    if (query.project) conditions.push(eq(goals.projectId, query.project));
+
     const allGoals = await db.drizzle
       .select()
       .from(goals)
-      .where(eq(goals.companyId, companyId));
+      .where(and(...conditions));
 
     type GoalNode = (typeof allGoals)[number] & { children: GoalNode[] };
     const nodeMap = new Map<string, GoalNode>();
@@ -177,6 +209,7 @@ export function goalsRouter(db: DbInstance): Router {
       ownerAgentId: body.ownerAgentId,
       parentId: body.parentId,
       level: body.level,
+      projectId: body.projectId,
     });
 
     const [row] = await db.drizzle
@@ -185,6 +218,7 @@ export function goalsRouter(db: DbInstance): Router {
         companyId,
         title: body.title,
         description: body.description ?? null,
+        projectId: body.projectId,
         level: body.level,
         status: body.status,
         parentId: body.parentId,
@@ -246,6 +280,7 @@ export function goalsRouter(db: DbInstance): Router {
       companyId,
       goalId: id,
       ownerAgentId: body.ownerAgentId,
+      projectId: body.projectId,
       parentId: relationChanged
         ? body.parentId !== undefined ? body.parentId : existing.parentId
         : undefined,

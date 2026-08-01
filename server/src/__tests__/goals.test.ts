@@ -175,4 +175,62 @@ describe('Goals API', () => {
         expect(body.message).toBe('A parent goal must use a level above each child.');
       });
   });
+
+  it('scopes goal lists and trees and validates project ownership', async () => {
+    const otherCompany = await request(app)
+      .post('/api/companies')
+      .send({ name: 'Other Goal Corp' })
+      .expect(201);
+    const project = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Scoped project' })
+      .expect(201);
+    const otherProject = await request(app)
+      .post(`/api/companies/${otherCompany.body.data.id}/projects`)
+      .send({ name: 'Other project' })
+      .expect(201);
+
+    const scoped = await request(app)
+      .post(`/api/companies/${companyId}/goals`)
+      .send({ title: 'Scoped root', projectId: project.body.data.id })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/goals`)
+      .send({ title: 'Unscoped goal' })
+      .expect(201);
+
+    expect(scoped.body.data.projectId).toBe(project.body.data.id);
+    const filtered = await request(app)
+      .get(`/api/companies/${companyId}/goals`)
+      .query({ project: project.body.data.id })
+      .expect(200);
+    expect(filtered.body.data).toHaveLength(1);
+    expect(filtered.body.data[0].id).toBe(scoped.body.data.id);
+
+    const tree = await request(app)
+      .get(`/api/companies/${companyId}/goals/tree`)
+      .query({ project: project.body.data.id })
+      .expect(200);
+    expect(tree.body.data).toEqual([
+      expect.objectContaining({ id: scoped.body.data.id, projectId: project.body.data.id }),
+    ]);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/goals`)
+      .send({ title: 'Invalid project', projectId: otherProject.body.data.id })
+      .expect(400);
+
+    await request(app)
+      .patch(`/api/companies/${companyId}/goals/${scoped.body.data.id}`)
+      .send({ projectId: null })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.projectId).toBeNull());
+  });
+
+  it('rejects a missing project reference on create', async () => {
+    await request(app)
+      .post(`/api/companies/${companyId}/goals`)
+      .send({ title: 'Invalid project', projectId: randomUUID() })
+      .expect(400);
+  });
 });
