@@ -140,6 +140,7 @@ export interface Task {
 export interface Goal {
   id: string;
   companyId: string;
+  projectId: string | null;
   title: string;
   description: string | null;
   level: GoalLevel;
@@ -164,6 +165,7 @@ export interface CreateGoalInput {
   parentId: string | null;
   ownerAgentId: string | null;
   progress: number;
+  projectId?: string | null;
 }
 
 export type UpdateGoalInput = Partial<
@@ -216,6 +218,10 @@ export interface TaskFilters {
   status?: string;
   priority?: string;
   assigneeId?: string;
+  projectId?: string;
+}
+
+export interface GoalFilters {
   projectId?: string;
 }
 
@@ -471,8 +477,12 @@ export const restoreTaskSubtree = (companyId: string, taskId: string) =>
 
 // ── Goals ────────────────────────────────────────────────────────────────
 
-export const getGoals = (companyId: string) =>
-  request<Goal[]>(`/companies/${companyId}/goals`);
+export const getGoals = (companyId: string, filters?: GoalFilters) => {
+  const params = new URLSearchParams();
+  if (filters?.projectId) params.set("project", filters.projectId);
+  const qs = params.toString();
+  return request<Goal[]>(`/companies/${companyId}/goals${qs ? `?${qs}` : ""}`);
+};
 
 export const createGoal = (companyId: string, data: CreateGoalInput) =>
   request<ApiResponse<Goal>>(`/companies/${companyId}/goals`, {

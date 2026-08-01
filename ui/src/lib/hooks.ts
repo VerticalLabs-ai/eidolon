@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import * as api from "./api";
-import type { TaskFilters } from "./api";
+import type { GoalFilters, TaskFilters } from "./api";
 
 // Helper: server wraps responses in { data: ... }, unwrap it
 function unwrap<T>(res: unknown): T {
@@ -337,16 +337,16 @@ export function useUpdateTask(companyId: string) {
 
 // ── Goals ────────────────────────────────────────────────────────────────
 
-export function useGoals(companyId: string | undefined) {
+export function useGoals(companyId: string | undefined, filters?: GoalFilters) {
   return useQuery({
-    queryKey: ["goals", companyId],
-    queryFn: async () => unwrap<api.Goal[]>(await api.getGoals(companyId!)),
+    queryKey: ["goals", companyId, filters],
+    queryFn: async () => unwrap<api.Goal[]>(await api.getGoals(companyId!, filters)),
     enabled: !!companyId,
   });
 }
 
-export function useGoalTree(companyId: string | undefined) {
-  return useGoals(companyId);
+export function useGoalTree(companyId: string | undefined, filters?: GoalFilters) {
+  return useGoals(companyId, filters);
 }
 
 export function useCreateGoal(companyId: string) {
@@ -355,10 +355,6 @@ export function useCreateGoal(companyId: string) {
     mutationFn: async (data: api.CreateGoalInput) =>
       unwrap<api.Goal>(await api.createGoal(companyId, data)),
     onSuccess: (goal) => {
-      qc.setQueryData<api.Goal[]>(["goals", companyId], (current) => [
-        ...(current ?? []),
-        goal,
-      ]);
       qc.invalidateQueries({ queryKey: ["goals", companyId] });
     },
   });
@@ -370,9 +366,6 @@ export function useUpdateGoal(companyId: string) {
     mutationFn: async ({ goalId, data }: { goalId: string; data: api.UpdateGoalInput }) =>
       unwrap<api.Goal>(await api.updateGoal(companyId, goalId, data)),
     onSuccess: (goal) => {
-      qc.setQueryData<api.Goal[]>(["goals", companyId], (current) =>
-        current?.map((item) => item.id === goal.id ? goal : item) ?? [goal],
-      );
       qc.invalidateQueries({ queryKey: ["goals", companyId] });
     },
   });

@@ -30,6 +30,7 @@ const rootGoal: Goal = {
   metrics: {},
   createdAt: "2026-07-30T22:00:00.000Z",
   updatedAt: "2026-07-30T22:00:00.000Z",
+  projectId: null,
 };
 
 const childGoal: Goal = {
@@ -119,6 +120,36 @@ describe("GoalFormModal", () => {
       },
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     );
+  });
+
+  it("includes project scope when creating from a project", async () => {
+    const user = userEvent.setup();
+    render(
+      <GoalFormModal
+        agents={[]}
+        companyId="company-1"
+        projectId="project-a"
+        goals={[]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Title"), "Project goal");
+    await user.click(screen.getByRole("button", { name: "Create Goal" }));
+
+    expect(mocks.createGoal.mock.calls[0][0]).toMatchObject({ projectId: "project-a" });
+  });
+
+  it("omits project scope for company-wide creation", async () => {
+    const user = userEvent.setup();
+    render(
+      <GoalFormModal agents={[]} companyId="company-1" goals={[]} onClose={vi.fn()} />,
+    );
+
+    await user.type(screen.getByLabelText("Title"), "Company goal");
+    await user.click(screen.getByRole("button", { name: "Create Goal" }));
+
+    expect(mocks.createGoal.mock.calls[0][0]).not.toHaveProperty("projectId");
   });
 
   it("edits a goal and excludes itself and descendants from parent choices", async () => {

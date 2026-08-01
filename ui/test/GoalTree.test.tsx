@@ -18,16 +18,21 @@ const mocks = vi.hoisted(() => ({
       progress: 20,
       targetDate: null,
       metrics: {},
+      projectId: null,
       createdAt: "2026-07-30T22:00:00.000Z",
       updatedAt: "2026-07-30T22:00:00.000Z",
     },
   ],
   goalResult: { data: [] as unknown[], isLoading: false, isError: false, error: null as Error | null },
   agentResult: { data: [] as unknown[], isError: false, isLoading: false, error: null as Error | null },
+  useGoalTree: vi.fn(),
 }));
 
 vi.mock("@/lib/hooks", () => ({
-  useGoalTree: () => mocks.goalResult,
+  useGoalTree: (...args: unknown[]) => {
+    mocks.useGoalTree(...args);
+    return mocks.goalResult;
+  },
   useAgents: () => mocks.agentResult,
 }));
 
@@ -50,6 +55,7 @@ vi.mock("@/components/goals/GoalFormModal", () => ({
 
 describe("GoalTree controls", () => {
   beforeEach(() => {
+    mocks.useGoalTree.mockClear();
     mocks.goalResult.data = mocks.goals;
     mocks.goalResult.isLoading = false;
     mocks.goalResult.isError = false;
@@ -58,6 +64,18 @@ describe("GoalTree controls", () => {
     mocks.agentResult.isError = false;
     mocks.agentResult.isLoading = false;
     mocks.agentResult.error = null;
+  });
+
+  it("passes project route context to the goal query", () => {
+    render(
+      <MemoryRouter initialEntries={["/company/company-1/projects/project-a/goals"]}>
+        <Routes>
+          <Route path="/company/:companyId/projects/:projectId/goals" element={<GoalTree />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(mocks.useGoalTree).toHaveBeenCalledWith("company-1", { projectId: "project-a" });
   });
 
   it("opens the shared editor for root, child, and edit workflows", async () => {

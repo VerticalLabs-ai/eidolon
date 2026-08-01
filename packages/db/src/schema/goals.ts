@@ -2,6 +2,7 @@ import { pgTable, text, integer, jsonb, timestamp } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 import { agents } from './agents.js';
+import { projects } from './projects.js';
 
 export const goals = pgTable('goals', {
   id: text('id')
@@ -10,6 +11,7 @@ export const goals = pgTable('goals', {
   companyId: text('company_id')
     .notNull()
     .references(() => companies.id),
+  projectId: text('project_id').references(() => projects.id),
   title: text('title').notNull(),
   description: text('description'),
   level: text('level', {

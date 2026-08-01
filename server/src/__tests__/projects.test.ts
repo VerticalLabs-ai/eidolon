@@ -130,4 +130,33 @@ describe('Projects API', () => {
         }));
       });
   });
+
+  it('reports only goals assigned to the project', async () => {
+    const project = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Goal-count project' })
+      .expect(201);
+    const otherProject = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Other goal-count project' })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/goals`)
+      .send({ title: 'Matching goal', projectId: project.body.data.id })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/goals`)
+      .send({ title: 'Other project goal', projectId: otherProject.body.data.id })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/goals`)
+      .send({ title: 'Unscoped goal' })
+      .expect(201);
+
+    const detail = await request(app)
+      .get(`/api/companies/${companyId}/projects/${project.body.data.id}`)
+      .expect(200);
+    expect(detail.body.data.goalCount).toBe(1);
+  });
 });
