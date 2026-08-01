@@ -208,13 +208,13 @@ function GoalNode({
 }
 
 export function GoalTree() {
-  const { companyId } = useParams();
+  const { companyId, projectId } = useParams();
   const {
     data: goals,
     error: goalsError,
     isError: goalsFailed,
     isLoading,
-  } = useGoalTree(companyId);
+  } = useGoalTree(companyId, projectId ? { projectId } : undefined);
   const {
     data: agents,
     error: agentsError,
@@ -299,6 +299,7 @@ export function GoalTree() {
           key={editor.goal?.id ?? editor.defaultParentId ?? "create"}
           agents={agents ?? []}
           companyId={companyId}
+          projectId={projectId}
           defaultParentId={editor.defaultParentId}
           goal={editor.goal}
           goals={goals ?? []}

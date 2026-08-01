@@ -9,6 +9,7 @@ import type { Agent, Goal, GoalLevel, GoalStatus } from "@/lib/api";
 interface GoalFormModalProps {
   agents: Agent[];
   companyId: string;
+  projectId?: string;
   defaultParentId?: string;
   goal?: Goal;
   goals: Goal[];
@@ -92,6 +93,7 @@ function childLevel(parent?: Goal): GoalLevel | null {
 export function GoalFormModal({
   agents,
   companyId,
+  projectId,
   defaultParentId,
   goal,
   goals,
@@ -184,6 +186,7 @@ export function GoalFormModal({
       parentId: parsed.data.parentId || null,
       ownerAgentId: parsed.data.ownerAgentId || null,
       progress: parsed.data.progress,
+      ...(projectId ? { projectId } : {}),
     };
     const callbacks = {
       onSuccess: onClose,
