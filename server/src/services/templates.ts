@@ -18,6 +18,7 @@ interface TemplateGoalConfig {
   title: string;
   description: string | null;
   level: string;
+  projectId?: string | null;
 }
 
 interface TemplatePromptConfig {
@@ -655,6 +656,7 @@ export class TemplateService {
       title: g.title,
       description: g.description,
       level: g.level,
+      projectId: g.projectId,
     }));
 
     // 4. Load prompt templates
@@ -767,6 +769,9 @@ export class TemplateService {
     for (const goalConfig of templateConfig.goals) {
       await this.db.drizzle.insert(goals).values({
         companyId,
+        ...(goalConfig.projectId !== undefined
+          ? { projectId: goalConfig.projectId }
+          : {}),
         title: goalConfig.title,
         description: goalConfig.description,
         level: goalConfig.level as

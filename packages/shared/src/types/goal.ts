@@ -45,6 +45,7 @@ export const GoalStatusEnum = z.enum([
 export interface Goal {
   id: string;
   companyId: string;
+  projectId: string | null;
   title: string;
   description: string | null;
   level: GoalLevel;
@@ -65,6 +66,7 @@ export interface Goal {
 export const GoalSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
+  projectId: z.string().uuid().nullable(),
   title: z.string().min(1).max(500),
   description: z.string().max(5000).nullable(),
   level: GoalLevelEnum,
@@ -84,6 +86,7 @@ export const GoalSchema = z.object({
 
 export const CreateGoalInputSchema = z.object({
   companyId: z.string().uuid(),
+  projectId: z.string().uuid().nullable().default(null),
   title: z.string().min(1).max(500),
   description: z.string().max(5000).optional(),
   level: GoalLevelEnum,
@@ -102,6 +105,7 @@ export const UpdateGoalInputSchema = z.object({
   description: z.string().max(5000).nullable().optional(),
   level: GoalLevelEnum.optional(),
   status: GoalStatusEnum.optional(),
+  projectId: z.string().uuid().nullable().optional(),
   parentId: z.string().uuid().nullable().optional(),
   ownerAgentId: z.string().uuid().nullable().optional(),
   progress: z.number().min(0).max(100).optional(),
