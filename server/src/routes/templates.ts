@@ -32,7 +32,6 @@ const SaveTemplateBody = z.object({
       title: z.string(),
       description: z.string().nullable().optional(),
       level: z.string().default('company'),
-      projectId: z.string().uuid().nullable().optional(),
     })).default([]),
     prompts: z.array(z.object({
       name: z.string(),

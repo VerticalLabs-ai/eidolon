@@ -95,4 +95,76 @@ describe('Templates API', () => {
   it('prevents deleting built-in templates', async () => {
     await request(app).delete('/api/templates/builtin-demo-saas-operator').expect(403);
   });
+
+  it('imports project-scoped source goals as unscoped (no FK violation, no cross-company project reference)', async () => {
+    // Build a source company that has a project and project-scoped goals.
+    const sourceCompany = await request(app)
+      .post('/api/companies')
+      .send({ name: 'Scoped Source Co' })
+      .expect(201);
+    const sourceCompanyId = sourceCompany.body.data.id;
+
+    const project = await request(app)
+      .post(`/api/companies/${sourceCompanyId}/projects`)
+      .send({ name: 'Source Project' })
+      .expect(201);
+    const projectId = project.body.data.id;
+
+    const scopedRoot = await request(app)
+      .post(`/api/companies/${sourceCompanyId}/goals`)
+      .send({ title: 'Project-scoped root', level: 'company', projectId })
+      .expect(201);
+    expect(scopedRoot.body.data.projectId).toBe(projectId);
+
+    const scopedChild = await request(app)
+      .post(`/api/companies/${sourceCompanyId}/goals`)
+      .send({
+        title: 'Project-scoped child',
+        level: 'team',
+        parentId: scopedRoot.body.data.id,
+        projectId,
+      })
+      .expect(201);
+    expect(scopedChild.body.data.projectId).toBe(projectId);
+
+    // Export the source company as a template.
+    const exportRes = await request(app)
+      .post(`/api/companies/${sourceCompanyId}/export`)
+      .send({ name: 'Scoped Source Snapshot', category: 'software' })
+      .expect(201);
+
+    const exportedConfig = exportRes.body.data.config;
+    // Exported goals carry no project association.
+    expect(exportedConfig.goals).toHaveLength(2);
+    for (const goal of exportedConfig.goals) {
+      expect(goal).not.toHaveProperty('projectId');
+    }
+
+    // Import the template into a brand-new company (which has no projects).
+    const importRes = await request(app)
+      .post(`/api/templates/${exportRes.body.data.template.id}/import`)
+      .send({ companyName: 'Imported Unscoped Co' })
+      .expect(201);
+
+    const importedCompanyId = importRes.body.data.companyId;
+    expect(importedCompanyId).toBeTruthy();
+    expect(importedCompanyId).not.toBe(sourceCompanyId);
+
+    // Every imported goal must be unscoped (projectId null) with no FK violation.
+    const importedGoals = await request(app)
+      .get(`/api/companies/${importedCompanyId}/goals`)
+      .expect(200);
+
+    expect(importedGoals.body.data).toHaveLength(2);
+    for (const goal of importedGoals.body.data) {
+      expect(goal.projectId).toBeNull();
+      expect(goal.companyId).toBe(importedCompanyId);
+    }
+
+    // The new company has no projects, so there can be no cross-company reference.
+    const importedProjects = await request(app)
+      .get(`/api/companies/${importedCompanyId}/projects`)
+      .expect(200);
+    expect(importedProjects.body.data).toHaveLength(0);
+  });
 });
