@@ -18,7 +18,6 @@ interface TemplateGoalConfig {
   title: string;
   description: string | null;
   level: string;
-  projectId?: string | null;
 }
 
 interface TemplatePromptConfig {
@@ -652,11 +651,13 @@ export class TemplateService {
       .from(goals)
       .where(eq(goals.companyId, companyId));
 
+    // Projects are company-local and are NOT part of a template. Goals are
+    // exported without their project association so templates stay portable
+    // across companies (the import target company has no such project).
     const templateGoals: TemplateGoalConfig[] = goalRows.map((g) => ({
       title: g.title,
       description: g.description,
       level: g.level,
-      projectId: g.projectId,
     }));
 
     // 4. Load prompt templates
@@ -767,11 +768,12 @@ export class TemplateService {
 
     // 3. Create goals
     for (const goalConfig of templateConfig.goals) {
+      // Imported goals are created unscoped: projectId defaults to null.
+      // Templates are portable across companies, and the new company has no
+      // projects yet, so carrying a source projectId would violate the
+      // goals.projectId -> projects.id FK or create a cross-company reference.
       await this.db.drizzle.insert(goals).values({
         companyId,
-        ...(goalConfig.projectId !== undefined
-          ? { projectId: goalConfig.projectId }
-          : {}),
         title: goalConfig.title,
         description: goalConfig.description,
         level: goalConfig.level as
