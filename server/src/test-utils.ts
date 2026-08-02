@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import type { Logger } from 'drizzle-orm/logger';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -29,6 +30,24 @@ if (!process.env.DATABASE_URL) {
     const parsed = dotenv.parse(readFileSync(envPath));
     if (parsed.DATABASE_URL) {
       process.env.DATABASE_URL = parsed.DATABASE_URL;
+    }
+  }
+}
+
+export class QueryCounter implements Logger {
+  private count = 0;
+
+  logQuery(): void {
+    this.count += 1;
+  }
+
+  reset(): void {
+    this.count = 0;
+  }
+
+  assertAtMost(limit: number): void {
+    if (this.count > limit) {
+      throw new Error(`Expected at most ${limit} database queries, received ${this.count}.`);
     }
   }
 }
@@ -247,7 +266,7 @@ async function resetTestDb(): Promise<void> {
  * stores the result, and subsequent calls TRUNCATE all public-schema tables
  * (a fast reset, ~5-20ms) and return the same `DbInstance`.
  */
-export async function createTestDb(): Promise<DbInstance> {
+export async function createTestDb(queryLogger?: Logger): Promise<DbInstance> {
   if (_dbInstance && _client) {
     await resetTestDb();
     return _dbInstance;
@@ -277,7 +296,7 @@ export async function createTestDb(): Promise<DbInstance> {
   });
 
   try {
-    const drizzleDb = drizzle(client);
+    const drizzleDb = drizzle(client, queryLogger ? { logger: queryLogger } : undefined);
     restoreDateSerializers(client);
     wrapExecute(drizzleDb);
 
