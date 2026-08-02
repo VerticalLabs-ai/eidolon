@@ -37,4 +37,13 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": "warn",
     },
   },
+  {
+    files: ["**/*.cjs"],
+    languageOptions: {
+      sourceType: "commonjs",
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
 );
