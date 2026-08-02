@@ -13,6 +13,7 @@
     "build": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter server build && pnpm --filter ui build",
     "build:vercel": "pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build && pnpm --filter server build && pnpm --filter @eidolon/db migrate && pnpm --filter ui build",
     "typecheck": "tsc -b",
+    "lint": "eslint . --report-unused-disable-directives",
     "test": "vitest",
     "test:run": "vitest run",
     "db:start": "supabase start",
@@ -24,11 +25,15 @@
     "promote": "bash scripts/promote-to-main.sh"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.15.0",
     "@types/supertest": "^7.2.0",
     "concurrently": "^9.1.2",
+    "eslint": "^10.8.0",
+    "globals": "^17.9.0",
     "supertest": "^7.2.2",
     "typescript": "^5.7.3",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^3.0.5"
   },
   "engines": {
