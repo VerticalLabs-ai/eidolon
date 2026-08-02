@@ -18,7 +18,7 @@
 # on main outside this flow and a human must reconcile first — we never force.
 #
 # Nothing reaches main that wasn't already gated: every commit on staging came
-# through a feature PR (CI + CodeRabbit/Qodo + autoreview) merged into staging.
+# through a feature PR (CI + Qodo + local autoreview) merged into staging.
 # This script only moves the production pointer to that reviewed tip.
 #
 # Usage:
