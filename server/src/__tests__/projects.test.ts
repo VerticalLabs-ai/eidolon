@@ -45,7 +45,13 @@ describe('Projects API', () => {
   });
 
   it('rejects an invalid repository URL without persisting a project', async () => {
-    for (const repoUrl of ['not-a-url', 'javascript:alert(document.domain)']) {
+    for (const repoUrl of [
+      'not-a-url',
+      'javascript:alert(document.domain)',
+      'https://token@github.com/org/repo',
+      'https://@github.com/org/repo',
+      'https://:@github.com/org/repo',
+    ]) {
       await request(app)
         .post(`/api/companies/${companyId}/projects`)
         .send({ name: 'Invalid repository', repoUrl })
@@ -115,10 +121,16 @@ describe('Projects API', () => {
       .send({ name: 'Keep canonical state', status: 'planning', repoUrl: null })
       .expect(201);
 
-    await request(app)
-      .patch(`/api/companies/${companyId}/projects/${created.body.data.id}`)
-      .send({ name: 'Do not persist', repoUrl: 'javascript:alert(document.domain)' })
-      .expect(400);
+    for (const repoUrl of [
+      'javascript:alert(document.domain)',
+      'https://token@github.com/org/repo',
+      'https://@github.com/org/repo',
+    ]) {
+      await request(app)
+        .patch(`/api/companies/${companyId}/projects/${created.body.data.id}`)
+        .send({ name: 'Do not persist', repoUrl })
+        .expect(400);
+    }
 
     await request(app)
       .get(`/api/companies/${companyId}/projects/${created.body.data.id}`)

@@ -73,7 +73,12 @@ describe("CreateProjectModal", () => {
     expect(mocks.createProject).not.toHaveBeenCalled();
   });
 
-  it("rejects repository URLs with executable schemes", async () => {
+  it.each([
+    ["executable schemes", "javascript:alert(document.domain)"],
+    ["embedded credentials", "https://token@github.com/org/repo"],
+    ["an empty userinfo section", "https://@github.com/org/repo"],
+    ["an empty password userinfo section", "https://:@github.com/org/repo"],
+  ])("rejects repository URLs with %s", async (_label, value) => {
     const user = userEvent.setup();
     render(
       <CreateProjectModal
@@ -85,14 +90,11 @@ describe("CreateProjectModal", () => {
     );
 
     await user.type(screen.getByLabelText("Project name"), "Runtime reliability");
-    await user.type(
-      screen.getByLabelText("Repository URL"),
-      "javascript:alert(document.domain)",
-    );
+    await user.type(screen.getByLabelText("Repository URL"), value);
     await user.click(screen.getByRole("button", { name: "Create Project" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Repository URL must start with http:// or https://.",
+      "Use an http(s) repository URL without embedded credentials, such as https://github.com/org/repo.",
     );
     expect(mocks.createProject).not.toHaveBeenCalled();
   });
