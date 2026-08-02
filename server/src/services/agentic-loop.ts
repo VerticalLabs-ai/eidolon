@@ -9,10 +9,7 @@
 
 import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import {
-  getConfiguredProviderBaseUrl,
-  getProvider,
-} from '../providers/index.js';
+import { getConfiguredProviderBaseUrl, getProvider } from '../providers/index.js';
 import type { ChatMessage, CompletionResult, ProviderConfig } from '../providers/types.js';
 import { KnowledgeService } from './knowledge.js';
 import { MemoryService } from './memory.js';
@@ -21,6 +18,7 @@ import { BudgetEnforcer } from './budget-enforcer.js';
 import { decrypt } from './crypto.js';
 import { providerEnvKeyName, resolveProviderApiKey } from './provider-key.js';
 import { continuationRetryDueAt, retryDueAt } from './execution-retry.js';
+import { withProviderCircuitBreaker } from './provider-circuit-breaker.js';
 import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
@@ -195,9 +193,9 @@ export class AgenticLoop {
       .where(eq(companies.id, companyId))
       .limit(1);
 
-    if (!agent) throw new Error(`Agent ${agentId} not found in company ${companyId}`);
-    if (!task) throw new Error(`Task ${taskId} not found in company ${companyId}`);
-    if (!company) throw new Error(`Company ${companyId} not found`);
+    if (!agent) {throw new Error(`Agent ${agentId} not found in company ${companyId}`);}
+    if (!task) {throw new Error(`Task ${taskId} not found in company ${companyId}`);}
+    if (!company) {throw new Error(`Company ${companyId} not found`);}
 
     // ------------------------------------------------------------------
     // 2. Check budget
@@ -206,8 +204,8 @@ export class AgenticLoop {
     if (budgetCheck && !budgetCheck.withinBudget) {
       throw new Error(
         `Agent ${agent.name} has exceeded its monthly budget ` +
-        `(spent ${budgetCheck.spentCents}c of ${budgetCheck.budgetCents}c). ` +
-        `Execution blocked.`,
+          `(spent ${budgetCheck.spentCents}c of ${budgetCheck.budgetCents}c). ` +
+          `Execution blocked.`,
       );
     }
 
@@ -251,7 +249,11 @@ export class AgenticLoop {
 
     let knowledgeContext = '';
     try {
-      knowledgeContext = await this.knowledgeService.getContextForAgent(companyId, agentId, taskDesc);
+      knowledgeContext = await this.knowledgeService.getContextForAgent(
+        companyId,
+        agentId,
+        taskDesc,
+      );
     } catch (err) {
       logger.warn({ err, agentId, taskId }, 'Failed to fetch knowledge context (non-fatal)');
     }
@@ -263,7 +265,13 @@ export class AgenticLoop {
       logger.warn({ err, agentId, taskId }, 'Failed to fetch memory context (non-fatal)');
     }
 
-    let mcpTools: Array<{ name: string; description: string; inputSchema: Record<string, unknown>; serverId: string; serverName: string }> = [];
+    let mcpTools: Array<{
+      name: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+      serverId: string;
+      serverName: string;
+    }> = [];
     try {
       mcpTools = await this.mcpService.getAvailableTools(companyId);
     } catch (err) {
@@ -273,7 +281,13 @@ export class AgenticLoop {
     // ------------------------------------------------------------------
     // 5. Build system prompt and initial messages
     // ------------------------------------------------------------------
-    const systemPrompt = this.buildSystemPrompt(agent, company, knowledgeContext, memoryContext, mcpTools);
+    const systemPrompt = this.buildSystemPrompt(
+      agent,
+      company,
+      knowledgeContext,
+      memoryContext,
+      mcpTools,
+    );
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: this.buildTaskPrompt(task) },
@@ -321,9 +335,7 @@ export class AgenticLoop {
           status: 'failed',
           completedAt: failedAt,
           failureCategory:
-            error instanceof TaskCheckoutError
-              ? error.code.toLowerCase()
-              : 'task_checkout_failed',
+            error instanceof TaskCheckoutError ? error.code.toLowerCase() : 'task_checkout_failed',
           error: error instanceof Error ? error.message : String(error),
           lastEventAt: failedAt,
           livenessStatus: 'stalled',
@@ -363,7 +375,9 @@ export class AgenticLoop {
       iterations++;
 
       try {
-        const result: CompletionResult = await provider.chat(messages, providerConfig);
+        const result: CompletionResult = await withProviderCircuitBreaker(providerName, () =>
+          provider.chat(messages, providerConfig),
+        );
 
         totalInputTokens += result.inputTokens;
         totalOutputTokens += result.outputTokens;
@@ -448,11 +462,13 @@ export class AgenticLoop {
             }
           } catch (toolErr) {
             const errorMsg = toolErr instanceof Error ? toolErr.message : 'Unknown tool error';
-            step.toolCalls = [{
-              tool: 'unknown',
-              args: {},
-              result: `Error: ${errorMsg}`,
-            }];
+            step.toolCalls = [
+              {
+                tool: 'unknown',
+                args: {},
+                result: `Error: ${errorMsg}`,
+              },
+            ];
 
             messages.push({ role: 'assistant', content: result.content });
             messages.push({
@@ -524,9 +540,9 @@ export class AgenticLoop {
         messages.push({ role: 'assistant', content: result.content });
         messages.push({
           role: 'user',
-          content: 'Continue working on the task. If you are done, include <task_complete> in your response.',
+          content:
+            'Continue working on the task. If you are done, include <task_complete> in your response.',
         });
-
       } catch (err) {
         status = 'failed';
         finalOutput = err instanceof Error ? err.message : 'Unknown error during execution';
@@ -551,9 +567,7 @@ export class AgenticLoop {
     // ------------------------------------------------------------------
     const completedAt = new Date();
 
-    const summary = finalOutput.length > 500
-      ? finalOutput.slice(0, 497) + '...'
-      : finalOutput;
+    const summary = finalOutput.length > 500 ? finalOutput.slice(0, 497) + '...' : finalOutput;
 
     const [currentExecution] = await this.db.drizzle
       .select({ retryAttempt: agentExecutions.retryAttempt })
@@ -606,7 +620,8 @@ export class AgenticLoop {
     }
 
     // Update task status
-    const taskStatus = status === 'completed' ? 'review' : status === 'failed' ? 'in_progress' : 'review';
+    const taskStatus =
+      status === 'completed' ? 'review' : status === 'failed' ? 'in_progress' : 'review';
     await this.db.drizzle
       .update(tasks)
       .set({
@@ -710,7 +725,13 @@ export class AgenticLoop {
     company: Record<string, any>,
     knowledgeContext: string,
     memoryContext: string,
-    mcpTools: Array<{ name: string; description: string; inputSchema: Record<string, unknown>; serverId: string; serverName: string }>,
+    mcpTools: Array<{
+      name: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+      serverId: string;
+      serverName: string;
+    }>,
   ): string {
     const sections: string[] = [];
 

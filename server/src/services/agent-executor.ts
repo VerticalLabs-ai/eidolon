@@ -4,10 +4,7 @@
 
 import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import {
-  getConfiguredProviderBaseUrl,
-  getProvider,
-} from '../providers/index.js';
+import { getConfiguredProviderBaseUrl, getProvider } from '../providers/index.js';
 import type { ChatMessage, CompletionResult, ProviderConfig } from '../providers/types.js';
 import { decrypt } from './crypto.js';
 import { providerEnvKeyName, resolveProviderApiKey } from './provider-key.js';
@@ -15,6 +12,7 @@ import { BudgetEnforcer } from './budget-enforcer.js';
 import { KnowledgeService } from './knowledge.js';
 import { MemoryService } from './memory.js';
 import { retryDueAt } from './execution-retry.js';
+import { withProviderCircuitBreaker } from './provider-circuit-breaker.js';
 import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
@@ -61,11 +59,7 @@ export class AgentExecutor {
    *   4. Call the AI provider
    *   5. Record execution, cost, and update task status
    */
-  async executeTask(
-    agentId: string,
-    taskId: string,
-    companyId: string,
-  ): Promise<ExecutionResult> {
+  async executeTask(agentId: string, taskId: string, companyId: string): Promise<ExecutionResult> {
     const { agents, tasks, companies, agentExecutions } = this.db.schema;
 
     // ------------------------------------------------------------------
@@ -114,8 +108,8 @@ export class AgentExecutor {
     if (budgetCheck && !budgetCheck.withinBudget) {
       throw new Error(
         `Agent ${agent.name} has exceeded its monthly budget ` +
-        `(spent ${budgetCheck.spentCents}c of ${budgetCheck.budgetCents}c). ` +
-        `Execution blocked.`,
+          `(spent ${budgetCheck.spentCents}c of ${budgetCheck.budgetCents}c). ` +
+          `Execution blocked.`,
       );
     }
 
@@ -214,9 +208,7 @@ export class AgentExecutor {
           status: 'failed',
           completedAt: failedAt,
           failureCategory:
-            error instanceof TaskCheckoutError
-              ? error.code.toLowerCase()
-              : 'task_checkout_failed',
+            error instanceof TaskCheckoutError ? error.code.toLowerCase() : 'task_checkout_failed',
           error: error instanceof Error ? error.message : String(error),
           lastEventAt: failedAt,
           livenessStatus: 'stalled',
@@ -249,7 +241,9 @@ export class AgentExecutor {
         maxTokens: agent.maxTokens ?? 4096,
       };
 
-      completion = await provider.chat(messages, providerConfig);
+      completion = await withProviderCircuitBreaker(providerName, () =>
+        provider.chat(messages, providerConfig),
+      );
 
       logger.info(
         {
@@ -266,7 +260,8 @@ export class AgentExecutor {
       );
     } catch (providerError) {
       // Provider call failed -- record error and return
-      const errorMsg = providerError instanceof Error ? providerError.message : String(providerError);
+      const errorMsg =
+        providerError instanceof Error ? providerError.message : String(providerError);
       const failedAt = new Date();
       const [currentExecution] = await this.db.drizzle
         .select({ retryAttempt: agentExecutions.retryAttempt })
@@ -328,9 +323,10 @@ export class AgentExecutor {
     const completedAt = new Date();
 
     // Build a summary from the first 500 chars of the response
-    const summary = completion.content.length > 500
-      ? completion.content.slice(0, 497) + '...'
-      : completion.content;
+    const summary =
+      completion.content.length > 500
+        ? completion.content.slice(0, 497) + '...'
+        : completion.content;
 
     await this.db.drizzle
       .update(agentExecutions)
@@ -468,8 +464,8 @@ export class AgentExecutor {
     // Agent identity
     systemParts.push(
       `You are ${agent.name}, an AI agent with the role of ${agent.role}` +
-      (agent.title ? ` (${agent.title})` : '') +
-      ` at ${company.name}.`,
+        (agent.title ? ` (${agent.title})` : '') +
+        ` at ${company.name}.`,
     );
 
     // Company context
