@@ -117,6 +117,11 @@ export function activityRecordFromEvent(event: EidolonEvent) {
       payload.projectId ??
       payload.task?.projectId ??
       payload.project?.id ??
+      payload.workflow?.projectId ??
+      payload.message?.projectId ??
+      payload.goal?.projectId ??
+      payload.routine?.projectId ??
+      payload.agent?.projectId ??
       null,
     createdAt: new Date(event.timestamp),
   };

@@ -113,7 +113,7 @@ describe('Activity API', () => {
 
     const firstPage = await request(app)
       .get(`/api/companies/${companyId}/activity`)
-      .query({ projectId, limit: 2, offset: 0 })
+      .query({ project: projectId, limit: 2, offset: 0 })
       .expect(200);
 
     expect(firstPage.body.meta).toEqual({ total: 3, limit: 2, offset: 0 });
@@ -123,7 +123,7 @@ describe('Activity API', () => {
     const reloadedApp = createTestApp(db);
     const secondPage = await request(reloadedApp)
       .get(`/api/companies/${companyId}/activity`)
-      .query({ projectId, limit: 2, offset: 2 })
+      .query({ project: projectId, limit: 2, offset: 2 })
       .expect(200);
     expect(secondPage.body.data).toEqual([
       expect.objectContaining({ action: 'project.created', description: 'Legacy project event' }),
@@ -133,7 +133,7 @@ describe('Activity API', () => {
   it('rejects invalid project filters and out-of-bounds limits', async () => {
     await request(app)
       .get(`/api/companies/${companyId}/activity`)
-      .query({ projectId: 'not-a-project' })
+      .query({ project: 'not-a-project' })
       .expect(400);
     await request(app)
       .get(`/api/companies/${companyId}/activity`)
@@ -150,5 +150,77 @@ describe('Activity API', () => {
       timestamp: new Date().toISOString(),
     });
     expect(record.projectId).toBe(projectId);
+  });
+
+  it.each([
+    ['workflow.created', 'workflow', 'workflow-1'],
+    ['message.sent', 'message', 'message-1'],
+    ['goal.created', 'goal', 'goal-1'],
+  ] as const)('extracts project ownership from nested %s payloads', (type, resource, id) => {
+    const projectId = '11111111-1111-4111-8111-111111111111';
+    const record = activityRecordFromEvent({
+      type,
+      companyId,
+      payload: {
+        [resource]: { id, projectId },
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(record.projectId).toBe(projectId);
+  });
+
+  it('filters activity by the project_id column, not misleading metadata', async () => {
+    const projectId = (await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Activity Scope' })
+      .expect(201)).body.data.id;
+    await db.drizzle.insert(db.schema.activityLog).values([
+      {
+        companyId,
+        actorType: 'system',
+        actorId: 'system',
+        action: 'workflow.created',
+        entityType: 'workflow',
+        entityId: 'workflow-1',
+        description: 'Workflow created',
+        metadata: { workflow: { projectId } },
+        projectId,
+        createdAt: new Date('2026-07-31T18:00:00.000Z'),
+      },
+      {
+        companyId,
+        actorType: 'system',
+        actorId: 'system',
+        action: 'message.sent',
+        entityType: 'message',
+        entityId: 'message-1',
+        description: 'Message sent',
+        metadata: { message: { projectId } },
+        projectId,
+        createdAt: new Date('2026-07-31T18:01:00.000Z'),
+      },
+      {
+        companyId,
+        actorType: 'system',
+        actorId: 'system',
+        action: 'goal.created',
+        entityType: 'goal',
+        entityId: 'goal-1',
+        description: 'Goal created',
+        metadata: { goal: { projectId } },
+        projectId: null,
+        createdAt: new Date('2026-07-31T18:02:00.000Z'),
+      },
+    ]);
+
+    const response = await request(app)
+      .get(`/api/companies/${companyId}/activity`)
+      .query({ project: projectId })
+      .expect(200);
+
+    expect(response.body.meta.total).toBe(2);
+    expect(response.body.data.map((entry: { action: string }) => entry.action))
+      .toEqual(['message.sent', 'workflow.created']);
   });
 });
