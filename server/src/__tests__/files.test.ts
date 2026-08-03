@@ -237,7 +237,7 @@ describe('Files API — project scoping', () => {
   // VAL-FILES-008: create with cross-company projectId rejected, no file created
   // -------------------------------------------------------------------------
   describe('VAL-FILES-008: cross-company projectId rejected', () => {
-    it('rejects a projectId from another company with 400 and writes no row', async () => {
+    it('rejects a projectId from another company with 404 and writes no row', async () => {
       const foreignProj = await request(app)
         .post(`/api/companies/${otherCompanyId}/projects`)
         .send({ name: 'Foreign' })
@@ -248,7 +248,11 @@ describe('Files API — project scoping', () => {
         .from(db.schema.agentFiles)
         .where(eq(db.schema.agentFiles.companyId, companyId));
 
-      await createFile({ name: 'cross-company.txt', projectId: foreignProj.body.data.id }).expect(400);
+      await createFile({ name: 'cross-company.txt', projectId: foreignProj.body.data.id })
+        .expect(404)
+        .expect(({ body }) => {
+          expect(body.code).toBe('PROJECT_INVALID');
+        });
 
       const afterCount = await db.drizzle
         .select({ count: sql<number>`count(*)` })
@@ -263,13 +267,17 @@ describe('Files API — project scoping', () => {
   // VAL-FILES-009: create with non-existent projectId rejected, no file created
   // -------------------------------------------------------------------------
   describe('VAL-FILES-009: non-existent projectId rejected', () => {
-    it('rejects a valid UUID that does not exist in projects with 400 and writes no row', async () => {
+    it('rejects a valid UUID that does not exist in projects with 404 and writes no row', async () => {
       const beforeCount = await db.drizzle
         .select({ count: sql<number>`count(*)` })
         .from(db.schema.agentFiles)
         .where(eq(db.schema.agentFiles.companyId, companyId));
 
-      await createFile({ name: 'nonexistent.txt', projectId: randomUUID() }).expect(400);
+      await createFile({ name: 'nonexistent.txt', projectId: randomUUID() })
+        .expect(404)
+        .expect(({ body }) => {
+          expect(body.code).toBe('PROJECT_INVALID');
+        });
 
       const afterCount = await db.drizzle
         .select({ count: sql<number>`count(*)` })
@@ -319,7 +327,7 @@ describe('Files API — project scoping', () => {
       await request(app)
         .patch(`/api/companies/${companyId}/files/${file.body.data.id}`)
         .send({ projectId: foreignProj.body.data.id })
-        .expect(400);
+        .expect(404);
 
       const [row] = await db.drizzle
         .select({ projectId: db.schema.agentFiles.projectId })

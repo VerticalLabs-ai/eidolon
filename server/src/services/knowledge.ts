@@ -225,6 +225,7 @@ export class KnowledgeService {
       sourceUrl?: string;
       tags?: string[];
       createdBy?: string;
+      projectId?: string | null;
     },
   ): Promise<KnowledgeDocument> {
     const { knowledgeDocuments, knowledgeChunks } = this.db.schema;
@@ -250,6 +251,7 @@ export class KnowledgeService {
         chunkCount: textChunks.length,
         embeddingStatus: 'completed',
         createdBy: data.createdBy ?? null,
+        projectId: data.projectId ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -449,15 +451,19 @@ export class KnowledgeService {
   }
 
   /**
-   * List all documents for a company.
+   * List all documents for a company, optionally filtered by project.
    */
-  async listDocuments(companyId: string): Promise<KnowledgeDocument[]> {
+  async listDocuments(companyId: string, projectId?: string): Promise<KnowledgeDocument[]> {
     const { knowledgeDocuments } = this.db.schema;
+
+    const conditions = projectId
+      ? and(eq(knowledgeDocuments.companyId, companyId), eq(knowledgeDocuments.projectId, projectId))
+      : eq(knowledgeDocuments.companyId, companyId);
 
     const rows = await this.db.drizzle
       .select()
       .from(knowledgeDocuments)
-      .where(eq(knowledgeDocuments.companyId, companyId))
+      .where(conditions)
       .orderBy(knowledgeDocuments.createdAt);
 
     return rows as unknown as KnowledgeDocument[];

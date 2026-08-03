@@ -6,6 +6,7 @@ import { KnowledgeService } from '../services/knowledge.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
 
 const CreateDocumentBody = z.object({
   title: z.string().min(1).max(500),
@@ -15,6 +16,7 @@ const CreateDocumentBody = z.object({
   sourceUrl: z.string().max(2000).optional(),
   tags: z.array(z.string()).optional(),
   createdBy: z.string().max(255).optional(),
+  projectId: z.string().uuid().optional(),
 });
 
 const UpdateDocumentBody = z.object({
@@ -28,13 +30,18 @@ const SearchBody = z.object({
   topK: z.number().int().min(1).max(20).optional(),
 });
 
+const KnowledgeListQuery = z.object({
+  project: z.string().uuid().optional(),
+});
+
 export function knowledgeRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const knowledgeService = new KnowledgeService(db);
 
   // GET /api/companies/:companyId/knowledge - list documents
-  router.get('/', async (req, res) => {
-    const docs = await knowledgeService.listDocuments(routeParams(req).companyId);
+  router.get('/', validate(KnowledgeListQuery, 'query'), async (req, res) => {
+    const query = (req as any).validated?.query as z.infer<typeof KnowledgeListQuery>;
+    const docs = await knowledgeService.listDocuments(routeParams(req).companyId, query?.project);
     res.json({ data: docs });
   });
 
@@ -42,6 +49,11 @@ export function knowledgeRouter(db: DbInstance): Router {
   router.post('/', validate(CreateDocumentBody), async (req, res) => {
     const body = req.body as z.infer<typeof CreateDocumentBody>;
     const companyId = routeParams(req).companyId;
+
+    // Validate project ownership when projectId is supplied
+    if (body.projectId) {
+      await validateProjectOwnership(db, companyId, body.projectId);
+    }
 
     const doc = await knowledgeService.addDocument(companyId, {
       title: body.title,
@@ -51,6 +63,7 @@ export function knowledgeRouter(db: DbInstance): Router {
       sourceUrl: body.sourceUrl,
       tags: body.tags,
       createdBy: body.createdBy,
+      projectId: body.projectId,
     });
 
     eventBus.emitEvent({

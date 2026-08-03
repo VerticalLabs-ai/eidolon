@@ -6,6 +6,7 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
 
 const CreateGoalBody = z.object({
   title: z.string().trim().min(1).max(500),
@@ -44,7 +45,7 @@ const GOAL_LEVEL_RANK: Record<GoalLevel, number> = {
 
 export function goalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { agents, goals, projects } = db.schema;
+  const { agents, goals } = db.schema;
 
   const GoalListQuery = z.object({
     project: z.string().uuid().optional(),
@@ -66,19 +67,7 @@ export function goalsRouter(db: DbInstance): Router {
     projectId?: string | null;
   }) {
     if (projectId !== undefined && projectId !== null) {
-      const [project] = await db.drizzle
-        .select({ id: projects.id })
-        .from(projects)
-        .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
-        .limit(1);
-
-      if (!project) {
-        throw new AppError(
-          400,
-          'GOAL_PROJECT_INVALID',
-          'Choose a project from this company.',
-        );
-      }
+      await validateProjectOwnership(db, companyId, projectId);
     }
 
     if (parentId !== undefined || (goalId && level !== undefined)) {
