@@ -121,6 +121,7 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
     projectId?: string | null;
     companyId?: string;
     createdAt?: Date;
+    isDirectory?: boolean;
   }): Promise<string> {
     const id = randomUUID();
     const now = overrides.createdAt ?? new Date();
@@ -138,7 +139,7 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
         content: null,
         storageType: 'inline',
         parentId: null,
-        isDirectory: false,
+        isDirectory: overrides.isDirectory ?? false,
         projectId: fileProjectId,
         createdAt: now,
         updatedAt: now,
@@ -290,7 +291,8 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
   // VAL-HOME-003: counts.fileCount matches project files
   // -------------------------------------------------------------------------
   describe('VAL-HOME-003: fileCount matches scoped files', () => {
-    it('fileCount equals the number of project-scoped agent_files', async () => {
+    it('fileCount excludes project folders and unscoped or foreign files', async () => {
+      await insertFile({ name: 'project-folder', isDirectory: true });
       await insertFile({ name: 'f1.txt' });
       await insertFile({ name: 'f2.txt' });
       await insertFile({ name: 'unscoped.txt', projectId: null });
@@ -306,7 +308,8 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
         .expect(200);
 
       expect(home.body.data.counts.fileCount).toBe(2);
-      expect(home.body.data.counts.fileCount).toBe(filesRes.body.data.length);
+      expect(filesRes.body.data).toHaveLength(3);
+      expect(filesRes.body.data.filter((file: { isDirectory: boolean }) => !file.isDirectory)).toHaveLength(2);
     });
   });
 
@@ -539,6 +542,7 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
   describe('VAL-HOME-009: recentFiles', () => {
     it('returns top 5 project files ordered by createdAt desc', async () => {
       const base = Date.now();
+      await insertFile({ name: 'project-folder', isDirectory: true, createdAt: new Date(base + 9999) });
       for (let i = 0; i < 7; i++) {
         await insertFile({ name: `f-${i}.txt`, createdAt: new Date(base + i * 1000) });
       }
@@ -553,6 +557,7 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
       expect(rf).toHaveLength(5);
       for (const f of rf) {
         expect(f.projectId).toBe(projectId);
+        expect(f.isDirectory).toBe(false);
       }
       for (let i = 1; i < rf.length; i++) {
         expect(new Date(rf[i].createdAt).getTime()).toBeLessThanOrEqual(
