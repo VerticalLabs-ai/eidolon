@@ -263,6 +263,7 @@ export class AgenticLoop {
       provider: providerName,
       executionMode: 'agentic-loop',
       lastEventAt: startedAt,
+      projectId: task.projectId,
       createdAt: startedAt,
     });
 

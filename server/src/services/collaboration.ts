@@ -195,7 +195,7 @@ export class CollaborationService {
       }
 
       const [task] = await tx
-        .select({ status: tasks.status })
+        .select({ status: tasks.status, projectId: tasks.projectId })
         .from(tasks)
         .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
         .limit(1)
@@ -358,6 +358,7 @@ export class CollaborationService {
           status: 'answered',
           idempotencyKey: `escalation:${id}`,
           relatedExecutionId: activeCheckout?.executionId ?? null,
+          projectId: task.projectId,
           createdAt: now,
           updatedAt: now,
         })

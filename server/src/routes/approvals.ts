@@ -44,7 +44,7 @@ const CancelBody = z.object({
 
 export function approvalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { approvals, approvalComments, taskThreadItems } = db.schema;
+  const { approvals, approvalComments, taskThreadItems, tasks } = db.schema;
 
   // GET /api/companies/:companyId/approvals?status=pending
   router.get('/', async (req, res) => {
@@ -98,6 +98,12 @@ export function approvalsRouter(db: DbInstance): Router {
         .returning();
 
       if (created.taskId) {
+        const [task] = await tx
+          .select({ projectId: tasks.projectId })
+          .from(tasks)
+          .where(and(eq(tasks.id, created.taskId), eq(tasks.companyId, companyId)))
+          .limit(1);
+
         const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
           companyId,
@@ -108,6 +114,7 @@ export function approvalsRouter(db: DbInstance): Router {
           payload: { approvalId: created.id, kind: created.kind, priority: created.priority },
           status: 'linked',
           relatedApprovalId: created.id,
+          projectId: task?.projectId ?? null,
           createdAt: now,
           updatedAt: now,
         };
@@ -197,6 +204,12 @@ export function approvalsRouter(db: DbInstance): Router {
       }
 
       if (updated.taskId) {
+        const [task] = await tx
+          .select({ projectId: tasks.projectId })
+          .from(tasks)
+          .where(and(eq(tasks.id, updated.taskId), eq(tasks.companyId, companyId)))
+          .limit(1);
+
         const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
           companyId,
@@ -209,6 +222,7 @@ export function approvalsRouter(db: DbInstance): Router {
           relatedApprovalId: updated.id,
           resolvedByUserId: req.user?.id ?? null,
           resolvedAt: now,
+          projectId: task?.projectId ?? null,
           createdAt: now,
           updatedAt: now,
         };

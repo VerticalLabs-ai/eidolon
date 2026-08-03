@@ -362,6 +362,7 @@ export class TaskCheckoutService {
           status: 'linked',
           idempotencyKey: `task-checkout:${checkout.id}`,
           relatedExecutionId: input.executionId,
+          projectId: task.projectId,
           createdAt: now,
           updatedAt: now,
         })
@@ -582,6 +583,7 @@ export class TaskCheckoutService {
           status: 'linked',
           idempotencyKey: `task-release:${checkout.id}`,
           relatedExecutionId: input.executionId,
+          projectId: task.projectId,
           createdAt: now,
           updatedAt: now,
         })

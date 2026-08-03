@@ -185,6 +185,7 @@ export class AgentExecutor {
       livenessStatus: 'healthy',
       lastUsefulAction: 'execution_started',
       nextActionHint: 'await_provider_response',
+      projectId: task.projectId,
       createdAt: now,
     });
 

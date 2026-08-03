@@ -154,6 +154,7 @@ export class RoutineTriggerService {
               lastUsefulAction: 'routine_triggered',
               nextActionHint: 'await_runtime_session',
               lastEventAt: now,
+              projectId: task.projectId,
               createdAt: now,
               updatedAt: now,
             })
@@ -184,6 +185,7 @@ export class RoutineTriggerService {
           status: execution ? 'linked' : 'answered',
           idempotencyKey: `routine-trigger:${triggerId}`,
           relatedExecutionId: execution?.id ?? null,
+          projectId: task.projectId,
           createdAt: now,
           updatedAt: now,
         })
