@@ -512,6 +512,88 @@ export interface ProjectThreadItem extends Omit<TaskThreadItem, "taskId"> {
   projectThreadId: string | null;
 }
 
+export interface ProjectThreadDetail extends ProjectThread {
+  items: ProjectThreadItem[];
+  meta?: { total: number; limit: number; offset: number };
+}
+
+export interface ProjectThreadFilters {
+  status?: ProjectThreadStatus;
+  type?: ProjectThreadType;
+}
+
+export interface CreateProjectThreadInput {
+  title: string;
+  type?: ProjectThreadType;
+  status?: ProjectThreadStatus;
+}
+
+export interface CreateThreadItemInput {
+  kind?: ProjectThreadItem["kind"];
+  content?: string;
+  payload?: TaskThreadPayload;
+  interactionType?: NonNullable<ProjectThreadItem["interactionType"]>;
+  status?: Extract<TaskThreadItemStatus, "pending" | "accepted" | "rejected" | "answered" | "linked">;
+}
+
+export interface UpdateThreadItemInput {
+  status: Extract<TaskThreadItemStatus, "accepted" | "rejected" | "answered">;
+  note?: string;
+  answers?: Record<string, unknown>;
+}
+
+export const getProjectThreads = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectThreadFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set("status", filters.status);
+  if (filters?.type) params.set("type", filters.type);
+  const query = params.toString();
+  return request<ApiResponse<ProjectThread[]>>(
+    `/companies/${companyId}/projects/${projectId}/threads${query ? `?${query}` : ""}`,
+  );
+};
+
+export const getProjectThread = (companyId: string, projectId: string, threadId: string) =>
+  request<ApiResponse<ProjectThreadDetail>>(
+    `/companies/${companyId}/projects/${projectId}/threads/${threadId}`,
+  );
+
+export const createProjectThread = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectThreadInput,
+) =>
+  request<ApiResponse<ProjectThread>>(
+    `/companies/${companyId}/projects/${projectId}/threads`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const createThreadItem = (
+  companyId: string,
+  projectId: string,
+  threadId: string,
+  data: CreateThreadItemInput,
+) =>
+  request<ApiResponse<ProjectThreadItem>>(
+    `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateThreadItem = (
+  companyId: string,
+  projectId: string,
+  threadId: string,
+  itemId: string,
+  data: UpdateThreadItemInput,
+) =>
+  request<ApiResponse<ProjectThreadItem>>(
+    `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items/${itemId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
 export const getTaskThread = (companyId: string, taskId: string) =>
   request<TaskThreadItem[]>(`/companies/${companyId}/tasks/${taskId}/thread`);
 

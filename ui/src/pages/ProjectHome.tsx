@@ -9,6 +9,7 @@ import { Card as UICard } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { isHttpUrl } from "@/lib/urls";
 import type { ProjectHomeSummary, Task, Activity as ActivityType, AgentFile, Goal } from "@/lib/api";
+import { ProjectThreadPanel } from "@/components/projects/ProjectThreadPanel";
 
 const statusVariant: Record<string, "default" | "success" | "warning" | "info" | "error"> = {
   active: "success",
@@ -412,6 +413,7 @@ export function ProjectHome({ companyId, projectId }: { companyId: string; proje
         <GoalsSummaryCard goalProgress={summary.goalProgress} companyId={companyId} projectId={projectId} />
         <RecentActivityCard activities={summary.recentActivity} />
         <RecentFilesCard files={summary.recentFiles} />
+        <ProjectThreadPanel companyId={companyId} projectId={projectId} />
       </div>
     </div>
   );

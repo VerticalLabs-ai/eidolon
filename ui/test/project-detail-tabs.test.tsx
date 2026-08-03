@@ -39,6 +39,7 @@ vi.mock("@/lib/hooks", () => ({
   useTasks: mocks.useTasks,
   useUpdateTask: () => ({ mutate: vi.fn() }),
   useCreateTask: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreateProjectThread: () => ({ mutate: vi.fn(), isPending: false }),
   useCreateProject: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false }),
   useUpdateProject: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false }),
 }));

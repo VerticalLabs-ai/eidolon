@@ -6,12 +6,20 @@ import { ProjectHome } from "../src/pages/ProjectHome";
 const mocks = vi.hoisted(() => ({
   useProjectHome: vi.fn(),
   useGoals: vi.fn(),
+  useProjectThreads: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useProjectThread: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useCreateThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useUpdateThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   refetch: vi.fn(),
 }));
 
 vi.mock("@/lib/hooks", () => ({
   useProjectHome: mocks.useProjectHome,
   useGoals: mocks.useGoals,
+  useProjectThreads: mocks.useProjectThreads,
+  useProjectThread: mocks.useProjectThread,
+  useCreateThreadItem: mocks.useCreateThreadItem,
+  useUpdateThreadItem: mocks.useUpdateThreadItem,
 }));
 
 const baseSummary = {

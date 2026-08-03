@@ -171,6 +171,75 @@ export function useProjectHome(
   });
 }
 
+// ── Project Threads ─────────────────────────────────────────────────────
+
+export function useProjectThreads(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectThreadFilters,
+) {
+  return useQuery({
+    queryKey: ["project-threads", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectThread[]>(await api.getProjectThreads(companyId!, projectId!, filters)),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useProjectThread(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  threadId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["project-thread", companyId, projectId, threadId],
+    queryFn: async () =>
+      unwrap<api.ProjectThreadDetail>(
+        await api.getProjectThread(companyId!, projectId!, threadId!),
+      ),
+    enabled: !!companyId && !!projectId && !!threadId,
+  });
+}
+
+export function useCreateProjectThread(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectThreadInput) =>
+      api.createProjectThread(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    },
+  });
+}
+
+export function useCreateThreadItem(companyId: string, projectId: string, threadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateThreadItemInput) =>
+      api.createThreadItem(companyId, projectId, threadId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId, threadId] });
+      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateThreadItem(companyId: string, projectId: string, threadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      itemId,
+      data,
+    }: {
+      itemId: string;
+      data: api.UpdateThreadItemInput;
+    }) => api.updateThreadItem(companyId, projectId, threadId, itemId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId, threadId] });
+    },
+  });
+}
+
 // ── Agents ───────────────────────────────────────────────────────────────
 
 export function useAgents(companyId: string | undefined) {

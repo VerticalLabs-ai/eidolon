@@ -14,6 +14,7 @@ import { isHttpUrl } from "@/lib/urls";
 import { TaskBoard } from "@/pages/TaskBoard";
 import { ProjectHome } from "@/pages/ProjectHome";
 import { ProjectDrive } from "@/pages/ProjectDrive";
+import { ProjectThreadComposer } from "@/components/projects/ProjectThreadComposer";
 import type { Tab } from "@/components/ui/Tabs";
 
 const VALID_TABS = ["home", "work", "drive", "activity"] as const;
@@ -174,7 +175,14 @@ export function ProjectDetail() {
         {activeTab === "home" && (
           <ProjectHome companyId={companyId ?? ""} projectId={project.id} />
         )}
-        {activeTab === "work" && <TaskBoard title="Work" />}
+        {activeTab === "work" && (
+          <div className="space-y-4 p-5 sm:p-6">
+            <TaskBoard title="Work" />
+            <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4">
+              <ProjectThreadComposer companyId={companyId ?? ""} projectId={project.id} />
+            </div>
+          </div>
+        )}
         {activeTab === "drive" && (
           <ProjectDrive companyId={companyId ?? ""} projectId={project.id} />
         )}
