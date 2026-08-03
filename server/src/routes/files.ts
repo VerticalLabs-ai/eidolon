@@ -21,12 +21,19 @@ const CreateFileBody = z.object({
   isDirectory: z.boolean().default(false),
   taskId: z.string().uuid().optional(),
   executionId: z.string().uuid().optional(),
+  projectId: z.string().uuid().nullable().default(null),
 });
 
 const PatchFileBody = z.object({
   name: z.string().min(1).max(255).optional(),
   content: z.string().optional(),
   mimeType: z.string().max(100).optional(),
+  projectId: z.string().uuid().nullable().optional(),
+});
+
+const FileListQuery = z.object({
+  agentId: z.string().uuid().optional(),
+  project: z.string().uuid().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -72,16 +79,37 @@ function getMimeType(name: string, provided?: string): string {
 
 export function filesRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { agentFiles } = db.schema;
+  const { agentFiles, projects } = db.schema;
 
-  // GET / - list all files (optional ?agentId filter)
-  router.get('/', async (req, res) => {
+  // Validate that a projectId belongs to the route's company. Rejects
+  // cross-company and non-existent references with 400 (no row written).
+  async function validateProjectOwnership(companyId: string, projectId: string): Promise<void> {
+    const [project] = await db.drizzle
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+      .limit(1);
+
+    if (!project) {
+      throw new AppError(
+        400,
+        'FILE_PROJECT_INVALID',
+        'Choose a project from this company.',
+      );
+    }
+  }
+
+  // GET / - list all files (optional ?agentId and ?project filters)
+  router.get('/', validate(FileListQuery, 'query'), async (req, res) => {
     const { companyId } = routeParams(req);
-    const agentId = req.query.agentId as string | undefined;
+    const query = (req as any).validated?.query as z.infer<typeof FileListQuery>;
 
     const conditions = [eq(agentFiles.companyId, companyId)];
-    if (agentId) {
-      conditions.push(eq(agentFiles.agentId, agentId));
+    if (query.agentId) {
+      conditions.push(eq(agentFiles.agentId, query.agentId));
+    }
+    if (query.project) {
+      conditions.push(eq(agentFiles.projectId, query.project));
     }
 
     const rows = await db.drizzle
@@ -98,6 +126,7 @@ export function filesRouter(db: DbInstance): Router {
         isDirectory: agentFiles.isDirectory,
         taskId: agentFiles.taskId,
         executionId: agentFiles.executionId,
+        projectId: agentFiles.projectId,
         createdAt: agentFiles.createdAt,
         updatedAt: agentFiles.updatedAt,
       })
@@ -130,6 +159,11 @@ export function filesRouter(db: DbInstance): Router {
     const companyId = routeParams(req).companyId;
     const now = new Date();
     const id = randomUUID();
+
+    // Validate project ownership (reject cross-company / non-existent)
+    if (body.projectId) {
+      await validateProjectOwnership(companyId, body.projectId);
+    }
 
     // If parentId specified, resolve parent path
     let parentPath: string | null = null;
@@ -170,6 +204,7 @@ export function filesRouter(db: DbInstance): Router {
         isDirectory: body.isDirectory,
         taskId: body.taskId ?? null,
         executionId: body.executionId ?? null,
+        projectId: body.projectId,
         createdAt: now,
         updatedAt: now,
       })
@@ -205,6 +240,11 @@ export function filesRouter(db: DbInstance): Router {
       throw new AppError(404, 'FILE_NOT_FOUND', `File ${id} not found`);
     }
 
+    // Validate project ownership when projectId is provided (reject cross-company / non-existent)
+    if (body.projectId !== undefined && body.projectId !== null) {
+      await validateProjectOwnership(companyId, body.projectId);
+    }
+
     const now = new Date();
     const updates: Record<string, unknown> = { updatedAt: now };
 
@@ -220,6 +260,9 @@ export function filesRouter(db: DbInstance): Router {
     }
     if (body.mimeType !== undefined) {
       updates.mimeType = body.mimeType;
+    }
+    if (body.projectId !== undefined) {
+      updates.projectId = body.projectId;
     }
 
     const [updated] = await db.drizzle
@@ -316,6 +359,7 @@ export function agentFilesRouter(db: DbInstance): Router {
         isDirectory: agentFiles.isDirectory,
         taskId: agentFiles.taskId,
         executionId: agentFiles.executionId,
+        projectId: agentFiles.projectId,
         createdAt: agentFiles.createdAt,
         updatedAt: agentFiles.updatedAt,
       })

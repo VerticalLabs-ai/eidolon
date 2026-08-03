@@ -2,6 +2,7 @@ import { pgTable, text, integer, boolean, timestamp, index } from 'drizzle-orm/p
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 import { agents } from './agents.js';
+import { projects } from './projects.js';
 
 export const agentFiles = pgTable(
   'agent_files',
@@ -23,6 +24,7 @@ export const agentFiles = pgTable(
     isDirectory: boolean('is_directory').notNull().default(false),
     taskId: text('task_id'),
     executionId: text('execution_id'),
+    projectId: text('project_id').references(() => projects.id),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
