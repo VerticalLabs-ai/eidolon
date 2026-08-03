@@ -1,6 +1,7 @@
 // Eidolon hooks — v2 with projects, delete, toasts
 import {
   useQuery,
+  useQueries,
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -198,6 +199,65 @@ export function useProjectThread(
         await api.getProjectThread(companyId!, projectId!, threadId!),
       ),
     enabled: !!companyId && !!projectId && !!threadId,
+  });
+}
+
+/**
+ * Aggregate recent items across ALL active project threads (not just the
+ * first one). Fetches the active thread list, then each thread's detail in
+ * parallel via useQueries, and merges items sorted newest-first.
+ */
+export function useProjectThreadItems(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectThreadFilters,
+) {
+  const threads = useProjectThreads(companyId, projectId, filters ?? { status: "active" });
+  const threadIds = threads.data?.map((t) => t.id) ?? [];
+  const queries = useQueries({
+    queries: threadIds.map((id) => ({
+      queryKey: ["project-thread", companyId, projectId, id],
+      queryFn: async () =>
+        unwrap<api.ProjectThreadDetail>(
+          await api.getProjectThread(companyId!, projectId!, id),
+        ),
+      enabled: !!companyId && !!projectId,
+    })),
+  });
+  const isLoading = threads.isLoading || queries.some((q) => q.isLoading);
+  const isError = threads.isError || queries.some((q) => q.isError);
+  const items = queries
+    .flatMap((q) => q.data?.items ?? [])
+    .sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  return { data: items, threads: threads.data ?? [], isLoading, isError };
+}
+
+/**
+ * Resolve a thread interaction item in any project thread. Unlike
+ * useUpdateThreadItem, the target threadId is supplied per-call so items
+ * aggregated from multiple threads can each be resolved against their own
+ * thread.
+ */
+export function useResolveThreadItem(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      threadId,
+      itemId,
+      data,
+    }: {
+      threadId: string;
+      itemId: string;
+      data: api.UpdateThreadItemInput;
+    }) => api.updateThreadItem(companyId, projectId, threadId, itemId, data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({
+        queryKey: ["project-thread", companyId, projectId, vars.threadId],
+      });
+      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    },
   });
 }
 

@@ -5,11 +5,10 @@ import { ProjectThreadPanel } from "../src/components/projects/ProjectThreadPane
 import { ProjectThreadComposer } from "../src/components/projects/ProjectThreadComposer";
 
 const mocks = vi.hoisted(() => ({
-  useProjectThreads: vi.fn(),
-  useProjectThread: vi.fn(),
-  useCreateProjectThread: vi.fn(),
+  useProjectThreadItems: vi.fn(),
   useCreateThreadItem: vi.fn(),
-  useUpdateThreadItem: vi.fn(),
+  useResolveThreadItem: vi.fn(),
+  useCreateProjectThread: vi.fn(),
 }));
 
 vi.mock("@/lib/hooks", () => mocks);
@@ -27,7 +26,7 @@ const thread = {
   updatedAt: "2026-08-01T10:00:00.000Z",
 };
 
-const item = {
+const baseItem = {
   id: "item-1",
   companyId: "company-1",
   taskId: null,
@@ -43,22 +42,42 @@ const item = {
   updatedAt: "2026-08-01T11:00:00.000Z",
 };
 
+const item = (overrides: Partial<typeof baseItem> = {}) => ({ ...baseItem, ...overrides });
+
 function wrapper({ children }: { children: React.ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>;
+}
+
+function panelResult(
+  overrides: Partial<{
+    data: typeof baseItem[];
+    threads: typeof thread[];
+    isLoading: boolean;
+    isError: boolean;
+  }> = {},
+) {
+  return {
+    data: overrides.data ?? [baseItem],
+    threads: overrides.threads ?? [thread],
+    isLoading: overrides.isLoading ?? false,
+    isError: overrides.isError ?? false,
+    ...overrides,
+  };
 }
 
 describe("Project threads", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.useProjectThreads.mockReturnValue({ data: [thread], isLoading: false, isError: false });
-    mocks.useProjectThread.mockReturnValue({
-      data: { ...thread, items: [item] },
-      isLoading: false,
+    mocks.useProjectThreadItems.mockReturnValue(panelResult());
+    mocks.useCreateThreadItem.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isSuccess: false,
       isError: false,
+      reset: vi.fn(),
     });
+    mocks.useResolveThreadItem.mockReturnValue({ mutate: vi.fn(), isPending: false });
     mocks.useCreateProjectThread.mockReturnValue({ mutate: vi.fn(), isPending: false });
-    mocks.useCreateThreadItem.mockReturnValue({ mutate: vi.fn(), isPending: false });
-    mocks.useUpdateThreadItem.mockReturnValue({ mutate: vi.fn(), isPending: false });
   });
 
   it("shows recent messages with author, timestamp, and kind", () => {
@@ -68,9 +87,31 @@ describe("Project threads", () => {
     expect(screen.getByText("comment")).toBeInTheDocument();
   });
 
+  it("renders a relative timestamp for each thread item", () => {
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    const timestamp = screen.getByTestId("thread-item-timestamp");
+    expect(timestamp).toBeInTheDocument();
+    expect(timestamp).toHaveAttribute("dateTime", baseItem.createdAt);
+    // formatDistanceToNow produces text ending with "ago"
+    expect(timestamp.textContent).toMatch(/ago$/);
+  });
+
+  it("aggregates recent items across all active project threads", () => {
+    const threadA = { ...thread, id: "thread-a", title: "Conversation A" };
+    const threadB = { ...thread, id: "thread-b", title: "Standup B", type: "standup" as const };
+    const itemA = item({ id: "a-1", projectThreadId: "thread-a", content: "From thread A", createdAt: "2026-08-01T12:00:00.000Z" });
+    const itemB = item({ id: "b-1", projectThreadId: "thread-b", content: "From thread B", createdAt: "2026-08-01T13:00:00.000Z" });
+    mocks.useProjectThreadItems.mockReturnValue(
+      panelResult({ data: [itemA, itemB], threads: [threadA, threadB] }),
+    );
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    expect(screen.getByText("From thread A")).toBeInTheDocument();
+    expect(screen.getByText("From thread B")).toBeInTheDocument();
+  });
+
   it("posts a non-empty comment and blocks empty content", () => {
     const mutate = vi.fn();
-    mocks.useCreateThreadItem.mockReturnValue({ mutate, isPending: false });
+    mocks.useCreateThreadItem.mockReturnValue({ mutate, isPending: false, isSuccess: false, isError: false, reset: vi.fn() });
     render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
     const input = screen.getByLabelText("Post a comment");
     const submit = screen.getByRole("button", { name: "Post comment" });
@@ -80,18 +121,104 @@ describe("Project threads", () => {
     expect(mutate).toHaveBeenCalledWith({ kind: "comment", content: "New comment" });
   });
 
-  it("shows and resolves pending interaction controls", () => {
-    const interaction = { ...item, id: "interaction-1", kind: "interaction" as const, status: "pending" as const };
+  it("clears the composer draft only after a successful mutation", () => {
+    const reset = vi.fn();
+    mocks.useCreateThreadItem.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isSuccess: false,
+      isError: false,
+      reset,
+    });
+    const { rerender } = render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    const input = screen.getByLabelText("Post a comment") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Draft to clear" } });
+    expect(input.value).toBe("Draft to clear");
+    // Simulate the mutation resolving successfully (hook re-renders with isSuccess: true)
+    mocks.useCreateThreadItem.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isSuccess: true,
+      isError: false,
+      reset,
+    });
+    rerender(<ProjectThreadPanel companyId="company-1" projectId="project-1" />);
+    expect(screen.getByLabelText("Post a comment")).toHaveValue("");
+    expect(reset).toHaveBeenCalled();
+  });
+
+  it("preserves the draft and surfaces an error when the mutation fails", () => {
+    mocks.useCreateThreadItem.mockReturnValue({ mutate: vi.fn(), isPending: false, isSuccess: false, isError: true, reset: vi.fn() });
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    const input = screen.getByLabelText("Post a comment") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Draft that failed" } });
+    expect(input.value).toBe("Draft that failed");
+    expect(screen.getByRole("alert")).toHaveTextContent(/could not post your comment/i);
+  });
+
+  it("shows pending interaction accept, reject, and answer controls", () => {
+    const interaction = item({ id: "interaction-1", kind: "interaction", status: "pending" });
+    mocks.useProjectThreadItems.mockReturnValue(panelResult({ data: [interaction] }));
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    expect(screen.getByRole("button", { name: "Accept interaction" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject interaction" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Answer interaction" })).toBeInTheDocument();
+  });
+
+  it("accepts a pending interaction", () => {
+    const interaction = item({ id: "interaction-1", projectThreadId: "thread-1", kind: "interaction", status: "pending" });
     const mutate = vi.fn();
-    mocks.useProjectThread.mockReturnValue({ data: { ...thread, items: [interaction] }, isLoading: false, isError: false });
-    mocks.useUpdateThreadItem.mockReturnValue({ mutate, isPending: false });
+    mocks.useProjectThreadItems.mockReturnValue(panelResult({ data: [interaction] }));
+    mocks.useResolveThreadItem.mockReturnValue({ mutate, isPending: false });
     render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
     fireEvent.click(screen.getByRole("button", { name: "Accept interaction" }));
-    expect(mutate).toHaveBeenCalledWith({ itemId: "interaction-1", data: { status: "accepted" } });
+    expect(mutate).toHaveBeenCalledWith({ threadId: "thread-1", itemId: "interaction-1", data: { status: "accepted" } });
+  });
+
+  it("rejects a pending interaction", () => {
+    const interaction = item({ id: "interaction-2", projectThreadId: "thread-1", kind: "interaction", status: "pending" });
+    const mutate = vi.fn();
+    mocks.useProjectThreadItems.mockReturnValue(panelResult({ data: [interaction] }));
+    mocks.useResolveThreadItem.mockReturnValue({ mutate, isPending: false });
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole("button", { name: "Reject interaction" }));
+    expect(mutate).toHaveBeenCalledWith({ threadId: "thread-1", itemId: "interaction-2", data: { status: "rejected" } });
+  });
+
+  it("answers a pending interaction", () => {
+    const interaction = item({ id: "interaction-3", projectThreadId: "thread-1", kind: "interaction", status: "pending" });
+    const mutate = vi.fn();
+    mocks.useProjectThreadItems.mockReturnValue(panelResult({ data: [interaction] }));
+    mocks.useResolveThreadItem.mockReturnValue({ mutate, isPending: false });
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole("button", { name: "Answer interaction" }));
+    expect(mutate).toHaveBeenCalledWith({ threadId: "thread-1", itemId: "interaction-3", data: { status: "answered" } });
+  });
+
+  it("hides interaction controls once the interaction is resolved", () => {
+    const resolved = item({ id: "interaction-resolved", kind: "interaction", status: "accepted" });
+    mocks.useProjectThreadItems.mockReturnValue(panelResult({ data: [resolved] }));
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    expect(screen.queryByRole("button", { name: "Accept interaction" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject interaction" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Answer interaction" })).not.toBeInTheDocument();
+    // final status is rendered as a badge instead
+    expect(screen.getByText("accepted")).toBeInTheDocument();
+  });
+
+  it("resolves interactions aggregated from a different thread against that thread", () => {
+    const threadB = { ...thread, id: "thread-b", type: "standup" as const };
+    const interaction = item({ id: "ix-b", projectThreadId: "thread-b", kind: "interaction", status: "pending" });
+    const mutate = vi.fn();
+    mocks.useProjectThreadItems.mockReturnValue(panelResult({ data: [interaction], threads: [thread, threadB] }));
+    mocks.useResolveThreadItem.mockReturnValue({ mutate, isPending: false });
+    render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole("button", { name: "Accept interaction" }));
+    expect(mutate).toHaveBeenCalledWith({ threadId: "thread-b", itemId: "ix-b", data: { status: "accepted" } });
   });
 
   it("shows an empty state without threads", () => {
-    mocks.useProjectThreads.mockReturnValue({ data: [], isLoading: false, isError: false });
+    mocks.useProjectThreadItems.mockReturnValue(panelResult({ data: [], threads: [] }));
     render(<ProjectThreadPanel companyId="company-1" projectId="project-1" />, { wrapper });
     expect(screen.getByText("No conversation yet")).toBeInTheDocument();
   });

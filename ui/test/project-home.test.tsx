@@ -8,8 +8,10 @@ const mocks = vi.hoisted(() => ({
   useGoals: vi.fn(),
   useProjectThreads: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useProjectThread: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
-  useCreateThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useProjectThreadItems: vi.fn(() => ({ data: [], threads: [], isLoading: false, isError: false })),
+  useCreateThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false, isError: false, reset: vi.fn() })),
   useUpdateThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useResolveThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   refetch: vi.fn(),
 }));
 
@@ -18,8 +20,10 @@ vi.mock("@/lib/hooks", () => ({
   useGoals: mocks.useGoals,
   useProjectThreads: mocks.useProjectThreads,
   useProjectThread: mocks.useProjectThread,
+  useProjectThreadItems: mocks.useProjectThreadItems,
   useCreateThreadItem: mocks.useCreateThreadItem,
   useUpdateThreadItem: mocks.useUpdateThreadItem,
+  useResolveThreadItem: mocks.useResolveThreadItem,
 }));
 
 const baseSummary = {
