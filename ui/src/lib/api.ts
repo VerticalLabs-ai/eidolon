@@ -913,6 +913,22 @@ export const updateProjectOutcome = (
     { method: "PATCH", body: JSON.stringify(data) },
   );
 
+// ── Project Work (composed endpoint) ─────────────────────────────────────
+
+export interface ProjectWorkSummary {
+  plans: ProjectPlan[];
+  outcomes: ProjectOutcome[];
+  threadSummary: {
+    activeThreadCount: number;
+    pendingInteractionCount: number;
+  };
+}
+
+export const getProjectWork = (companyId: string, projectId: string) =>
+  request<ApiResponse<ProjectWorkSummary>>(
+    `/companies/${companyId}/projects/${projectId}/work`,
+  );
+
 export const getTaskThread = (companyId: string, taskId: string) =>
   request<TaskThreadItem[]>(`/companies/${companyId}/tasks/${taskId}/thread`);
 

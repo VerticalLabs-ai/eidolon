@@ -483,6 +483,64 @@ export function useUpdateProjectDecision(companyId: string, projectId: string) {
   });
 }
 
+// ── Project Outcomes ──────────────────────────────────────────────────────
+
+export function useProjectOutcomes(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectOutcomeFilters,
+) {
+  return useQuery({
+    queryKey: ["project-outcomes", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectOutcome[]>(
+        await api.getProjectOutcomes(companyId!, projectId!, filters),
+      ),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useCreateProjectOutcome(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectOutcomeInput) =>
+      api.createProjectOutcome(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-outcomes", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectOutcome(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      outcomeId,
+      data,
+    }: {
+      outcomeId: string;
+      data: api.UpdateProjectOutcomeInput;
+    }) => api.updateProjectOutcome(companyId, projectId, outcomeId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-outcomes", companyId, projectId] });
+    },
+  });
+}
+
+// ── Project Work (composed endpoint) ──────────────────────────────────────
+
+export function useProjectWork(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["project-work", companyId, projectId],
+    queryFn: async () =>
+      unwrap<api.ProjectWorkSummary>(await api.getProjectWork(companyId!, projectId!)),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
 // ── Agents ───────────────────────────────────────────────────────────────
 
 export function useAgents(companyId: string | undefined) {
