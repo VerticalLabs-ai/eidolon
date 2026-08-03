@@ -240,7 +240,9 @@ export function tasksRouter(db: DbInstance): Router {
    * Project ownership is derived from the linked task's `project_id` — callers
    * never supply it directly.
    */
-  async function insertThreadItem(values: typeof taskThreadItems.$inferInsert): Promise<{
+  async function insertThreadItem(
+    values: typeof taskThreadItems.$inferInsert & { taskId: string },
+  ): Promise<{
     row: typeof taskThreadItems.$inferSelect;
     created: boolean;
   }> {
@@ -297,7 +299,9 @@ export function tasksRouter(db: DbInstance): Router {
     return { row, created: true };
   }
 
-  async function createThreadItem(values: typeof taskThreadItems.$inferInsert) {
+  async function createThreadItem(
+    values: typeof taskThreadItems.$inferInsert & { taskId: string },
+  ) {
     const { row } = await insertThreadItem(values);
     return row;
   }

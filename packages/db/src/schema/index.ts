@@ -25,6 +25,7 @@ export { mcpServers } from './mcp_servers.js';
 export { approvals, approvalComments } from './approvals.js';
 export { inboxReadStates } from './inbox_read_states.js';
 export { taskThreadItems } from './task_thread_items.js';
+export { projectThreads } from './project_threads.js';
 export { taskCheckouts } from './task_checkouts.js';
 export { taskHolds } from './task_holds.js';
 export { executionEnvironments, workspaceLifecycleEvents } from './execution_environments.js';

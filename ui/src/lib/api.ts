@@ -486,6 +486,32 @@ export interface TaskThreadItem {
   source?: "thread" | "execution" | "approval";
 }
 
+export type ProjectThreadType =
+  | "conversation"
+  | "plan_review"
+  | "decision_review"
+  | "standup";
+
+export type ProjectThreadStatus = "active" | "archived";
+
+export interface ProjectThread {
+  id: string;
+  companyId: string;
+  projectId: string;
+  title: string;
+  type: ProjectThreadType;
+  status: ProjectThreadStatus;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectThreadItem extends Omit<TaskThreadItem, "taskId"> {
+  taskId: string | null;
+  projectThreadId: string | null;
+}
+
 export const getTaskThread = (companyId: string, taskId: string) =>
   request<TaskThreadItem[]>(`/companies/${companyId}/tasks/${taskId}/thread`);
 
