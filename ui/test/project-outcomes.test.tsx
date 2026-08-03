@@ -225,6 +225,16 @@ describe("ProjectOutcomesPanel — VAL-OUT-004, VAL-OUT-005, VAL-OUT-008, VAL-OU
     expect(screen.getByText(/no outcomes yet/i)).toBeInTheDocument();
   });
 
+  it("shows an empty state for an empty API response envelope", () => {
+    mocks.useProjectOutcomes.mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    });
+    render(<ProjectOutcomesPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    expect(screen.getByText(/no outcomes yet/i)).toBeInTheDocument();
+  });
+
   it("shows a loading state", () => {
     mocks.useProjectOutcomes.mockReturnValue({ data: undefined, isLoading: true, isError: false });
     render(<ProjectOutcomesPanel companyId="company-1" projectId="project-1" />, { wrapper });

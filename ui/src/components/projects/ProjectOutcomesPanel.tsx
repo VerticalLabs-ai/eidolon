@@ -320,6 +320,12 @@ export function ProjectOutcomesPanel({
     projectId,
     typeFilter === "all" ? undefined : { type: typeFilter },
   );
+  // The hook normally unwraps the API envelope, but keep the panel resilient
+  // when a response reaches it as `{ data: [...] }` (for example during a
+  // browser transition between API client versions).
+  const outcomeList = Array.isArray(outcomes)
+    ? outcomes
+    : ((outcomes as unknown as { data?: ProjectOutcome[] } | undefined)?.data ?? []);
   const createOutcome = useCreateProjectOutcome(companyId, projectId);
   const updateOutcome = useUpdateProjectOutcome(companyId, projectId);
 
@@ -377,13 +383,13 @@ export function ProjectOutcomesPanel({
           </div>
         ) : isError ? (
           <div className="py-5 text-sm text-error">Outcomes could not be loaded.</div>
-        ) : !outcomes || outcomes.length === 0 ? (
+        ) : outcomeList.length === 0 ? (
           <div className="py-5 text-sm text-text-muted" role="status">
             No outcomes yet
           </div>
         ) : (
           <ul className="space-y-2">
-            {outcomes.map((outcome) => (
+            {outcomeList.map((outcome) => (
               <OutcomeRow
                 key={outcome.id}
                 outcome={outcome}
