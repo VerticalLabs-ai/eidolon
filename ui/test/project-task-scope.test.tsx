@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskBoard } from "../src/pages/TaskBoard";
 
@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   modalProps: vi.fn(),
   useTasks: vi.fn(() => ({ data: [], isLoading: false })),
   updateTask: vi.fn(),
+  refetch: vi.fn(),
 }));
 
 vi.mock("react-router-dom", async (importOriginal) => {
@@ -37,6 +38,7 @@ vi.mock("@/components/tasks/CreateTaskModal", async (importOriginal) => {
 describe("project task scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.useTasks.mockReturnValue({ data: [], isLoading: false });
   });
 
   it("requests and creates tasks within the current project", () => {
@@ -48,5 +50,26 @@ describe("project task scope", () => {
     expect(mocks.modalProps).toHaveBeenCalledWith(
       expect.objectContaining({ companyId: "company-1", projectId: "project-1" }),
     );
+  });
+
+  // VAL-WORK-009: Work tab loading state
+  it("shows a loading indicator when tasks are loading", () => {
+    mocks.useTasks.mockReturnValue({ data: undefined, isLoading: true });
+    render(<TaskBoard />);
+    // The loading state renders animated pulse columns
+    const pulses = document.querySelectorAll(".animate-pulse");
+    expect(pulses.length).toBeGreaterThan(0);
+  });
+
+  // VAL-WORK-009: Work tab error state
+  it("shows an error message when tasks fail to load", () => {
+    mocks.useTasks.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: mocks.refetch,
+    });
+    render(<TaskBoard />);
+    expect(screen.getByText("Tasks could not be loaded")).toBeInTheDocument();
   });
 });

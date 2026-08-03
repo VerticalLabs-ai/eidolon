@@ -30,7 +30,7 @@ const priorityOptions = [
 
 export function TaskBoard() {
   const { companyId, projectId } = useParams();
-  const { data: tasks, isLoading } = useTasks(
+  const { data: tasks, isLoading, isError, refetch } = useTasks(
     companyId,
     projectId ? { projectId } : undefined,
   );
@@ -80,13 +80,13 @@ export function TaskBoard() {
               />
             </div>
           </div>
-          <button
+          <Button
+            size="md"
             onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
+            icon={<Plus className="h-4 w-4" />}
           >
-            <Plus className="h-4 w-4" />
             New Task
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -99,19 +99,28 @@ export function TaskBoard() {
             />
           ))}
         </div>
+      ) : isError ? (
+        <EmptyState
+          icon={<ListTodo className="h-6 w-6" />}
+          title="Tasks could not be loaded"
+          description="Check your connection and try again."
+          action={
+            <Button onClick={() => void refetch()}>Try again</Button>
+          }
+        />
       ) : !tasks?.length ? (
         <EmptyState
           icon={<ListTodo className="h-6 w-6" />}
           title="No tasks yet"
           description="Create your first task to get started."
           action={
-            <button
+            <Button
+              size="md"
               onClick={() => setModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
+              icon={<Plus className="h-4 w-4" />}
             >
-              <Plus className="h-4 w-4" />
               New Task
-            </button>
+            </Button>
           }
         />
       ) : (

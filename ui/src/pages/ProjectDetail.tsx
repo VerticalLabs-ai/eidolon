@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { useArchiveProject, useProject } from "@/lib/hooks";
@@ -12,12 +12,17 @@ import { ProjectFormModal } from "@/components/projects/ProjectFormModal";
 import { ProjectActivity } from "@/components/projects/ProjectActivity";
 import { isHttpUrl } from "@/lib/urls";
 import { TaskBoard } from "@/pages/TaskBoard";
-import { GoalTree } from "@/pages/GoalTree";
+import { ProjectHome } from "@/pages/ProjectHome";
+import { ProjectDrive } from "@/pages/ProjectDrive";
 import type { Tab } from "@/components/ui/Tabs";
 
+const VALID_TABS = ["home", "work", "drive", "activity"] as const;
+type ValidTab = (typeof VALID_TABS)[number];
+
 const tabs: Tab[] = [
-  { id: "issues", label: "Issues" },
-  { id: "goals", label: "Goals" },
+  { id: "home", label: "Home" },
+  { id: "work", label: "Work" },
+  { id: "drive", label: "Drive" },
   { id: "activity", label: "Activity" },
 ];
 
@@ -32,12 +37,21 @@ const statusVariant: Record<string, "default" | "success" | "warning" | "info" |
 export function ProjectDetail() {
   const { companyId, projectId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, isLoading, isError, refetch } = useProject(companyId, projectId);
   const archiveMutation = useArchiveProject(companyId ?? "");
-  const [activeTab, setActiveTab] = useState("issues");
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+
+  const rawTab = searchParams.get("tab");
+  const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
+    ? (rawTab as ValidTab)
+    : "home";
+
+  const handleTabChange = (id: string) => {
+    setSearchParams(id === "home" ? {} : { tab: id }, { replace: true });
+  };
 
   if (isLoading) {
     return (
@@ -145,13 +159,18 @@ export function ProjectDetail() {
             </div>
           )}
         </div>
-        <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} className="!px-0" />
+        <Tabs tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} className="!px-0" />
       </div>
 
       {/* Tab content */}
       <div className="flex-1 overflow-auto">
-        {activeTab === "issues" && <TaskBoard />}
-        {activeTab === "goals" && <GoalTree />}
+        {activeTab === "home" && (
+          <ProjectHome companyId={companyId ?? ""} projectId={project.id} />
+        )}
+        {activeTab === "work" && <TaskBoard />}
+        {activeTab === "drive" && (
+          <ProjectDrive companyId={companyId ?? ""} projectId={project.id} />
+        )}
         {activeTab === "activity" && (
           <ProjectActivity key={project.id} companyId={companyId ?? ""} projectId={project.id} />
         )}

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, and, sql, desc } from 'drizzle-orm';
+import { eq, and, sql, desc, or, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -44,9 +44,13 @@ const ProjectListQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+const HomeRouteParams = z.object({
+  id: z.string().uuid(),
+});
+
 export function projectsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { projects, tasks, goals } = db.schema;
+  const { projects, tasks, goals, agentFiles, agentExecutions, taskThreadItems, activityLog } = db.schema;
 
   // GET /api/companies/:companyId/projects - list all projects for a company
   router.get('/', validate(ProjectListQuery, 'query'), async (req, res) => {
@@ -135,6 +139,238 @@ export function projectsRouter(db: DbInstance): Router {
         taskCount: Number(taskCount),
         goalCount: Number(goalCount),
         agentCount: Number(agentCount),
+      },
+    });
+  });
+
+  // GET /api/companies/:companyId/projects/:id/home - composed home summary
+  router.get('/:id/home', validate(HomeRouteParams, 'params'), async (req, res) => {
+    const { id } = (req as any).validated.params as z.infer<typeof HomeRouteParams>;
+    const companyId = routeParams(req).companyId;
+
+    // Company-boundary enforcement: project must belong to route companyId
+    const [project] = await db.drizzle
+      .select({
+        id: projects.id,
+        name: projects.name,
+        description: projects.description,
+        status: projects.status,
+        repoUrl: projects.repoUrl,
+        createdAt: projects.createdAt,
+        updatedAt: projects.updatedAt,
+      })
+      .from(projects)
+      .where(and(eq(projects.id, id), eq(projects.companyId, companyId)))
+      .limit(1);
+
+    if (!project) {
+      throw new AppError(404, 'PROJECT_NOT_FOUND', `Project ${id} not found`);
+    }
+
+    // Run all independent composition queries in parallel
+    const [
+      taskCountRow,
+      goalCountRow,
+      agentCountRow,
+      fileCountRow,
+      breakdownRows,
+      activeWorkRows,
+      needsAttentionRows,
+      failedWorkRows,
+      recentActivityRows,
+      recentFilesRows,
+      goalProgressRow,
+    ] = await Promise.all([
+      // counts.taskCount
+      db.drizzle
+        .select({ count: sql<number>`count(*)` })
+        .from(tasks)
+        .where(and(eq(tasks.companyId, companyId), eq(tasks.projectId, id))),
+      // counts.goalCount
+      db.drizzle
+        .select({ count: sql<number>`count(*)` })
+        .from(goals)
+        .where(and(eq(goals.companyId, companyId), eq(goals.projectId, id))),
+      // counts.agentCount — distinct non-null assignees
+      db.drizzle
+        .select({
+          count: sql<number>`count(distinct ${tasks.assigneeAgentId})`,
+        })
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.companyId, companyId),
+            eq(tasks.projectId, id),
+            sql`${tasks.assigneeAgentId} is not null`,
+          ),
+        ),
+      // counts.fileCount
+      db.drizzle
+        .select({ count: sql<number>`count(*)` })
+        .from(agentFiles)
+        .where(and(eq(agentFiles.companyId, companyId), eq(agentFiles.projectId, id))),
+      // taskStatusBreakdown — per-status counts
+      db.drizzle
+        .select({
+          status: tasks.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(tasks)
+        .where(and(eq(tasks.companyId, companyId), eq(tasks.projectId, id)))
+        .groupBy(tasks.status),
+      // activeWork — in_progress + review, top 10 by updatedAt desc
+      db.drizzle
+        .select()
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.companyId, companyId),
+            eq(tasks.projectId, id),
+            inArray(tasks.status, ['in_progress', 'review']),
+          ),
+        )
+        .orderBy(desc(tasks.updatedAt), desc(tasks.id))
+        .limit(10),
+      // needsAttention — review + timed_out OR pending thread items, top 10
+      db.drizzle
+        .select()
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.companyId, companyId),
+            eq(tasks.projectId, id),
+            or(
+              inArray(tasks.status, ['review', 'timed_out']),
+              sql`EXISTS (SELECT 1 FROM ${taskThreadItems} WHERE ${taskThreadItems.companyId} = ${companyId} AND ${taskThreadItems.taskId} = ${tasks.id} AND ${taskThreadItems.status} = 'pending')`,
+            ),
+          ),
+        )
+        .orderBy(desc(tasks.updatedAt), desc(tasks.id))
+        .limit(10),
+      // failedWork — failed executions joined to tasks via task linkage, top 10
+      db.drizzle
+        .select({
+          id: agentExecutions.id,
+          companyId: agentExecutions.companyId,
+          agentId: agentExecutions.agentId,
+          taskId: agentExecutions.taskId,
+          status: agentExecutions.status,
+          summary: agentExecutions.summary,
+          error: agentExecutions.error,
+          startedAt: agentExecutions.startedAt,
+          completedAt: agentExecutions.completedAt,
+          createdAt: agentExecutions.createdAt,
+          updatedAt: agentExecutions.updatedAt,
+        })
+        .from(agentExecutions)
+        .innerJoin(tasks, eq(tasks.id, agentExecutions.taskId))
+        .where(
+          and(
+            eq(agentExecutions.companyId, companyId),
+            eq(agentExecutions.status, 'failed'),
+            eq(tasks.projectId, id),
+          ),
+        )
+        .orderBy(desc(agentExecutions.updatedAt), desc(agentExecutions.id))
+        .limit(10),
+      // recentActivity — top 5 project activity events (same scoping as activity.ts)
+      db.drizzle
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            or(
+              and(eq(activityLog.entityType, 'project'), eq(activityLog.entityId, id)),
+              and(
+                sql`${activityLog.action} like 'project.%'`,
+                sql`${activityLog.metadata}->'project'->>'id' = ${id}`,
+              ),
+              and(
+                sql`${activityLog.action} like 'task.%'`,
+                sql`${activityLog.metadata}->'task'->>'projectId' = ${id}`,
+              ),
+              and(
+                sql`${activityLog.action} like 'task.%'`,
+                sql`${activityLog.metadata}->>'projectId' = ${id}`,
+              ),
+            ),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+        .limit(5),
+      // recentFiles — top 5 project files by createdAt desc
+      db.drizzle
+        .select({
+          id: agentFiles.id,
+          companyId: agentFiles.companyId,
+          agentId: agentFiles.agentId,
+          name: agentFiles.name,
+          path: agentFiles.path,
+          mimeType: agentFiles.mimeType,
+          sizeBytes: agentFiles.sizeBytes,
+          storageType: agentFiles.storageType,
+          parentId: agentFiles.parentId,
+          isDirectory: agentFiles.isDirectory,
+          taskId: agentFiles.taskId,
+          executionId: agentFiles.executionId,
+          projectId: agentFiles.projectId,
+          createdAt: agentFiles.createdAt,
+          updatedAt: agentFiles.updatedAt,
+        })
+        .from(agentFiles)
+        .where(and(eq(agentFiles.companyId, companyId), eq(agentFiles.projectId, id)))
+        .orderBy(desc(agentFiles.createdAt), desc(agentFiles.id))
+        .limit(5),
+      // goalProgress — count + avg progress
+      db.drizzle
+        .select({
+          count: sql<number>`count(*)`,
+          aggregateProgress: sql<number>`coalesce(avg(${goals.progress}), 0)`,
+        })
+        .from(goals)
+        .where(and(eq(goals.companyId, companyId), eq(goals.projectId, id))),
+    ]);
+
+    // Build the per-status breakdown map (all statuses default to 0)
+    const statuses = ['backlog', 'todo', 'in_progress', 'review', 'done', 'cancelled', 'timed_out'] as const;
+    const taskStatusBreakdown: Record<string, number> = {};
+    for (const s of statuses) {
+      taskStatusBreakdown[s] = 0;
+    }
+    for (const row of breakdownRows) {
+      taskStatusBreakdown[row.status] = Number(row.count);
+    }
+
+    const taskCount = Number(taskCountRow[0].count);
+    const goalCount = Number(goalCountRow[0].count);
+    const agentCount = Number(agentCountRow[0].count);
+    const fileCount = Number(fileCountRow[0].count);
+
+    const goalProgressCount = Number(goalProgressRow[0].count);
+    const goalProgressAggregate = goalProgressCount > 0
+      ? Math.round(Number(goalProgressRow[0].aggregateProgress))
+      : 0;
+
+    res.json({
+      data: {
+        project,
+        counts: {
+          taskCount,
+          goalCount,
+          agentCount,
+          fileCount,
+        },
+        taskStatusBreakdown,
+        activeWork: activeWorkRows,
+        needsAttention: needsAttentionRows,
+        failedWork: failedWorkRows,
+        recentActivity: recentActivityRows,
+        recentFiles: recentFilesRows,
+        goalProgress: {
+          count: goalProgressCount,
+          aggregateProgress: goalProgressAggregate,
+        },
       },
     });
   });
