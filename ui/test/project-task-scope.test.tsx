@@ -42,7 +42,7 @@ describe("project task scope", () => {
   });
 
   it("requests and creates tasks within the current project", () => {
-    render(<TaskBoard />);
+    render(<TaskBoard title="Work" />);
 
     expect(mocks.useTasks).toHaveBeenCalledWith("company-1", {
       projectId: "project-1",
@@ -55,7 +55,7 @@ describe("project task scope", () => {
   // VAL-WORK-009: Work tab loading state
   it("shows a loading indicator when tasks are loading", () => {
     mocks.useTasks.mockReturnValue({ data: undefined, isLoading: true });
-    render(<TaskBoard />);
+    render(<TaskBoard title="Work" />);
     // The loading state renders animated pulse columns
     const pulses = document.querySelectorAll(".animate-pulse");
     expect(pulses.length).toBeGreaterThan(0);
@@ -69,7 +69,14 @@ describe("project task scope", () => {
       isError: true,
       refetch: mocks.refetch,
     });
-    render(<TaskBoard />);
+    render(<TaskBoard title="Work" />);
     expect(screen.getByText("Tasks could not be loaded")).toBeInTheDocument();
+  });
+
+  it("renders the caller-provided title for standalone Issues", () => {
+    render(<TaskBoard title="Issues" />);
+
+    expect(screen.getByRole("heading", { name: "Issues" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Work" })).not.toBeInTheDocument();
   });
 });

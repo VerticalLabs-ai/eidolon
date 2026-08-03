@@ -50,7 +50,14 @@ export function ProjectDetail() {
     : "home";
 
   const handleTabChange = (id: string) => {
-    setSearchParams(id === "home" ? {} : { tab: id }, { replace: true });
+    // Update only the `tab` query param, preserving any other query params.
+    const next = new URLSearchParams(searchParams);
+    if (id === "home") {
+      next.delete("tab");
+    } else {
+      next.set("tab", id);
+    }
+    setSearchParams(next, { replace: true });
   };
 
   if (isLoading) {
@@ -167,7 +174,7 @@ export function ProjectDetail() {
         {activeTab === "home" && (
           <ProjectHome companyId={companyId ?? ""} projectId={project.id} />
         )}
-        {activeTab === "work" && <TaskBoard />}
+        {activeTab === "work" && <TaskBoard title="Work" />}
         {activeTab === "drive" && (
           <ProjectDrive companyId={companyId ?? ""} projectId={project.id} />
         )}

@@ -393,12 +393,19 @@ describe('Files API — project scoping', () => {
         taskId: null,
       });
 
-      // Run the same backfill UPDATE as migration 0010
+      // Run the same backfill UPDATE as migration 0010 — must match the
+      // actual migration SQL exactly (join through projects for FK safety +
+      // match company_id across agent_files/tasks/projects).
       await db.drizzle.execute(
         sql`UPDATE "agent_files"
-            SET "project_id" = (SELECT "project_id" FROM "tasks" WHERE "tasks"."id" = "agent_files"."task_id")
-            WHERE "task_id" IS NOT NULL
-              AND (SELECT "project_id" FROM "tasks" WHERE "tasks"."id" = "agent_files"."task_id") IS NOT NULL`,
+            SET "project_id" = "p"."id"
+            FROM "tasks" "t"
+            JOIN "projects" "p"
+              ON "p"."id" = "t"."project_id"
+             AND "p"."company_id" = "t"."company_id"
+            WHERE "agent_files"."task_id" = "t"."id"
+              AND "agent_files"."company_id" = "t"."company_id"
+              AND "agent_files"."project_id" IS NULL`,
       );
 
       const [linked] = await db.drizzle

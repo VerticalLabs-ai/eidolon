@@ -48,6 +48,37 @@ interface WorkStateSectionProps {
 function WorkStateSection({ label, count, icon, variant, children }: WorkStateSectionProps) {
   const [expanded, setExpanded] = useState(false);
   const countId = `${variant}-count`;
+  const hasContent = count > 0;
+
+  // When there is no expandable content (count === 0), render a static,
+  // non-interactive header row so screen readers do not announce a toggle
+  // that expands nothing.
+  if (!hasContent) {
+    return (
+      <div className="rounded-lg border border-white/[0.06] bg-surface/50">
+        <div
+          className="flex w-full items-center justify-between gap-2 px-3 py-2.5"
+          aria-label={label}
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded text-accent">
+              {icon}
+            </span>
+            <span className="text-sm font-medium text-text-primary">{label}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span
+              className="text-lg font-bold tabular-nums text-text-primary font-display"
+              data-testid={countId}
+            >
+              {count}
+            </span>
+            <span className="w-3.5" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-white/[0.06] bg-surface/50">
@@ -70,18 +101,14 @@ function WorkStateSection({ label, count, icon, variant, children }: WorkStateSe
           >
             {count}
           </span>
-          {count > 0 ? (
-            expanded ? (
-              <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5 text-text-muted" />
-            )
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
           ) : (
-            <span className="w-3.5" />
+            <ChevronRight className="h-3.5 w-3.5 text-text-muted" />
           )}
         </div>
       </button>
-      {expanded && count > 0 && children && (
+      {expanded && children && (
         <div className="border-t border-white/[0.06] px-3 py-2">
           {children}
         </div>

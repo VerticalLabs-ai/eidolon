@@ -208,7 +208,13 @@ export function projectsRouter(db: DbInstance): Router {
       db.drizzle
         .select({ count: sql<number>`count(*)` })
         .from(agentFiles)
-        .where(and(eq(agentFiles.companyId, companyId), eq(agentFiles.projectId, id))),
+        .where(
+          and(
+            eq(agentFiles.companyId, companyId),
+            eq(agentFiles.projectId, id),
+            eq(agentFiles.isDirectory, false),
+          ),
+        ),
       // taskStatusBreakdown — per-status counts
       db.drizzle
         .select({
@@ -319,7 +325,13 @@ export function projectsRouter(db: DbInstance): Router {
           updatedAt: agentFiles.updatedAt,
         })
         .from(agentFiles)
-        .where(and(eq(agentFiles.companyId, companyId), eq(agentFiles.projectId, id)))
+        .where(
+          and(
+            eq(agentFiles.companyId, companyId),
+            eq(agentFiles.projectId, id),
+            eq(agentFiles.isDirectory, false),
+          ),
+        )
         .orderBy(desc(agentFiles.createdAt), desc(agentFiles.id))
         .limit(5),
       // goalProgress — count + avg progress
@@ -349,7 +361,7 @@ export function projectsRouter(db: DbInstance): Router {
 
     const goalProgressCount = Number(goalProgressRow[0].count);
     const goalProgressAggregate = goalProgressCount > 0
-      ? Math.round(Number(goalProgressRow[0].aggregateProgress))
+      ? Number(goalProgressRow[0].aggregateProgress)
       : 0;
 
     res.json({

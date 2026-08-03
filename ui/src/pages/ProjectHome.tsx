@@ -1,13 +1,14 @@
-import { ExternalLink, FolderKanban, Activity, FileText, Target, AlertTriangle, Zap, TrendingUp } from "lucide-react";
+import { ExternalLink, FolderKanban, Activity, FileText, Target, AlertTriangle, Zap, TrendingUp, ChevronDown, ChevronRight } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
-import { useProjectHome } from "@/lib/hooks";
+import { useState } from "react";
+import { clsx } from "clsx";
+import { useProjectHome, useGoals } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card as UICard } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { GoalTree } from "@/pages/GoalTree";
 import { isHttpUrl } from "@/lib/urls";
-import type { ProjectHomeSummary, Task, Activity as ActivityType, AgentFile } from "@/lib/api";
+import type { ProjectHomeSummary, Task, Activity as ActivityType, AgentFile, Goal } from "@/lib/api";
 
 const statusVariant: Record<string, "default" | "success" | "warning" | "info" | "error"> = {
   active: "success",
@@ -166,10 +167,129 @@ function NeedsAttentionCard({ tasks }: { tasks: Task[] }) {
   );
 }
 
+// ── Compact project-scoped goal tree (card-safe, no page chrome) ─────────
+
+interface CompactGoalNode {
+  goal: Goal;
+  children: CompactGoalNode[];
+}
+
+function buildCompactTree(goals: Goal[]): CompactGoalNode[] {
+  const map = new Map<string, CompactGoalNode>();
+  const roots: CompactGoalNode[] = [];
+
+  for (const goal of goals) {
+    map.set(goal.id, { goal, children: [] });
+  }
+
+  for (const goal of goals) {
+    const node = map.get(goal.id)!;
+    if (goal.parentId && map.has(goal.parentId)) {
+      map.get(goal.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return roots;
+}
+
+const levelBadgeTint: Record<string, string> = {
+  company: "bg-neon-cyan/10 text-neon-cyan",
+  department: "bg-neon-purple/10 text-neon-purple",
+  team: "bg-success/10 text-success",
+  individual: "bg-warning/10 text-warning",
+};
+
+function CompactGoalNodeRow({
+  depth,
+  node,
+}: {
+  depth: number;
+  node: CompactGoalNode;
+}) {
+  const [expanded, setExpanded] = useState(depth < 1);
+  const hasChildren = node.children.length > 0;
+  const goal = node.goal;
+
+  return (
+    <div className={clsx(depth > 0 && "ml-3 border-l border-white/[0.06] pl-2")}>
+      <div className="flex items-center gap-2 py-1">
+        {hasChildren ? (
+          <button
+            type="button"
+            className="shrink-0 rounded p-0.5 text-text-secondary hover:text-accent"
+            onClick={() => setExpanded((c) => !c)}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Collapse" : "Expand"} ${goal.title}`}
+          >
+            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          </button>
+        ) : (
+          <span className="w-4 shrink-0" />
+        )}
+        <span
+          className={clsx(
+            "shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+            levelBadgeTint[goal.level] ?? "bg-surface-overlay text-text-secondary",
+          )}
+        >
+          {goal.level.slice(0, 3)}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-xs text-text-primary">{goal.title}</span>
+        <span className="shrink-0 text-[10px] tabular-nums text-text-secondary">{goal.progress}%</span>
+      </div>
+      {expanded && hasChildren && (
+        <div>
+          {node.children.map((child) => (
+            <CompactGoalNodeRow key={child.goal.id} depth={depth + 1} node={child} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompactGoalTree({ companyId, projectId }: { companyId: string; projectId: string }) {
+  const { data: goals, isLoading, isError } = useGoals(companyId, { projectId });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2 py-2" role="status" aria-label="Loading goals">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="h-5 animate-pulse rounded bg-white/[0.04]" />
+        ))}
+      </div>
+    );
+  }
+
+  if (isError) {
+    return <p className="py-2 text-xs text-error">Goals could not be loaded.</p>;
+  }
+
+  if (!goals?.length) {
+    return <CardEmpty message="No goals yet" />;
+  }
+
+  const tree = buildCompactTree(goals);
+
+  return (
+    <div className="max-h-64 overflow-auto" data-testid="compact-goal-tree">
+      {tree.map((node) => (
+        <CompactGoalNodeRow key={node.goal.id} depth={0} node={node} />
+      ))}
+    </div>
+  );
+}
+
 function GoalsSummaryCard({
   goalProgress,
+  companyId,
+  projectId,
 }: {
   goalProgress: ProjectHomeSummary["goalProgress"];
+  companyId: string;
+  projectId: string;
 }) {
   return (
     <Card title="Goals" icon={<Target className="h-4 w-4" />}>
@@ -190,9 +310,7 @@ function GoalsSummaryCard({
       {goalProgress.count === 0 ? (
         <CardEmpty message="No goals yet" />
       ) : (
-        <div className="max-h-64 overflow-auto">
-          <GoalTree />
-        </div>
+        <CompactGoalTree companyId={companyId} projectId={projectId} />
       )}
     </Card>
   );
@@ -291,7 +409,7 @@ export function ProjectHome({ companyId, projectId }: { companyId: string; proje
         <CountsCard counts={summary.counts} />
         <ActiveWorkCard tasks={summary.activeWork} />
         <NeedsAttentionCard tasks={summary.needsAttention} />
-        <GoalsSummaryCard goalProgress={summary.goalProgress} />
+        <GoalsSummaryCard goalProgress={summary.goalProgress} companyId={companyId} projectId={projectId} />
         <RecentActivityCard activities={summary.recentActivity} />
         <RecentFilesCard files={summary.recentFiles} />
       </div>
