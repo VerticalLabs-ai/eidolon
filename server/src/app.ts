@@ -31,6 +31,7 @@ import { evaluationsRouter } from './routes/evaluations.js';
 import { collaborationsRouter, agentCollaborationsRouter } from './routes/collaborations.js';
 import { templatesRouter, companyExportRouter } from './routes/templates.js';
 import { projectsRouter } from './routes/projects.js';
+import { projectThreadsRouter } from './routes/project-threads.js';
 import { adaptersRouter } from './routes/adapters.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { inboxRouter } from './routes/inbox.js';
@@ -135,6 +136,7 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/agents', requireAuth, requireOrgMember(), agentsRouter(db));
   app.use('/api/companies/:companyId/org-chart', requireAuth, requireOrgMember(), orgChartRouter(db));
   app.use('/api/companies/:companyId/projects', requireAuth, requireOrgMember(), projectsRouter(db));
+  app.use('/api/companies/:companyId/projects/:projectId/threads', requireAuth, requireOrgMember(), projectThreadsRouter(db));
   app.use('/api/companies/:companyId/tasks', requireAuth, requireOrgMember(), tasksRouter(db));
   app.use('/api/companies/:companyId/goals', requireAuth, requireOrgMember(), goalsRouter(db));
   app.use('/api/companies/:companyId/messages', requireAuth, requireOrgMember(), messagesRouter(db));
