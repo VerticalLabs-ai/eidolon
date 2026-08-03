@@ -2,6 +2,12 @@ import { and, eq, desc } from "drizzle-orm";
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import {
+  type WorkflowNode,
+  CreateWorkflowInputSchema,
+  UpdateWorkflowInputSchema,
+  UpdateNodeInputSchema,
+} from "@eidolon/shared";
 import { AppError } from "../middleware/error-handler.js";
 import { validate } from "../middleware/validate.js";
 import eventBus from "../realtime/events.js";
@@ -9,57 +15,15 @@ import type { DbInstance } from "../types.js";
 import { validateProjectOwnership } from "../utils/project-validation.js";
 import { routeParams } from "../utils/route-params.js";
 
-// ---------------------------------------------------------------------------
-// Workflow node types (stored as JSON in the nodes column)
-// ---------------------------------------------------------------------------
+// Re-export so existing callers (e.g. orchestrator) can import from the route
+// module if needed. The canonical definition now lives in @eidolon/shared.
+export type { WorkflowNode };
 
-export interface WorkflowNode {
-  id: string;
-  type: "task" | "decision" | "trigger" | "action";
-  label: string;
-  agentId?: string;
-  taskId?: string;
-  config: Record<string, unknown>;
-  status: "pending" | "running" | "completed" | "failed" | "skipped";
-  dependsOn: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Validation schemas
-// ---------------------------------------------------------------------------
-
-const WorkflowNodeSchema = z.object({
-  id: z.string().min(1),
-  type: z.enum(["task", "decision", "trigger", "action"]),
-  label: z.string().min(1).max(255),
-  agentId: z.string().uuid().optional(),
-  taskId: z.string().uuid().optional(),
-  config: z.record(z.unknown()).default({}),
-  status: z
-    .enum(["pending", "running", "completed", "failed", "skipped"])
-    .default("pending"),
-  dependsOn: z.array(z.string()).default([]),
-});
-
-const CreateWorkflowBody = z.object({
-  name: z.string().min(1).max(255),
-  description: z.string().max(5000).optional(),
-  status: z.enum(["draft", "active", "paused", "archived"]).default("draft"),
-  nodes: z.array(WorkflowNodeSchema).default([]),
-  projectId: z.string().uuid().nullable().optional(),
-});
-
-const UpdateWorkflowBody = z.object({
-  name: z.string().min(1).max(255).optional(),
-  description: z.string().max(5000).nullable().optional(),
-  status: z.enum(["draft", "active", "paused", "archived"]).optional(),
-  nodes: z.array(WorkflowNodeSchema).optional(),
-});
-
-const UpdateNodeBody = z.object({
-  status: z.enum(["pending", "running", "completed", "failed", "skipped"]),
-  config: z.record(z.unknown()).optional(),
-});
+// Use the shared schemas directly — they are the single source of truth for
+// the workflow contract.
+const CreateWorkflowBody = CreateWorkflowInputSchema;
+const UpdateWorkflowBody = UpdateWorkflowInputSchema;
+const UpdateNodeBody = UpdateNodeInputSchema;
 
 export function workflowsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
