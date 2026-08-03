@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import * as api from "./api";
-import type { GoalFilters, TaskFilters } from "./api";
+import type { GoalFilters, TaskFilters, FileFilters } from "./api";
 
 // Helper: server wraps responses in { data: ... }, unwrap it
 function unwrap<T>(res: unknown): T {
@@ -154,6 +154,20 @@ export function useArchiveProject(companyId: string) {
       qc.invalidateQueries({ queryKey: ["projects", companyId] });
       qc.invalidateQueries({ queryKey: ["projects", companyId, project.id] });
     },
+  });
+}
+
+// ── Project Home Summary ────────────────────────────────────────────────
+
+export function useProjectHome(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["project-home", companyId, projectId],
+    queryFn: async () =>
+      unwrap<api.ProjectHomeSummary>(await api.getProjectHome(companyId!, projectId!)),
+    enabled: !!companyId && !!projectId,
   });
 }
 
@@ -646,10 +660,15 @@ export function useDeleteWebhook(companyId: string) {
 
 // ── Agent Files ──────────────────────────────────────────────────────────
 
-export function useFiles(companyId: string | undefined, agentId?: string) {
+export function useFiles(
+  companyId: string | undefined,
+  agentId?: string,
+  filters?: FileFilters,
+) {
   return useQuery({
-    queryKey: ["files", companyId, agentId],
-    queryFn: async () => unwrap<api.AgentFile[]>(await api.getFiles(companyId!, agentId)),
+    queryKey: ["files", companyId, agentId ?? null, filters ?? null],
+    queryFn: async () =>
+      unwrap<api.AgentFile[]>(await api.getFiles(companyId!, agentId, filters)),
     enabled: !!companyId,
   });
 }

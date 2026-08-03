@@ -48,6 +48,8 @@ vi.mock("@/lib/hooks", () => ({
 }));
 
 vi.mock("@/pages/TaskBoard", () => ({ TaskBoard: () => <div>Issue board</div> }));
+vi.mock("@/pages/ProjectHome", () => ({ ProjectHome: () => <div>Home content</div> }));
+vi.mock("@/pages/ProjectDrive", () => ({ ProjectDrive: () => <div>Drive content</div> }));
 vi.mock("@/pages/GoalTree", () => ({ GoalTree: () => <div>Goal tree</div> }));
 vi.mock("@/components/projects/ProjectActivity", () => ({
   ProjectActivity: ({ companyId, projectId }: { companyId: string; projectId: string }) => (

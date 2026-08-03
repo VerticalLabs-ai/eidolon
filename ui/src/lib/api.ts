@@ -304,6 +304,61 @@ export const archiveProject = (companyId: string, projectId: string) =>
     method: "DELETE",
   });
 
+// ── Project Home Summary ────────────────────────────────────────────────
+
+export interface ProjectHomeSummary {
+  project: {
+    id: string;
+    name: string;
+    description: string | null;
+    status: string;
+    repoUrl: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  counts: {
+    taskCount: number;
+    goalCount: number;
+    agentCount: number;
+    fileCount: number;
+  };
+  taskStatusBreakdown: {
+    backlog: number;
+    todo: number;
+    in_progress: number;
+    review: number;
+    done: number;
+    cancelled: number;
+    timed_out: number;
+  };
+  activeWork: Task[];
+  needsAttention: Task[];
+  failedWork: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    taskId: string | null;
+    status: string;
+    summary: string | null;
+    error: string | null;
+    startedAt: string;
+    completedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }[];
+  recentActivity: Activity[];
+  recentFiles: AgentFile[];
+  goalProgress: {
+    count: number;
+    aggregateProgress: number;
+  };
+}
+
+export const getProjectHome = (companyId: string, projectId: string) =>
+  request<ApiResponse<ProjectHomeSummary>>(
+    `/companies/${companyId}/projects/${projectId}/home`,
+  );
+
 // ── Agents ───────────────────────────────────────────────────────────────
 
 export const getAgents = (companyId: string) =>
@@ -758,13 +813,23 @@ export interface AgentFile {
   isDirectory: boolean;
   taskId: string | null;
   executionId: string | null;
+  projectId: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export const getFiles = (companyId: string, agentId?: string) => {
+export interface FileFilters {
+  projectId?: string;
+}
+
+export const getFiles = (
+  companyId: string,
+  agentId?: string,
+  filters?: FileFilters,
+) => {
   const params = new URLSearchParams();
   if (agentId) params.set("agentId", agentId);
+  if (filters?.projectId) params.set("project", filters.projectId);
   const qs = params.toString();
   return request<AgentFile[]>(`/companies/${companyId}/files${qs ? `?${qs}` : ""}`);
 };
@@ -783,6 +848,7 @@ export const createFile = (
     isDirectory?: boolean;
     taskId?: string;
     executionId?: string;
+    projectId?: string | null;
   },
 ) =>
   request<AgentFile>(`/companies/${companyId}/files`, {
@@ -793,7 +859,7 @@ export const createFile = (
 export const updateFile = (
   companyId: string,
   fileId: string,
-  data: { name?: string; content?: string; mimeType?: string },
+  data: { name?: string; content?: string; mimeType?: string; projectId?: string | null },
 ) =>
   request<AgentFile>(`/companies/${companyId}/files/${fileId}`, {
     method: "PATCH",

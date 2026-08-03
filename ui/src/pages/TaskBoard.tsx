@@ -30,7 +30,7 @@ const priorityOptions = [
 
 export function TaskBoard() {
   const { companyId, projectId } = useParams();
-  const { data: tasks, isLoading } = useTasks(
+  const { data: tasks, isLoading, isError, refetch } = useTasks(
     companyId,
     projectId ? { projectId } : undefined,
   );
@@ -99,6 +99,20 @@ export function TaskBoard() {
             />
           ))}
         </div>
+      ) : isError ? (
+        <EmptyState
+          icon={<ListTodo className="h-6 w-6" />}
+          title="Tasks could not be loaded"
+          description="Check your connection and try again."
+          action={
+            <button
+              onClick={() => void refetch()}
+              className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
+            >
+              Try again
+            </button>
+          }
+        />
       ) : !tasks?.length ? (
         <EmptyState
           icon={<ListTodo className="h-6 w-6" />}
