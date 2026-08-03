@@ -17,6 +17,7 @@ import { TaskCheckoutError } from "../services/task-checkout.js";
 import type { DbInstance } from "../types.js";
 import { routeParams } from "../utils/route-params.js";
 import { validateProjectOwnership } from "../utils/project-validation.js";
+import { resolveTaskProjectId } from "../utils/task-project-resolver.js";
 
 const LIVENESS_STATUS_HEALTHY = "healthy";
 const LAST_USEFUL_ACTION_MANUAL_EXECUTION = "manual_execution_created";
@@ -1171,7 +1172,7 @@ export function agentsRouter(db: DbInstance): Router {
 
       if (body.taskId) {
         const [task] = await db.drizzle
-          .select({ projectId: tasks.projectId })
+          .select({ id: tasks.id })
           .from(tasks)
           .where(and(eq(tasks.id, body.taskId), eq(tasks.companyId, companyId)))
           .limit(1);
@@ -1180,7 +1181,13 @@ export function agentsRouter(db: DbInstance): Router {
           throw new AppError(404, "TASK_NOT_FOUND", `Task ${body.taskId} not found`);
         }
 
-        executionProjectId = task.projectId;
+        // Resolve project_id through a same-company join so stale/deleted/
+        // cross-company task.project_id values yield NULL.
+        executionProjectId = await resolveTaskProjectId(
+          db.drizzle,
+          companyId,
+          body.taskId,
+        );
       } else if (body.projectId) {
         await validateProjectOwnership(db, companyId, body.projectId);
         executionProjectId = body.projectId;

@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import eventBus from '../realtime/events.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 import type { DbInstance } from '../types.js';
 
 export type TaskCheckoutSource = 'api' | 'agent_executor' | 'agentic_loop' | 'routine';
@@ -342,6 +343,10 @@ export class TaskCheckoutService {
         })
         .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)));
 
+      // Resolve project_id through a same-company join so stale/deleted/
+      // cross-company task.project_id values yield NULL.
+      const resolvedProjectId = await resolveTaskProjectId(tx, input.companyId, input.taskId);
+
       const [threadItem] = await tx
         .insert(taskThreadItems)
         .values({
@@ -362,7 +367,7 @@ export class TaskCheckoutService {
           status: 'linked',
           idempotencyKey: `task-checkout:${checkout.id}`,
           relatedExecutionId: input.executionId,
-          projectId: task.projectId,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         })
@@ -562,6 +567,10 @@ export class TaskCheckoutService {
         throw this.conflict(input, checkout, { conflictReason: 'execution_release_race' });
       }
 
+      // Resolve project_id through a same-company join so stale/deleted/
+      // cross-company task.project_id values yield NULL.
+      const resolvedProjectId = await resolveTaskProjectId(tx, input.companyId, input.taskId);
+
       const [threadItem] = await tx
         .insert(taskThreadItems)
         .values({
@@ -583,7 +592,7 @@ export class TaskCheckoutService {
           status: 'linked',
           idempotencyKey: `task-release:${checkout.id}`,
           relatedExecutionId: input.executionId,
-          projectId: task.projectId,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         })

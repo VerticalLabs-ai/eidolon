@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import { AppError } from '../middleware/error-handler.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 
 type CollaborationType = 'delegation' | 'request_help' | 'review' | 'consensus' | 'escalation';
 
@@ -195,7 +196,7 @@ export class CollaborationService {
       }
 
       const [task] = await tx
-        .select({ status: tasks.status, projectId: tasks.projectId })
+        .select({ status: tasks.status })
         .from(tasks)
         .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
         .limit(1)
@@ -339,6 +340,10 @@ export class CollaborationService {
         updatedAt: now,
       });
 
+      // Resolve project_id through a same-company join so stale/deleted/
+      // cross-company task.project_id values yield NULL.
+      const resolvedProjectId = await resolveTaskProjectId(tx, companyId, taskId);
+
       await tx
         .insert(taskThreadItems)
         .values({
@@ -358,7 +363,7 @@ export class CollaborationService {
           status: 'answered',
           idempotencyKey: `escalation:${id}`,
           relatedExecutionId: activeCheckout?.executionId ?? null,
-          projectId: task.projectId,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         })

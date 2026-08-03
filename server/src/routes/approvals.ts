@@ -7,6 +7,7 @@ import { validate } from '../middleware/validate.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -98,11 +99,9 @@ export function approvalsRouter(db: DbInstance): Router {
         .returning();
 
       if (created.taskId) {
-        const [task] = await tx
-          .select({ projectId: tasks.projectId })
-          .from(tasks)
-          .where(and(eq(tasks.id, created.taskId), eq(tasks.companyId, companyId)))
-          .limit(1);
+        // Resolve project_id through a same-company join so stale/deleted/
+        // cross-company task.project_id values yield NULL.
+        const resolvedProjectId = await resolveTaskProjectId(tx, companyId, created.taskId);
 
         const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
@@ -114,7 +113,7 @@ export function approvalsRouter(db: DbInstance): Router {
           payload: { approvalId: created.id, kind: created.kind, priority: created.priority },
           status: 'linked',
           relatedApprovalId: created.id,
-          projectId: task?.projectId ?? null,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         };
@@ -204,11 +203,9 @@ export function approvalsRouter(db: DbInstance): Router {
       }
 
       if (updated.taskId) {
-        const [task] = await tx
-          .select({ projectId: tasks.projectId })
-          .from(tasks)
-          .where(and(eq(tasks.id, updated.taskId), eq(tasks.companyId, companyId)))
-          .limit(1);
+        // Resolve project_id through a same-company join so stale/deleted/
+        // cross-company task.project_id values yield NULL.
+        const resolvedProjectId = await resolveTaskProjectId(tx, companyId, updated.taskId);
 
         const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
@@ -222,7 +219,7 @@ export function approvalsRouter(db: DbInstance): Router {
           relatedApprovalId: updated.id,
           resolvedByUserId: req.user?.id ?? null,
           resolvedAt: now,
-          projectId: task?.projectId ?? null,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         };

@@ -18,6 +18,7 @@ import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -171,6 +172,10 @@ export class AgentExecutor {
     const execId = randomUUID();
     const now = new Date();
 
+    // Resolve project_id through a same-company join so stale/deleted/
+    // cross-company task.project_id values yield NULL.
+    const resolvedProjectId = await resolveTaskProjectId(this.db.drizzle, companyId, taskId);
+
     await this.db.drizzle.insert(agentExecutions).values({
       id: execId,
       companyId,
@@ -185,7 +190,7 @@ export class AgentExecutor {
       livenessStatus: 'healthy',
       lastUsefulAction: 'execution_started',
       nextActionHint: 'await_provider_response',
-      projectId: task.projectId,
+      projectId: resolvedProjectId,
       createdAt: now,
     });
 

@@ -11,6 +11,7 @@ import {
 } from '../services/task-checkout.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 
 const TASK_TYPES = ['feature', 'bug', 'chore', 'spike', 'epic'] as const;
 const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -245,19 +246,21 @@ export function tasksRouter(db: DbInstance): Router {
   }> {
     const now = new Date();
 
-    // Derive projectId from the linked task's project_id
-    const [task] = await db.drizzle
-      .select({ projectId: tasks.projectId })
-      .from(tasks)
-      .where(and(eq(tasks.id, values.taskId), eq(tasks.companyId, values.companyId)))
-      .limit(1);
+    // Derive projectId from the linked task's project, resolved through a
+    // same-company join to projects so stale/deleted/cross-company IDs yield
+    // NULL instead of causing FK violations.
+    const resolvedProjectId = await resolveTaskProjectId(
+      db.drizzle,
+      values.companyId,
+      values.taskId,
+    );
 
     const insertValues = {
       id: randomUUID(),
       createdAt: now,
       updatedAt: now,
       ...values,
-      projectId: task?.projectId ?? null,
+      projectId: resolvedProjectId,
     };
 
     if (insertValues.idempotencyKey) {
