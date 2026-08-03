@@ -8,6 +8,7 @@ export * from './types/agent.js';
 export * from './types/task.js';
 export * from './types/goal.js';
 export * from './types/file.js';
+export * from './types/project.js';
 export * from './types/workflow.js';
 export * from './types/message.js';
 export * from './types/budget.js';
