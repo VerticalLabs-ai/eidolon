@@ -238,7 +238,7 @@ export function webhookManagementRouter(db: DbInstance): Router {
 
 export function webhookTriggerRouter(db: DbInstance): Router {
   const router = Router();
-  const { webhooks, tasks, messages, agents } = db.schema;
+  const { webhooks, tasks, messages, agents, automationRuns } = db.schema;
 
   // POST /:webhookId/trigger - receive external event
   router.post("/:webhookId/trigger", async (req, res) => {
@@ -294,171 +294,227 @@ export function webhookTriggerRouter(db: DbInstance): Router {
 
     const now = new Date();
     const companyId = webhook.companyId;
+
+    // Record the automation_run at trigger time
+    const runId = randomUUID();
+    await db.drizzle.insert(automationRuns).values({
+      id: runId,
+      companyId,
+      projectId: webhook.projectId,
+      automationType: "webhook",
+      automationId: webhook.id,
+      automationName: webhook.name,
+      triggerType: "webhook",
+      triggerPayload: payload as Record<string, unknown>,
+      status: "running",
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
     let result: Record<string, unknown> = {};
 
-    // Dispatch based on event type
-    switch (webhook.eventType) {
-      case "task.create": {
-        if (!payload.title) {
-          throw new AppError(
-            400,
-            "MISSING_FIELD",
-            'Field "title" is required for task.create',
-          );
-        }
+    try {
+      // Dispatch based on event type
+      switch (webhook.eventType) {
+        case "task.create": {
+          if (!payload.title) {
+            throw new AppError(
+              400,
+              "MISSING_FIELD",
+              'Field "title" is required for task.create',
+            );
+          }
 
-        const assignee =
-          payload.assigneeAgentId ?? webhook.targetAgentId ?? null;
+          const assignee =
+            payload.assigneeAgentId ?? webhook.targetAgentId ?? null;
 
-        const taskPriority =
-          payload.priority === "urgent"
-            ? "high"
-            : ((payload.priority ?? "medium") as
-                | "critical"
-                | "high"
-                | "medium"
-                | "low");
+          const taskPriority =
+            payload.priority === "urgent"
+              ? "high"
+              : ((payload.priority ?? "medium") as
+                  | "critical"
+                  | "high"
+                  | "medium"
+                  | "low");
 
-        const [task] = await db.drizzle
-          .insert(tasks)
-          .values({
+          const [task] = await db.drizzle
+            .insert(tasks)
+            .values({
+              companyId,
+              projectId: webhook.projectId,
+              title: payload.title,
+              description: payload.description ?? null,
+              type: (payload.type ?? "feature") as
+                | "feature"
+                | "bug"
+                | "chore"
+                | "spike"
+                | "epic",
+              status: "backlog",
+              priority: taskPriority,
+              assigneeAgentId: assignee,
+              createdByUserId: `webhook:${webhook.id}`,
+              dependencies: [],
+              tags: [],
+              createdAt: now,
+              updatedAt: now,
+            })
+            .returning();
+
+          eventBus.emitEvent({
+            type: "task.created",
             companyId,
-            title: payload.title,
-            description: payload.description ?? null,
-            type: (payload.type ?? "feature") as
-              | "feature"
-              | "bug"
-              | "chore"
-              | "spike"
-              | "epic",
-            status: "backlog",
-            priority: taskPriority,
-            assigneeAgentId: assignee,
-            createdByUserId: `webhook:${webhook.id}`,
-            dependencies: [],
-            tags: [],
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
+            payload: {
+              taskId: task.id,
+              title: payload.title,
+              source: "webhook",
+              webhookId: webhook.id,
+            },
+            timestamp: now.toISOString(),
+          });
 
-        eventBus.emitEvent({
-          type: "task.created",
-          companyId,
-          payload: {
-            taskId: task.id,
-            title: payload.title,
-            source: "webhook",
-            webhookId: webhook.id,
-          },
-          timestamp: now.toISOString(),
-        });
-
-        result = { action: "task.created", taskId: task.id };
-        break;
-      }
-
-      case "agent.wake": {
-        const agentId = webhook.targetAgentId;
-        if (!agentId) {
-          throw new AppError(
-            400,
-            "NO_TARGET_AGENT",
-            "This webhook has no target agent configured for agent.wake",
-          );
+          result = { action: "task.created", taskId: task.id };
+          break;
         }
 
-        // Verify agent exists
-        const [agent] = await db.drizzle
-          .select({ id: agents.id, companyId: agents.companyId })
-          .from(agents)
-          .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
-          .limit(1);
+        case "agent.wake": {
+          const agentId = webhook.targetAgentId;
+          if (!agentId) {
+            throw new AppError(
+              400,
+              "NO_TARGET_AGENT",
+              "This webhook has no target agent configured for agent.wake",
+            );
+          }
 
-        if (!agent) {
-          throw new AppError(
-            404,
-            "AGENT_NOT_FOUND",
-            `Target agent ${agentId} not found`,
-          );
-        }
+          // Verify agent exists
+          const [agent] = await db.drizzle
+            .select({ id: agents.id, companyId: agents.companyId })
+            .from(agents)
+            .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+            .limit(1);
 
-        // Update agent status to indicate a wake / heartbeat
-        await db.drizzle
-          .update(agents)
-          .set({ lastHeartbeatAt: now, status: "working", updatedAt: now })
-          .where(eq(agents.id, agentId));
+          if (!agent) {
+            throw new AppError(
+              404,
+              "AGENT_NOT_FOUND",
+              `Target agent ${agentId} not found`,
+            );
+          }
 
-        eventBus.emitEvent({
-          type: "agent.heartbeat",
-          companyId,
-          payload: { agentId, source: "webhook", webhookId: webhook.id },
-          timestamp: now.toISOString(),
-        });
+          // Update agent status to indicate a wake / heartbeat
+          await db.drizzle
+            .update(agents)
+            .set({ lastHeartbeatAt: now, status: "working", updatedAt: now })
+            .where(eq(agents.id, agentId));
 
-        result = { action: "agent.wake", agentId };
-        break;
-      }
-
-      case "message.send": {
-        if (!payload.content) {
-          throw new AppError(
-            400,
-            "MISSING_FIELD",
-            'Field "content" is required for message.send',
-          );
-        }
-
-        const toAgentId = payload.toAgentId ?? webhook.targetAgentId;
-        if (!toAgentId) {
-          throw new AppError(
-            400,
-            "MISSING_FIELD",
-            'Field "toAgentId" or a configured target agent is required for message.send',
-          );
-        }
-
-        const fromAgentId = payload.fromAgentId ?? `webhook:${webhook.id}`;
-        const threadId = randomUUID();
-
-        const [message] = await db.drizzle
-          .insert(messages)
-          .values({
+          eventBus.emitEvent({
+            type: "agent.heartbeat",
             companyId,
-            fromAgentId,
-            toAgentId,
-            threadId,
-            content: payload.content,
-            type: "response",
-            metadata: (payload.metadata ?? {}) as Record<string, unknown>,
-            createdAt: now,
-          })
-          .returning();
+            payload: { agentId, source: "webhook", webhookId: webhook.id },
+            timestamp: now.toISOString(),
+          });
 
-        eventBus.emitEvent({
-          type: "message.sent",
-          companyId,
-          payload: {
-            messageId: message.id,
-            fromAgentId,
-            toAgentId,
-            source: "webhook",
-            webhookId: webhook.id,
-          },
-          timestamp: now.toISOString(),
-        });
+          result = { action: "agent.wake", agentId };
+          break;
+        }
 
-        result = { action: "message.sent", messageId: message.id };
-        break;
+        case "message.send": {
+          if (!payload.content) {
+            throw new AppError(
+              400,
+              "MISSING_FIELD",
+              'Field "content" is required for message.send',
+            );
+          }
+
+          const toAgentId = payload.toAgentId ?? webhook.targetAgentId;
+          if (!toAgentId) {
+            throw new AppError(
+              400,
+              "MISSING_FIELD",
+              'Field "toAgentId" or a configured target agent is required for message.send',
+            );
+          }
+
+          const fromAgentId = payload.fromAgentId ?? `webhook:${webhook.id}`;
+          const threadId = randomUUID();
+
+          const [message] = await db.drizzle
+            .insert(messages)
+            .values({
+              companyId,
+              projectId: webhook.projectId,
+              fromAgentId,
+              toAgentId,
+              threadId,
+              content: payload.content,
+              type: "response",
+              metadata: (payload.metadata ?? {}) as Record<string, unknown>,
+              createdAt: now,
+            })
+            .returning();
+
+          eventBus.emitEvent({
+            type: "message.sent",
+            companyId,
+            payload: {
+              messageId: message.id,
+              fromAgentId,
+              toAgentId,
+              source: "webhook",
+              webhookId: webhook.id,
+            },
+            timestamp: now.toISOString(),
+          });
+
+          result = { action: "message.sent", messageId: message.id };
+          break;
+        }
+
+        default: {
+          throw new AppError(
+            400,
+            "UNKNOWN_EVENT_TYPE",
+            `Unsupported event type: ${webhook.eventType}`,
+          );
+        }
       }
 
-      default: {
-        throw new AppError(
-          400,
-          "UNKNOWN_EVENT_TYPE",
-          `Unsupported event type: ${webhook.eventType}`,
-        );
-      }
+      // Complete the automation_run
+      const completeNow = new Date();
+      const taskId = typeof result.taskId === "string" ? result.taskId : null;
+      const messageId =
+        typeof result.messageId === "string" ? result.messageId : null;
+      const outcome =
+        typeof result.action === "string" ? result.action : "completed";
+      await db.drizzle
+        .update(automationRuns)
+        .set({
+          status: "completed",
+          taskId,
+          messageId,
+          outcome,
+          completedAt: completeNow,
+          updatedAt: completeNow,
+        })
+        .where(eq(automationRuns.id, runId));
+    } catch (error) {
+      // Fail the automation_run
+      const failNow = new Date();
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      await db.drizzle
+        .update(automationRuns)
+        .set({
+          status: "failed",
+          error: errorMessage,
+          completedAt: failNow,
+          updatedAt: failNow,
+        })
+        .where(eq(automationRuns.id, runId));
+      throw error;
     }
 
     // Record the trigger: increment count and update last_triggered_at

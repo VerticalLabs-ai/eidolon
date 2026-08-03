@@ -1,5 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { Router } from "express";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AppError } from "../middleware/error-handler.js";
 import { validate } from "../middleware/validate.js";
@@ -196,6 +197,7 @@ export function workflowsRouter(db: DbInstance): Router {
   // POST /api/companies/:companyId/workflows/:id/execute
   router.post("/:id/execute", async (req, res) => {
     const { id, companyId } = routeParams(req);
+    const { workflows, automationRuns } = db.schema;
 
     const [wf] = await db.drizzle
       .select()
@@ -232,6 +234,31 @@ export function workflowsRouter(db: DbInstance): Router {
       })
       .where(eq(workflows.id, id))
       .returning();
+
+    // Record the automation_run
+    const workflowNodes = wf.nodes as unknown as WorkflowNode[];
+    const linkedTaskId = workflowNodes.find((n) => n.taskId)?.taskId ?? null;
+    const runId = randomUUID();
+    await db.drizzle.insert(automationRuns).values({
+      id: runId,
+      companyId,
+      projectId: wf.projectId,
+      automationType: "workflow",
+      automationId: wf.id,
+      automationName: wf.name,
+      triggerType: "manual",
+      triggerPayload: {
+        workflowId: wf.id,
+        workflowName: wf.name,
+        nodeCount: workflowNodes.length,
+        trigger: "manual",
+      },
+      status: "running",
+      taskId: linkedTaskId,
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
 
     eventBus.emitEvent({
       type: "workflow.started",
@@ -304,6 +331,9 @@ export function workflowsRouter(db: DbInstance): Router {
         (n) => n.status === "completed" || n.status === "skipped",
       );
 
+      // Check if any node failed (DAG halts)
+      const anyFailed = nodes.some((n) => n.status === "failed");
+
       const updateValues: Record<string, unknown> = {
         nodes: nodes as unknown as Record<string, unknown>[],
         updatedAt: new Date(),
@@ -317,6 +347,49 @@ export function workflowsRouter(db: DbInstance): Router {
         .set(updateValues)
         .where(eq(workflows.id, id))
         .returning();
+
+      // Update the automation_run based on DAG outcome
+      if (allDone || anyFailed) {
+        const { automationRuns } = db.schema;
+        const runNow = new Date();
+        const [latestRun] = await db.drizzle
+          .select()
+          .from(automationRuns)
+          .where(
+            and(
+              eq(automationRuns.companyId, companyId),
+              eq(automationRuns.automationType, "workflow"),
+              eq(automationRuns.automationId, id),
+              eq(automationRuns.status, "running"),
+            ),
+          )
+          .orderBy(desc(automationRuns.createdAt))
+          .limit(1);
+
+        if (latestRun) {
+          if (anyFailed) {
+            await db.drizzle
+              .update(automationRuns)
+              .set({
+                status: "failed",
+                error: `Node ${nodeId} failed`,
+                completedAt: runNow,
+                updatedAt: runNow,
+              })
+              .where(eq(automationRuns.id, latestRun.id));
+          } else {
+            await db.drizzle
+              .update(automationRuns)
+              .set({
+                status: "completed",
+                outcome: "workflow_completed",
+                completedAt: runNow,
+                updatedAt: runNow,
+              })
+              .where(eq(automationRuns.id, latestRun.id));
+          }
+        }
+      }
 
       eventBus.emitEvent({
         type: "workflow.node_updated",
