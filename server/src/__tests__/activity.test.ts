@@ -44,8 +44,12 @@ describe('Activity API', () => {
   });
 
   it('returns persisted project and authoritative task history with bounded pagination', async () => {
-    const projectId = '11111111-1111-4111-8111-111111111111';
-    const otherProjectId = '22222222-2222-4222-8222-222222222222';
+    const projectId = (await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Lifecycle' }).expect(201)).body.data.id;
+    const otherProjectId = (await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Other' }).expect(201)).body.data.id;
     await db.drizzle.insert(db.schema.activityLog).values([
       {
         companyId,
@@ -56,6 +60,7 @@ describe('Activity API', () => {
         entityId: companyId,
         description: 'Legacy project event',
         metadata: { project: { id: projectId, name: 'Lifecycle' } },
+        projectId,
         createdAt: new Date('2026-07-31T18:00:00.000Z'),
       },
       {
@@ -67,6 +72,7 @@ describe('Activity API', () => {
         entityId: 'task-1',
         description: 'Task created: Verify persistence',
         metadata: { task: { id: 'task-1', projectId, title: 'Verify persistence' } },
+        projectId,
         createdAt: new Date('2026-07-31T18:02:00.000Z'),
       },
       {
@@ -78,6 +84,7 @@ describe('Activity API', () => {
         entityId: projectId,
         description: 'Project updated: Lifecycle',
         metadata: { project: { id: projectId }, changes: ['status'] },
+        projectId,
         createdAt: new Date('2026-07-31T18:03:00.000Z'),
       },
       {
@@ -88,7 +95,7 @@ describe('Activity API', () => {
         entityType: 'project',
         entityId: otherProjectId,
         description: 'Other project',
-        metadata: { project: { id: otherProjectId } },
+        metadata: { project: { id: projectId } },
         createdAt: new Date('2026-07-31T18:04:00.000Z'),
       },
       {
@@ -132,5 +139,16 @@ describe('Activity API', () => {
       .get(`/api/companies/${companyId}/activity`)
       .query({ limit: 201 })
       .expect(400);
+  });
+
+  it('extracts project ownership into the durable activity column', () => {
+    const projectId = '11111111-1111-4111-8111-111111111111';
+    const record = activityRecordFromEvent({
+      type: 'task.created',
+      companyId,
+      payload: { task: { id: 'task-1', projectId } },
+      timestamp: new Date().toISOString(),
+    });
+    expect(record.projectId).toBe(projectId);
   });
 });

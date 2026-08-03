@@ -5,6 +5,7 @@ import { AppError } from "../middleware/error-handler.js";
 import { validate } from "../middleware/validate.js";
 import eventBus from "../realtime/events.js";
 import type { DbInstance } from "../types.js";
+import { validateProjectOwnership } from "../utils/project-validation.js";
 import { routeParams } from "../utils/route-params.js";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,7 @@ const CreateWorkflowBody = z.object({
   description: z.string().max(5000).optional(),
   status: z.enum(["draft", "active", "paused", "archived"]).default("draft"),
   nodes: z.array(WorkflowNodeSchema).default([]),
+  projectId: z.string().uuid().nullable().optional(),
 });
 
 const UpdateWorkflowBody = z.object({
@@ -65,10 +67,15 @@ export function workflowsRouter(db: DbInstance): Router {
   // GET /api/companies/:companyId/workflows
   router.get("/", async (req, res) => {
     const { companyId } = routeParams(req);
+    const project = typeof req.query.project === "string" ? req.query.project : undefined;
     const rows = await db.drizzle
       .select()
       .from(workflows)
-      .where(eq(workflows.companyId, companyId));
+      .where(
+        project
+          ? and(eq(workflows.companyId, companyId), eq(workflows.projectId, project))
+          : eq(workflows.companyId, companyId),
+      );
     res.json({ data: rows });
   });
 
@@ -77,6 +84,7 @@ export function workflowsRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof CreateWorkflowBody>;
     const { companyId } = routeParams(req);
     const now = new Date();
+    await validateProjectOwnership(db, companyId, body.projectId);
 
     const [row] = await db.drizzle
       .insert(workflows)
@@ -86,6 +94,7 @@ export function workflowsRouter(db: DbInstance): Router {
         description: body.description ?? null,
         status: body.status,
         nodes: body.nodes as Record<string, unknown>[],
+        projectId: body.projectId ?? null,
         createdAt: now,
         updatedAt: now,
       })

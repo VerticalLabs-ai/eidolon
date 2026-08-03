@@ -8,6 +8,7 @@ import eventBus from '../realtime/events.js';
 import type { RoutineEvent } from '../realtime/events.js';
 import { RoutineTriggerService } from '../services/routine-trigger.js';
 import type { DbInstance } from '../types.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
 import { routeParams } from '../utils/route-params.js';
 
 const CreateRoutineBody = z.object({
@@ -20,6 +21,7 @@ const CreateRoutineBody = z.object({
   enabled: z.boolean().default(true),
   variables: z.record(z.unknown()).default({}),
   workspacePolicy: z.record(z.unknown()).default({}),
+  projectId: z.string().uuid().nullable().optional(),
 });
 
 export function routinesRouter(db: DbInstance): Router {
@@ -29,10 +31,13 @@ export function routinesRouter(db: DbInstance): Router {
 
   router.get('/', async (req, res) => {
     const { companyId } = routeParams(req);
+    const project = typeof req.query.project === 'string' ? req.query.project : undefined;
     const rows = await db.drizzle
       .select()
       .from(routines)
-      .where(eq(routines.companyId, companyId))
+      .where(project
+        ? and(eq(routines.companyId, companyId), eq(routines.projectId, project))
+        : eq(routines.companyId, companyId))
       .orderBy(routines.createdAt);
     res.json({ data: rows });
   });
@@ -41,6 +46,7 @@ export function routinesRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     const body = req.body as z.infer<typeof CreateRoutineBody>;
     const now = new Date();
+    await validateProjectOwnership(db, companyId, body.projectId);
 
     if (body.agentId) {
       const [agent] = await db.drizzle
@@ -67,6 +73,7 @@ export function routinesRouter(db: DbInstance): Router {
         enabled: body.enabled,
         variables: body.variables,
         workspacePolicy: body.workspacePolicy,
+        projectId: body.projectId ?? null,
         createdAt: now,
         updatedAt: now,
       })

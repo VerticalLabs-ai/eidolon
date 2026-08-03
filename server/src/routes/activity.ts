@@ -1,5 +1,5 @@
 import { Router, type Request } from 'express';
-import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import eventBus from '../realtime/events.js';
@@ -11,6 +11,7 @@ import type { EidolonEvent } from '../realtime/events.js';
 const ActivityQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  project: z.string().uuid().optional(),
   projectId: z.string().uuid().optional(),
 });
 
@@ -27,28 +28,9 @@ export function activityRouter(db: DbInstance): Router {
   router.get('/', validate(ActivityQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
     const query = (req as ValidatedActivityRequest).validated.query;
-    const projectScope = query.projectId
-      ? or(
-          and(
-            eq(activityLog.entityType, 'project'),
-            eq(activityLog.entityId, query.projectId),
-          ),
-          and(
-            sql`${activityLog.action} like 'project.%'`,
-            sql`${activityLog.metadata}->'project'->>'id' = ${query.projectId}`,
-          ),
-          and(
-            sql`${activityLog.action} like 'task.%'`,
-            sql`${activityLog.metadata}->'task'->>'projectId' = ${query.projectId}`,
-          ),
-          and(
-            sql`${activityLog.action} like 'task.%'`,
-            sql`${activityLog.metadata}->>'projectId' = ${query.projectId}`,
-          ),
-        )
-      : undefined;
+    const projectScope = query.project ?? query.projectId;
     const where = projectScope
-      ? and(eq(activityLog.companyId, companyId), projectScope)
+      ? and(eq(activityLog.companyId, companyId), eq(activityLog.projectId, projectScope))
       : eq(activityLog.companyId, companyId);
 
     const rows = await db.drizzle
@@ -131,6 +113,11 @@ export function activityRecordFromEvent(event: EidolonEvent) {
     entityId,
     description: entityName ? `${description}: ${entityName}` : description,
     metadata: event.payload as Record<string, unknown>,
+    projectId:
+      payload.projectId ??
+      payload.task?.projectId ??
+      payload.project?.id ??
+      null,
     createdAt: new Date(event.timestamp),
   };
 }
