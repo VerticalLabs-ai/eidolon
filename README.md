@@ -25,6 +25,7 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 | **Real-time dashboard** | WebSocket-powered live updates. Monitor everything from your phone. |
 | **Multi-tenancy** | Run multiple autonomous companies from one deployment, isolated by org membership. |
 | **Activity audit log** | Every action tracked with actor, entity, and timestamp. |
+| **Project workspace** | Per-project shell with four deep-linkable tabs — Home (composed summary of counts, active work, needs-attention, goals, recent activity and files), Work (scoped task board), Drive (project-scoped file tree), and Activity (work-state header + event timeline). Tabs are URL-routed via `?tab=home|work|drive|activity`. |
 
 ## Quickstart
 
@@ -133,8 +134,11 @@ Operators can validate a configured process, HTTP, or OpenClaw session without r
 2. **Hire agents** — Add agents with specific roles (CEO, CTO, Engineer, etc.). Each agent has its own provider, model, budget, instructions, and capability flags.
 3. **Set goals** — Define OKRs that cascade from mission to tasks.
 4. **Create tasks** — Kanban board with priority-aware scheduling. Assignment selects an owner; an execution-scoped checkout is the atomic, auditable transition that starts work.
-5. **Run** — Agents execute via the Observe → Think → Act → Reflect loop with live transcript streaming, budget enforcement, and approval gates on governed actions.
-6. **Monitor** — Inbox surfaces pending approvals, inbound collaborations, and high-signal activity. Navigate with `j`/`k`/`a`/`o`.
+5. **Organize projects** — Group work into projects. Each project shell composes Home (counts, active work, goals, recent activity), Work (scoped task board), Drive (project file tree), and Activity (work-state + timeline) into four deep-linkable tabs.
+6. **Run** — Agents execute via the Observe → Think → Act → Reflect loop with live transcript streaming, budget enforcement, and approval gates on governed actions.
+7. **Monitor** — Inbox surfaces pending approvals, inbound collaborations, and high-signal activity. Navigate with `j`/`k`/`a`/`o`.
+
+Project ownership is canonical across context and execution: migrations 0011 and 0012 add `project_id` to knowledge, messages, task threads, agent executions, workflows, routines, and the activity log, backed by shared ownership validation utilities and API-level project scoping. Task-derived records inherit the project from their task, and deleting a project clears those references while preserving the records.
 
 ## API overview
 
@@ -162,6 +166,8 @@ All endpoints under `/api`. See the per-route source for full schemas.
 | `POST /api/companies/:id/tasks` | Create task |
 | `POST /api/companies/:id/tasks/:taskId/checkout` | Atomically check out a task for an agent execution |
 | `GET /api/companies/:id/goals` | Goal tree |
+| `GET /api/companies/:id/projects/:projectId/home` | Composed project-home summary (counts, task breakdown, active/needs-attention/failed work, recent activity, recent files, goal progress) |
+| `GET /api/companies/:id/files?project=:projectId` | List files scoped to a project (nullable projectId on agent_files) |
 | `GET /api/companies/:id/approvals` | List approvals |
 | `POST /api/companies/:id/approvals/:id/decide` | Approve / reject |
 | `GET /api/companies/:id/inbox` | Unified feed |
