@@ -44,7 +44,12 @@ vi.mock("@/lib/hooks", () => ({
 }));
 
 vi.mock("@/pages/TaskBoard", () => ({
-  TaskBoard: () => <div data-testid="task-board">Task board</div>,
+  TaskBoard: ({ title }: { title: string }) => (
+    <div data-testid="task-board">
+      <h2>{title}</h2>
+      Task board
+    </div>
+  ),
 }));
 vi.mock("@/pages/ProjectHome", () => ({
   ProjectHome: ({ companyId, projectId }: { companyId: string; projectId: string }) => (
@@ -121,6 +126,7 @@ describe("ProjectDetail tab query mapping", () => {
   it("renders Work (TaskBoard) when ?tab=work", () => {
     renderDetail("/company/company-1/projects/project-1?tab=work");
     expect(screen.getByTestId("task-board")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Work" })).toBeInTheDocument();
     expect(screen.queryByTestId("project-home")).not.toBeInTheDocument();
   });
 

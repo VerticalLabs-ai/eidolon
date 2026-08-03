@@ -28,7 +28,7 @@ const priorityOptions = [
   { value: "low", label: "Low" },
 ];
 
-export function TaskBoard({ title = "Work" }: { title?: string } = {}) {
+export function TaskBoard({ title }: { title: string }) {
   const { companyId, projectId } = useParams();
   const { data: tasks, isLoading, isError, refetch } = useTasks(
     companyId,

@@ -174,7 +174,7 @@ export function ProjectDetail() {
         {activeTab === "home" && (
           <ProjectHome companyId={companyId ?? ""} projectId={project.id} />
         )}
-        {activeTab === "work" && <TaskBoard />}
+        {activeTab === "work" && <TaskBoard title="Work" />}
         {activeTab === "drive" && (
           <ProjectDrive companyId={companyId ?? ""} projectId={project.id} />
         )}

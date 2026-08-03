@@ -99,7 +99,7 @@ export function App() {
           <Route path="inbox" element={<Inbox />} />
           <Route path="projects" element={<ProjectList />} />
           <Route path="projects/:projectId" element={<ProjectDetail />} />
-          <Route path="issues" element={<TaskBoard />} />
+          <Route path="issues" element={<TaskBoard title="Issues" />} />
           <Route path="tasks/:taskId" element={<TaskDetail />} />
           <Route path="goals" element={<GoalTree />} />
           <Route path="agents" element={<AgentList />} />
