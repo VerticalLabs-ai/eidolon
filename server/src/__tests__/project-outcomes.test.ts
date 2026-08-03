@@ -9,6 +9,7 @@ describe('Project Outcomes API — VAL-OUT-*', () => {
   let companyId: string;
   let otherCompanyId: string;
   let projectId: string;
+  let otherProjectId: string;
   let outcomesUrl: string;
 
   beforeEach(async () => {
@@ -27,6 +28,11 @@ describe('Project Outcomes API — VAL-OUT-*', () => {
       .send({ name: 'Outcome Project', status: 'active', repoUrl: null })
       .expect(201);
     projectId = project.body.data.id;
+    const otherProject = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Other Outcome Project', status: 'active', repoUrl: null })
+      .expect(201);
+    otherProjectId = otherProject.body.data.id;
     outcomesUrl = `/api/companies/${companyId}/projects/${projectId}/outcomes`;
   });
 
@@ -56,6 +62,25 @@ describe('Project Outcomes API — VAL-OUT-*', () => {
       expect(response.body.data.referenceUrl).toBe('https://example.com/result');
       expect(response.body.data.referenceId).toBe('ref-1');
       expect(response.body.data.metadata).toEqual({ source: 'test' });
+    });
+
+    it('rejects a task from another project in the same company', async () => {
+      const task = await request(app)
+        .post(`/api/companies/${companyId}/tasks`)
+        .send({ title: 'Other project task', projectId: otherProjectId })
+        .expect(201);
+
+      await createOutcome({ taskId: task.body.data.id }).expect(400);
+    });
+
+    it('accepts a task from the routed project', async () => {
+      const task = await request(app)
+        .post(`/api/companies/${companyId}/tasks`)
+        .send({ title: 'Project task', projectId })
+        .expect(201);
+
+      const response = await createOutcome({ taskId: task.body.data.id }).expect(201);
+      expect(response.body.data.taskId).toBe(task.body.data.id);
     });
   });
 

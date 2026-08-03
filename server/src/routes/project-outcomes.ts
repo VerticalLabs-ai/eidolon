@@ -125,11 +125,19 @@ export function projectOutcomesRouter(db: DbInstance): Router {
     }
     if (body.taskId) {
       const [task] = await db.drizzle
-        .select({ id: tasks.id })
+        .select({ id: tasks.id, projectId: tasks.projectId })
         .from(tasks)
-        .where(and(eq(tasks.id, body.taskId), eq(tasks.companyId, companyId)))
+        .where(
+          and(
+            eq(tasks.id, body.taskId),
+            eq(tasks.companyId, companyId),
+            eq(tasks.projectId, projectId),
+          ),
+        )
         .limit(1);
-      if (!task) throw new AppError(400, 'TASK_NOT_FOUND', 'Task is not in this company');
+      if (!task) {
+        throw new AppError(400, 'TASK_NOT_FOUND', 'Task is not in this project');
+      }
     }
 
     const [row] = await db.drizzle

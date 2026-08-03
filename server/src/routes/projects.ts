@@ -576,7 +576,15 @@ export function projectsRouter(db: DbInstance): Router {
 
     // Fetch step counts for plans (two-step approach for PGlite compatibility)
     const planIds = planRows.map((p) => p.id);
-    let plans: Array<typeof planRows[number] & { stepCount: number; completedStepCount: number }> = [];
+    const stepStatuses = ['pending', 'in_progress', 'completed', 'blocked', 'skipped'] as const;
+    type StepStatusCounts = Record<(typeof stepStatuses)[number], number>;
+    let plans: Array<
+      typeof planRows[number] & {
+        stepCount: number;
+        completedStepCount: number;
+        stepStatusCounts: StepStatusCounts;
+      }
+    > = [];
     if (planIds.length > 0) {
       const stepCounts = await db.drizzle
         .select({
@@ -584,16 +592,39 @@ export function projectsRouter(db: DbInstance): Router {
           stepCount: sql<number>`count(*)`.as('step_count'),
           completedStepCount:
             sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'completed')`.as('completed_step_count'),
+          pendingCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'pending')`.as('pending_count'),
+          inProgressCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'in_progress')`.as('in_progress_count'),
+          blockedCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'blocked')`.as('blocked_count'),
+          skippedCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'skipped')`.as('skipped_count'),
         })
         .from(projectPlanSteps)
-        .where(inArray(projectPlanSteps.planId, planIds))
+        .where(
+          and(
+            eq(projectPlanSteps.companyId, companyId),
+            inArray(projectPlanSteps.planId, planIds),
+          ),
+        )
         .groupBy(projectPlanSteps.planId);
 
-      const countsByPlan = new Map<string, { stepCount: number; completedStepCount: number }>();
+      const countsByPlan = new Map<
+        string,
+        { stepCount: number; completedStepCount: number; stepStatusCounts: StepStatusCounts }
+      >();
       for (const sc of stepCounts) {
         countsByPlan.set(sc.planId, {
           stepCount: Number(sc.stepCount),
           completedStepCount: Number(sc.completedStepCount),
+          stepStatusCounts: {
+            pending: Number(sc.pendingCount),
+            in_progress: Number(sc.inProgressCount),
+            completed: Number(sc.completedStepCount),
+            blocked: Number(sc.blockedCount),
+            skipped: Number(sc.skippedCount),
+          },
         });
       }
 
@@ -601,6 +632,13 @@ export function projectsRouter(db: DbInstance): Router {
         ...p,
         stepCount: countsByPlan.get(p.id)?.stepCount ?? 0,
         completedStepCount: countsByPlan.get(p.id)?.completedStepCount ?? 0,
+        stepStatusCounts: countsByPlan.get(p.id)?.stepStatusCounts ?? {
+          pending: 0,
+          in_progress: 0,
+          completed: 0,
+          blocked: 0,
+          skipped: 0,
+        },
       }));
     }
 

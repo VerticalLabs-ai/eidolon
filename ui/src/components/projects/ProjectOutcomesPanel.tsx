@@ -193,7 +193,7 @@ function CreateOutcomeModal({
     title: string;
     description?: string;
     referenceUrl?: string;
-  }) => void;
+  }, onSuccess: () => void) => void;
   pending: boolean;
 }) {
   const [type, setType] = useState<ProjectOutcomeType>("document");
@@ -205,12 +205,16 @@ function CreateOutcomeModal({
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!trimmedTitle || pending) return;
-    onCreate({
+    const data = {
       type,
       title: trimmedTitle,
-      description: description.trim() || undefined,
-      referenceUrl: referenceUrl.trim() || undefined,
-    });
+      ...(description.trim() ? { description: description.trim() } : {}),
+      ...(referenceUrl.trim() ? { referenceUrl: referenceUrl.trim() } : {}),
+    };
+    onCreate(data, handleCreated);
+  }
+
+  function handleCreated() {
     setTitle("");
     setDescription("");
     setReferenceUrl("");
@@ -397,9 +401,13 @@ export function ProjectOutcomesPanel({
         open={createOpen}
         pending={createOutcome.isPending}
         onClose={() => setCreateOpen(false)}
-        onCreate={(data) => {
-          createOutcome.mutate(data);
-          setCreateOpen(false);
+        onCreate={(data, onSuccess) => {
+          createOutcome.mutate(data, {
+            onSuccess: () => {
+              onSuccess();
+              setCreateOpen(false);
+            },
+          });
         }}
       />
     </section>

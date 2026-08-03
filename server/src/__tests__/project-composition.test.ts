@@ -308,14 +308,17 @@ describe('Project Composition Endpoints — VAL-CROSS-006/007/010, VAL-DEC-007',
   });
 
   describe('GET /work — plans with step status summaries', () => {
-    it('returns all plans with stepCount and completedStepCount', async () => {
+    it('returns all plans with stepCount, completedStepCount, and per-status counts', async () => {
       const plan1 = await createPlan('Plan 1');
       const plan2 = await createPlan('Plan 2');
 
-      // Add steps to plan1
-      const s1 = await createPlanStep(plan1.id, { title: 'Step 1' });
-      await createPlanStep(plan1.id, { title: 'Step 2' });
-      await updatePlanStep(plan1.id, s1.id, { status: 'completed' });
+      const statuses = ['pending', 'in_progress', 'completed', 'blocked', 'skipped'] as const;
+      for (const status of statuses) {
+        const step = await createPlanStep(plan1.id, { title: `${status} step` });
+        if (status !== 'pending') {
+          await updatePlanStep(plan1.id, step.id, { status });
+        }
+      }
 
       const res = await request(app).get(workUrl).expect(200);
       const plans = res.body.data.plans;
@@ -323,13 +326,27 @@ describe('Project Composition Endpoints — VAL-CROSS-006/007/010, VAL-DEC-007',
 
       const p1 = plans.find((p: any) => p.id === plan1.id);
       expect(p1).toBeDefined();
-      expect(p1.stepCount).toBe(2);
+      expect(p1.stepCount).toBe(5);
       expect(p1.completedStepCount).toBe(1);
+      expect(p1.stepStatusCounts).toEqual({
+        pending: 1,
+        in_progress: 1,
+        completed: 1,
+        blocked: 1,
+        skipped: 1,
+      });
 
       const p2 = plans.find((p: any) => p.id === plan2.id);
       expect(p2).toBeDefined();
       expect(p2.stepCount).toBe(0);
       expect(p2.completedStepCount).toBe(0);
+      expect(p2.stepStatusCounts).toEqual({
+        pending: 0,
+        in_progress: 0,
+        completed: 0,
+        blocked: 0,
+        skipped: 0,
+      });
     });
   });
 

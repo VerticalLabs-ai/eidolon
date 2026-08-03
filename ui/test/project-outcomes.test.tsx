@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectOutcomesPanel } from "../src/components/projects/ProjectOutcomesPanel";
@@ -148,11 +148,37 @@ describe("ProjectOutcomesPanel — VAL-OUT-004, VAL-OUT-005, VAL-OUT-008, VAL-OU
       target: { value: "https://docs.example.com/audit" },
     });
     fireEvent.click(screen.getByRole("button", { name: /save outcome/i }));
-    expect(mutate).toHaveBeenCalledWith({
-      type: "audit",
-      title: "Design doc",
-      referenceUrl: "https://docs.example.com/audit",
-    });
+    expect(mutate).toHaveBeenCalledWith(
+      {
+        type: "audit",
+        title: "Design doc",
+        referenceUrl: "https://docs.example.com/audit",
+      },
+      { onSuccess: expect.any(Function) },
+    );
+  });
+
+  it("closes and resets the create modal only after a successful mutation", async () => {
+    const mutate = vi.fn((_data, options: { onSuccess: () => void }) => options.onSuccess());
+    mocks.useCreateProjectOutcome.mockReturnValue(mutationResult({ mutate }));
+    render(<ProjectOutcomesPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /create outcome/i }));
+    fireEvent.change(screen.getByTestId("outcome-title-input"), { target: { value: "Design doc" } });
+    fireEvent.click(screen.getByRole("button", { name: /save outcome/i }));
+    await waitFor(() => expect(screen.queryByTestId("outcome-title-input")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /create outcome/i }));
+    expect(screen.getByTestId("outcome-title-input")).toHaveValue("");
+  });
+
+  it("preserves create form state when the mutation fails", () => {
+    const mutate = vi.fn();
+    mocks.useCreateProjectOutcome.mockReturnValue(mutationResult({ mutate }));
+    render(<ProjectOutcomesPanel companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /create outcome/i }));
+    fireEvent.change(screen.getByTestId("outcome-title-input"), { target: { value: "Keep this" } });
+    fireEvent.click(screen.getByRole("button", { name: /save outcome/i }));
+    expect(screen.getByTestId("outcome-title-input")).toHaveValue("Keep this");
   });
 
   it("blocks creating an outcome with an empty title", () => {
