@@ -40,6 +40,11 @@ vi.mock("@/lib/hooks", () => ({
   useUpdateTask: () => ({ mutate: vi.fn() }),
   useCreateTask: () => ({ mutate: vi.fn(), isPending: false }),
   useCreateProjectThread: () => ({ mutate: vi.fn(), isPending: false }),
+  usePlansWithSteps: () => ({ data: [], isLoading: false, isError: false }),
+  useCreateProjectPlan: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreatePlanStep: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdatePlanStep: () => ({ mutate: vi.fn(), isPending: false }),
+  useAdvancePlanGate: () => ({ mutate: vi.fn(), isPending: false }),
   useCreateProject: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false }),
   useUpdateProject: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false }),
 }));

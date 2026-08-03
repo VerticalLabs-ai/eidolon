@@ -561,6 +561,42 @@ export interface ProjectPlanStep {
   updatedAt: string;
 }
 
+export interface ProjectPlanDetail extends ProjectPlan {
+  steps: ProjectPlanStep[];
+}
+
+export interface ProjectPlanFilters {
+  status?: ProjectPlanStatus;
+}
+
+export interface CreateProjectPlanInput {
+  title: string;
+  description?: string;
+  taskId?: string;
+  createdByAgentId?: string | null;
+}
+
+export interface UpdateProjectPlanInput {
+  title?: string;
+  description?: string | null;
+  status?: ProjectPlanStatus;
+  progress?: number;
+}
+
+export interface CreatePlanStepInput {
+  title: string;
+  description?: string;
+  stepType?: ProjectPlanStepType;
+  gateConfig?: Record<string, unknown>;
+}
+
+export interface UpdatePlanStepInput {
+  title?: string;
+  description?: string | null;
+  status?: ProjectPlanStepStatus;
+  stepOrder?: number;
+}
+
 export type ProjectDecisionStatus = "pending" | "approved" | "rejected" | "superseded";
 
 export interface ProjectDecision {
@@ -657,6 +693,85 @@ export const updateThreadItem = (
   request<ApiResponse<ProjectThreadItem>>(
     `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items/${itemId}`,
     { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+// ── Project Plans ────────────────────────────────────────────────────────
+
+export const getProjectPlans = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectPlanFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set("status", filters.status);
+  const query = params.toString();
+  return request<ApiResponse<ProjectPlan[]>>(
+    `/companies/${companyId}/projects/${projectId}/plans${query ? `?${query}` : ""}`,
+  );
+};
+
+export const getProjectPlan = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+) =>
+  request<ApiResponse<ProjectPlanDetail>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}`,
+  );
+
+export const createProjectPlan = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectPlanInput,
+) =>
+  request<ApiResponse<ProjectPlan>>(
+    `/companies/${companyId}/projects/${projectId}/plans`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateProjectPlan = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  data: UpdateProjectPlanInput,
+) =>
+  request<ApiResponse<ProjectPlan>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const createPlanStep = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  data: CreatePlanStepInput,
+) =>
+  request<ApiResponse<ProjectPlanStep>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updatePlanStep = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  stepId: string,
+  data: UpdatePlanStepInput,
+) =>
+  request<ApiResponse<ProjectPlanStep>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps/${stepId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const advancePlanGate = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  stepId: string,
+) =>
+  request<ApiResponse<ProjectPlanStep>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps/${stepId}/advance`,
+    { method: "POST" },
   );
 
 export const getTaskThread = (companyId: string, taskId: string) =>

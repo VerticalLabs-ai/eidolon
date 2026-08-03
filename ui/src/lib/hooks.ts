@@ -300,6 +300,145 @@ export function useUpdateThreadItem(companyId: string, projectId: string, thread
   });
 }
 
+// ── Project Plans ─────────────────────────────────────────────────────────
+
+export function useProjectPlans(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectPlanFilters,
+) {
+  return useQuery({
+    queryKey: ["project-plans", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectPlan[]>(await api.getProjectPlans(companyId!, projectId!, filters)),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useProjectPlan(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  planId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["project-plan", companyId, projectId, planId],
+    queryFn: async () =>
+      unwrap<api.ProjectPlanDetail>(
+        await api.getProjectPlan(companyId!, projectId!, planId!),
+      ),
+    enabled: !!companyId && !!projectId && !!planId,
+  });
+}
+
+/**
+ * Fetch plans (optionally filtered) and their full step lists in parallel.
+ * Returns `ProjectPlanDetail[]` so consumers can render progress bars and
+ * per-step status indicators without a second round-trip per plan.
+ */
+export function usePlansWithSteps(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectPlanFilters,
+) {
+  const plans = useProjectPlans(companyId, projectId, filters);
+  const planIds = plans.data?.map((p) => p.id) ?? [];
+  const queries = useQueries({
+    queries: planIds.map((id) => ({
+      queryKey: ["project-plan", companyId, projectId, id],
+      queryFn: async () =>
+        unwrap<api.ProjectPlanDetail>(
+          await api.getProjectPlan(companyId!, projectId!, id),
+        ),
+      enabled: !!companyId && !!projectId,
+    })),
+  });
+  const isLoading = plans.isLoading || queries.some((q) => q.isLoading);
+  const isError = plans.isError || queries.some((q) => q.isError);
+  const data = queries
+    .map((q) => q.data)
+    .filter((d): d is api.ProjectPlanDetail => !!d)
+    .sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  return { data, isLoading, isError };
+}
+
+export function useCreateProjectPlan(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectPlanInput) =>
+      api.createProjectPlan(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectPlan(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      data,
+    }: {
+      planId: string;
+      data: api.UpdateProjectPlanInput;
+    }) => api.updateProjectPlan(companyId, projectId, planId, data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
+export function useCreatePlanStep(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      data,
+    }: {
+      planId: string;
+      data: api.CreatePlanStepInput;
+    }) => api.createPlanStep(companyId, projectId, planId, data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
+export function useUpdatePlanStep(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      stepId,
+      data,
+    }: {
+      planId: string;
+      stepId: string;
+      data: api.UpdatePlanStepInput;
+    }) => api.updatePlanStep(companyId, projectId, planId, stepId, data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
+export function useAdvancePlanGate(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ planId, stepId }: { planId: string; stepId: string }) =>
+      api.advancePlanGate(companyId, projectId, planId, stepId),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
 // ── Agents ───────────────────────────────────────────────────────────────
 
 export function useAgents(companyId: string | undefined) {
