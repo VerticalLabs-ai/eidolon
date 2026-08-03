@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 import { agents } from './agents.js';
 import { tasks } from './tasks.js';
+import { projects } from './projects.js';
 
 /**
  * Approvals are first-class governance objects that gate specific mutations
@@ -23,7 +24,7 @@ export const approvals = pgTable(
       .notNull()
       .references(() => companies.id),
     kind: text('kind', {
-      enum: ['budget_change', 'agent_termination', 'task_review', 'custom'],
+      enum: ['budget_change', 'agent_termination', 'task_review', 'custom', 'plan_gate'],
     })
       .notNull()
       .default('custom'),
@@ -48,6 +49,9 @@ export const approvals = pgTable(
       .$type<Record<string, unknown>>()
       .default({}),
     taskId: text('task_id').references(() => tasks.id),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    // The FK is added in migration 0014 to avoid a circular schema module dependency.
+    planStepId: text('plan_step_id'),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -58,7 +62,9 @@ export const approvals = pgTable(
   },
   (table) => [
     index('idx_approvals_company_status').on(table.companyId, table.status),
+    index('idx_approvals_company_project_status').on(table.companyId, table.projectId, table.status),
     index('idx_approvals_task').on(table.taskId),
+    index('idx_approvals_plan_step').on(table.planStepId),
   ],
 );
 

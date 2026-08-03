@@ -51,6 +51,9 @@ import {
   companySkills,
   agentSkills,
   routines,
+  projectPlans,
+  projectPlanSteps,
+  projectDecisions,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +103,9 @@ const SCHEMA_BUNDLE = {
   companySkills,
   agentSkills,
   routines,
+  projectPlans,
+  projectPlanSteps,
+  projectDecisions,
 } as const;
 
 export interface BootstrapOptions {

@@ -517,6 +517,71 @@ export interface ProjectThreadDetail extends ProjectThread {
   meta?: { total: number; limit: number; offset: number };
 }
 
+export type ProjectPlanStatus = "draft" | "active" | "completed" | "cancelled";
+export type ProjectPlanStepType = "action" | "review_gate" | "permission_gate";
+export type ProjectPlanStepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "blocked"
+  | "skipped";
+
+export interface ProjectPlan {
+  id: string;
+  companyId: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  status: ProjectPlanStatus;
+  progress: number;
+  taskId: string | null;
+  stepCount?: number;
+  completedStepCount?: number;
+  createdByUserId?: string | null;
+  createdByAgentId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectPlanStep {
+  id: string;
+  planId: string;
+  companyId: string;
+  title: string;
+  description: string | null;
+  stepOrder: number;
+  stepType: ProjectPlanStepType;
+  status: ProjectPlanStepStatus;
+  gateApprovalId: string | null;
+  gateConfig: Record<string, unknown>;
+  completedByUserId: string | null;
+  completedByAgentId: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProjectDecisionStatus = "pending" | "approved" | "rejected" | "superseded";
+
+export interface ProjectDecision {
+  id: string;
+  companyId: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  status: ProjectDecisionStatus;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  rationale: string | null;
+  planId: string | null;
+  planStepId: string | null;
+  supersededById: string | null;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProjectThreadFilters {
   status?: ProjectThreadStatus;
   type?: ProjectThreadType;
@@ -1968,7 +2033,8 @@ export type ApprovalKind =
   | "budget_change"
   | "agent_termination"
   | "task_review"
-  | "custom";
+  | "custom"
+  | "plan_gate";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type ApprovalPriority = "critical" | "high" | "medium" | "low";
 
@@ -1986,6 +2052,8 @@ export interface Approval {
   resolutionNote: string | null;
   payload: Record<string, unknown>;
   taskId: string | null;
+  projectId: string | null;
+  planStepId: string | null;
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
