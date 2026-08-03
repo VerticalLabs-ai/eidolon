@@ -589,6 +589,22 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
 
       expect(res.body.data.goalProgress).toEqual({ count: 0, aggregateProgress: 0 });
     });
+
+    it('returns the exact fractional average (not rounded) — regression for VAL-HOME-010', async () => {
+      // progress [0, 1] → avg = 0.5, NOT Math.round(0.5) = 1
+      await insertGoal({ title: 'g-zero', progress: 0 });
+      await insertGoal({ title: 'g-one', progress: 1 });
+
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/projects/${projectId}/home`)
+        .expect(200);
+
+      const gp = res.body.data.goalProgress;
+      expect(gp.count).toBe(2);
+      // The exact average must be returned — 0.5, not rounded to 0 or 1
+      expect(gp.aggregateProgress).toBeCloseTo(0.5, 5);
+      expect(Number.isInteger(gp.aggregateProgress)).toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------

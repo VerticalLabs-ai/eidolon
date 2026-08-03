@@ -349,7 +349,7 @@ export function projectsRouter(db: DbInstance): Router {
 
     const goalProgressCount = Number(goalProgressRow[0].count);
     const goalProgressAggregate = goalProgressCount > 0
-      ? Math.round(Number(goalProgressRow[0].aggregateProgress))
+      ? Number(goalProgressRow[0].aggregateProgress)
       : 0;
 
     res.json({

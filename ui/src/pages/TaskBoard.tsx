@@ -28,7 +28,7 @@ const priorityOptions = [
   { value: "low", label: "Low" },
 ];
 
-export function TaskBoard() {
+export function TaskBoard({ title = "Work" }: { title?: string } = {}) {
   const { companyId, projectId } = useParams();
   const { data: tasks, isLoading, isError, refetch } = useTasks(
     companyId,
@@ -63,7 +63,7 @@ export function TaskBoard() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between shrink-0">
         <div>
           <h2 className="font-display text-2xl font-bold text-text-primary tracking-tight">
-            Tasks
+            {title}
           </h2>
           <p className="text-sm text-text-secondary mt-1">
             {filtered.length} task{filtered.length !== 1 ? "s" : ""}

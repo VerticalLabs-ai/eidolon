@@ -5,15 +5,13 @@ import { ProjectHome } from "../src/pages/ProjectHome";
 
 const mocks = vi.hoisted(() => ({
   useProjectHome: vi.fn(),
+  useGoals: vi.fn(),
   refetch: vi.fn(),
 }));
 
 vi.mock("@/lib/hooks", () => ({
   useProjectHome: mocks.useProjectHome,
-}));
-
-vi.mock("@/pages/GoalTree", () => ({
-  GoalTree: () => <div data-testid="goal-tree">Goal tree</div>,
+  useGoals: mocks.useGoals,
 }));
 
 const baseSummary = {
@@ -59,6 +57,15 @@ function renderHome() {
 describe("ProjectHome", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default mock for useGoals — returns a small project-scoped goal set
+    mocks.useGoals.mockReturnValue({
+      data: [
+        { id: "goal-1", title: "Reliability OKR", level: "company", status: "active", parentId: null, progress: 50, projectId: "project-1" },
+        { id: "goal-2", title: "Sub-goal", level: "department", status: "active", parentId: "goal-1", progress: 80, projectId: "project-1" },
+      ],
+      isLoading: false,
+      isError: false,
+    });
   });
 
   // VAL-HOMEUI-023: renders cards from a mock home summary
@@ -94,7 +101,7 @@ describe("ProjectHome", () => {
 
     // Goals summary card
     expect(screen.getByText("65%")).toBeInTheDocument();
-    expect(screen.getByTestId("goal-tree")).toBeInTheDocument();
+    expect(screen.getByTestId("compact-goal-tree")).toBeInTheDocument();
 
     // Recent activity card
     expect(screen.getByText("Task created: Fix race condition")).toBeInTheDocument();
@@ -152,7 +159,7 @@ describe("ProjectHome", () => {
     expect(screen.getByText("No goals yet")).toBeInTheDocument();
     expect(screen.getByText("No recent activity")).toBeInTheDocument();
     expect(screen.getByText("No recent files")).toBeInTheDocument();
-    expect(screen.queryByTestId("goal-tree")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("compact-goal-tree")).not.toBeInTheDocument();
   });
 
   // VAL-HOMEUI-019: loading state shows indicators
