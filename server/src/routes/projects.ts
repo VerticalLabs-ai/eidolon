@@ -241,7 +241,7 @@ export function projectsRouter(db: DbInstance): Router {
             eq(tasks.projectId, id),
             or(
               inArray(tasks.status, ['review', 'timed_out']),
-              sql`EXISTS (SELECT 1 FROM ${taskThreadItems} WHERE ${taskThreadItems.taskId} = ${tasks.id} AND ${taskThreadItems.status} = 'pending')`,
+              sql`EXISTS (SELECT 1 FROM ${taskThreadItems} WHERE ${taskThreadItems.companyId} = ${companyId} AND ${taskThreadItems.taskId} = ${tasks.id} AND ${taskThreadItems.status} = 'pending')`,
             ),
           ),
         )

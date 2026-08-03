@@ -3,6 +3,7 @@ import { formatDistanceToNow } from "date-fns";
 import { useProjectHome } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Card as UICard } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { GoalTree } from "@/pages/GoalTree";
 import { isHttpUrl } from "@/lib/urls";
@@ -17,6 +18,8 @@ const statusVariant: Record<string, "default" | "success" | "warning" | "info" |
 };
 
 // ── Card wrapper ─────────────────────────────────────────────────────────
+// Thin composition of the design-system Card: adds the icon + heading row and
+// the labelled landmark, without re-implementing the card surface itself.
 
 function Card({
   title,
@@ -30,17 +33,21 @@ function Card({
   className?: string;
 }) {
   return (
-    <section
-      className={`rounded-xl border border-white/[0.06] bg-surface p-4 ${className}`}
-      aria-label={title}
-    >
-      <header className="mb-3 flex items-center gap-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
-          {icon}
-        </span>
-        <h2 className="text-sm font-semibold text-text-primary font-display">{title}</h2>
-      </header>
-      {children}
+    <section className={className} aria-label={title}>
+      <UICard
+        animated={false}
+        className="h-full"
+        header={
+          <div className="flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
+              {icon}
+            </span>
+            <h2 className="text-sm font-semibold text-text-primary font-display">{title}</h2>
+          </div>
+        }
+      >
+        {children}
+      </UICard>
     </section>
   );
 }

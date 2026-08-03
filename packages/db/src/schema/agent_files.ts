@@ -35,5 +35,6 @@ export const agentFiles = pgTable(
   (table) => [
     index('idx_agent_files_agent').on(table.agentId),
     index('idx_agent_files_company').on(table.companyId),
+    index('idx_agent_files_company_project').on(table.companyId, table.projectId, table.createdAt),
   ],
 );

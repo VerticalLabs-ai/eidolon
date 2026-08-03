@@ -105,12 +105,7 @@ export function TaskBoard() {
           title="Tasks could not be loaded"
           description="Check your connection and try again."
           action={
-            <button
-              onClick={() => void refetch()}
-              className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
-            >
-              Try again
-            </button>
+            <Button onClick={() => void refetch()}>Try again</Button>
           }
         />
       ) : !tasks?.length ? (
