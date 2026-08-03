@@ -28,6 +28,7 @@ export { taskThreadItems } from './task_thread_items.js';
 export { projectThreads } from './project_threads.js';
 export { projectPlans, projectPlanSteps } from './project_plans.js';
 export { projectDecisions } from './project_decisions.js';
+export { projectOutcomes } from './project_outcomes.js';
 export { taskCheckouts } from './task_checkouts.js';
 export { taskHolds } from './task_holds.js';
 export { executionEnvironments, workspaceLifecycleEvents } from './execution_environments.js';

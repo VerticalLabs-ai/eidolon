@@ -635,6 +635,59 @@ export interface UpdateProjectDecisionInput {
   supersededById?: string;
 }
 
+export type ProjectOutcomeType =
+  | "document"
+  | "pull_request"
+  | "audit"
+  | "review"
+  | "delivery_summary";
+export type ProjectOutcomeStatus = "pending" | "completed" | "failed";
+
+export interface ProjectOutcome {
+  id: string;
+  companyId: string;
+  projectId: string;
+  type: ProjectOutcomeType;
+  title: string;
+  description: string | null;
+  status: ProjectOutcomeStatus;
+  referenceUrl: string | null;
+  referenceId: string | null;
+  taskId: string | null;
+  planId: string | null;
+  planStepId: string | null;
+  metadata: Record<string, unknown>;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectOutcomeFilters {
+  type?: ProjectOutcomeType;
+  status?: ProjectOutcomeStatus;
+}
+
+export interface CreateProjectOutcomeInput {
+  type: ProjectOutcomeType;
+  title: string;
+  description?: string;
+  referenceUrl?: string;
+  referenceId?: string;
+  taskId?: string;
+  planId?: string;
+  planStepId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateProjectOutcomeInput {
+  status?: ProjectOutcomeStatus;
+  description?: string | null;
+  referenceUrl?: string | null;
+  referenceId?: string | null;
+}
+
 export interface ProjectThreadFilters {
   status?: ProjectThreadStatus;
   type?: ProjectThreadType;
@@ -822,6 +875,41 @@ export const updateProjectDecision = (
 ) =>
   request<ApiResponse<ProjectDecision>>(
     `/companies/${companyId}/projects/${projectId}/decisions/${decisionId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const getProjectOutcomes = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectOutcomeFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.status) params.set("status", filters.status);
+  const query = params.toString();
+  return request<ApiResponse<ProjectOutcome[]>>(
+    `/companies/${companyId}/projects/${projectId}/outcomes${query ? `?${query}` : ""}`,
+  );
+};
+
+export const createProjectOutcome = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectOutcomeInput,
+) =>
+  request<ApiResponse<ProjectOutcome>>(
+    `/companies/${companyId}/projects/${projectId}/outcomes`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateProjectOutcome = (
+  companyId: string,
+  projectId: string,
+  outcomeId: string,
+  data: UpdateProjectOutcomeInput,
+) =>
+  request<ApiResponse<ProjectOutcome>>(
+    `/companies/${companyId}/projects/${projectId}/outcomes/${outcomeId}`,
     { method: "PATCH", body: JSON.stringify(data) },
   );
 
