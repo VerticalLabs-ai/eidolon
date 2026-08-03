@@ -127,6 +127,13 @@ export interface ActivityEvent extends ServerEvent {
   type: 'activity.logged';
 }
 
+export interface AutomationRunEvent extends ServerEvent {
+  type:
+    | 'automation.run.started'
+    | 'automation.run.completed'
+    | 'automation.run.failed';
+}
+
 export type EidolonEvent =
   | CompanyEvent
   | AgentEvent
@@ -138,6 +145,7 @@ export type EidolonEvent =
   | BudgetEvent
   | WorkflowEvent
   | ActivityEvent
+  | AutomationRunEvent
   | EnvironmentEvent
   | ExecutionEvent
   | RuntimeEvent

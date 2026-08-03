@@ -44,6 +44,7 @@ import { runtimeAdaptersRouter } from './routes/runtime-adapters.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { skillsRouter } from './routes/skills.js';
 import { routinesRouter } from './routes/routines.js';
+import { automationsRouter } from './routes/automations.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -198,6 +199,9 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/sessions', requireAuth, requireOrgMember('admin'), sessionsRouter(db));
   app.use('/api/companies/:companyId/skills', requireAuth, requireOrgMember('admin'), skillsRouter(db));
   app.use('/api/companies/:companyId/routines', requireAuth, requireOrgMember(), routinesRouter(db));
+
+  // Unified automations surface (aggregates routines, workflows, webhooks)
+  app.use('/api/companies/:companyId/automations', requireAuth, requireOrgMember(), automationsRouter(db));
 
   // Local execution environments
   app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));

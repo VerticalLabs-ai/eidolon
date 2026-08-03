@@ -7,6 +7,7 @@ import { validate } from "../middleware/validate.js";
 import eventBus from "../realtime/events.js";
 import type { DbInstance } from "../types.js";
 import logger from "../utils/logger.js";
+import { validateProjectOwnership } from "../utils/project-validation.js";
 import { routeParams } from "../utils/route-params.js";
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,7 @@ const CreateWebhookBody = z.object({
     .enum(["task.create", "agent.wake", "message.send"])
     .default("task.create"),
   targetAgentId: z.string().uuid().optional(),
+  projectId: z.string().uuid().nullable().optional(),
 });
 
 const PatchWebhookBody = z.object({
@@ -75,10 +77,18 @@ export function webhookManagementRouter(db: DbInstance): Router {
 
   // GET / - list webhooks (hide secret, show last 4 chars)
   router.get("/", async (req, res) => {
+    const { companyId } = routeParams(req);
+    const project =
+      typeof req.query.project === "string" ? req.query.project : undefined;
+
     const rows = await db.drizzle
       .select()
       .from(webhooks)
-      .where(eq(webhooks.companyId, routeParams(req).companyId));
+      .where(
+        project
+          ? and(eq(webhooks.companyId, companyId), eq(webhooks.projectId, project))
+          : eq(webhooks.companyId, companyId),
+      );
 
     const sanitized = rows.map((row) => ({
       ...row,
@@ -95,6 +105,9 @@ export function webhookManagementRouter(db: DbInstance): Router {
     const now = new Date();
     const id = randomUUID();
     const secret = generateSecret();
+
+    // Validate project ownership if projectId is provided
+    await validateProjectOwnership(db, companyId, body.projectId);
 
     // If a target agent is specified, verify it belongs to the same company
     if (body.targetAgentId) {
@@ -130,6 +143,7 @@ export function webhookManagementRouter(db: DbInstance): Router {
         eventType: body.eventType,
         enabled: true,
         triggerCount: 0,
+        projectId: body.projectId ?? null,
         createdAt: now,
         updatedAt: now,
       })
