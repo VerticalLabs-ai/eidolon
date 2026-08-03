@@ -6,6 +6,7 @@ import { agents } from './agents.js';
 import { tasks } from './tasks.js';
 import { approvals } from './approvals.js';
 import { agentExecutions } from './agent_executions.js';
+import { projects } from './projects.js';
 
 export const taskThreadItems = pgTable(
   'task_thread_items',
@@ -49,6 +50,7 @@ export const taskThreadItems = pgTable(
     relatedExecutionId: text('related_execution_id').references(() => agentExecutions.id),
     resolvedByUserId: text('resolved_by_user_id'),
     resolutionNote: text('resolution_note'),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -60,6 +62,7 @@ export const taskThreadItems = pgTable(
   (table) => [
     index('idx_task_thread_items_task').on(table.companyId, table.taskId, table.createdAt),
     index('idx_task_thread_items_status').on(table.companyId, table.status),
+    index('idx_task_thread_items_company_project').on(table.companyId, table.projectId, table.createdAt),
     index('idx_task_thread_items_payload').using('gin', table.payload),
     uniqueIndex('uq_task_thread_items_idempotency').on(
       table.companyId,

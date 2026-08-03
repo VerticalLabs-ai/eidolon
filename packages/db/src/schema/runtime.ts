@@ -6,6 +6,7 @@ import { tasks } from './tasks.js';
 import { agentExecutions } from './agent_executions.js';
 import { executionEnvironments } from './execution_environments.js';
 import { mcpServers } from './mcp_servers.js';
+import { projects } from './projects.js';
 
 export const agentRuntimeSessions = pgTable(
   'agent_runtime_sessions',
@@ -218,6 +219,7 @@ export const routines = pgTable(
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     lastTriggeredAt: timestamp('last_triggered_at', { mode: 'date', precision: 3, withTimezone: true }),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
@@ -228,6 +230,7 @@ export const routines = pgTable(
   },
   (table) => [
     index('idx_routines_company_enabled').on(table.companyId, table.enabled),
+    index('idx_routines_company_project').on(table.companyId, table.projectId, table.createdAt),
     index('idx_routines_agent').on(table.agentId),
   ],
 );
