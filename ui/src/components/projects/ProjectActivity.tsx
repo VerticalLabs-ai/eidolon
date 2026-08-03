@@ -1,9 +1,22 @@
 import { useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
-import { Activity, Archive, CheckCircle2, FolderPlus, ListTodo, Pencil } from "lucide-react";
-import { useProjectActivity } from "@/lib/hooks";
+import {
+  Activity,
+  Archive,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  FolderPlus,
+  ListTodo,
+  Pencil,
+  XCircle,
+  Zap,
+} from "lucide-react";
+import { useProjectActivity, useProjectHome } from "@/lib/hooks";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import type { ProjectHomeSummary, Task } from "@/lib/api";
 
 const PAGE_SIZE = 20;
 
@@ -22,7 +35,186 @@ function actorLabel(actorType: string, actorId: string | null) {
   return `${actorType === "agent" ? "Agent" : "User"} ${actorId}`;
 }
 
-export function ProjectActivity({ companyId, projectId }: { companyId: string; projectId: string }) {
+// ── Work-state header ────────────────────────────────────────────────────
+
+interface WorkStateSectionProps {
+  label: string;
+  count: number;
+  icon: React.ReactNode;
+  variant: "active" | "needs-input" | "failed";
+  children?: React.ReactNode;
+}
+
+function WorkStateSection({ label, count, icon, variant, children }: WorkStateSectionProps) {
+  const [expanded, setExpanded] = useState(false);
+  const countId = `${variant}-count`;
+
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-surface/50">
+      <button
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left cursor-pointer"
+        aria-expanded={expanded}
+        aria-label={label}
+      >
+        <div className="flex items-center gap-2">
+          <span className="flex h-5 w-5 items-center justify-center rounded text-accent">
+            {icon}
+          </span>
+          <span className="text-sm font-medium text-text-primary">{label}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className="text-lg font-bold tabular-nums text-text-primary font-display"
+            data-testid={countId}
+          >
+            {count}
+          </span>
+          {count > 0 ? (
+            expanded ? (
+              <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 text-text-muted" />
+            )
+          ) : (
+            <span className="w-3.5" />
+          )}
+        </div>
+      </button>
+      {expanded && count > 0 && children && (
+        <div className="border-t border-white/[0.06] px-3 py-2">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskRow({ task }: { task: Task }) {
+  return (
+    <li className="flex items-center justify-between gap-2 border-b border-white/[0.04] py-1.5 last:border-b-0">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm text-text-primary">{task.title}</p>
+        <p className="text-xs text-text-muted">{task.status.replaceAll("_", " ")}</p>
+      </div>
+      {task.identifier && (
+        <span className="shrink-0 rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] font-medium tabular-nums text-text-muted">
+          {task.identifier}
+        </span>
+      )}
+    </li>
+  );
+}
+
+function WorkStateHeader({
+  companyId,
+  projectId,
+}: {
+  companyId: string;
+  projectId: string;
+}) {
+  const { data: summary, isLoading, isError, refetch } = useProjectHome(companyId, projectId);
+
+  if (isLoading) {
+    return (
+      <div
+        className="rounded-lg border border-white/[0.06] bg-surface/50 px-4 py-3"
+        data-testid="work-state-header"
+        role="status"
+        aria-label="Loading work state"
+      >
+        <div className="h-5 w-32 animate-pulse rounded bg-white/[0.06]" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div
+        className="rounded-lg border border-error/20 bg-error/5 px-4 py-3"
+        data-testid="work-state-header"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-error">Work state could not be loaded.</p>
+          <Button variant="secondary" size="sm" onClick={() => void refetch()}>Try again</Button>
+        </div>
+      </div>
+    );
+  }
+
+  const home: ProjectHomeSummary | undefined = summary;
+  const activeWork = home?.activeWork ?? [];
+  const needsAttention = home?.needsAttention ?? [];
+  const failedWork = home?.failedWork ?? [];
+
+  return (
+    <div className="space-y-2" data-testid="work-state-header">
+      <WorkStateSection
+        label="Active"
+        count={activeWork.length}
+        icon={<Zap className="h-4 w-4" />}
+        variant="active"
+      >
+        <ul>
+          {activeWork.map((task) => (
+            <TaskRow key={task.id} task={task} />
+          ))}
+        </ul>
+      </WorkStateSection>
+
+      <WorkStateSection
+        label="Needs Input"
+        count={needsAttention.length}
+        icon={<AlertTriangle className="h-4 w-4" />}
+        variant="needs-input"
+      >
+        <ul>
+          {needsAttention.map((task) => (
+            <TaskRow key={task.id} task={task} />
+          ))}
+        </ul>
+      </WorkStateSection>
+
+      <WorkStateSection
+        label="Failed"
+        count={failedWork.length}
+        icon={<XCircle className="h-4 w-4" />}
+        variant="failed"
+      >
+        <ul>
+          {failedWork.map((exec) => (
+            <li
+              key={exec.id}
+              className="flex items-center justify-between gap-2 border-b border-white/[0.04] py-1.5 last:border-b-0"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-text-primary">
+                  {exec.summary ?? exec.error ?? "Failed execution"}
+                </p>
+                <p className="text-xs text-text-muted">
+                  {formatDistanceToNow(new Date(exec.startedAt), { addSuffix: true })}
+                </p>
+              </div>
+              <span className="shrink-0 rounded-full bg-error/10 px-2 py-0.5 text-[10px] font-medium text-error">
+                failed
+              </span>
+            </li>
+          ))}
+        </ul>
+      </WorkStateSection>
+    </div>
+  );
+}
+
+// ── Activity timeline ────────────────────────────────────────────────────
+
+function ActivityTimeline({
+  companyId,
+  projectId,
+}: {
+  companyId: string;
+  projectId: string;
+}) {
   const [offset, setOffset] = useState(0);
   const query = useProjectActivity(companyId, projectId, PAGE_SIZE, offset);
   const entries = query.data?.data ?? [];
@@ -30,7 +222,7 @@ export function ProjectActivity({ companyId, projectId }: { companyId: string; p
 
   if (query.isLoading) {
     return (
-      <div className="flex h-full items-center justify-center" role="status" aria-label="Loading activity">
+      <div className="flex items-center justify-center py-12" role="status" aria-label="Loading activity">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
       </div>
     );
@@ -38,31 +230,27 @@ export function ProjectActivity({ companyId, projectId }: { companyId: string; p
 
   if (query.isError) {
     return (
-      <div className="flex h-full items-center justify-center p-6">
-        <EmptyState
-          icon={<Activity className="h-6 w-6" />}
-          title="Activity could not be loaded"
-          description="The persisted history is still safe. Check your connection and try again."
-          action={<Button variant="secondary" onClick={() => void query.refetch()}>Try again</Button>}
-        />
-      </div>
+      <EmptyState
+        icon={<Activity className="h-6 w-6" />}
+        title="Activity could not be loaded"
+        description="The persisted history is still safe. Check your connection and try again."
+        action={<Button variant="secondary" onClick={() => void query.refetch()}>Try again</Button>}
+      />
     );
   }
 
   if (entries.length === 0 && offset === 0) {
     return (
-      <div className="flex h-full items-center justify-center p-6">
-        <EmptyState
-          icon={<Activity className="h-6 w-6" />}
-          title="No activity yet"
-          description="Durable project and associated task events will appear here."
-        />
-      </div>
+      <EmptyState
+        icon={<Activity className="h-6 w-6" />}
+        title="No activity yet"
+        description="Durable project and associated task events will appear here."
+      />
     );
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4 p-5 sm:p-6">
+    <div className="space-y-4">
       <div className="rounded-lg border border-white/[0.06] bg-surface-raised/40 px-4 py-3 text-xs text-text-secondary">
         System records server-observed changes. User attribution is not available for these events yet.
       </div>
@@ -114,6 +302,17 @@ export function ProjectActivity({ companyId, projectId }: { companyId: string; p
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Main component ───────────────────────────────────────────────────────
+
+export function ProjectActivity({ companyId, projectId }: { companyId: string; projectId: string }) {
+  return (
+    <div className="mx-auto max-w-4xl space-y-4 p-5 sm:p-6">
+      <WorkStateHeader companyId={companyId} projectId={projectId} />
+      <ActivityTimeline companyId={companyId} projectId={projectId} />
     </div>
   );
 }
