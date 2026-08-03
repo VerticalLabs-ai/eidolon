@@ -2,6 +2,7 @@ import { pgTable, text, integer, boolean, timestamp, index } from 'drizzle-orm/p
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 import { agents } from './agents.js';
+import { projects } from './projects.js';
 
 export const webhooks = pgTable(
   'webhooks',
@@ -19,6 +20,7 @@ export const webhooks = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     lastTriggeredAt: timestamp('last_triggered_at', { mode: 'date', precision: 3 }),
     triggerCount: integer('trigger_count').notNull().default(0),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -28,5 +30,6 @@ export const webhooks = pgTable(
   },
   (table) => [
     index('idx_webhooks_company').on(table.companyId),
+    index('idx_webhooks_company_project').on(table.companyId, table.projectId, table.createdAt),
   ],
 );
