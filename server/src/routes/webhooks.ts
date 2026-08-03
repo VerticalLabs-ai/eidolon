@@ -294,23 +294,11 @@ export function webhookTriggerRouter(db: DbInstance): Router {
       throw new AppError(401, "INVALID_SECRET", "Invalid webhook secret");
     }
 
-    // Parse the payload
-    const parseResult = TriggerPayload.safeParse(req.body);
-    if (!parseResult.success) {
-      throw new AppError(
-        400,
-        "INVALID_PAYLOAD",
-        "Invalid webhook payload",
-        parseResult.error.errors,
-      );
-    }
-    const payload = parseResult.data;
-
     const now = new Date();
     const companyId = webhook.companyId;
-
-    // Record the automation_run at trigger time
     const runId = randomUUID();
+
+    // Record the run before parsing so malformed payloads are captured too.
     await db.drizzle.insert(automationRuns).values({
       id: runId,
       companyId,
@@ -319,12 +307,38 @@ export function webhookTriggerRouter(db: DbInstance): Router {
       automationId: webhook.id,
       automationName: webhook.name,
       triggerType: "webhook",
-      triggerPayload: payload as Record<string, unknown>,
+      triggerPayload:
+        req.body && typeof req.body === "object"
+          ? (req.body as Record<string, unknown>)
+          : {},
       status: "running",
       startedAt: now,
       createdAt: now,
       updatedAt: now,
     });
+
+    // Parse the payload
+    const parseResult = TriggerPayload.safeParse(req.body);
+    if (!parseResult.success) {
+      const completedAt = new Date();
+      await db.drizzle
+        .update(automationRuns)
+        .set({
+          status: "failed",
+          error: parseResult.error.message,
+          completedAt,
+          updatedAt: completedAt,
+        })
+        .where(eq(automationRuns.id, runId));
+
+      throw new AppError(
+        400,
+        "INVALID_PAYLOAD",
+        "Invalid webhook payload",
+        parseResult.error.errors,
+      );
+    }
+    const payload = parseResult.data;
 
     let result: Record<string, unknown> = {};
 

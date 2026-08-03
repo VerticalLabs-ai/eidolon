@@ -593,6 +593,28 @@ describe('Automation runs — webhook trigger', () => {
     expect(runs[0].completedAt).not.toBeNull();
   });
 
+  it('VAL-RUN-013: schema-invalid webhook payload records a failed run', async () => {
+    const webhookId = await insertWebhook(db, {
+      companyId,
+      name: 'Invalid Payload Webhook',
+      eventType: 'task.create',
+    });
+
+    await request(app)
+      .post(`/api/webhooks/${webhookId}/trigger`)
+      .set('x-webhook-secret', 'test-secret')
+      .send({ title: 123 })
+      .expect(400);
+
+    const runs = await getRuns(db, companyId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].automationType).toBe('webhook');
+    expect(runs[0].automationId).toBe(webhookId);
+    expect(runs[0].status).toBe('failed');
+    expect(runs[0].error).not.toBeNull();
+    expect(runs[0].completedAt).not.toBeNull();
+  });
+
   it('VAL-RUN-019: webhook run records projectId from the webhook', async () => {
     const webhookId = await insertWebhook(db, {
       companyId,
