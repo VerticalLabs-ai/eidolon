@@ -439,6 +439,50 @@ export function useAdvancePlanGate(companyId: string, projectId: string) {
   });
 }
 
+// ── Project Decisions ─────────────────────────────────────────────────────
+
+export function useProjectDecisions(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectDecisionFilters,
+) {
+  return useQuery({
+    queryKey: ["project-decisions", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectDecision[]>(
+        await api.getProjectDecisions(companyId!, projectId!, filters),
+      ),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useCreateProjectDecision(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectDecisionInput) =>
+      api.createProjectDecision(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-decisions", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectDecision(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      decisionId,
+      data,
+    }: {
+      decisionId: string;
+      data: api.UpdateProjectDecisionInput;
+    }) => api.updateProjectDecision(companyId, projectId, decisionId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-decisions", companyId, projectId] });
+    },
+  });
+}
+
 // ── Agents ───────────────────────────────────────────────────────────────
 
 export function useAgents(companyId: string | undefined) {

@@ -618,6 +618,23 @@ export interface ProjectDecision {
   updatedAt: string;
 }
 
+export interface ProjectDecisionFilters {
+  status?: ProjectDecisionStatus;
+}
+
+export interface CreateProjectDecisionInput {
+  title: string;
+  description?: string;
+  planId?: string;
+  planStepId?: string;
+}
+
+export interface UpdateProjectDecisionInput {
+  status: Exclude<ProjectDecisionStatus, "pending">;
+  rationale?: string;
+  supersededById?: string;
+}
+
 export interface ProjectThreadFilters {
   status?: ProjectThreadStatus;
   type?: ProjectThreadType;
@@ -772,6 +789,40 @@ export const advancePlanGate = (
   request<ApiResponse<ProjectPlanStep>>(
     `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps/${stepId}/advance`,
     { method: "POST" },
+  );
+
+export const getProjectDecisions = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectDecisionFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set("status", filters.status);
+  const query = params.toString();
+  return request<ApiResponse<ProjectDecision[]>>(
+    `/companies/${companyId}/projects/${projectId}/decisions${query ? `?${query}` : ""}`,
+  );
+};
+
+export const createProjectDecision = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectDecisionInput,
+) =>
+  request<ApiResponse<ProjectDecision>>(
+    `/companies/${companyId}/projects/${projectId}/decisions`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateProjectDecision = (
+  companyId: string,
+  projectId: string,
+  decisionId: string,
+  data: UpdateProjectDecisionInput,
+) =>
+  request<ApiResponse<ProjectDecision>>(
+    `/companies/${companyId}/projects/${projectId}/decisions/${decisionId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
   );
 
 export const getTaskThread = (companyId: string, taskId: string) =>
