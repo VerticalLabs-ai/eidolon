@@ -304,6 +304,10 @@ export function workflowsRouter(db: DbInstance): Router {
       };
       if (allDone) {
         updateValues.status = "archived"; // completed workflows go to archived
+      } else if (anyFailed) {
+        // A failed node halts this execution. Leave the workflow re-executable
+        // instead of keeping it active after its run has become terminal.
+        updateValues.status = "paused";
       }
 
       const [updated] = await db.drizzle

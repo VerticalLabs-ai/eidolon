@@ -389,6 +389,36 @@ describe('Automation runs — workflow execute', () => {
     expect(runs[0].completedAt).not.toBeNull();
   });
 
+  it('allows a failed workflow to be re-executed with a new automation_run', async () => {
+    const wf = await createWorkflow(app, companyId, {
+      name: 'Retryable Workflow',
+      nodes: [{ id: 'n1', type: 'task', label: 'Step 1', config: {}, status: 'pending', dependsOn: [] }],
+    });
+
+    await request(app).post(`/api/companies/${companyId}/workflows/${wf.id}/execute`).expect(200);
+    await request(app)
+      .patch(`/api/companies/${companyId}/workflows/${wf.id}/nodes/n1`)
+      .send({ status: 'failed' })
+      .expect(200);
+
+    const failedWorkflow = await request(app)
+      .get(`/api/companies/${companyId}/workflows/${wf.id}`)
+      .expect(200);
+    expect(['paused', 'archived']).toContain(failedWorkflow.body.data.status);
+
+    const failedRuns = await getRuns(db, companyId);
+    expect(failedRuns).toHaveLength(1);
+    expect(failedRuns[0].status).toBe('failed');
+
+    await request(app).post(`/api/companies/${companyId}/workflows/${wf.id}/execute`).expect(200);
+
+    const runsAfterRetry = await getRuns(db, companyId);
+    expect(runsAfterRetry).toHaveLength(2);
+    expect(new Set(runsAfterRetry.map((run) => run.id)).size).toBe(2);
+    expect(runsAfterRetry.filter((run) => run.status === 'failed')).toHaveLength(1);
+    expect(runsAfterRetry.filter((run) => run.status === 'running')).toHaveLength(1);
+  });
+
   it('VAL-RUN-008: workflow run links to task via nodeId taskId', async () => {
     // Create a task first
     const taskRes = await request(app)
