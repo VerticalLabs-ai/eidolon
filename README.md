@@ -120,6 +120,29 @@ EIDOLON_COMPANY_ID=<uuid> \
 
 Point any MCP-capable client (Claude Desktop, Cursor, Claude Code, `mcp-cli`) at the binary. Full docs in [`packages/mcp-server/README.md`](packages/mcp-server/README.md).
 
+### Cleaning up validation fixtures
+
+Validation companies should be created with `settings.testFixture: true` (and
+optionally a `__mtest__` name prefix). The cleanup command is non-destructive
+by default and reports what it would remove:
+
+```bash
+pnpm cleanup:fixtures
+```
+
+Pass `--execute` to delete marked fixtures and their dependent data:
+
+```bash
+pnpm cleanup:fixtures -- --execute
+```
+
+For crashed or abandoned validation runs, add `--stale-hours N` to delete only
+fixtures older than `N` hours:
+
+```bash
+pnpm cleanup:fixtures -- --execute --stale-hours 24
+```
+
 For agent-side MCP client connections, tenant-registered `stdio` transports are disabled by default because they spawn local processes on the Eidolon server. Operators can enable them for trusted deployments with `EIDOLON_ENABLE_TENANT_STDIO_MCP=true`; `EIDOLON_MCP_STDIO_COMMAND_ALLOWLIST` must list exact full argv presets such as `/usr/local/bin/node /opt/eidolon/mcp/echo-server.mjs`, not generic interpreters or package runners. Stdio env overrides are rejected unless each key is listed in `EIDOLON_MCP_STDIO_ENV_ALLOWLIST`; the spawned process never inherits the Eidolon server process env. Remote SSE/Streamable HTTP transports can use safe public IP literals by default; hostnames and trusted private hosts must be listed in `EIDOLON_MCP_REMOTE_HOST_ALLOWLIST` so operators own the DNS/network path. MCP connect, discovery, and tool calls are bounded by `EIDOLON_MCP_CONNECT_TIMEOUT_MS`, `EIDOLON_MCP_DISCOVERY_TIMEOUT_MS`, and `EIDOLON_MCP_TOOL_CALL_TIMEOUT_MS`.
 
 ### Local CLI runtime adapters
