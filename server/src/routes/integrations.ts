@@ -51,12 +51,91 @@ const PatchIntegrationBody = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Map MCP server status to unified health status.
+ * connected → healthy, error → error, disconnected → unknown.
+ */
+function mapMcpStatusToHealth(status: string): string {
+  if (status === 'connected') return 'healthy';
+  if (status === 'error') return 'error';
+  return 'unknown';
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
 export function integrationsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const { integrations } = db.schema;
+
+  // GET /health - unified health surface (integrations + MCP servers)
+  router.get('/health', async (req, res) => {
+    const { companyId } = routeParams(req);
+    const project =
+      typeof req.query.project === 'string' ? req.query.project : undefined;
+
+    // Query integrations (optionally filtered by project)
+    const integrationRows = await db.drizzle
+      .select()
+      .from(integrations)
+      .where(
+        project
+          ? and(eq(integrations.companyId, companyId), eq(integrations.projectId, project))
+          : eq(integrations.companyId, companyId),
+      );
+
+    const integrationEntries = integrationRows.map((row) => ({
+      type: 'integration' as const,
+      id: row.id,
+      name: row.name,
+      healthStatus: row.healthStatus,
+      lastHealthCheckAt: row.lastHealthCheckAt,
+      healthError: row.healthError,
+      projectId: row.projectId,
+      provider: row.provider,
+      transport: null,
+    }));
+
+    // Query MCP servers — they have no projectId, so exclude them when a
+    // project filter is applied (unscoped entries are excluded by the filter).
+    let mcpEntries: Array<{
+      type: 'mcp_server';
+      id: string;
+      name: string;
+      healthStatus: string;
+      lastHealthCheckAt: Date | null;
+      healthError: string | null;
+      projectId: string | null;
+      provider: null;
+      transport: string;
+    }> = [];
+
+    if (!project) {
+      const { mcpServers } = db.schema;
+      const mcpRows = await db.drizzle
+        .select()
+        .from(mcpServers)
+        .where(eq(mcpServers.companyId, companyId));
+
+      mcpEntries = mcpRows.map((row) => ({
+        type: 'mcp_server' as const,
+        id: row.id,
+        name: row.name,
+        healthStatus: mapMcpStatusToHealth(row.status),
+        lastHealthCheckAt: row.lastConnectedAt,
+        healthError: null,
+        projectId: null,
+        provider: null,
+        transport: row.transport,
+      }));
+    }
+
+    res.json({ data: [...integrationEntries, ...mcpEntries] });
+  });
 
   // GET / - list integrations (also returns catalog)
   router.get('/', async (req, res) => {
