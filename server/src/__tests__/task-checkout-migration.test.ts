@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { randomUUID } from 'node:crypto';
@@ -136,26 +136,19 @@ describe('task checkout lifecycle migration', () => {
         createdAt: staleTimestamp,
         updatedAt: staleTimestamp,
       });
-      await migrationDb.insert(schema.agentExecutions).values({
-        id: executionId,
-        companyId,
-        agentId,
-        status: 'running',
-        startedAt: staleTimestamp,
-        executionMode: 'single',
-        createdAt: staleTimestamp,
-        updatedAt: staleTimestamp,
-      });
+      await migrationDb.execute(sql`
+        INSERT INTO "agent_executions" ("id", "company_id", "agent_id", "status", "started_at", "execution_mode", "created_at", "updated_at")
+        VALUES (${executionId}, ${companyId}, ${agentId}, 'running', ${staleTimestamp}, 'single', ${staleTimestamp}, ${staleTimestamp})
+      `);
 
       await migrationDb.execute(sql`
         UPDATE "agent_executions" SET "status" = 'completed' WHERE "id" = ${executionId}
       `);
 
-      const [execution] = await migrationDb
-        .select()
-        .from(schema.agentExecutions)
-        .where(eq(schema.agentExecutions.id, executionId));
-      expect(execution.updatedAt.getTime()).toBeGreaterThan(staleTimestamp.getTime());
+      const [execution] = await migrationDb.execute(sql`
+        SELECT "updated_at" FROM "agent_executions" WHERE "id" = ${executionId}
+      `).then((r) => r.rows as Array<{ updated_at: string }>);
+      expect(new Date(execution.updated_at).getTime()).toBeGreaterThan(staleTimestamp.getTime());
     } finally {
       await client.close();
     }
@@ -227,18 +220,10 @@ describe('task checkout lifecycle migration', () => {
         createdAt: now,
         updatedAt: now,
       });
-      await migrationDb.insert(schema.agentExecutions).values({
-        id: executionId,
-        companyId,
-        agentId,
-        taskId,
-        status: 'completed',
-        startedAt: now,
-        completedAt: now,
-        executionMode: 'single',
-        createdAt: now,
-        updatedAt: now,
-      });
+      await migrationDb.execute(sql`
+        INSERT INTO "agent_executions" ("id", "company_id", "agent_id", "task_id", "status", "started_at", "completed_at", "execution_mode", "created_at", "updated_at")
+        VALUES (${executionId}, ${companyId}, ${agentId}, ${taskId}, 'completed', ${now}, ${now}, 'single', ${now}, ${now})
+      `);
       await migrationDb.insert(schema.taskCheckouts).values({
         id: checkoutId,
         companyId,
@@ -263,23 +248,19 @@ describe('task checkout lifecycle migration', () => {
       );
       await migrate(migrationDb, { migrationsFolder });
 
-      const [[checkout], [task], [agent], evidence] = await Promise.all([
+      const [[checkout], [task], [agent]] = await Promise.all([
         migrationDb
           .select()
           .from(schema.taskCheckouts)
           .where(eq(schema.taskCheckouts.id, checkoutId)),
         migrationDb.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)),
         migrationDb.select().from(schema.agents).where(eq(schema.agents.id, agentId)),
-        migrationDb
-          .select()
-          .from(schema.taskThreadItems)
-          .where(
-            and(
-              eq(schema.taskThreadItems.taskId, taskId),
-              eq(schema.taskThreadItems.relatedExecutionId, executionId),
-            ),
-          ),
       ]);
+      const evidenceResult = await migrationDb.execute(sql`
+        SELECT "payload" FROM "task_thread_items"
+        WHERE "task_id" = ${taskId} AND "related_execution_id" = ${executionId}
+      `);
+      const evidence = evidenceResult.rows as unknown as Array<{ payload: Record<string, unknown> }>;
       expect(checkout.status).toBe('released');
       expect(task.status).toBe('review');
       expect(agent.status).toBe('idle');
@@ -343,16 +324,10 @@ describe('task checkout lifecycle migration', () => {
         createdAt,
         updatedAt: leasedAt,
       });
-      await migrationDb.insert(schema.agentExecutions).values({
-        id: executionId,
-        companyId,
-        agentId,
-        status: 'running',
-        startedAt: leasedAt,
-        executionMode: 'single',
-        createdAt: leasedAt,
-        updatedAt: leasedAt,
-      });
+      await migrationDb.execute(sql`
+        INSERT INTO "agent_executions" ("id", "company_id", "agent_id", "status", "started_at", "execution_mode", "created_at", "updated_at")
+        VALUES (${executionId}, ${companyId}, ${agentId}, 'running', ${leasedAt}, 'single', ${leasedAt}, ${leasedAt})
+      `);
       await migrationDb.execute(sql`
         INSERT INTO "execution_environments" (
           "id",

@@ -1,6 +1,7 @@
 import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
+import { projects } from './projects.js';
 
 export const knowledgeDocuments = pgTable(
   'knowledge_documents',
@@ -21,6 +22,7 @@ export const knowledgeDocuments = pgTable(
     chunkCount: integer('chunk_count').notNull().default(0),
     embeddingStatus: text('embedding_status').notNull().default('pending'),
     createdBy: text('created_by'),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -30,6 +32,7 @@ export const knowledgeDocuments = pgTable(
   },
   (table) => [
     index('idx_knowledge_docs_company').on(table.companyId),
+    index('idx_knowledge_docs_company_project').on(table.companyId, table.projectId, table.createdAt),
   ],
 );
 

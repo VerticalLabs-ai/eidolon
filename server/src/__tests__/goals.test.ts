@@ -218,7 +218,10 @@ describe('Goals API', () => {
     await request(app)
       .post(`/api/companies/${companyId}/goals`)
       .send({ title: 'Invalid project', projectId: otherProject.body.data.id })
-      .expect(400);
+      .expect(404)
+      .expect(({ body }) => {
+        expect(body.code).toBe('PROJECT_INVALID');
+      });
 
     await request(app)
       .patch(`/api/companies/${companyId}/goals/${scoped.body.data.id}`)
@@ -231,6 +234,9 @@ describe('Goals API', () => {
     await request(app)
       .post(`/api/companies/${companyId}/goals`)
       .send({ title: 'Invalid project', projectId: randomUUID() })
-      .expect(400);
+      .expect(404)
+      .expect(({ body }) => {
+        expect(body.code).toBe('PROJECT_INVALID');
+      });
   });
 });

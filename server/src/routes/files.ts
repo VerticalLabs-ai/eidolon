@@ -7,6 +7,7 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -79,25 +80,7 @@ function getMimeType(name: string, provided?: string): string {
 
 export function filesRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { agentFiles, projects } = db.schema;
-
-  // Validate that a projectId belongs to the route's company. Rejects
-  // cross-company and non-existent references with 400 (no row written).
-  async function validateProjectOwnership(companyId: string, projectId: string): Promise<void> {
-    const [project] = await db.drizzle
-      .select({ id: projects.id })
-      .from(projects)
-      .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
-      .limit(1);
-
-    if (!project) {
-      throw new AppError(
-        400,
-        'FILE_PROJECT_INVALID',
-        'Choose a project from this company.',
-      );
-    }
-  }
+  const { agentFiles } = db.schema;
 
   // GET / - list all files (optional ?agentId and ?project filters)
   router.get('/', validate(FileListQuery, 'query'), async (req, res) => {
@@ -162,7 +145,7 @@ export function filesRouter(db: DbInstance): Router {
 
     // Validate project ownership (reject cross-company / non-existent)
     if (body.projectId) {
-      await validateProjectOwnership(companyId, body.projectId);
+      await validateProjectOwnership(db, companyId, body.projectId);
     }
 
     // If parentId specified, resolve parent path
@@ -242,7 +225,7 @@ export function filesRouter(db: DbInstance): Router {
 
     // Validate project ownership when projectId is provided (reject cross-company / non-existent)
     if (body.projectId !== undefined && body.projectId !== null) {
-      await validateProjectOwnership(companyId, body.projectId);
+      await validateProjectOwnership(db, companyId, body.projectId);
     }
 
     const now = new Date();

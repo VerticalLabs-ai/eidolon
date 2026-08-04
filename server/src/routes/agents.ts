@@ -16,6 +16,8 @@ import { HeartbeatScheduler } from "../services/scheduler.js";
 import { TaskCheckoutError } from "../services/task-checkout.js";
 import type { DbInstance } from "../types.js";
 import { routeParams } from "../utils/route-params.js";
+import { validateProjectOwnership } from "../utils/project-validation.js";
+import { resolveTaskProjectId } from "../utils/task-project-resolver.js";
 
 const LIVENESS_STATUS_HEALTHY = "healthy";
 const LAST_USEFUL_ACTION_MANUAL_EXECUTION = "manual_execution_created";
@@ -136,6 +138,7 @@ const UpdateInstructionsBody = z.object({
 
 const CreateExecutionBody = z.object({
   taskId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
   modelUsed: z.string().max(255).optional(),
   provider: z.string().max(100).optional(),
 });
@@ -264,6 +267,7 @@ type ExecutionRow = {
   id: string;
   agentId: string;
   taskId: string | null;
+  projectId: string | null;
   status: "running" | "completed" | "failed" | "cancelled";
   startedAt: Date;
   completedAt: Date | null;
@@ -314,6 +318,7 @@ function serializeExecution(
     id: row.id,
     agentId: row.agentId,
     taskId: row.taskId ?? null,
+    projectId: row.projectId ?? null,
     action,
     status: row.status,
     input: null,
@@ -1122,15 +1127,20 @@ export function agentsRouter(db: DbInstance): Router {
       throw new AppError(404, "AGENT_NOT_FOUND", `Agent ${id} not found`);
     }
 
+    const project = req.query.project as string | undefined;
+
+    const conditions = [
+      eq(agentExecutions.agentId, id),
+      eq(agentExecutions.companyId, companyId),
+    ];
+    if (project) {
+      conditions.push(eq(agentExecutions.projectId, project));
+    }
+
     const rows = await db.drizzle
       .select()
       .from(agentExecutions)
-      .where(
-        and(
-          eq(agentExecutions.agentId, id),
-          eq(agentExecutions.companyId, companyId),
-        ),
-      )
+      .where(and(...conditions))
       .orderBy(desc(agentExecutions.createdAt))
       .limit(50);
 
@@ -1155,6 +1165,34 @@ export function agentsRouter(db: DbInstance): Router {
         throw new AppError(404, "AGENT_NOT_FOUND", `Agent ${id} not found`);
       }
 
+      // Derive projectId from the linked task when taskId is present.
+      // For manual executions (no taskId), accept an optional projectId
+      // validated against the company.
+      let executionProjectId: string | null = null;
+
+      if (body.taskId) {
+        const [task] = await db.drizzle
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(and(eq(tasks.id, body.taskId), eq(tasks.companyId, companyId)))
+          .limit(1);
+
+        if (!task) {
+          throw new AppError(404, "TASK_NOT_FOUND", `Task ${body.taskId} not found`);
+        }
+
+        // Resolve project_id through a same-company join so stale/deleted/
+        // cross-company task.project_id values yield NULL.
+        executionProjectId = await resolveTaskProjectId(
+          db.drizzle,
+          companyId,
+          body.taskId,
+        );
+      } else if (body.projectId) {
+        await validateProjectOwnership(db, companyId, body.projectId);
+        executionProjectId = body.projectId;
+      }
+
       const now = new Date();
       const execId = randomUUID();
 
@@ -1174,6 +1212,7 @@ export function agentsRouter(db: DbInstance): Router {
           livenessStatus: LIVENESS_STATUS_HEALTHY,
           lastUsefulAction: LAST_USEFUL_ACTION_MANUAL_EXECUTION,
           nextActionHint: NEXT_ACTION_HINT_AWAIT_LOG,
+          projectId: executionProjectId,
           createdAt: now,
         })
         .returning();

@@ -24,6 +24,7 @@ import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 
 export const MAX_CONTINUATION_RETRIES = 3;
 
@@ -252,6 +253,10 @@ export class AgenticLoop {
     const execId = randomUUID();
     const startedAt = new Date();
 
+    // Resolve project_id through a same-company join so stale/deleted/
+    // cross-company task.project_id values yield NULL.
+    const resolvedProjectId = await resolveTaskProjectId(this.db.drizzle, companyId, taskId);
+
     await this.db.drizzle.insert(agentExecutions).values({
       id: execId,
       companyId,
@@ -263,6 +268,7 @@ export class AgenticLoop {
       provider: providerName,
       executionMode: 'agentic-loop',
       lastEventAt: startedAt,
+      projectId: resolvedProjectId,
       createdAt: startedAt,
     });
 

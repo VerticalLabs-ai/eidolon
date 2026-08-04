@@ -7,6 +7,7 @@ import { validate } from '../middleware/validate.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -44,7 +45,7 @@ const CancelBody = z.object({
 
 export function approvalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { approvals, approvalComments, taskThreadItems } = db.schema;
+  const { approvals, approvalComments, taskThreadItems, tasks } = db.schema;
 
   // GET /api/companies/:companyId/approvals?status=pending
   router.get('/', async (req, res) => {
@@ -98,6 +99,10 @@ export function approvalsRouter(db: DbInstance): Router {
         .returning();
 
       if (created.taskId) {
+        // Resolve project_id through a same-company join so stale/deleted/
+        // cross-company task.project_id values yield NULL.
+        const resolvedProjectId = await resolveTaskProjectId(tx, companyId, created.taskId);
+
         const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
           companyId,
@@ -108,6 +113,7 @@ export function approvalsRouter(db: DbInstance): Router {
           payload: { approvalId: created.id, kind: created.kind, priority: created.priority },
           status: 'linked',
           relatedApprovalId: created.id,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         };
@@ -197,6 +203,10 @@ export function approvalsRouter(db: DbInstance): Router {
       }
 
       if (updated.taskId) {
+        // Resolve project_id through a same-company join so stale/deleted/
+        // cross-company task.project_id values yield NULL.
+        const resolvedProjectId = await resolveTaskProjectId(tx, companyId, updated.taskId);
+
         const threadValues: typeof taskThreadItems.$inferInsert = {
           id: randomUUID(),
           companyId,
@@ -209,6 +219,7 @@ export function approvalsRouter(db: DbInstance): Router {
           relatedApprovalId: updated.id,
           resolvedByUserId: req.user?.id ?? null,
           resolvedAt: now,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         };

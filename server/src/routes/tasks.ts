@@ -11,6 +11,7 @@ import {
 } from '../services/task-checkout.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 
 const TASK_TYPES = ['feature', 'bug', 'chore', 'spike', 'epic'] as const;
 const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -235,17 +236,31 @@ export function tasksRouter(db: DbInstance): Router {
    * Insert a thread item, reporting whether the row was newly created or is an
    * idempotency replay of an existing row. Callers that emit realtime events
    * must gate emission on `created` so replays don't broadcast duplicates.
+   *
+   * Project ownership is derived from the linked task's `project_id` — callers
+   * never supply it directly.
    */
   async function insertThreadItem(values: typeof taskThreadItems.$inferInsert): Promise<{
     row: typeof taskThreadItems.$inferSelect;
     created: boolean;
   }> {
     const now = new Date();
+
+    // Derive projectId from the linked task's project, resolved through a
+    // same-company join to projects so stale/deleted/cross-company IDs yield
+    // NULL instead of causing FK violations.
+    const resolvedProjectId = await resolveTaskProjectId(
+      db.drizzle,
+      values.companyId,
+      values.taskId,
+    );
+
     const insertValues = {
       id: randomUUID(),
       createdAt: now,
       updatedAt: now,
       ...values,
+      projectId: resolvedProjectId,
     };
 
     if (insertValues.idempotencyKey) {
@@ -359,6 +374,26 @@ export function tasksRouter(db: DbInstance): Router {
     }
 
     res.json({ data: board });
+  });
+
+  // GET /api/companies/:companyId/tasks/thread-items - list all thread items (with optional ?project filter)
+  router.get('/thread-items', async (req, res) => {
+    const companyId = routeParams(req).companyId;
+    const project = req.query.project as string | undefined;
+
+    const conditions = [eq(taskThreadItems.companyId, companyId)];
+    if (project) {
+      conditions.push(eq(taskThreadItems.projectId, project));
+    }
+
+    const rows = await db.drizzle
+      .select()
+      .from(taskThreadItems)
+      .where(and(...conditions))
+      .orderBy(desc(taskThreadItems.createdAt))
+      .limit(200);
+
+    res.json({ data: rows });
   });
 
   // GET /api/companies/:companyId/tasks/:id/thread

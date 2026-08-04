@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { RuntimeSessionService } from './runtime-sessions.js';
 import { TaskCheckoutService } from './task-checkout.js';
+import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 import type { DbInstance } from '../types.js';
 
 export type RoutineTriggerStatus =
@@ -138,6 +139,10 @@ export class RoutineTriggerService {
         })
         .returning();
 
+      // Resolve project_id through a same-company join so stale/deleted/
+      // cross-company task.project_id values yield NULL.
+      const resolvedProjectId = await resolveTaskProjectId(tx, companyId, task.id);
+
       const [execution] = executionId
         ? await tx
             .insert(agentExecutions)
@@ -154,6 +159,7 @@ export class RoutineTriggerService {
               lastUsefulAction: 'routine_triggered',
               nextActionHint: 'await_runtime_session',
               lastEventAt: now,
+              projectId: resolvedProjectId,
               createdAt: now,
               updatedAt: now,
             })
@@ -184,6 +190,7 @@ export class RoutineTriggerService {
           status: execution ? 'linked' : 'answered',
           idempotencyKey: `routine-trigger:${triggerId}`,
           relatedExecutionId: execution?.id ?? null,
+          projectId: resolvedProjectId,
           createdAt: now,
           updatedAt: now,
         })

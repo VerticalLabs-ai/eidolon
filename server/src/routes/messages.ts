@@ -7,6 +7,7 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
 
 const SendMessageBody = z.object({
   fromAgentId: z.string().uuid(),
@@ -17,6 +18,7 @@ const SendMessageBody = z.object({
   threadId: z.string().uuid().optional(),
   parentMessageId: z.string().uuid().optional(),
   metadata: z.record(z.unknown()).default({}),
+  projectId: z.string().uuid().optional(),
 });
 
 const MessageListQuery = z.object({
@@ -24,6 +26,7 @@ const MessageListQuery = z.object({
   toAgent: z.string().uuid().optional(),
   threadId: z.string().uuid().optional(),
   type: z.string().optional(),
+  project: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -35,13 +38,14 @@ export function messagesRouter(db: DbInstance): Router {
   // GET /api/companies/:companyId/messages
   router.get('/', validate(MessageListQuery, 'query'), async (req, res) => {
     const companyId = routeParams(req).companyId;
-    const query = req.query as unknown as z.infer<typeof MessageListQuery>;
+    const query = (req as any).validated?.query as z.infer<typeof MessageListQuery>;
 
     const conditions = [eq(messages.companyId, companyId)];
     if (query.fromAgent) conditions.push(eq(messages.fromAgentId, query.fromAgent));
     if (query.toAgent) conditions.push(eq(messages.toAgentId, query.toAgent));
     if (query.threadId) conditions.push(eq(messages.threadId, query.threadId));
     if (query.type) conditions.push(eq(messages.type, query.type as any));
+    if (query.project) conditions.push(eq(messages.projectId, query.project));
 
     const rows = await db.drizzle
       .select()
@@ -65,6 +69,11 @@ export function messagesRouter(db: DbInstance): Router {
     const companyId = routeParams(req).companyId;
     const now = new Date();
 
+    // Validate project ownership when projectId is supplied
+    if (body.projectId) {
+      await validateProjectOwnership(db, companyId, body.projectId);
+    }
+
     const [row] = await db.drizzle
       .insert(messages)
       .values({
@@ -77,6 +86,7 @@ export function messagesRouter(db: DbInstance): Router {
         threadId: body.threadId ?? randomUUID(),
         parentMessageId: body.parentMessageId ?? null,
         metadata: body.metadata,
+        projectId: body.projectId ?? null,
         createdAt: now,
       })
       .returning();

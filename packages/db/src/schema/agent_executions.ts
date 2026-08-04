@@ -3,6 +3,7 @@ import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-
 import { randomUUID } from 'node:crypto';
 import { agents } from './agents.js';
 import { tasks } from './tasks.js';
+import { projects } from './projects.js';
 
 export const agentExecutions = pgTable(
   'agent_executions',
@@ -60,6 +61,7 @@ export const agentExecutions = pgTable(
     lastUsefulAction: text('last_useful_action'),
     nextActionHint: text('next_action_hint'),
     continuationAttempts: integer('continuation_attempts').notNull().default(0),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     lastContinuationAt: timestamp('last_continuation_at', { mode: 'date', precision: 3, withTimezone: true }),
     watchdogLastCheckedAt: timestamp('watchdog_last_checked_at', { mode: 'date', precision: 3, withTimezone: true }),
     recoveryTaskId: text('recovery_task_id').references(() => tasks.id, { onDelete: 'set null' }),
@@ -94,6 +96,7 @@ export const agentExecutions = pgTable(
   },
   (table) => [
     index('idx_agent_executions_company').on(table.companyId, table.agentId, table.createdAt),
+    index('idx_agent_executions_company_project').on(table.companyId, table.projectId, table.createdAt),
     index('idx_agent_executions_liveness').on(table.companyId, table.livenessStatus, table.watchdogLastCheckedAt),
     index('idx_agent_executions_retry')
       .on(table.companyId, table.retryStatus, table.retryDueAt)
