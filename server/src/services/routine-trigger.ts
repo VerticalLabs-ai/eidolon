@@ -17,6 +17,7 @@ type RoutineTriggerWork = {
   task: TableRow<'tasks'>;
   execution: TableRow<'agentExecutions'> | null;
   threadItem: TableRow<'taskThreadItems'>;
+  runId: string;
 };
 
 export class RoutineTriggerService {
@@ -80,6 +81,12 @@ export class RoutineTriggerService {
       ? 'session_started'
       : 'task_created_without_agent';
 
+    // Complete the automation_run now that all work is linked
+    await this.completeRun(companyId, result.runId, {
+      sessionId: session?.id ?? null,
+      outcome: status,
+    });
+
     return {
       ...result,
       execution: result.execution && session
@@ -94,7 +101,7 @@ export class RoutineTriggerService {
     companyId: string,
     routineId: string,
   ): Promise<RoutineTriggerWork | null> {
-    const { routines, tasks, agentExecutions, taskThreadItems } = this.db.schema;
+    const { routines, tasks, agentExecutions, taskThreadItems, automationRuns } = this.db.schema;
     const now = new Date();
 
     return this.db.drizzle.transaction(async (tx) => {
@@ -119,12 +126,16 @@ export class RoutineTriggerService {
       const executionId = routine.agentId ? randomUUID() : null;
       const triggerId = randomUUID();
       const taskStatus = routine.agentId ? 'todo' : 'backlog';
+      const runId = randomUUID();
 
+      // FIX: set tasks.projectId directly from the routine at insert time
+      // (previously project was only resolved downstream for execution/thread items).
       const [task] = await tx
         .insert(tasks)
         .values({
           id: taskId,
           companyId,
+          projectId: routine.projectId,
           title: `Run routine: ${routine.name}`,
           description: routine.prompt,
           type: 'chore',
@@ -202,11 +213,35 @@ export class RoutineTriggerService {
         .where(and(eq(routines.id, routine.id), eq(routines.companyId, companyId)))
         .returning();
 
+      // Record the automation_run with links to created work
+      await tx.insert(automationRuns).values({
+        id: runId,
+        companyId,
+        projectId: routine.projectId,
+        automationType: 'routine',
+        automationId: routine.id,
+        automationName: routine.name,
+        triggerType: 'manual',
+        triggerPayload: {
+          routineId: routine.id,
+          routineName: routine.name,
+          mode: routine.mode,
+          trigger: 'manual',
+        },
+        status: 'running',
+        taskId: task.id,
+        executionId: execution?.id ?? null,
+        startedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+
       return {
         routine: updatedRoutine,
         task,
         execution,
         threadItem,
+        runId,
       };
     });
   }
@@ -218,7 +253,7 @@ export class RoutineTriggerService {
   ) {
     if (!work.execution) return;
 
-    const { tasks, agentExecutions, taskThreadItems } = this.db.schema;
+    const { tasks, agentExecutions, taskThreadItems, automationRuns } = this.db.schema;
     const now = new Date();
     const message = error instanceof Error ? error.message : String(error);
 
@@ -259,7 +294,43 @@ export class RoutineTriggerService {
           eq(taskThreadItems.companyId, companyId),
           eq(taskThreadItems.id, work.threadItem.id),
         ));
+
+      // Mark the automation_run as failed
+      await tx
+        .update(automationRuns)
+        .set({
+          status: 'failed',
+          error: message,
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(automationRuns.companyId, companyId),
+          eq(automationRuns.id, work.runId),
+        ));
     });
+  }
+
+  private async completeRun(
+    companyId: string,
+    runId: string,
+    opts: { sessionId: string | null; outcome: string },
+  ) {
+    const { automationRuns } = this.db.schema;
+    const now = new Date();
+    await this.db.drizzle
+      .update(automationRuns)
+      .set({
+        status: 'completed',
+        sessionId: opts.sessionId,
+        outcome: opts.outcome,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(automationRuns.companyId, companyId),
+        eq(automationRuns.id, runId),
+      ));
   }
 }
 

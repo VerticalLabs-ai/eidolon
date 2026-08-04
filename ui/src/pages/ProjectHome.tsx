@@ -12,6 +12,7 @@ import type { ProjectHomeSummary, Task, Activity as ActivityType, AgentFile, Goa
 import { ProjectThreadPanel } from "@/components/projects/ProjectThreadPanel";
 import { PlanProgressCard } from "@/components/projects/PlanProgressCard";
 import { PendingDecisionsCard } from "@/components/projects/PendingDecisionsCard";
+import { HealthSummaryCard } from "@/components/projects/HealthSummaryCard";
 
 const statusVariant: Record<string, "default" | "success" | "warning" | "info" | "error"> = {
   active: "success",
@@ -418,6 +419,7 @@ export function ProjectHome({ companyId, projectId }: { companyId: string; proje
         <ProjectThreadPanel companyId={companyId} projectId={projectId} />
         <PendingDecisionsCard companyId={companyId} projectId={projectId} />
         <PlanProgressCard companyId={companyId} projectId={projectId} />
+        <HealthSummaryCard companyId={companyId} projectId={projectId} />
       </div>
     </div>
   );

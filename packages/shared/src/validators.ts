@@ -57,10 +57,12 @@ export {
   WorkflowSchema,
   WorkflowNodeSchema,
   WorkflowStatusEnum,
+  WorkflowNodeTypeEnum,
   WorkflowNodeStatusEnum,
   CreateWorkflowInputSchema,
   CreateWorkflowNodeInputSchema,
   UpdateWorkflowInputSchema,
+  UpdateNodeInputSchema,
 } from './types/workflow.js';
 
 // ---------------------------------------------------------------------------

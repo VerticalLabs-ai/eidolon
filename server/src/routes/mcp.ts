@@ -127,6 +127,47 @@ export function mcpRouter(db: DbInstance): Router {
     }
   });
 
+  // POST /api/companies/:companyId/mcp/servers/:id/health -- real re-check
+  // Performs a real reconnect + discovery, updates status truthfully, and
+  // returns the result including toolCount. On failure, sets status='error'.
+  router.post('/servers/:id/health', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+
+    const server = await mcpService.getServer(id);
+    if (!server || server.companyId !== companyId) {
+      throw new AppError(404, 'MCP_SERVER_NOT_FOUND', `MCP server ${id} not found`);
+    }
+
+    try {
+      const updated = await mcpService.connectServer(id);
+      res.json({
+        data: {
+          id,
+          status: 'connected' as const,
+          lastConnectedAt: updated.lastConnectedAt,
+          toolCount: (updated.availableTools ?? []).length,
+        },
+      });
+    } catch (error) {
+      // connectServer already set status='error' in the DB for all failure
+      // paths (including policy errors). Fetch the current row state to
+      // return truthful persisted values. Policy failures (e.g., stdio
+      // disabled) return the same health data shape as other failures for
+      // client consistency, rather than a generic AppError 403 envelope.
+      const current = await mcpService.getServer(id);
+      const message = error instanceof Error ? error.message : String(error);
+      res.json({
+        data: {
+          id,
+          status: 'error' as const,
+          lastConnectedAt: current?.lastConnectedAt ?? null,
+          toolCount: (current?.availableTools ?? []).length,
+          error: message,
+        },
+      });
+    }
+  });
+
   // GET /api/companies/:companyId/mcp/tools -- list all available tools across servers
   router.get('/tools', async (req, res) => {
     const { companyId } = routeParams(req);

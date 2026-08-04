@@ -63,6 +63,8 @@ export function projectsRouter(db: DbInstance): Router {
     projectPlanSteps,
     projectDecisions,
     projectOutcomes,
+    integrations,
+    automationRuns,
   } = db.schema;
 
   // GET /api/companies/:companyId/projects - list all projects for a company
@@ -196,6 +198,9 @@ export function projectsRouter(db: DbInstance): Router {
       recentThreadItemsRows,
       pendingDecisionsRows,
       activePlanProgressRows,
+      // VER-513: integration health counts + automation run status counts
+      integrationHealthRows,
+      automationRunStatusRows,
     ] = await Promise.all([
       // counts.taskCount
       db.drizzle
@@ -421,6 +426,34 @@ export function projectsRouter(db: DbInstance): Router {
         )
         .orderBy(desc(projectPlans.createdAt), desc(projectPlans.id))
         .limit(3),
+      // VER-513: integration health counts scoped to this project
+      db.drizzle
+        .select({
+          healthStatus: integrations.healthStatus,
+          count: sql<number>`count(*)`,
+        })
+        .from(integrations)
+        .where(
+          and(
+            eq(integrations.companyId, companyId),
+            eq(integrations.projectId, id),
+          ),
+        )
+        .groupBy(integrations.healthStatus),
+      // VER-513: automation run status counts scoped to this project
+      db.drizzle
+        .select({
+          status: automationRuns.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(automationRuns)
+        .where(
+          and(
+            eq(automationRuns.companyId, companyId),
+            eq(automationRuns.projectId, id),
+          ),
+        )
+        .groupBy(automationRuns.status),
     ]);
 
     // Build the per-status breakdown map (all statuses default to 0)
@@ -473,6 +506,33 @@ export function projectsRouter(db: DbInstance): Router {
       }));
     }
 
+    // VER-513: Build health summary scoped to this project
+    const healthSummary = {
+      integrations: {
+        healthy: 0,
+        degraded: 0,
+        error: 0,
+        unknown: 0,
+      },
+      automationRuns: {
+        success: 0,
+        failure: 0,
+      },
+    };
+    for (const row of integrationHealthRows) {
+      const key = row.healthStatus as keyof typeof healthSummary.integrations;
+      if (key in healthSummary.integrations) {
+        healthSummary.integrations[key] = Number(row.count);
+      }
+    }
+    for (const row of automationRunStatusRows) {
+      if (row.status === 'completed') {
+        healthSummary.automationRuns.success = Number(row.count);
+      } else if (row.status === 'failed') {
+        healthSummary.automationRuns.failure = Number(row.count);
+      }
+    }
+
     res.json({
       data: {
         project,
@@ -496,6 +556,8 @@ export function projectsRouter(db: DbInstance): Router {
         recentThreadItems: recentThreadItemsRows,
         pendingDecisions: pendingDecisionsRows,
         activePlanProgress,
+        // VER-513 composed fields
+        healthSummary,
       },
     });
   });
@@ -522,6 +584,7 @@ export function projectsRouter(db: DbInstance): Router {
       outcomeRows,
       activeThreadCountRow,
       pendingInteractionCountRow,
+      automationRunRows,
     ] = await Promise.all([
       // plans — all plans for the project (step counts fetched separately below)
       db.drizzle
@@ -572,6 +635,18 @@ export function projectsRouter(db: DbInstance): Router {
             eq(taskThreadItems.status, 'pending'),
           ),
         ),
+      // VER-513: recent automation runs scoped to this project (top 20)
+      db.drizzle
+        .select()
+        .from(automationRuns)
+        .where(
+          and(
+            eq(automationRuns.companyId, companyId),
+            eq(automationRuns.projectId, id),
+          ),
+        )
+        .orderBy(desc(automationRuns.createdAt), desc(automationRuns.id))
+        .limit(20),
     ]);
 
     // Fetch step counts for plans (two-step approach for PGlite compatibility)
@@ -650,6 +725,8 @@ export function projectsRouter(db: DbInstance): Router {
           activeThreadCount: Number(activeThreadCountRow[0].count),
           pendingInteractionCount: Number(pendingInteractionCountRow[0].count),
         },
+        // VER-513: recent automation runs scoped to this project
+        automationRuns: automationRunRows,
       },
     });
   });

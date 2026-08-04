@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import eventBus from "../realtime/events.js";
-import type { WorkflowNode } from "../routes/workflows.js";
+import type { WorkflowNode } from "@eidolon/shared";
 import type { DbInstance } from "../types.js";
 import logger from "../utils/logger.js";
 

@@ -55,6 +55,7 @@ import {
   projectPlanSteps,
   projectDecisions,
   projectOutcomes,
+  automationRuns,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,7 @@ const SCHEMA_BUNDLE = {
   projectPlanSteps,
   projectDecisions,
   projectOutcomes,
+  automationRuns,
 } as const;
 
 export interface BootstrapOptions {
