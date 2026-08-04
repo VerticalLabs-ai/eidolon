@@ -7,6 +7,11 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
+import {
+  checkIntegrationHealth,
+  persistHealthResult,
+} from '../services/integration-health-checker.js';
 
 // ---------------------------------------------------------------------------
 // Integration catalog
@@ -35,6 +40,7 @@ const CreateIntegrationBody = z.object({
   provider: z.string().min(1).max(100),
   config: z.record(z.unknown()).default({}),
   credentials: z.string().optional(),
+  projectId: z.string().uuid().nullable().optional(),
 });
 
 const PatchIntegrationBody = z.object({
@@ -55,11 +61,17 @@ export function integrationsRouter(db: DbInstance): Router {
   // GET / - list integrations (also returns catalog)
   router.get('/', async (req, res) => {
     const { companyId } = routeParams(req);
+    const project =
+      typeof req.query.project === 'string' ? req.query.project : undefined;
 
     const rows = await db.drizzle
       .select()
       .from(integrations)
-      .where(eq(integrations.companyId, companyId));
+      .where(
+        project
+          ? and(eq(integrations.companyId, companyId), eq(integrations.projectId, project))
+          : eq(integrations.companyId, companyId),
+      );
 
     // Mask credentials
     const sanitized = rows.map((row) => ({
@@ -78,17 +90,22 @@ export function integrationsRouter(db: DbInstance): Router {
     const now = new Date();
     const id = randomUUID();
 
+    // Validate project ownership when projectId is provided.
+    await validateProjectOwnership(db, companyId, body.projectId);
+
     const [row] = await db.drizzle
       .insert(integrations)
       .values({
         id,
         companyId,
+        projectId: body.projectId ?? null,
         name: body.name,
         type: body.type,
         provider: body.provider,
         config: JSON.stringify(body.config),
         credentialsEncrypted: body.credentials ?? null,
         status: 'active',
+        healthStatus: 'unknown',
         usageCount: 0,
         createdAt: now,
         updatedAt: now,
@@ -197,7 +214,7 @@ export function integrationsRouter(db: DbInstance): Router {
     res.json({ data: { id, deleted: true } });
   });
 
-  // POST /:id/test - test connection
+  // POST /:id/test - real health check (truthful, never simulated)
   router.post('/:id/test', async (req, res) => {
     const { id, companyId } = routeParams(req);
 
@@ -211,25 +228,27 @@ export function integrationsRouter(db: DbInstance): Router {
       throw new AppError(404, 'INTEGRATION_NOT_FOUND', `Integration ${id} not found`);
     }
 
-    // Simulate a connection test -- in production this would call the actual service
-    const success = !!existing.credentialsEncrypted;
-    const now = new Date();
+    const result = await checkIntegrationHealth({
+      id: existing.id,
+      type: existing.type,
+      provider: existing.provider,
+      config: existing.config,
+      credentialsEncrypted: existing.credentialsEncrypted,
+    });
 
-    if (success) {
-      await db.drizzle
-        .update(integrations)
-        .set({ lastUsedAt: now, updatedAt: now })
-        .where(eq(integrations.id, id));
-    }
+    // Persist the truthful result onto the integration row.
+    await persistHealthResult(db, id, result);
 
     res.json({
       data: {
         id,
-        success,
-        message: success
-          ? 'Connection successful'
-          : 'No credentials configured -- provide credentials to test the connection',
-        testedAt: now.toISOString(),
+        success: result.healthStatus === 'healthy',
+        healthStatus: result.healthStatus,
+        healthCheckMethod: result.healthCheckMethod,
+        healthError: result.healthError,
+        httpStatus: result.httpStatus ?? null,
+        message: result.message,
+        testedAt: result.testedAt,
       },
     });
   });
