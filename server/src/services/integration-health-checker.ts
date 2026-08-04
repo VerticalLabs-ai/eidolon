@@ -1,5 +1,7 @@
+import dns from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import { eq } from 'drizzle-orm';
 import type { DbInstance } from '../types.js';
 
@@ -94,6 +96,218 @@ function resolveConfigUrl(config: Record<string, unknown>): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// SSRF protection — private/loopback address rejection and DNS pinning
+// ---------------------------------------------------------------------------
+
+interface PinnedTarget {
+  url: URL;
+  address: string;
+  family: 4 | 6;
+}
+
+/**
+ * Expand an IPv6 address to its full 8-group form so we can inspect bit
+ * patterns reliably. Handles `::` compression and dotted-decimal tails
+ * (IPv4-mapped addresses like `::ffff:127.0.0.1`).
+ */
+function expandIPv6(ip: string): number[] {
+  // Handle IPv4-mapped tail (e.g. ::ffff:127.0.0.1)
+  const v4TailMatch = ip.match(/:(\d+\.\d+\.\d+\.\d+)$/);
+  let normalized = ip;
+  if (v4TailMatch) {
+    const v4Parts = v4TailMatch[1].split('.').map(Number);
+    const group1 = ((v4Parts[0] << 8) | v4Parts[1]).toString(16);
+    const group2 = ((v4Parts[2] << 8) | v4Parts[3]).toString(16);
+    normalized = ip.slice(0, ip.length - v4TailMatch[1].length) + group1 + ':' + group2;
+  }
+
+  const parts = normalized.split('::');
+  if (parts.length === 1) {
+    return parts[0].split(':').map((g) => parseInt(g, 16));
+  }
+  const left = parts[0] ? parts[0].split(':') : [];
+  const right = parts[1] ? parts[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  const middle = Array(missing).fill('0');
+  return [...left, ...middle, ...right].map((g) => parseInt(g || '0', 16));
+}
+
+/**
+ * Returns true when `address` is a private, loopback, link-local, or
+ * unspecified IP address that must never be the target of a health check.
+ *
+ * Blocked ranges:
+ *   IPv4: 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16,
+ *         172.16.0.0/12, 192.168.0.0/16
+ *   IPv6: ::1, ::, fc00::/7, fe80::/10, and IPv4-mapped variants
+ */
+function isPrivateOrLoopbackAddress(address: string): boolean {
+  const ip = address.trim().toLowerCase();
+  const family = net.isIP(ip);
+
+  if (family === 4) {
+    const parts = ip.split('.').map(Number);
+    if (parts[0] === 0) return true; // 0.0.0.0/8
+    if (parts[0] === 10) return true; // 10.0.0.0/8
+    if (parts[0] === 127) return true; // 127.0.0.0/8
+    if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
+    if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+    return false;
+  }
+
+  if (family === 6) {
+    if (ip === '::1') return true; // loopback
+    if (ip === '::') return true; // unspecified
+
+    // IPv4-mapped IPv6 in dotted-decimal form (::ffff:a.b.c.d)
+    const v4Mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (v4Mapped) {
+      return isPrivateOrLoopbackAddress(v4Mapped[1]);
+    }
+
+    const groups = expandIPv6(ip);
+
+    // IPv4-mapped IPv6 in hex form (::ffff:xxxx:xxxx) — groups[5] === 0xffff
+    if (
+      groups[0] === 0 && groups[1] === 0 && groups[2] === 0 &&
+      groups[3] === 0 && groups[4] === 0 && groups[5] === 0xffff
+    ) {
+      const a = (groups[6] >> 8) & 0xff;
+      const b = groups[6] & 0xff;
+      const c = (groups[7] >> 8) & 0xff;
+      const d = groups[7] & 0xff;
+      return isPrivateOrLoopbackAddress(`${a}.${b}.${c}.${d}`);
+    }
+
+    // fc00::/7 — unique local addresses (first 7 bits = 1111110)
+    if ((groups[0] & 0xfe00) === 0xfc00) return true;
+    // fe80::/10 — link-local (first 10 bits = 1111111010)
+    if ((groups[0] & 0xffc0) === 0xfe80) return true;
+    return false;
+  }
+
+  return false;
+}
+
+/**
+ * When `EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE` is set to a truthy value, private
+ * address checks are skipped. This is intended for test environments that
+ * bind local servers on 127.0.0.1.
+ */
+function privateAddressCheckEnabled(): boolean {
+  const flag = process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE;
+  return flag !== 'true' && flag !== '1';
+}
+
+// ---------------------------------------------------------------------------
+// Injectable DNS resolver (for testing)
+// ---------------------------------------------------------------------------
+
+type DnsLookupFn = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<Array<{ address: string; family: number }>>;
+
+const realDnsLookup: DnsLookupFn = (hostname, options) =>
+  dns.lookup(hostname, options);
+
+let dnsLookupFn: DnsLookupFn = realDnsLookup;
+
+/**
+ * Override the DNS lookup function used by the health checker. Intended for
+ * testing DNS pre-resolution and pinning behavior without real DNS.
+ */
+export function _setDnsLookupForTesting(fn: DnsLookupFn): void {
+  dnsLookupFn = fn;
+}
+
+/**
+ * Restore the real DNS lookup function.
+ */
+export function _resetDnsLookupForTesting(): void {
+  dnsLookupFn = realDnsLookup;
+}
+
+/**
+ * Resolve a URL hostname via dns.lookup, reject private/loopback/link-local
+ * addresses, and return a pinned target so the request cannot be redirected
+ * to a different address by DNS rebinding.
+ */
+async function resolveHealthCheckTarget(
+  url: URL,
+  signal: AbortSignal,
+): Promise<PinnedTarget> {
+  // URL.hostname includes brackets for IPv6 (e.g. [::1]); strip them so
+  // net.isIP and isPrivateOrLoopbackAddress work correctly.
+  const hostname =
+    url.hostname.startsWith('[') && url.hostname.endsWith(']')
+      ? url.hostname.slice(1, -1).toLowerCase()
+      : url.hostname.toLowerCase();
+  const enforcePrivateCheck = privateAddressCheckEnabled();
+
+  // Reject the literal "localhost" hostname explicitly.
+  if (enforcePrivateCheck && hostname === 'localhost') {
+    throw new Error(
+      'Health check URL hostname "localhost" is not allowed — use a public hostname or IP address.',
+    );
+  }
+
+  const literalFamily = net.isIP(hostname);
+  if (literalFamily === 4 || literalFamily === 6) {
+    if (enforcePrivateCheck && isPrivateOrLoopbackAddress(hostname)) {
+      throw new Error(
+        `Health check URL resolves to a private/loopback address (${hostname}) which is blocked by SSRF protection.`,
+      );
+    }
+    return { url, address: hostname, family: literalFamily as 4 | 6 };
+  }
+
+  // Pre-resolve the hostname and inspect every returned address.
+  const addresses = await new Promise<Array<{ address: string; family: number }>>(
+    (resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      void dnsLookupFn(hostname, { all: true, verbatim: true }).then(
+        (result) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(result);
+        },
+        (error) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
+    },
+  );
+
+  if (enforcePrivateCheck) {
+    const privateAddr = addresses.find((entry) =>
+      isPrivateOrLoopbackAddress(entry.address),
+    );
+    if (privateAddr) {
+      throw new Error(
+        `Health check URL hostname "${hostname}" resolved to a private/loopback address (${privateAddr.address}) which is blocked by SSRF protection.`,
+      );
+    }
+  }
+
+  const pinned = addresses[0];
+  if (!pinned) {
+    throw new Error(`Health check URL hostname "${hostname}" did not resolve to any address.`);
+  }
+  return {
+    url,
+    address: pinned.address,
+    family: (pinned.family === 6 ? 6 : 4) as 4 | 6,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Bounded HTTP HEAD request
 // ---------------------------------------------------------------------------
 
@@ -103,31 +317,43 @@ interface BoundedHeadResult {
 }
 
 /**
- * Perform a bounded HEAD request to `targetUrl`.
+ * Perform a bounded HEAD request to a pinned target.
  *
  * Bounds:
  * - Finite timeout (default 30s, capped at 30s).
  * - Redirects are NOT followed (3xx is treated as a non-success response).
  * - Response body consumption is capped at MAX_RESPONSE_BYTES.
  * - `agent: false` disables connection pooling.
+ * - The resolved IP address is pinned via the `lookup` callback to prevent
+ *   DNS rebinding attacks.
  */
 function boundedHead(
-  targetUrl: URL,
+  target: PinnedTarget,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<BoundedHeadResult> {
-  const transport = targetUrl.protocol === 'https:' ? https : http;
+  const transport = target.url.protocol === 'https:' ? https : http;
   const timeoutSignal = AbortSignal.timeout(Math.min(timeoutMs, MAX_TIMEOUT_MS));
   const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
   return new Promise((resolve, reject) => {
     const req = transport.request(
-      targetUrl,
+      target.url,
       {
         method: 'HEAD',
         headers: { 'user-agent': 'eidolon-health-check/1.0' },
         signal: combined,
         agent: false,
+        lookup: (_hostname, options, callback) => {
+          if (options.all) {
+            callback(null, [{
+              address: target.address,
+              family: target.family,
+            }]);
+            return;
+          }
+          callback(null, target.address, target.family);
+        },
       },
       (response) => {
         // Drain and bound the response body so it cannot exhaust resources.
@@ -225,7 +451,18 @@ export async function checkIntegrationHealth(
     }
 
     try {
-      const result = await boundedHead(parsedUrl, timeoutMs, options.signal);
+      // Create a timeout signal that covers both DNS resolution and the
+      // HTTP request so the total wall-clock stays bounded.
+      const timeoutSignal = AbortSignal.timeout(Math.min(timeoutMs, MAX_TIMEOUT_MS));
+      const combined = options.signal
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : timeoutSignal;
+
+      // SSRF protection: pre-resolve the hostname, reject private/loopback
+      // addresses, and pin the resolved address to prevent DNS rebinding.
+      const target = await resolveHealthCheckTarget(parsedUrl, combined);
+
+      const result = await boundedHead(target, timeoutMs, options.signal);
       const ok = result.status >= 200 && result.status < 300;
 
       if (ok) {

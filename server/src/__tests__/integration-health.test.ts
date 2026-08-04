@@ -6,12 +6,35 @@ import { createTestApp, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 import {
   checkIntegrationHealth,
+  _setDnsLookupForTesting,
+  _resetDnsLookupForTesting,
   type IntegrationRow,
 } from '../services/integration-health-checker.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The SSRF protection in integration-health-checker rejects private/loopback
+ * addresses. Tests that bind local servers on 127.0.0.1 must set
+ * EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE=true so the check is bypassed.
+ * SSRF-specific tests leave the env var unset to verify protection.
+ */
+let savedAllowPrivate: string | undefined;
+
+function allowPrivateAddresses(): void {
+  savedAllowPrivate = process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE;
+  process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE = 'true';
+}
+
+function restoreAllowPrivate(): void {
+  if (savedAllowPrivate === undefined) {
+    delete process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE;
+  } else {
+    process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE = savedAllowPrivate;
+  }
+}
 
 async function createCompany(app: ReturnType<typeof createTestApp>, name: string) {
   const res = await request(app).post('/api/companies').send({ name }).expect(201);
@@ -114,6 +137,7 @@ describe('integration health — real HTTP checks (VAL-HLT-001)', () => {
   let recorder: Awaited<ReturnType<typeof startRecordingServer>>;
 
   beforeEach(async () => {
+    allowPrivateAddresses();
     db = await createTestDb();
     app = createTestApp(db);
     companyId = await createCompany(app, 'Test Co');
@@ -122,6 +146,7 @@ describe('integration health — real HTTP checks (VAL-HLT-001)', () => {
 
   afterEach(async () => {
     await recorder.close();
+    restoreAllowPrivate();
   });
 
   it('custom_api 2xx → healthy with http_head method (real HEAD request)', async () => {
@@ -431,6 +456,7 @@ describe('integration health — persistence (VAL-HLT-005)', () => {
   let recorder: Awaited<ReturnType<typeof startRecordingServer>>;
 
   beforeEach(async () => {
+    allowPrivateAddresses();
     db = await createTestDb();
     app = createTestApp(db);
     companyId = await createCompany(app, 'Persist Co');
@@ -439,6 +465,7 @@ describe('integration health — persistence (VAL-HLT-005)', () => {
 
   afterEach(async () => {
     await recorder.close();
+    restoreAllowPrivate();
   });
 
   it('persists all four health fields after a successful check', async () => {
@@ -650,6 +677,14 @@ describe('integration health — project scoping (VAL-HLT-008)', () => {
 // ---------------------------------------------------------------------------
 
 describe('integration health — bounded checks (VAL-HLT-009)', () => {
+  beforeEach(() => {
+    allowPrivateAddresses();
+  });
+
+  afterEach(() => {
+    restoreAllowPrivate();
+  });
+
   it('bounded HEAD respects a short timeout option', async () => {
     const recorder = await startRecordingServer(200, { delayMs: 3000 });
     try {
@@ -724,5 +759,251 @@ describe('integration health — new integrations start unknown (VAL-HLT-007)', 
     const row = await getIntegration(db, integ.id);
     expect(row!.healthStatus).toBe('unknown');
     expect(row!.status).toBe('active');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSRF protection — private/loopback address rejection and DNS pinning
+// ---------------------------------------------------------------------------
+
+describe('integration health — SSRF protection', () => {
+  beforeEach(() => {
+    // Ensure private address checks are enforced for these tests.
+    delete process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE;
+  });
+
+  afterEach(() => {
+    delete process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE;
+    _resetDnsLookupForTesting();
+  });
+
+  // --- Private IPv4 literal rejection ----------------------------------
+
+  const privateIpv4Cases: Array<[string, string]> = [
+    ['127.0.0.1', '127.0.0.0/8 loopback'],
+    ['127.255.255.255', '127.0.0.0/8 loopback high'],
+    ['10.0.0.1', '10.0.0.0/8 private'],
+    ['10.255.255.255', '10.0.0.0/8 private high'],
+    ['192.168.1.1', '192.168.0.0/16 private'],
+    ['192.168.0.0', '192.168.0.0/16 private low'],
+    ['172.16.0.1', '172.16.0.0/12 private low'],
+    ['172.31.255.255', '172.16.0.0/12 private high'],
+    ['169.254.1.1', '169.254.0.0/16 link-local'],
+    ['0.0.0.0', '0.0.0.0/8 unspecified'],
+  ];
+
+  for (const [ip, label] of privateIpv4Cases) {
+    it(`rejects private IPv4 ${ip} (${label})`, async () => {
+      const result = await checkIntegrationHealth({
+        id: '1',
+        type: 'custom_api',
+        provider: 'custom',
+        config: { baseUrl: `http://${ip}:80` },
+        credentialsEncrypted: 'token',
+      });
+
+      expect(result.healthStatus).toBe('error');
+      expect(result.realCheckPerformed).toBe(true);
+      expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
+    });
+  }
+
+  // --- Non-private IPv4 should NOT be SSRF-blocked (may fail to connect) -
+
+  it('does not SSRF-block 172.15.0.1 (just below 172.16 range)', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://172.15.0.1:80' },
+      credentialsEncrypted: 'token',
+      // Short timeout so it fails fast (connection refused / timeout, not SSRF).
+    }, { timeoutMs: 500 });
+
+    expect(result.healthStatus).toBe('error');
+    expect(result.healthError).not.toMatch(/SSRF|private|loopback|blocked/i);
+  });
+
+  it('does not SSRF-block 172.32.0.1 (just above 172.31 range)', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://172.32.0.1:80' },
+      credentialsEncrypted: 'token',
+    }, { timeoutMs: 500 });
+
+    expect(result.healthStatus).toBe('error');
+    expect(result.healthError).not.toMatch(/SSRF|private|loopback|blocked/i);
+  });
+
+  // --- localhost hostname rejection ------------------------------------
+
+  it('rejects "localhost" hostname', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://localhost:80' },
+      credentialsEncrypted: 'token',
+    }, { timeoutMs: 500 });
+
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(true);
+    expect(result.healthError).toMatch(/localhost/i);
+  });
+
+  // --- IPv6 loopback rejection -----------------------------------------
+
+  it('rejects IPv6 loopback [::1]', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://[::1]:80' },
+      credentialsEncrypted: 'token',
+    }, { timeoutMs: 500 });
+
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(true);
+    expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
+  });
+
+  it('rejects IPv6 unspecified [::]', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://[::]:80' },
+      credentialsEncrypted: 'token',
+    }, { timeoutMs: 500 });
+
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(true);
+    expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
+  });
+
+  // --- DNS pre-resolution catches private addresses for hostnames -------
+
+  it('rejects hostname that resolves to a private address (DNS pre-resolution)', async () => {
+    // Mock DNS to return 127.0.0.1 for a public-looking hostname.
+    _setDnsLookupForTesting(async () => [
+      { address: '127.0.0.1', family: 4 },
+    ]);
+
+    try {
+      const result = await checkIntegrationHealth({
+        id: '1',
+        type: 'custom_api',
+        provider: 'custom',
+        config: { baseUrl: 'http://rebind.example.com:80' },
+        credentialsEncrypted: 'token',
+      }, { timeoutMs: 1000 });
+
+      expect(result.healthStatus).toBe('error');
+      expect(result.realCheckPerformed).toBe(true);
+      expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
+      expect(result.healthError).toMatch(/rebind\.example\.com|127\.0\.0\.1/);
+    } finally {
+      _resetDnsLookupForTesting();
+    }
+  });
+
+  // --- DNS pinning: request uses the pre-resolved address --------------
+
+  it('pins the resolved address in the HTTP request (DNS rebinding protection)', async () => {
+    // Start a local server on 127.0.0.1.
+    const recorder = await startRecordingServer(200);
+    try {
+      // Allow private addresses so the private check is bypassed, but
+      // the pinning mechanism still applies: DNS is mocked to return
+      // 127.0.0.1, and the request must use that pinned address to
+      // reach the local server.
+      process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE = 'true';
+
+      let lookupCalls = 0;
+      _setDnsLookupForTesting(async () => {
+        lookupCalls++;
+        return [{ address: '127.0.0.1', family: 4 }];
+      });
+
+      try {
+        const result = await checkIntegrationHealth({
+          id: '1',
+          type: 'custom_api',
+          provider: 'custom',
+          config: { baseUrl: `http://pinned.example.com:${(recorder.server.address() as { port: number }).port}` },
+          credentialsEncrypted: 'token',
+        });
+
+        // The request reached the local server via the pinned 127.0.0.1.
+        expect(result.healthStatus).toBe('healthy');
+        expect(result.realCheckPerformed).toBe(true);
+        expect(recorder.requests.some((r) => r.method === 'HEAD')).toBe(true);
+
+        // DNS lookup was called once during pre-resolution.
+        expect(lookupCalls).toBe(1);
+      } finally {
+        _resetDnsLookupForTesting();
+      }
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it('pins address and does not re-resolve DNS during the HTTP request', async () => {
+    // Start a local server on 127.0.0.1.
+    const recorder = await startRecordingServer(200);
+    try {
+      process.env.EIDOLON_HEALTH_CHECK_ALLOW_PRIVATE = 'true';
+
+      let lookupCalls = 0;
+      _setDnsLookupForTesting(async () => {
+        lookupCalls++;
+        if (lookupCalls === 1) {
+          // First call (pre-resolution) returns 127.0.0.1.
+          return [{ address: '127.0.0.1', family: 4 }];
+        }
+        // Second call would be a DNS rebinding attack — return a different address.
+        return [{ address: '10.0.0.1', family: 4 }];
+      });
+
+      try {
+        const result = await checkIntegrationHealth({
+          id: '1',
+          type: 'custom_api',
+          provider: 'custom',
+          config: { baseUrl: `http://rebind-test.example.com:${(recorder.server.address() as { port: number }).port}` },
+          credentialsEncrypted: 'token',
+        });
+
+        // The request used the pinned 127.0.0.1 and reached the local server.
+        expect(result.healthStatus).toBe('healthy');
+        expect(recorder.requests.some((r) => r.method === 'HEAD')).toBe(true);
+        // DNS lookup was called exactly once (pre-resolution only).
+        // The HTTP request used the lookup callback, not DNS.
+        expect(lookupCalls).toBe(1);
+      } finally {
+        _resetDnsLookupForTesting();
+      }
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  // --- IPv4-mapped IPv6 rejection --------------------------------------
+
+  it('rejects IPv4-mapped IPv6 loopback [::ffff:127.0.0.1]', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://[::ffff:127.0.0.1]:80' },
+      credentialsEncrypted: 'token',
+    }, { timeoutMs: 500 });
+
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(true);
+    expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
   });
 });
