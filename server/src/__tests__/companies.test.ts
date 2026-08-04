@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
+import { eq } from 'drizzle-orm';
 import { createTestDb, createTestApp } from '../test-utils.js';
+import { setupActivityLogger } from '../routes/activity.js';
 
 describe('Companies API', () => {
   let app: ReturnType<typeof createTestApp>;
@@ -248,6 +250,84 @@ describe('Companies API', () => {
       await request(app)
         .delete('/api/companies/00000000-0000-0000-0000-000000000000')
         .expect(404);
+    });
+
+    it('should hard-delete a company and its dependent rows', async () => {
+      const created = await request(app)
+        .post('/api/companies')
+        .send({ name: 'Hard Delete Me', settings: { testFixture: true } })
+        .expect(201);
+      const companyId = created.body.data.id;
+
+      const agent = await request(app)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: 'Delete Agent', role: 'engineer' })
+        .expect(201);
+      const task = await request(app)
+        .post(`/api/companies/${companyId}/tasks`)
+        .send({ title: 'Delete Task' })
+        .expect(201);
+      const project = await request(app)
+        .post(`/api/companies/${companyId}/projects`)
+        .send({ name: 'Delete Project' })
+        .expect(201);
+
+      await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(204);
+
+      const [company, remainingAgent, remainingTask, remainingProject] = await Promise.all([
+        db.drizzle
+          .select()
+          .from(db.schema.companies)
+          .where(eq(db.schema.companies.id, companyId)),
+        db.drizzle
+          .select()
+          .from(db.schema.agents)
+          .where(eq(db.schema.agents.id, agent.body.data.id)),
+        db.drizzle
+          .select()
+          .from(db.schema.tasks)
+          .where(eq(db.schema.tasks.id, task.body.data.id)),
+        db.drizzle
+          .select()
+          .from(db.schema.projects)
+          .where(eq(db.schema.projects.id, project.body.data.id)),
+      ]);
+
+      expect(company).toHaveLength(0);
+      expect(remainingAgent).toHaveLength(0);
+      expect(remainingTask).toHaveLength(0);
+      expect(remainingProject).toHaveLength(0);
+    });
+
+    it('should not recreate an activity log row after hard delete', async () => {
+      const created = await request(app)
+        .post('/api/companies')
+        .send({ name: 'Activity Hard Delete Me', settings: { testFixture: true } })
+        .expect(201);
+      const companyId = created.body.data.id;
+
+      await db.drizzle.insert(db.schema.activityLog).values({
+        companyId,
+        actorType: 'system',
+        actorId: 'system',
+        action: 'company.created',
+        entityType: 'company',
+        entityId: companyId,
+        description: 'Company created',
+        metadata: {},
+        createdAt: new Date(),
+      });
+      setupActivityLogger(db);
+
+      await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(204);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const remainingActivity = await db.drizzle
+        .select()
+        .from(db.schema.activityLog)
+        .where(eq(db.schema.activityLog.companyId, companyId));
+
+      expect(remainingActivity).toHaveLength(0);
     });
   });
 

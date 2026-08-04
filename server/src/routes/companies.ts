@@ -137,59 +137,96 @@ export function companiesRouter(db: DbInstance): Router {
     }
 
     if (hard) {
-      // Hard delete: remove all related data then the company
-      // Order matters due to foreign key constraints
-      const tables = [
-        db.schema.agentCollaborations,
-        db.schema.agentEvaluations,
-        db.schema.agentMemories,
-        db.schema.agentExecutions,
-        db.schema.agentConfigRevisions,
-        db.schema.agentFiles,
-        db.schema.costEvents,
-        db.schema.budgetAlerts,
-        db.schema.heartbeats,
-        db.schema.messages,
-        db.schema.tasks,
-        db.schema.goals,
-        db.schema.workflows,
-        db.schema.projects,
-        db.schema.webhooks,
-        db.schema.secrets,
-        db.schema.integrations,
-        db.schema.mcpServers,
-        db.schema.activityLog,
-      ];
+      // Every hard-delete operation must be atomic. In particular, the company
+      // must not be left partially cleaned if a newly-added company-scoped
+      // table rejects its delete.
+      await db.drizzle.transaction(async (tx) => {
+        const deleteByCompany = async (table: any) => {
+          await tx.delete(table).where(eq(table.companyId, companyId));
+        };
 
-      for (const table of tables) {
-        await db.drizzle.delete(table).where(eq((table as any).companyId, companyId));
-      }
+        // Delete indirect children before their parent rows.
+        const docs = await tx
+          .select({ id: db.schema.knowledgeDocuments.id })
+          .from(db.schema.knowledgeDocuments)
+          .where(eq(db.schema.knowledgeDocuments.companyId, companyId));
+        for (const doc of docs) {
+          await tx.delete(db.schema.knowledgeChunks).where(eq(db.schema.knowledgeChunks.documentId, doc.id));
+        }
+        const templates = await tx
+          .select({ id: db.schema.promptTemplates.id })
+          .from(db.schema.promptTemplates)
+          .where(eq(db.schema.promptTemplates.companyId, companyId));
+        for (const template of templates) {
+          await tx.delete(db.schema.promptVersions).where(eq(db.schema.promptVersions.templateId, template.id));
+        }
+        // Chunks also carry a denormalized company_id and may exist even when
+        // their document has already been removed.
+        await deleteByCompany(db.schema.knowledgeChunks);
+        const approvals = await tx
+          .select({ id: db.schema.approvals.id })
+          .from(db.schema.approvals)
+          .where(eq(db.schema.approvals.companyId, companyId));
+        for (const approval of approvals) {
+          await tx.delete(db.schema.approvalComments).where(eq(db.schema.approvalComments.approvalId, approval.id));
+        }
 
-      // Delete knowledge (chunks reference documents, not company directly)
-      const docs = await db.drizzle
-        .select({ id: db.schema.knowledgeDocuments.id })
-        .from(db.schema.knowledgeDocuments)
-        .where(eq(db.schema.knowledgeDocuments.companyId, companyId));
-      for (const doc of docs) {
-        await db.drizzle.delete(db.schema.knowledgeChunks).where(eq(db.schema.knowledgeChunks.documentId, doc.id));
-      }
-      await db.drizzle.delete(db.schema.knowledgeDocuments).where(eq(db.schema.knowledgeDocuments.companyId, companyId));
+        // Audit and join rows reference agents, tasks, executions, approvals,
+        // plans, and project threads with NO ACTION foreign keys.
+        for (const table of [
+          db.schema.taskThreadItems,
+          db.schema.taskCheckouts,
+          db.schema.agentCollaborations,
+          db.schema.agentEvaluations,
+          db.schema.agentMemories,
+          db.schema.agentConfigRevisions,
+          db.schema.agentFiles,
+          db.schema.mcpToolCalls,
+          db.schema.agentRuntimeSessions,
+          db.schema.workspaceLifecycleEvents,
+          db.schema.executionEnvironments,
+          db.schema.automationRuns,
+          db.schema.taskHolds,
+          db.schema.routines,
+          db.schema.agentSkills,
+          db.schema.companySkills,
+          db.schema.approvals,
+          db.schema.projectDecisions,
+          db.schema.projectOutcomes,
+          db.schema.projectPlanSteps,
+          db.schema.projectPlans,
+          db.schema.projectThreads,
+          db.schema.agentExecutions,
+        ]) {
+          await deleteByCompany(table);
+        }
 
-      // Delete prompt versions (reference templates, not company)
-      const templates = await db.drizzle
-        .select({ id: db.schema.promptTemplates.id })
-        .from(db.schema.promptTemplates)
-        .where(eq(db.schema.promptTemplates.companyId, companyId));
-      for (const tmpl of templates) {
-        await db.drizzle.delete(db.schema.promptVersions).where(eq(db.schema.promptVersions.templateId, tmpl.id));
-      }
-      await db.drizzle.delete(db.schema.promptTemplates).where(eq(db.schema.promptTemplates.companyId, companyId));
+        // Remaining direct company rows. These must be removed before the
+        // company because their foreign keys use the default NO ACTION.
+        for (const table of [
+          db.schema.costEvents,
+          db.schema.budgetAlerts,
+          db.schema.heartbeats,
+          db.schema.messages,
+          db.schema.tasks,
+          db.schema.goals,
+          db.schema.workflows,
+          db.schema.projects,
+          db.schema.webhooks,
+          db.schema.secrets,
+          db.schema.integrations,
+          db.schema.mcpServers,
+          db.schema.inboxReadStates,
+          db.schema.activityLog,
+          db.schema.knowledgeDocuments,
+          db.schema.promptTemplates,
+        ]) {
+          await deleteByCompany(table);
+        }
 
-      // Delete agents (after all agent-referencing tables)
-      await db.drizzle.delete(db.schema.agents).where(eq(db.schema.agents.companyId, companyId));
-
-      // Finally delete the company
-      await db.drizzle.delete(companies).where(eq(companies.id, companyId));
+        await tx.delete(db.schema.agents).where(eq(db.schema.agents.companyId, companyId));
+        await tx.delete(companies).where(eq(companies.id, companyId));
+      });
 
       eventBus.emitEvent({
         type: 'company.deleted',

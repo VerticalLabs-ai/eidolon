@@ -55,3 +55,22 @@ git checkout staging
 git merge --no-ff origin/main
 git push
 ```
+
+## Validation fixture convention
+
+Mark every company created for validation with `settings.testFixture=true` in
+the `POST /api/companies` payload. Use a `__mtest__` name prefix for human
+visibility; cleanup relies on the marker, not the name:
+
+```json
+{ "name": "__mtest__ validation run", "settings": { "testFixture": true } }
+```
+
+After validation, tear down marked fixtures with:
+
+```bash
+pnpm cleanup:fixtures -- --execute
+```
+
+The cleanup command is a dry run unless `--execute` is supplied. Use
+`--stale-hours N` with `--execute` to remove only fixtures older than `N` hours.
