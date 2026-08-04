@@ -62,6 +62,10 @@ const baseSummary = {
     { id: "file-1", companyId: "company-1", agentId: null, name: "report.md", path: "/report.md", mimeType: "text/markdown", sizeBytes: 1024, content: null, storageType: "db", parentId: null, isDirectory: false, taskId: null, executionId: null, projectId: "project-1", createdAt: "2026-07-31T10:00:00.000Z", updatedAt: "2026-07-31T10:00:00.00.000Z" },
   ],
   goalProgress: { count: 3, aggregateProgress: 65 },
+  healthSummary: {
+    integrations: { healthy: 2, degraded: 0, error: 1, unknown: 1 },
+    automationRuns: { success: 5, failure: 2 },
+  },
 };
 
 function renderHome() {

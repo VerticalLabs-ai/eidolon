@@ -1144,8 +1144,42 @@ export function useDeleteIntegration(companyId: string) {
 }
 
 export function useTestIntegration(companyId: string) {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (integrationId: string) => api.testIntegration(companyId, integrationId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["integrations", companyId] });
+    },
+  });
+}
+
+// ── Automation Runs ────────────────────────────────────────────────────
+
+export function useAutomationRuns(
+  companyId: string | undefined,
+  filters?: api.AutomationRunFilters,
+) {
+  return useQuery({
+    queryKey: ["automation-runs", companyId, filters],
+    queryFn: async () =>
+      unwrap<api.AutomationRun[]>(await api.getAutomationRuns(companyId!, filters)),
+    enabled: !!companyId,
+  });
+}
+
+// ── Unified Health Surface ─────────────────────────────────────────────
+
+export function useUnifiedHealth(
+  companyId: string | undefined,
+  projectId?: string,
+) {
+  return useQuery({
+    queryKey: ["unified-health", companyId, projectId ?? null],
+    queryFn: async () =>
+      unwrap<api.UnifiedHealthEntry[]>(
+        await api.getUnifiedHealth(companyId!, projectId),
+      ),
+    enabled: !!companyId,
   });
 }
 

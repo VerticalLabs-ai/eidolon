@@ -21,6 +21,8 @@ import {
   Webhook,
   X,
   Loader2,
+  HelpCircle,
+  Activity,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { Card } from "@/components/ui/Card";
@@ -33,7 +35,7 @@ import {
   useDeleteIntegration,
   useTestIntegration,
 } from "@/lib/hooks";
-import type { IntegrationCatalogItem, Integration } from "@/lib/api";
+import type { IntegrationCatalogItem, Integration, HealthStatus } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Icon map for integration types
@@ -83,6 +85,46 @@ function StatusBadge({ status }: { status: string }) {
       {v.label}
     </span>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Health badge — color-coded healthStatus (healthy=green, degraded=yellow,
+// error=red, unknown=gray). Distinct from the lifecycle StatusBadge above.
+// ---------------------------------------------------------------------------
+
+const HEALTH_VARIANTS: Record<
+  HealthStatus,
+  { icon: typeof CheckCircle2; color: string; label: string; badgeVariant: "success" | "warning" | "error" | "default" }
+> = {
+  healthy: { icon: CheckCircle2, color: "text-emerald-400", label: "Healthy", badgeVariant: "success" },
+  degraded: { icon: AlertCircle, color: "text-amber-400", label: "Degraded", badgeVariant: "warning" },
+  error: { icon: XCircle, color: "text-red-400", label: "Error", badgeVariant: "error" },
+  unknown: { icon: HelpCircle, color: "text-text-secondary", label: "Unknown", badgeVariant: "default" },
+};
+
+function HealthBadge({ status }: { status: HealthStatus }) {
+  const v = HEALTH_VARIANTS[status] ?? HEALTH_VARIANTS.unknown;
+  const Icon = v.icon;
+  return (
+    <span
+      className={clsx("flex items-center gap-1 text-[10px] font-medium", v.color)}
+      data-testid={`health-badge-${status}`}
+    >
+      <Icon className="h-3 w-3" />
+      {v.label}
+    </span>
+  );
+}
+
+function formatDateTime(d: string | null): string {
+  if (!d) return "Never checked";
+  return new Date(d).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +237,7 @@ export function Integrations() {
     null,
   );
   const [testResults, setTestResults] = useState<
-    Record<string, { success: boolean; message: string } | "loading">
+    Record<string, { success: boolean; message: string; healthStatus?: HealthStatus } | "loading">
   >({});
 
   const connected = integrationsData?.data ?? [];
@@ -231,6 +273,7 @@ export function Integrations() {
           [integrationId]: {
             success: data.success,
             message: data.message,
+            healthStatus: data.healthStatus as HealthStatus | undefined,
           },
         }));
       },
@@ -271,6 +314,16 @@ export function Integrations() {
             {connected.map((integration) => {
               const Icon = getIntegrationIcon(integration.type);
               const testResult = testResults[integration.id];
+              // If a test just ran and returned a healthStatus, show that;
+              // otherwise use the persisted healthStatus from the integration.
+              const effectiveHealth: HealthStatus =
+                testResult && testResult !== "loading" && testResult.healthStatus
+                  ? testResult.healthStatus
+                  : (integration.healthStatus ?? "unknown");
+              const healthError =
+                testResult && testResult !== "loading" && !testResult.success
+                  ? testResult.message
+                  : integration.healthError;
 
               return (
                 <Card key={integration.id} className="group">
@@ -297,6 +350,34 @@ export function Integrations() {
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
+                  </div>
+
+                  {/* Health status badge — distinct from lifecycle status */}
+                  <div className="mt-3 flex items-center gap-2">
+                    <Activity className="h-3 w-3 text-text-secondary" />
+                    <HealthBadge status={effectiveHealth} />
+                  </div>
+
+                  {/* Health error message (only when errored) */}
+                  {effectiveHealth === "error" && healthError && (
+                    <p
+                      className="mt-1.5 text-[10px] text-red-400 flex items-start gap-1"
+                      data-testid={`health-error-${integration.id}`}
+                    >
+                      <XCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                      <span>{healthError}</span>
+                    </p>
+                  )}
+
+                  {/* Last health check timestamp */}
+                  <div className="mt-2 flex items-center gap-1 text-[10px] text-text-secondary">
+                    <span data-testid={`health-check-time-${integration.id}`}>
+                      {formatDateTime(
+                        testResult && testResult !== "loading"
+                          ? new Date().toISOString()
+                          : integration.lastHealthCheckAt,
+                      )}
+                    </span>
                   </div>
 
                   <div className="mt-3 flex items-center gap-4 text-[10px] text-text-secondary">

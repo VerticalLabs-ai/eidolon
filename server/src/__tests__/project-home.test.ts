@@ -246,6 +246,7 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
         'counts',
         'failedWork',
         'goalProgress',
+        'healthSummary',
         'needsAttention',
         'pendingDecisions',
         'project',

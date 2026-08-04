@@ -50,6 +50,7 @@ vi.mock("@/lib/hooks", () => ({
   useProjectOutcomes: () => ({ data: [], isLoading: false, isError: false }),
   useCreateProjectOutcome: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateProjectOutcome: () => ({ mutate: vi.fn(), isPending: false }),
+  useProjectWork: () => ({ data: { automationRuns: [] }, isLoading: false, isError: false }),
   useCreateProject: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false }),
   useUpdateProject: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false }),
 }));

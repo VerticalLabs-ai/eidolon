@@ -352,6 +352,8 @@ export interface ProjectHomeSummary {
     count: number;
     aggregateProgress: number;
   };
+  // VER-513 composed fields
+  healthSummary: HealthSummary;
 }
 
 export const getProjectHome = (companyId: string, projectId: string) =>
@@ -922,6 +924,8 @@ export interface ProjectWorkSummary {
     activeThreadCount: number;
     pendingInteractionCount: number;
   };
+  // VER-513 composed fields
+  automationRuns: AutomationRun[];
 }
 
 export const getProjectWork = (companyId: string, projectId: string) =>
@@ -1330,17 +1334,24 @@ export interface IntegrationCatalogItem {
 export interface Integration {
   id: string;
   companyId: string;
+  projectId: string | null;
   name: string;
   type: string;
   provider: string;
   config: Record<string, unknown>;
   credentialsEncrypted: string | null;
   status: string;
+  healthStatus: HealthStatus;
+  lastHealthCheckAt: string | null;
+  healthError: string | null;
+  healthCheckMethod: string | null;
   lastUsedAt: string | null;
   usageCount: number;
   createdAt: string;
   updatedAt: string;
 }
+
+export type HealthStatus = "healthy" | "degraded" | "error" | "unknown";
 
 export interface IntegrationsResponse {
   data: Integration[];
@@ -1386,10 +1397,106 @@ export const deleteIntegration = (companyId: string, integrationId: string) =>
   });
 
 export const testIntegration = (companyId: string, integrationId: string) =>
-  request<{ id: string; success: boolean; message: string; testedAt: string }>(
+  request<{
+    id: string;
+    success: boolean;
+    healthStatus: HealthStatus;
+    healthCheckMethod: string | null;
+    healthError: string | null;
+    httpStatus: number | null;
+    message: string;
+    testedAt: string;
+  }>(
     `/companies/${companyId}/integrations/${integrationId}/test`,
     { method: "POST" },
   );
+
+// ── Automation Runs ────────────────────────────────────────────────────
+
+export type AutomationType = "routine" | "workflow" | "webhook";
+export type AutomationRunTriggerType = "manual" | "webhook" | "schedule" | "event" | "api";
+export type AutomationRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface AutomationRun {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  automationType: AutomationType;
+  automationId: string;
+  automationName: string;
+  triggerType: AutomationRunTriggerType;
+  triggerPayload: Record<string, unknown>;
+  status: AutomationRunStatus;
+  taskId: string | null;
+  executionId: string | null;
+  sessionId: string | null;
+  messageId: string | null;
+  outcome: string | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutomationRunFilters {
+  type?: AutomationType;
+  status?: AutomationRunStatus;
+  project?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export const getAutomationRuns = (companyId: string, filters?: AutomationRunFilters) => {
+  const params = new URLSearchParams();
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.status) params.set("status", filters.status);
+  if (filters?.project) params.set("project", filters.project);
+  if (filters?.limit) params.set("limit", String(filters.limit));
+  if (filters?.offset) params.set("offset", String(filters.offset));
+  const qs = params.toString();
+  return request<ApiResponse<AutomationRun[]>>(
+    `/companies/${companyId}/automations/runs${qs ? `?${qs}` : ""}`,
+  );
+};
+
+// ── Unified Health Surface ──────────────────────────────────────────────
+
+export interface UnifiedHealthEntry {
+  type: "integration" | "mcp_server";
+  id: string;
+  name: string;
+  healthStatus: HealthStatus;
+  lastHealthCheckAt: string | null;
+  healthError: string | null;
+  projectId: string | null;
+  provider: string | null;
+  transport: string | null;
+}
+
+export const getUnifiedHealth = (companyId: string, projectId?: string) => {
+  const params = new URLSearchParams();
+  if (projectId) params.set("project", projectId);
+  const qs = params.toString();
+  return request<ApiResponse<UnifiedHealthEntry[]>>(
+    `/companies/${companyId}/integrations/health${qs ? `?${qs}` : ""}`,
+  );
+};
+
+// ── Health Summary (project-scoped composed) ─────────────────────────────
+
+export interface HealthSummary {
+  integrations: {
+    healthy: number;
+    degraded: number;
+    error: number;
+    unknown: number;
+  };
+  automationRuns: {
+    success: number;
+    failure: number;
+  };
+}
 
 // ── Knowledge Base ─────────────────────────────────────────────────────
 

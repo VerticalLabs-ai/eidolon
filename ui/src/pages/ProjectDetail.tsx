@@ -18,6 +18,7 @@ import { ProjectThreadComposer } from "@/components/projects/ProjectThreadCompos
 import { ProjectPlansPanel } from "@/components/projects/ProjectPlansPanel";
 import { ProjectDecisionsPanel } from "@/components/projects/ProjectDecisionsPanel";
 import { ProjectOutcomesPanel } from "@/components/projects/ProjectOutcomesPanel";
+import { AutomationRunsPanel } from "@/components/projects/AutomationRunsPanel";
 import type { Tab } from "@/components/ui/Tabs";
 
 const VALID_TABS = ["home", "work", "drive", "activity"] as const;
@@ -189,6 +190,9 @@ export function ProjectDetail() {
             </div>
             <div className="mx-auto max-w-6xl">
               <ProjectOutcomesPanel companyId={companyId ?? ""} projectId={project.id} />
+            </div>
+            <div className="mx-auto max-w-6xl">
+              <AutomationRunsPanel companyId={companyId ?? ""} projectId={project.id} />
             </div>
             <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4">
               <ProjectThreadComposer companyId={companyId ?? ""} projectId={project.id} />
