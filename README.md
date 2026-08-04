@@ -26,6 +26,8 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 | **Multi-tenancy** | Run multiple autonomous companies from one deployment, isolated by org membership. |
 | **Activity audit log** | Every action tracked with actor, entity, and timestamp. |
 | **Project workspace** | Per-project shell with four deep-linkable tabs — Home (composed summary of counts, active work, needs-attention, goals, recent activity and files), Work (scoped task board), Drive (project-scoped file tree), and Activity (work-state header + event timeline). Tabs are URL-routed via `?tab=home|work|drive|activity`. |
+| **Consolidated automation contracts** | Canonical automation and run-history contracts across routines, workflows, and webhooks, with project scoping and linked work. |
+| **Truthful integration health** | Real connectivity checks with SSRF protections, persisted health status, and unified integration/MCP health visibility. |
 
 ### Project work surfaces (VER-514)
 
@@ -37,6 +39,13 @@ Projects now support durable, human-governed work surfaces across the Home and W
 - **Typed outcomes** — Projects track `document`, `pull_request`, `audit`, `review`, and `delivery_summary` outcomes with `pending`, `completed`, or `failed` status and reference URLs. Use `/api/companies/:companyId/projects/:projectId/outcomes`; the UI includes `ProjectOutcomesPanel` on Work.
 - **Composed project endpoints** — `GET /api/companies/:companyId/projects/:id/home` includes recent thread items, pending decisions, and active plan progress. `GET /api/companies/:companyId/projects/:id/work` returns plans with step summaries, outcomes, and a thread summary.
 - **Database migrations** — Migrations `0013`, `0014`, and `0015` add project threads, plans, plan steps, decisions, and outcomes, and enhance task thread items and approvals.
+
+### Automation contracts and integration health (VER-513)
+
+- **Consolidated automation contracts** — The canonical `automation_runs` table records every invocation of routines, workflows, and webhooks with status, trigger type, trigger payload, and links to created work (tasks, executions, sessions, and messages). `GET /api/companies/:companyId/automations` aggregates all three automation types into one canonical list with type discrimination, trigger information, project scoping, run counts, and last-run timestamps. `GET /api/companies/:companyId/automations/runs` provides cross-automation run history with filtering by type, status, and project. Webhooks support project scoping (`projectId` with a foreign key and `ON DELETE SET NULL`) and propagate the project to created tasks and messages. Routine-triggered tasks set `projectId` directly from the routine. Shared workflow types are reconciled with the route contract, including `projectId`, status enums, and aligned node types.
+- **Truthful integration health** — The simulated integration test endpoint is replaced with real connectivity checks. A pluggable `IntegrationHealthChecker` performs bounded `HEAD` requests for HTTP-based integrations (`custom_api`, `webhook_out`) with SSRF protections including private-address rejection, DNS pre-resolution, and address pinning. Catalog providers without implemented checkers return structured `unknown` status, never `healthy`. Health status (`healthy`, `degraded`, `error`, or `unknown`) is persisted separately from lifecycle status, and new integrations start as `unknown`. `GET /api/companies/:companyId/integrations/health` aggregates integration and MCP server health. MCP servers have a dedicated `POST /api/companies/:companyId/mcp/servers/:id/health` re-check endpoint. Integrations support project scoping.
+- **Database migrations** — Migrations `0016` and `0017` add the `automation_runs` table, the webhook `projectId` column, and integration health fields plus `projectId`.
+- **UI surfaces** — The Integrations page shows color-coded health badges (`healthy`, `degraded`, `error`, `unknown`) with real health-check buttons, error messages, and last-check timestamps. `AutomationRunsPanel` shows recent automation runs on the project Work tab. `HealthSummaryCard` shows integration health counts and automation run success/failure counts on the project Home tab.
 
 ## Quickstart
 
@@ -147,7 +156,8 @@ Operators can validate a configured process, HTTP, or OpenClaw session without r
 4. **Create tasks** — Kanban board with priority-aware scheduling. Assignment selects an owner; an execution-scoped checkout is the atomic, auditable transition that starts work.
 5. **Organize projects** — Group work into projects. Each project shell composes Home (counts, active work, goals, recent activity), Work (scoped task board), Drive (project file tree), and Activity (work-state + timeline) into four deep-linkable tabs.
 6. **Run** — Agents execute via the Observe → Think → Act → Reflect loop with live transcript streaming, budget enforcement, and approval gates on governed actions.
-7. **Monitor** — Inbox surfaces pending approvals, inbound collaborations, and high-signal activity. Navigate with `j`/`k`/`a`/`o`.
+7. **Track automation and health** — Routine, workflow, and webhook invocations are recorded with linked work and project scope; integration and MCP connectivity health is checked and surfaced with actionable status.
+8. **Monitor** — Inbox surfaces pending approvals, inbound collaborations, and high-signal activity. Navigate with `j`/`k`/`a`/`o`.
 
 Project ownership is canonical across context and execution: migrations 0011 and 0012 add `project_id` to knowledge, messages, task threads, agent executions, workflows, routines, and the activity log, backed by shared ownership validation utilities and API-level project scoping. Task-derived records inherit the project from their task, and deleting a project clears those references while preserving the records.
 
@@ -173,6 +183,11 @@ All endpoints under `/api`. See the per-route source for full schemas.
 | `POST /api/companies/:id/sessions/:sessionId/finalize` | Finalize a runtime session and release its workspace |
 | `POST /api/companies/:id/skills/install` | Install/update a company skill and optionally assign it to agents |
 | `POST /api/companies/:id/routines` | Create a scheduled, continuous, or on-demand Jarvis routine |
+| `GET /api/companies/:id/automations` | List routines, workflows, and webhooks in one canonical automation list |
+| `GET /api/companies/:id/automations/runs` | List cross-automation run history with type, status, and project filters |
+| `GET /api/companies/:id/automations/:type/:id/runs` | List runs for one routine, workflow, or webhook |
+| `GET /api/companies/:id/integrations/health` | Aggregate integration and MCP server health |
+| `POST /api/companies/:id/mcp/servers/:id/health` | Re-check health for an MCP server |
 | `GET /api/companies/:id/tasks` | List tasks |
 | `POST /api/companies/:id/tasks` | Create task |
 | `POST /api/companies/:id/tasks/:taskId/checkout` | Atomically check out a task for an agent execution |
