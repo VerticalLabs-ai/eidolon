@@ -135,6 +135,10 @@ export function setupActivityLogger(db: DbInstance): void {
   const { activityLog } = db.schema;
 
   eventBus.onEvent(async (event) => {
+    if (event.type === 'company.deleted') {
+      return;
+    }
+
     try {
       await db.drizzle.insert(activityLog).values(activityRecordFromEvent(event));
     } catch (err) {

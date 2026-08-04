@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { createTestDb, createTestApp } from '../test-utils.js';
+import { setupActivityLogger } from '../routes/activity.js';
 
 describe('Companies API', () => {
   let app: ReturnType<typeof createTestApp>;
@@ -296,6 +297,37 @@ describe('Companies API', () => {
       expect(remainingAgent).toHaveLength(0);
       expect(remainingTask).toHaveLength(0);
       expect(remainingProject).toHaveLength(0);
+    });
+
+    it('should not recreate an activity log row after hard delete', async () => {
+      const created = await request(app)
+        .post('/api/companies')
+        .send({ name: 'Activity Hard Delete Me', settings: { testFixture: true } })
+        .expect(201);
+      const companyId = created.body.data.id;
+
+      await db.drizzle.insert(db.schema.activityLog).values({
+        companyId,
+        actorType: 'system',
+        actorId: 'system',
+        action: 'company.created',
+        entityType: 'company',
+        entityId: companyId,
+        description: 'Company created',
+        metadata: {},
+        createdAt: new Date(),
+      });
+      setupActivityLogger(db);
+
+      await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(204);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const remainingActivity = await db.drizzle
+        .select()
+        .from(db.schema.activityLog)
+        .where(eq(db.schema.activityLog.companyId, companyId));
+
+      expect(remainingActivity).toHaveLength(0);
     });
   });
 
