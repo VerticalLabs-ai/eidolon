@@ -1,6 +1,7 @@
 // Eidolon hooks — v2 with projects, delete, toasts
 import {
   useQuery,
+  useQueries,
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -167,6 +168,375 @@ export function useProjectHome(
     queryKey: ["project-home", companyId, projectId],
     queryFn: async () =>
       unwrap<api.ProjectHomeSummary>(await api.getProjectHome(companyId!, projectId!)),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+// ── Project Threads ─────────────────────────────────────────────────────
+
+export function useProjectThreads(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectThreadFilters,
+) {
+  return useQuery({
+    queryKey: ["project-threads", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectThread[]>(await api.getProjectThreads(companyId!, projectId!, filters)),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useProjectThread(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  threadId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["project-thread", companyId, projectId, threadId],
+    queryFn: async () =>
+      unwrap<api.ProjectThreadDetail>(
+        await api.getProjectThread(companyId!, projectId!, threadId!),
+      ),
+    enabled: !!companyId && !!projectId && !!threadId,
+  });
+}
+
+/**
+ * Aggregate recent items across ALL active project threads (not just the
+ * first one). Fetches the active thread list, then each thread's detail in
+ * parallel via useQueries, and merges items sorted newest-first.
+ */
+export function useProjectThreadItems(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectThreadFilters,
+) {
+  const threads = useProjectThreads(companyId, projectId, filters ?? { status: "active" });
+  const threadIds = threads.data?.map((t) => t.id) ?? [];
+  const queries = useQueries({
+    queries: threadIds.map((id) => ({
+      queryKey: ["project-thread", companyId, projectId, id],
+      queryFn: async () =>
+        unwrap<api.ProjectThreadDetail>(
+          await api.getProjectThread(companyId!, projectId!, id),
+        ),
+      enabled: !!companyId && !!projectId,
+    })),
+  });
+  const isLoading = threads.isLoading || queries.some((q) => q.isLoading);
+  const isError = threads.isError || queries.some((q) => q.isError);
+  const items = queries
+    .flatMap((q) => q.data?.items ?? [])
+    .sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  return { data: items, threads: threads.data ?? [], isLoading, isError };
+}
+
+/**
+ * Resolve a thread interaction item in any project thread. Unlike
+ * useUpdateThreadItem, the target threadId is supplied per-call so items
+ * aggregated from multiple threads can each be resolved against their own
+ * thread.
+ */
+export function useResolveThreadItem(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      threadId,
+      itemId,
+      data,
+    }: {
+      threadId: string;
+      itemId: string;
+      data: api.UpdateThreadItemInput;
+    }) => api.updateThreadItem(companyId, projectId, threadId, itemId, data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({
+        queryKey: ["project-thread", companyId, projectId, vars.threadId],
+      });
+      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    },
+  });
+}
+
+export function useCreateProjectThread(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectThreadInput) =>
+      api.createProjectThread(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    },
+  });
+}
+
+export function useCreateThreadItem(companyId: string, projectId: string, threadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateThreadItemInput) =>
+      api.createThreadItem(companyId, projectId, threadId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId, threadId] });
+      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateThreadItem(companyId: string, projectId: string, threadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      itemId,
+      data,
+    }: {
+      itemId: string;
+      data: api.UpdateThreadItemInput;
+    }) => api.updateThreadItem(companyId, projectId, threadId, itemId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId, threadId] });
+    },
+  });
+}
+
+// ── Project Plans ─────────────────────────────────────────────────────────
+
+export function useProjectPlans(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectPlanFilters,
+) {
+  return useQuery({
+    queryKey: ["project-plans", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectPlan[]>(await api.getProjectPlans(companyId!, projectId!, filters)),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useProjectPlan(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  planId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["project-plan", companyId, projectId, planId],
+    queryFn: async () =>
+      unwrap<api.ProjectPlanDetail>(
+        await api.getProjectPlan(companyId!, projectId!, planId!),
+      ),
+    enabled: !!companyId && !!projectId && !!planId,
+  });
+}
+
+/**
+ * Fetch plans (optionally filtered) and their full step lists in parallel.
+ * Returns `ProjectPlanDetail[]` so consumers can render progress bars and
+ * per-step status indicators without a second round-trip per plan.
+ */
+export function usePlansWithSteps(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectPlanFilters,
+) {
+  const plans = useProjectPlans(companyId, projectId, filters);
+  const planIds = plans.data?.map((p) => p.id) ?? [];
+  const queries = useQueries({
+    queries: planIds.map((id) => ({
+      queryKey: ["project-plan", companyId, projectId, id],
+      queryFn: async () =>
+        unwrap<api.ProjectPlanDetail>(
+          await api.getProjectPlan(companyId!, projectId!, id),
+        ),
+      enabled: !!companyId && !!projectId,
+    })),
+  });
+  const isLoading = plans.isLoading || queries.some((q) => q.isLoading);
+  const isError = plans.isError || queries.some((q) => q.isError);
+  const data = queries
+    .map((q) => q.data)
+    .filter((d): d is api.ProjectPlanDetail => !!d)
+    .sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  return { data, isLoading, isError };
+}
+
+export function useCreateProjectPlan(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectPlanInput) =>
+      api.createProjectPlan(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectPlan(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      data,
+    }: {
+      planId: string;
+      data: api.UpdateProjectPlanInput;
+    }) => api.updateProjectPlan(companyId, projectId, planId, data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
+export function useCreatePlanStep(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      data,
+    }: {
+      planId: string;
+      data: api.CreatePlanStepInput;
+    }) => api.createPlanStep(companyId, projectId, planId, data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
+export function useUpdatePlanStep(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      stepId,
+      data,
+    }: {
+      planId: string;
+      stepId: string;
+      data: api.UpdatePlanStepInput;
+    }) => api.updatePlanStep(companyId, projectId, planId, stepId, data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
+export function useAdvancePlanGate(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ planId, stepId }: { planId: string; stepId: string }) =>
+      api.advancePlanGate(companyId, projectId, planId, stepId),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+    },
+  });
+}
+
+// ── Project Decisions ─────────────────────────────────────────────────────
+
+export function useProjectDecisions(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectDecisionFilters,
+) {
+  return useQuery({
+    queryKey: ["project-decisions", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectDecision[]>(
+        await api.getProjectDecisions(companyId!, projectId!, filters),
+      ),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useCreateProjectDecision(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectDecisionInput) =>
+      api.createProjectDecision(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-decisions", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectDecision(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      decisionId,
+      data,
+    }: {
+      decisionId: string;
+      data: api.UpdateProjectDecisionInput;
+    }) => api.updateProjectDecision(companyId, projectId, decisionId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-decisions", companyId, projectId] });
+    },
+  });
+}
+
+// ── Project Outcomes ──────────────────────────────────────────────────────
+
+export function useProjectOutcomes(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  filters?: api.ProjectOutcomeFilters,
+) {
+  return useQuery({
+    queryKey: ["project-outcomes", companyId, projectId, filters],
+    queryFn: async () =>
+      unwrap<api.ProjectOutcome[]>(
+        await api.getProjectOutcomes(companyId!, projectId!, filters),
+      ),
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useCreateProjectOutcome(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.CreateProjectOutcomeInput) =>
+      api.createProjectOutcome(companyId, projectId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-outcomes", companyId, projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectOutcome(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      outcomeId,
+      data,
+    }: {
+      outcomeId: string;
+      data: api.UpdateProjectOutcomeInput;
+    }) => api.updateProjectOutcome(companyId, projectId, outcomeId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-outcomes", companyId, projectId] });
+    },
+  });
+}
+
+// ── Project Work (composed endpoint) ──────────────────────────────────────
+
+export function useProjectWork(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["project-work", companyId, projectId],
+    queryFn: async () =>
+      unwrap<api.ProjectWorkSummary>(await api.getProjectWork(companyId!, projectId!)),
     enabled: !!companyId && !!projectId,
   });
 }

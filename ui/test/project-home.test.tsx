@@ -6,12 +6,30 @@ import { ProjectHome } from "../src/pages/ProjectHome";
 const mocks = vi.hoisted(() => ({
   useProjectHome: vi.fn(),
   useGoals: vi.fn(),
+  useProjectThreads: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useProjectThread: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useProjectThreadItems: vi.fn(() => ({ data: [], threads: [], isLoading: false, isError: false })),
+  useCreateThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false, isError: false, reset: vi.fn() })),
+  useUpdateThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useResolveThreadItem: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePlansWithSteps: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useProjectDecisions: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useUpdateProjectDecision: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   refetch: vi.fn(),
 }));
 
 vi.mock("@/lib/hooks", () => ({
   useProjectHome: mocks.useProjectHome,
   useGoals: mocks.useGoals,
+  useProjectThreads: mocks.useProjectThreads,
+  useProjectThread: mocks.useProjectThread,
+  useProjectThreadItems: mocks.useProjectThreadItems,
+  useCreateThreadItem: mocks.useCreateThreadItem,
+  useUpdateThreadItem: mocks.useUpdateThreadItem,
+  useResolveThreadItem: mocks.useResolveThreadItem,
+  usePlansWithSteps: mocks.usePlansWithSteps,
+  useProjectDecisions: mocks.useProjectDecisions,
+  useUpdateProjectDecision: mocks.useUpdateProjectDecision,
 }));
 
 const baseSummary = {

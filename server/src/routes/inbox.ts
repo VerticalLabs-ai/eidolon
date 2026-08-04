@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { validate } from '../middleware/validate.js';
@@ -103,6 +103,7 @@ export function inboxRouter(db: DbInstance): Router {
           eq(taskThreadItems.companyId, companyId),
           eq(taskThreadItems.kind, 'interaction'),
           eq(taskThreadItems.status, 'pending'),
+          isNotNull(taskThreadItems.taskId),
         ),
       )
       .orderBy(desc(taskThreadItems.createdAt))
@@ -139,6 +140,7 @@ export function inboxRouter(db: DbInstance): Router {
           eq(taskThreadItems.companyId, companyId),
           eq(taskThreadItems.kind, 'interaction'),
           eq(taskThreadItems.status, 'pending'),
+          isNotNull(taskThreadItems.taskId),
         ),
       );
 
@@ -190,6 +192,7 @@ export function inboxRouter(db: DbInstance): Router {
     }
 
     for (const item of pendingThreadItems) {
+      if (!item.taskId) continue;
       const inboxItemId = `thread:${item.id}`;
       const interactionLabel = (item.interactionType ?? 'interaction').replace('_', ' ');
       items.push({

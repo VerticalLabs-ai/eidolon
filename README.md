@@ -27,6 +27,17 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 | **Activity audit log** | Every action tracked with actor, entity, and timestamp. |
 | **Project workspace** | Per-project shell with four deep-linkable tabs — Home (composed summary of counts, active work, needs-attention, goals, recent activity and files), Work (scoped task board), Drive (project-scoped file tree), and Activity (work-state header + event timeline). Tabs are URL-routed via `?tab=home|work|drive|activity`. |
 
+### Project work surfaces (VER-514)
+
+Projects now support durable, human-governed work surfaces across the Home and Work tabs:
+
+- **Persistent project threads** — Projects have canonical conversation threads (`project_threads`). Thread items (`task_thread_items`) support both task-scoped and project-scoped conversations. Use `GET`/`POST /api/companies/:companyId/projects/:projectId/threads`; the UI surfaces these through `ProjectThreadPanel` on Home and `ProjectThreadComposer` on Work.
+- **Multi-step plans with gates** — Plans (`project_plans` and `project_plan_steps`) contain `action`, `review_gate`, or `permission_gate` steps. Advancing a gate creates a bidirectionally linked `plan_gate` approval record, while plan progress is calculated from step completion. Use `/api/companies/:companyId/projects/:projectId/plans`; the UI includes `ProjectPlansPanel` on Work and `PlanProgressCard` on Home.
+- **Human-owned decision cards** — Decision cards move through `pending`, `approved`, `rejected`, and `superseded` states and can link to plans and plan steps. Use `/api/companies/:companyId/projects/:projectId/decisions`; the UI includes `PendingDecisionsCard` on Home and `ProjectDecisionsPanel` on Work.
+- **Typed outcomes** — Projects track `document`, `pull_request`, `audit`, `review`, and `delivery_summary` outcomes with `pending`, `completed`, or `failed` status and reference URLs. Use `/api/companies/:companyId/projects/:projectId/outcomes`; the UI includes `ProjectOutcomesPanel` on Work.
+- **Composed project endpoints** — `GET /api/companies/:companyId/projects/:id/home` includes recent thread items, pending decisions, and active plan progress. `GET /api/companies/:companyId/projects/:id/work` returns plans with step summaries, outcomes, and a thread summary.
+- **Database migrations** — Migrations `0013`, `0014`, and `0015` add project threads, plans, plan steps, decisions, and outcomes, and enhance task thread items and approvals.
+
 ## Quickstart
 
 ```bash

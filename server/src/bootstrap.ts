@@ -41,6 +41,7 @@ import {
   approvalComments,
   inboxReadStates,
   taskThreadItems,
+  projectThreads,
   taskCheckouts,
   taskHolds,
   executionEnvironments,
@@ -50,6 +51,10 @@ import {
   companySkills,
   agentSkills,
   routines,
+  projectPlans,
+  projectPlanSteps,
+  projectDecisions,
+  projectOutcomes,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +94,7 @@ const SCHEMA_BUNDLE = {
   approvalComments,
   inboxReadStates,
   taskThreadItems,
+  projectThreads,
   taskCheckouts,
   taskHolds,
   executionEnvironments,
@@ -98,6 +104,10 @@ const SCHEMA_BUNDLE = {
   companySkills,
   agentSkills,
   routines,
+  projectPlans,
+  projectPlanSteps,
+  projectDecisions,
+  projectOutcomes,
 } as const;
 
 export interface BootstrapOptions {

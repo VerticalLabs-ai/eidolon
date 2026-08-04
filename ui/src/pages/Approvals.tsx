@@ -44,6 +44,7 @@ const kindLabels: Record<ApprovalKind, string> = {
   agent_termination: "Agent termination",
   task_review: "Task review",
   custom: "Custom",
+  plan_gate: "Plan gate",
 };
 
 const priorityVariant: Record<

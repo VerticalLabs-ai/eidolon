@@ -50,7 +50,20 @@ const HomeRouteParams = z.object({
 
 export function projectsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { projects, tasks, goals, agentFiles, agentExecutions, taskThreadItems, activityLog } = db.schema;
+  const {
+    projects,
+    tasks,
+    goals,
+    agentFiles,
+    agentExecutions,
+    taskThreadItems,
+    activityLog,
+    projectThreads,
+    projectPlans,
+    projectPlanSteps,
+    projectDecisions,
+    projectOutcomes,
+  } = db.schema;
 
   // GET /api/companies/:companyId/projects - list all projects for a company
   router.get('/', validate(ProjectListQuery, 'query'), async (req, res) => {
@@ -180,6 +193,9 @@ export function projectsRouter(db: DbInstance): Router {
       recentActivityRows,
       recentFilesRows,
       goalProgressRow,
+      recentThreadItemsRows,
+      pendingDecisionsRows,
+      activePlanProgressRows,
     ] = await Promise.all([
       // counts.taskCount
       db.drizzle
@@ -342,6 +358,69 @@ export function projectsRouter(db: DbInstance): Router {
         })
         .from(goals)
         .where(and(eq(goals.companyId, companyId), eq(goals.projectId, id))),
+      // recentThreadItems — top 5 items from active project threads (VER-514)
+      db.drizzle
+        .select({
+          id: taskThreadItems.id,
+          companyId: taskThreadItems.companyId,
+          taskId: taskThreadItems.taskId,
+          kind: taskThreadItems.kind,
+          authorUserId: taskThreadItems.authorUserId,
+          authorAgentId: taskThreadItems.authorAgentId,
+          content: taskThreadItems.content,
+          payload: taskThreadItems.payload,
+          interactionType: taskThreadItems.interactionType,
+          status: taskThreadItems.status,
+          idempotencyKey: taskThreadItems.idempotencyKey,
+          relatedApprovalId: taskThreadItems.relatedApprovalId,
+          relatedExecutionId: taskThreadItems.relatedExecutionId,
+          resolvedByUserId: taskThreadItems.resolvedByUserId,
+          resolutionNote: taskThreadItems.resolutionNote,
+          projectId: taskThreadItems.projectId,
+          projectThreadId: taskThreadItems.projectThreadId,
+          createdAt: taskThreadItems.createdAt,
+          updatedAt: taskThreadItems.updatedAt,
+          resolvedAt: taskThreadItems.resolvedAt,
+        })
+        .from(taskThreadItems)
+        .innerJoin(projectThreads, eq(projectThreads.id, taskThreadItems.projectThreadId))
+        .where(
+          and(
+            eq(taskThreadItems.companyId, companyId),
+            eq(projectThreads.companyId, companyId),
+            eq(projectThreads.projectId, id),
+            eq(projectThreads.status, 'active'),
+          ),
+        )
+        .orderBy(desc(taskThreadItems.createdAt), desc(taskThreadItems.id))
+        .limit(5),
+      // pendingDecisions — top 5 pending decisions (VER-514)
+      db.drizzle
+        .select()
+        .from(projectDecisions)
+        .where(
+          and(
+            eq(projectDecisions.companyId, companyId),
+            eq(projectDecisions.projectId, id),
+            eq(projectDecisions.status, 'pending'),
+          ),
+        )
+        .orderBy(desc(projectDecisions.createdAt), desc(projectDecisions.id))
+        .limit(5),
+      // activePlanProgress — top 3 active plans (VER-514)
+      // Step counts are fetched separately after Promise.all resolves.
+      db.drizzle
+        .select()
+        .from(projectPlans)
+        .where(
+          and(
+            eq(projectPlans.companyId, companyId),
+            eq(projectPlans.projectId, id),
+            eq(projectPlans.status, 'active'),
+          ),
+        )
+        .orderBy(desc(projectPlans.createdAt), desc(projectPlans.id))
+        .limit(3),
     ]);
 
     // Build the per-status breakdown map (all statuses default to 0)
@@ -364,6 +443,36 @@ export function projectsRouter(db: DbInstance): Router {
       ? Number(goalProgressRow[0].aggregateProgress)
       : 0;
 
+    // Fetch step counts for active plans (two-step approach for PGlite compatibility)
+    const activePlanIds = activePlanProgressRows.map((p) => p.id);
+    let activePlanProgress: Array<typeof activePlanProgressRows[number] & { stepCount: number; completedStepCount: number }> = [];
+    if (activePlanIds.length > 0) {
+      const stepCounts = await db.drizzle
+        .select({
+          planId: projectPlanSteps.planId,
+          stepCount: sql<number>`count(*)`.as('step_count'),
+          completedStepCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'completed')`.as('completed_step_count'),
+        })
+        .from(projectPlanSteps)
+        .where(inArray(projectPlanSteps.planId, activePlanIds))
+        .groupBy(projectPlanSteps.planId);
+
+      const countsByPlan = new Map<string, { stepCount: number; completedStepCount: number }>();
+      for (const sc of stepCounts) {
+        countsByPlan.set(sc.planId, {
+          stepCount: Number(sc.stepCount),
+          completedStepCount: Number(sc.completedStepCount),
+        });
+      }
+
+      activePlanProgress = activePlanProgressRows.map((p) => ({
+        ...p,
+        stepCount: countsByPlan.get(p.id)?.stepCount ?? 0,
+        completedStepCount: countsByPlan.get(p.id)?.completedStepCount ?? 0,
+      }));
+    }
+
     res.json({
       data: {
         project,
@@ -382,6 +491,164 @@ export function projectsRouter(db: DbInstance): Router {
         goalProgress: {
           count: goalProgressCount,
           aggregateProgress: goalProgressAggregate,
+        },
+        // VER-514 composed fields
+        recentThreadItems: recentThreadItemsRows,
+        pendingDecisions: pendingDecisionsRows,
+        activePlanProgress,
+      },
+    });
+  });
+
+  // GET /api/companies/:companyId/projects/:id/work - composed work summary (VER-514)
+  router.get('/:id/work', validate(HomeRouteParams, 'params'), async (req, res) => {
+    const { id } = (req as any).validated.params as z.infer<typeof HomeRouteParams>;
+    const companyId = routeParams(req).companyId;
+
+    // Company-boundary enforcement: project must belong to route companyId
+    const [project] = await db.drizzle
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, id), eq(projects.companyId, companyId)))
+      .limit(1);
+
+    if (!project) {
+      throw new AppError(404, 'PROJECT_NOT_FOUND', `Project ${id} not found`);
+    }
+
+    // Run all independent composition queries in parallel
+    const [
+      planRows,
+      outcomeRows,
+      activeThreadCountRow,
+      pendingInteractionCountRow,
+    ] = await Promise.all([
+      // plans — all plans for the project (step counts fetched separately below)
+      db.drizzle
+        .select()
+        .from(projectPlans)
+        .where(
+          and(
+            eq(projectPlans.companyId, companyId),
+            eq(projectPlans.projectId, id),
+          ),
+        )
+        .orderBy(desc(projectPlans.createdAt), desc(projectPlans.id)),
+      // outcomes — recent outcomes (top 20)
+      db.drizzle
+        .select()
+        .from(projectOutcomes)
+        .where(
+          and(
+            eq(projectOutcomes.companyId, companyId),
+            eq(projectOutcomes.projectId, id),
+          ),
+        )
+        .orderBy(desc(projectOutcomes.createdAt), desc(projectOutcomes.id))
+        .limit(20),
+      // activeThreadCount — count of active project threads
+      db.drizzle
+        .select({ count: sql<number>`count(*)` })
+        .from(projectThreads)
+        .where(
+          and(
+            eq(projectThreads.companyId, companyId),
+            eq(projectThreads.projectId, id),
+            eq(projectThreads.status, 'active'),
+          ),
+        ),
+      // pendingInteractionCount — count of pending interaction items from project threads
+      db.drizzle
+        .select({ count: sql<number>`count(*)` })
+        .from(taskThreadItems)
+        .innerJoin(projectThreads, eq(projectThreads.id, taskThreadItems.projectThreadId))
+        .where(
+          and(
+            eq(taskThreadItems.companyId, companyId),
+            eq(projectThreads.companyId, companyId),
+            eq(projectThreads.projectId, id),
+            eq(projectThreads.status, 'active'),
+            eq(taskThreadItems.kind, 'interaction'),
+            eq(taskThreadItems.status, 'pending'),
+          ),
+        ),
+    ]);
+
+    // Fetch step counts for plans (two-step approach for PGlite compatibility)
+    const planIds = planRows.map((p) => p.id);
+    const stepStatuses = ['pending', 'in_progress', 'completed', 'blocked', 'skipped'] as const;
+    type StepStatusCounts = Record<(typeof stepStatuses)[number], number>;
+    let plans: Array<
+      typeof planRows[number] & {
+        stepCount: number;
+        completedStepCount: number;
+        stepStatusCounts: StepStatusCounts;
+      }
+    > = [];
+    if (planIds.length > 0) {
+      const stepCounts = await db.drizzle
+        .select({
+          planId: projectPlanSteps.planId,
+          stepCount: sql<number>`count(*)`.as('step_count'),
+          completedStepCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'completed')`.as('completed_step_count'),
+          pendingCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'pending')`.as('pending_count'),
+          inProgressCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'in_progress')`.as('in_progress_count'),
+          blockedCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'blocked')`.as('blocked_count'),
+          skippedCount:
+            sql<number>`count(*) filter (where ${projectPlanSteps.status} = 'skipped')`.as('skipped_count'),
+        })
+        .from(projectPlanSteps)
+        .where(
+          and(
+            eq(projectPlanSteps.companyId, companyId),
+            inArray(projectPlanSteps.planId, planIds),
+          ),
+        )
+        .groupBy(projectPlanSteps.planId);
+
+      const countsByPlan = new Map<
+        string,
+        { stepCount: number; completedStepCount: number; stepStatusCounts: StepStatusCounts }
+      >();
+      for (const sc of stepCounts) {
+        countsByPlan.set(sc.planId, {
+          stepCount: Number(sc.stepCount),
+          completedStepCount: Number(sc.completedStepCount),
+          stepStatusCounts: {
+            pending: Number(sc.pendingCount),
+            in_progress: Number(sc.inProgressCount),
+            completed: Number(sc.completedStepCount),
+            blocked: Number(sc.blockedCount),
+            skipped: Number(sc.skippedCount),
+          },
+        });
+      }
+
+      plans = planRows.map((p) => ({
+        ...p,
+        stepCount: countsByPlan.get(p.id)?.stepCount ?? 0,
+        completedStepCount: countsByPlan.get(p.id)?.completedStepCount ?? 0,
+        stepStatusCounts: countsByPlan.get(p.id)?.stepStatusCounts ?? {
+          pending: 0,
+          in_progress: 0,
+          completed: 0,
+          blocked: 0,
+          skipped: 0,
+        },
+      }));
+    }
+
+    res.json({
+      data: {
+        plans,
+        outcomes: outcomeRows,
+        threadSummary: {
+          activeThreadCount: Number(activeThreadCountRow[0].count),
+          pendingInteractionCount: Number(pendingInteractionCountRow[0].count),
         },
       },
     });

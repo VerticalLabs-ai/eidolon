@@ -45,7 +45,7 @@ const CancelBody = z.object({
 
 export function approvalsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { approvals, approvalComments, taskThreadItems, tasks } = db.schema;
+  const { approvals, approvalComments, taskThreadItems, tasks, projectPlanSteps, projectPlans } = db.schema;
 
   // GET /api/companies/:companyId/approvals?status=pending
   router.get('/', async (req, res) => {
@@ -227,8 +227,56 @@ export function approvalsRouter(db: DbInstance): Router {
         await tx.insert(taskThreadItems).values(threadValues);
       }
 
+      // Plan gate resolution: update the linked plan step status.
+      if (updated.planStepId) {
+        if (body.decision === 'approved') {
+          await tx
+            .update(projectPlanSteps)
+            .set({
+              status: 'completed',
+              completedAt: now,
+              completedByUserId: req.user?.id ?? null,
+              updatedAt: now,
+            })
+            .where(eq(projectPlanSteps.id, updated.planStepId));
+        } else {
+          await tx
+            .update(projectPlanSteps)
+            .set({
+              status: 'blocked',
+              updatedAt: now,
+            })
+            .where(eq(projectPlanSteps.id, updated.planStepId));
+        }
+      }
+
       return updated;
     });
+
+    // Recalculate plan progress after a gate resolution changes step status.
+    if (row.planStepId) {
+      const [step] = await db.drizzle
+        .select({ planId: projectPlanSteps.planId })
+        .from(projectPlanSteps)
+        .where(eq(projectPlanSteps.id, row.planStepId))
+        .limit(1);
+
+      if (step) {
+        const steps = await db.drizzle
+          .select({ status: projectPlanSteps.status })
+          .from(projectPlanSteps)
+          .where(eq(projectPlanSteps.planId, step.planId));
+
+        const nonSkipped = steps.filter((s) => s.status !== 'skipped').length;
+        const completed = steps.filter((s) => s.status === 'completed').length;
+        const progress = nonSkipped > 0 ? Math.round((completed / nonSkipped) * 100) : 0;
+
+        await db.drizzle
+          .update(projectPlans)
+          .set({ progress, updatedAt: now })
+          .where(eq(projectPlans.id, step.planId));
+      }
+    }
 
     eventBus.emitEvent({
       type: 'approval.decided' as any,

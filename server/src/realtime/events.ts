@@ -88,6 +88,13 @@ export interface ProjectEvent extends ServerEvent {
     | 'project.deleted';
 }
 
+export interface ProjectThreadEvent extends ServerEvent {
+  type:
+    | 'project.thread.created'
+    | 'project.thread.item.created'
+    | 'project.thread.item.updated';
+}
+
 export interface GoalEvent extends ServerEvent {
   type:
     | 'goal.created'
@@ -124,6 +131,7 @@ export type EidolonEvent =
   | CompanyEvent
   | AgentEvent
   | ProjectEvent
+  | ProjectThreadEvent
   | TaskEvent
   | GoalEvent
   | MessageEvent

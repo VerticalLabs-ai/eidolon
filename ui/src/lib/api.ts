@@ -486,6 +486,449 @@ export interface TaskThreadItem {
   source?: "thread" | "execution" | "approval";
 }
 
+export type ProjectThreadType =
+  | "conversation"
+  | "plan_review"
+  | "decision_review"
+  | "standup";
+
+export type ProjectThreadStatus = "active" | "archived";
+
+export interface ProjectThread {
+  id: string;
+  companyId: string;
+  projectId: string;
+  title: string;
+  type: ProjectThreadType;
+  status: ProjectThreadStatus;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectThreadItem extends Omit<TaskThreadItem, "taskId"> {
+  taskId: string | null;
+  projectThreadId: string | null;
+}
+
+export interface ProjectThreadDetail extends ProjectThread {
+  items: ProjectThreadItem[];
+  meta?: { total: number; limit: number; offset: number };
+}
+
+export type ProjectPlanStatus = "draft" | "active" | "completed" | "cancelled";
+export type ProjectPlanStepType = "action" | "review_gate" | "permission_gate";
+export type ProjectPlanStepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "blocked"
+  | "skipped";
+
+export interface ProjectPlan {
+  id: string;
+  companyId: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  status: ProjectPlanStatus;
+  progress: number;
+  taskId: string | null;
+  stepCount?: number;
+  completedStepCount?: number;
+  createdByUserId?: string | null;
+  createdByAgentId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectPlanStep {
+  id: string;
+  planId: string;
+  companyId: string;
+  title: string;
+  description: string | null;
+  stepOrder: number;
+  stepType: ProjectPlanStepType;
+  status: ProjectPlanStepStatus;
+  gateApprovalId: string | null;
+  gateConfig: Record<string, unknown>;
+  completedByUserId: string | null;
+  completedByAgentId: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectPlanDetail extends ProjectPlan {
+  steps: ProjectPlanStep[];
+}
+
+export interface ProjectPlanFilters {
+  status?: ProjectPlanStatus;
+}
+
+export interface CreateProjectPlanInput {
+  title: string;
+  description?: string;
+  taskId?: string;
+  createdByAgentId?: string | null;
+}
+
+export interface UpdateProjectPlanInput {
+  title?: string;
+  description?: string | null;
+  status?: ProjectPlanStatus;
+  progress?: number;
+}
+
+export interface CreatePlanStepInput {
+  title: string;
+  description?: string;
+  stepType?: ProjectPlanStepType;
+  gateConfig?: Record<string, unknown>;
+}
+
+export interface UpdatePlanStepInput {
+  title?: string;
+  description?: string | null;
+  status?: ProjectPlanStepStatus;
+  stepOrder?: number;
+}
+
+export type ProjectDecisionStatus = "pending" | "approved" | "rejected" | "superseded";
+
+export interface ProjectDecision {
+  id: string;
+  companyId: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  status: ProjectDecisionStatus;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  rationale: string | null;
+  planId: string | null;
+  planStepId: string | null;
+  supersededById: string | null;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectDecisionFilters {
+  status?: ProjectDecisionStatus;
+}
+
+export interface CreateProjectDecisionInput {
+  title: string;
+  description?: string;
+  planId?: string;
+  planStepId?: string;
+}
+
+export interface UpdateProjectDecisionInput {
+  status: Exclude<ProjectDecisionStatus, "pending">;
+  rationale?: string;
+  supersededById?: string;
+}
+
+export type ProjectOutcomeType =
+  | "document"
+  | "pull_request"
+  | "audit"
+  | "review"
+  | "delivery_summary";
+export type ProjectOutcomeStatus = "pending" | "completed" | "failed";
+
+export interface ProjectOutcome {
+  id: string;
+  companyId: string;
+  projectId: string;
+  type: ProjectOutcomeType;
+  title: string;
+  description: string | null;
+  status: ProjectOutcomeStatus;
+  referenceUrl: string | null;
+  referenceId: string | null;
+  taskId: string | null;
+  planId: string | null;
+  planStepId: string | null;
+  metadata: Record<string, unknown>;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectOutcomeFilters {
+  type?: ProjectOutcomeType;
+  status?: ProjectOutcomeStatus;
+}
+
+export interface CreateProjectOutcomeInput {
+  type: ProjectOutcomeType;
+  title: string;
+  description?: string;
+  referenceUrl?: string;
+  referenceId?: string;
+  taskId?: string;
+  planId?: string;
+  planStepId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateProjectOutcomeInput {
+  status?: ProjectOutcomeStatus;
+  description?: string | null;
+  referenceUrl?: string | null;
+  referenceId?: string | null;
+}
+
+export interface ProjectThreadFilters {
+  status?: ProjectThreadStatus;
+  type?: ProjectThreadType;
+}
+
+export interface CreateProjectThreadInput {
+  title: string;
+  type?: ProjectThreadType;
+  status?: ProjectThreadStatus;
+}
+
+export interface CreateThreadItemInput {
+  kind?: ProjectThreadItem["kind"];
+  content?: string;
+  payload?: TaskThreadPayload;
+  interactionType?: NonNullable<ProjectThreadItem["interactionType"]>;
+  status?: Extract<TaskThreadItemStatus, "pending" | "accepted" | "rejected" | "answered" | "linked">;
+}
+
+export interface UpdateThreadItemInput {
+  status: Extract<TaskThreadItemStatus, "accepted" | "rejected" | "answered">;
+  note?: string;
+  answers?: Record<string, unknown>;
+}
+
+export const getProjectThreads = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectThreadFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set("status", filters.status);
+  if (filters?.type) params.set("type", filters.type);
+  const query = params.toString();
+  return request<ApiResponse<ProjectThread[]>>(
+    `/companies/${companyId}/projects/${projectId}/threads${query ? `?${query}` : ""}`,
+  );
+};
+
+export const getProjectThread = (companyId: string, projectId: string, threadId: string) =>
+  request<ApiResponse<ProjectThreadDetail>>(
+    `/companies/${companyId}/projects/${projectId}/threads/${threadId}`,
+  );
+
+export const createProjectThread = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectThreadInput,
+) =>
+  request<ApiResponse<ProjectThread>>(
+    `/companies/${companyId}/projects/${projectId}/threads`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const createThreadItem = (
+  companyId: string,
+  projectId: string,
+  threadId: string,
+  data: CreateThreadItemInput,
+) =>
+  request<ApiResponse<ProjectThreadItem>>(
+    `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateThreadItem = (
+  companyId: string,
+  projectId: string,
+  threadId: string,
+  itemId: string,
+  data: UpdateThreadItemInput,
+) =>
+  request<ApiResponse<ProjectThreadItem>>(
+    `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items/${itemId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+// ── Project Plans ────────────────────────────────────────────────────────
+
+export const getProjectPlans = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectPlanFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set("status", filters.status);
+  const query = params.toString();
+  return request<ApiResponse<ProjectPlan[]>>(
+    `/companies/${companyId}/projects/${projectId}/plans${query ? `?${query}` : ""}`,
+  );
+};
+
+export const getProjectPlan = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+) =>
+  request<ApiResponse<ProjectPlanDetail>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}`,
+  );
+
+export const createProjectPlan = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectPlanInput,
+) =>
+  request<ApiResponse<ProjectPlan>>(
+    `/companies/${companyId}/projects/${projectId}/plans`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateProjectPlan = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  data: UpdateProjectPlanInput,
+) =>
+  request<ApiResponse<ProjectPlan>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const createPlanStep = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  data: CreatePlanStepInput,
+) =>
+  request<ApiResponse<ProjectPlanStep>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updatePlanStep = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  stepId: string,
+  data: UpdatePlanStepInput,
+) =>
+  request<ApiResponse<ProjectPlanStep>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps/${stepId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const advancePlanGate = (
+  companyId: string,
+  projectId: string,
+  planId: string,
+  stepId: string,
+) =>
+  request<ApiResponse<ProjectPlanStep>>(
+    `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps/${stepId}/advance`,
+    { method: "POST" },
+  );
+
+export const getProjectDecisions = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectDecisionFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set("status", filters.status);
+  const query = params.toString();
+  return request<ApiResponse<ProjectDecision[]>>(
+    `/companies/${companyId}/projects/${projectId}/decisions${query ? `?${query}` : ""}`,
+  );
+};
+
+export const createProjectDecision = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectDecisionInput,
+) =>
+  request<ApiResponse<ProjectDecision>>(
+    `/companies/${companyId}/projects/${projectId}/decisions`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateProjectDecision = (
+  companyId: string,
+  projectId: string,
+  decisionId: string,
+  data: UpdateProjectDecisionInput,
+) =>
+  request<ApiResponse<ProjectDecision>>(
+    `/companies/${companyId}/projects/${projectId}/decisions/${decisionId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const getProjectOutcomes = (
+  companyId: string,
+  projectId: string,
+  filters?: ProjectOutcomeFilters,
+) => {
+  const params = new URLSearchParams();
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.status) params.set("status", filters.status);
+  const query = params.toString();
+  return request<ApiResponse<ProjectOutcome[]>>(
+    `/companies/${companyId}/projects/${projectId}/outcomes${query ? `?${query}` : ""}`,
+  );
+};
+
+export const createProjectOutcome = (
+  companyId: string,
+  projectId: string,
+  data: CreateProjectOutcomeInput,
+) =>
+  request<ApiResponse<ProjectOutcome>>(
+    `/companies/${companyId}/projects/${projectId}/outcomes`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const updateProjectOutcome = (
+  companyId: string,
+  projectId: string,
+  outcomeId: string,
+  data: UpdateProjectOutcomeInput,
+) =>
+  request<ApiResponse<ProjectOutcome>>(
+    `/companies/${companyId}/projects/${projectId}/outcomes/${outcomeId}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+// ── Project Work (composed endpoint) ─────────────────────────────────────
+
+export interface ProjectWorkSummary {
+  plans: ProjectPlan[];
+  outcomes: ProjectOutcome[];
+  threadSummary: {
+    activeThreadCount: number;
+    pendingInteractionCount: number;
+  };
+}
+
+export const getProjectWork = (companyId: string, projectId: string) =>
+  request<ApiResponse<ProjectWorkSummary>>(
+    `/companies/${companyId}/projects/${projectId}/work`,
+  );
+
 export const getTaskThread = (companyId: string, taskId: string) =>
   request<TaskThreadItem[]>(`/companies/${companyId}/tasks/${taskId}/thread`);
 
@@ -1860,7 +2303,8 @@ export type ApprovalKind =
   | "budget_change"
   | "agent_termination"
   | "task_review"
-  | "custom";
+  | "custom"
+  | "plan_gate";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type ApprovalPriority = "critical" | "high" | "medium" | "low";
 
@@ -1878,6 +2322,8 @@ export interface Approval {
   resolutionNote: string | null;
   payload: Record<string, unknown>;
   taskId: string | null;
+  projectId: string | null;
+  planStepId: string | null;
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;

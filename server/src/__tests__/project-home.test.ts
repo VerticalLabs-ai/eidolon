@@ -241,14 +241,17 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
       const data = res.body.data;
       expect(data).toBeDefined();
       expect(Object.keys(data).sort()).toEqual([
+        'activePlanProgress',
         'activeWork',
         'counts',
         'failedWork',
         'goalProgress',
         'needsAttention',
+        'pendingDecisions',
         'project',
         'recentActivity',
         'recentFiles',
+        'recentThreadItems',
         'taskStatusBreakdown',
       ]);
       expect(data.project.id).toBe(projectId);
@@ -673,6 +676,10 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
       expect(data.recentActivity).toEqual([]);
       expect(data.recentFiles).toEqual([]);
       expect(data.goalProgress).toEqual({ count: 0, aggregateProgress: 0 });
+      // New composed fields (VER-514)
+      expect(data.recentThreadItems).toEqual([]);
+      expect(data.pendingDecisions).toEqual([]);
+      expect(data.activePlanProgress).toEqual([]);
     });
   });
 
