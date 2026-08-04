@@ -1396,17 +1396,19 @@ export const deleteIntegration = (companyId: string, integrationId: string) =>
     method: "DELETE",
   });
 
+export interface TestIntegrationResult {
+  id: string;
+  success: boolean;
+  healthStatus: HealthStatus;
+  healthCheckMethod: string | null;
+  healthError: string | null;
+  httpStatus: number | null;
+  message: string;
+  testedAt: string;
+}
+
 export const testIntegration = (companyId: string, integrationId: string) =>
-  request<{
-    id: string;
-    success: boolean;
-    healthStatus: HealthStatus;
-    healthCheckMethod: string | null;
-    healthError: string | null;
-    httpStatus: number | null;
-    message: string;
-    testedAt: string;
-  }>(
+  request<ApiResponse<TestIntegrationResult>>(
     `/companies/${companyId}/integrations/${integrationId}/test`,
     { method: "POST" },
   );

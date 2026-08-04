@@ -119,15 +119,13 @@ describe("Integrations — VAL-UI-001/002/003/004, VAL-CROSS-003", () => {
   it("calls testIntegration mutate when Test Connection is clicked and updates badge", async () => {
     const mutate = vi.fn((_id: string, options: { onSuccess: (res: unknown) => void }) => {
       options.onSuccess({
-        data: {
-          id: "int-1",
-          success: true,
-          healthStatus: "healthy",
-          healthCheckMethod: "http_head",
-          healthError: null,
-          message: "Connection successful (HTTP 200).",
-          testedAt: "2026-08-02T12:00:00.000Z",
-        },
+        id: "int-1",
+        success: true,
+        healthStatus: "healthy",
+        healthCheckMethod: "http_head",
+        healthError: null,
+        message: "Connection successful (HTTP 200).",
+        testedAt: "2026-08-02T12:00:00.000Z",
       });
     });
     mocks.useTestIntegration.mockReturnValue(mutationResult({ mutate }));
@@ -152,15 +150,13 @@ describe("Integrations — VAL-UI-001/002/003/004, VAL-CROSS-003", () => {
   it("updates badge to error when health check returns error", async () => {
     const mutate = vi.fn((_id: string, options: { onSuccess: (res: unknown) => void }) => {
       options.onSuccess({
-        data: {
-          id: "int-1",
-          success: false,
-          healthStatus: "error",
-          healthCheckMethod: "http_head",
-          healthError: "HTTP 500 Internal Server Error",
-          message: "Health check failed: HTTP 500.",
-          testedAt: "2026-08-02T12:00:00.000Z",
-        },
+        id: "int-1",
+        success: false,
+        healthStatus: "error",
+        healthCheckMethod: "http_head",
+        healthError: "HTTP 500 Internal Server Error",
+        message: "Health check failed: HTTP 500.",
+        testedAt: "2026-08-02T12:00:00.000Z",
       });
     });
     mocks.useTestIntegration.mockReturnValue(mutationResult({ mutate }));
@@ -263,15 +259,13 @@ describe("Integrations — VAL-UI-001/002/003/004, VAL-CROSS-003", () => {
   it("badge transitions from unknown to healthy after a successful check", async () => {
     const mutate = vi.fn((_id: string, options: { onSuccess: (res: unknown) => void }) => {
       options.onSuccess({
-        data: {
-          id: "int-1",
-          success: true,
-          healthStatus: "healthy",
-          healthCheckMethod: "http_head",
-          healthError: null,
-          message: "Connection successful (HTTP 200).",
-          testedAt: "2026-08-02T12:00:00.000Z",
-        },
+        id: "int-1",
+        success: true,
+        healthStatus: "healthy",
+        healthCheckMethod: "http_head",
+        healthError: null,
+        message: "Connection successful (HTTP 200).",
+        testedAt: "2026-08-02T12:00:00.000Z",
       });
     });
     mocks.useTestIntegration.mockReturnValue(mutationResult({ mutate }));
@@ -288,6 +282,40 @@ describe("Integrations — VAL-UI-001/002/003/004, VAL-CROSS-003", () => {
     await waitFor(() => {
       expect(screen.getByTestId("health-badge-healthy")).toBeInTheDocument();
       expect(screen.queryByTestId("health-badge-unknown")).not.toBeInTheDocument();
+    });
+  });
+
+  // Server timestamp: UI should use server testedAt, not client-generated Date.now()
+  it("displays server testedAt timestamp after health check, not client-generated time", async () => {
+    const serverTestedAt = "2026-08-02T12:00:00.000Z";
+    const mutate = vi.fn((_id: string, options: { onSuccess: (res: unknown) => void }) => {
+      options.onSuccess({
+        id: "int-1",
+        success: true,
+        healthStatus: "healthy",
+        healthCheckMethod: "http_head",
+        healthError: null,
+        message: "Connection successful (HTTP 200).",
+        testedAt: serverTestedAt,
+      });
+    });
+    mocks.useTestIntegration.mockReturnValue(mutationResult({ mutate }));
+    mocks.useIntegrations.mockReturnValue({
+      data: { data: [makeIntegration({ healthStatus: "unknown" as HealthStatus, lastHealthCheckAt: null })], catalog },
+      isLoading: false,
+      isError: false,
+    });
+    renderWithRouter();
+    // Before: Never checked
+    expect(screen.getByTestId("health-check-time-int-1")).toHaveTextContent("Never checked");
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    // After: should display the server-provided timestamp, not client time
+    await waitFor(() => {
+      const ts = screen.getByTestId("health-check-time-int-1");
+      expect(ts).not.toHaveTextContent("Never checked");
+      // The server timestamp Aug 2, 2026 should appear in the formatted output
+      expect(ts.textContent).toMatch(/Aug/);
+      expect(ts.textContent).toMatch(/2/);
     });
   });
 });

@@ -1146,9 +1146,14 @@ export function useDeleteIntegration(companyId: string) {
 export function useTestIntegration(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (integrationId: string) => api.testIntegration(companyId, integrationId),
+    mutationFn: async (integrationId: string) =>
+      unwrap<api.TestIntegrationResult>(
+        await api.testIntegration(companyId, integrationId),
+      ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["integrations", companyId] });
+      qc.invalidateQueries({ queryKey: ["unified-health", companyId] });
+      qc.invalidateQueries({ queryKey: ["project-home", companyId] });
     },
   });
 }

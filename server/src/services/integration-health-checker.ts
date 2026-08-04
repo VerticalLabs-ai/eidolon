@@ -435,7 +435,7 @@ export async function checkIntegrationHealth(
         healthError: `Configured URL "${url}" is not a valid URL.`,
         message: 'Health check failed: invalid URL.',
         testedAt,
-        realCheckPerformed: true,
+        realCheckPerformed: false,
       };
     }
 
@@ -446,10 +446,14 @@ export async function checkIntegrationHealth(
         healthError: `Configured URL must use http or https (got ${parsedUrl.protocol}).`,
         message: 'Health check failed: unsupported protocol.',
         testedAt,
-        realCheckPerformed: true,
+        realCheckPerformed: false,
       };
     }
 
+    // Track whether an actual HTTP request was attempted. Only set to true
+    // right before boundedHead is called — DNS resolution failures, SSRF
+    // rejections, and other pre-request errors leave it false.
+    let requestAttempted = false;
     try {
       // Create a timeout signal that covers both DNS resolution and the
       // HTTP request so the total wall-clock stays bounded.
@@ -462,6 +466,7 @@ export async function checkIntegrationHealth(
       // addresses, and pin the resolved address to prevent DNS rebinding.
       const target = await resolveHealthCheckTarget(parsedUrl, combined);
 
+      requestAttempted = true;
       const result = await boundedHead(target, timeoutMs, options.signal);
       const ok = result.status >= 200 && result.status < 300;
 
@@ -501,7 +506,7 @@ export async function checkIntegrationHealth(
           ? 'Health check failed: request timed out.'
           : `Health check failed: ${message}`,
         testedAt,
-        realCheckPerformed: true,
+        realCheckPerformed: requestAttempted,
       };
     }
   }

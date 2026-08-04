@@ -237,7 +237,7 @@ export function Integrations() {
     null,
   );
   const [testResults, setTestResults] = useState<
-    Record<string, { success: boolean; message: string; healthStatus?: HealthStatus } | "loading">
+    Record<string, { success: boolean; message: string; healthStatus?: HealthStatus; testedAt?: string } | "loading">
   >({});
 
   const connected = integrationsData?.data ?? [];
@@ -267,13 +267,13 @@ export function Integrations() {
     setTestResults((prev) => ({ ...prev, [integrationId]: "loading" }));
     testIntegration.mutate(integrationId, {
       onSuccess: (res) => {
-        const data = (res as any)?.data ?? res;
         setTestResults((prev) => ({
           ...prev,
           [integrationId]: {
-            success: data.success,
-            message: data.message,
-            healthStatus: data.healthStatus as HealthStatus | undefined,
+            success: res.success,
+            message: res.message,
+            healthStatus: res.healthStatus,
+            testedAt: res.testedAt,
           },
         }));
       },
@@ -373,8 +373,8 @@ export function Integrations() {
                   <div className="mt-2 flex items-center gap-1 text-[10px] text-text-secondary">
                     <span data-testid={`health-check-time-${integration.id}`}>
                       {formatDateTime(
-                        testResult && testResult !== "loading"
-                          ? new Date().toISOString()
+                        testResult && testResult !== "loading" && testResult.testedAt
+                          ? testResult.testedAt
                           : integration.lastHealthCheckAt,
                       )}
                     </span>

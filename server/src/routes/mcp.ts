@@ -149,11 +149,11 @@ export function mcpRouter(db: DbInstance): Router {
         },
       });
     } catch (error) {
-      if (error instanceof MCPPolicyError) {
-        throw new AppError(403, 'MCP_TRANSPORT_DISABLED', error.message);
-      }
-      // connectServer already set status='error' in the DB. Fetch the
-      // current row state to return truthful persisted values.
+      // connectServer already set status='error' in the DB for all failure
+      // paths (including policy errors). Fetch the current row state to
+      // return truthful persisted values. Policy failures (e.g., stdio
+      // disabled) return the same health data shape as other failures for
+      // client consistency, rather than a generic AppError 403 envelope.
       const current = await mcpService.getServer(id);
       const message = error instanceof Error ? error.message : String(error);
       res.json({

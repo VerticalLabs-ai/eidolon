@@ -492,6 +492,63 @@ await server.connect(new StdioServerTransport());
     expect(row!.status).toBe('error');
   });
 
+  it('policy failure (stdio disabled) returns health data shape, not 403 error envelope', async () => {
+    // Register a stdio server with stdio enabled, then disable stdio and
+    // attempt a health re-check. The policy failure should return the same
+    // { data: { id, status, error } } shape as other failures, not a
+    // generic AppError 403 envelope.
+    process.env.EIDOLON_ENABLE_TENANT_STDIO_MCP = 'true';
+    const serverPath = path.join(tempDir, 'echo-mcp-server.mjs');
+    process.env.EIDOLON_MCP_STDIO_COMMAND_ALLOWLIST = `${process.execPath} ${serverPath}`;
+    await fs.writeFile(
+      serverPath,
+      `
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+const server = new McpServer({ name: "echo-test", version: "1.0.0" });
+server.registerTool(
+  "echo",
+  { title: "Echo", description: "Echo text.", inputSchema: { text: z.string() } },
+  async ({ text }) => ({ content: [{ type: "text", text }] }),
+);
+await server.connect(new StdioServerTransport());
+`,
+      'utf8',
+    );
+
+    const registered = await request(app)
+      .post(`/api/companies/${companyId}/mcp/servers`)
+      .send({
+        name: 'Stdio MCP',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [serverPath],
+      })
+      .expect(201);
+
+    const serverId = registered.body.data.id;
+
+    // Disable stdio transport — the re-check must fail with a policy error.
+    delete process.env.EIDOLON_ENABLE_TENANT_STDIO_MCP;
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/mcp/servers/${serverId}/health`)
+      .expect(200);
+
+    // Must return health data shape, not a 403 error envelope
+    expect(res.body).toHaveProperty('data');
+    expect(res.body).not.toHaveProperty('error');
+    expect(res.body.data.id).toBe(serverId);
+    expect(res.body.data.status).toBe('error');
+    expect(res.body.data.error).toMatch(/stdio.*disabled|disabled by server policy/i);
+    expect(res.body.data.toolCount).toBe(0);
+
+    // Persisted in DB
+    const row = await getMcpServer(db, serverId);
+    expect(row!.status).toBe('error');
+  });
+
   it('cross-company re-check is rejected with 404 (VAL-HLT-015)', async () => {
     process.env.EIDOLON_MCP_REMOTE_HOST_ALLOWLIST = '127.0.0.1';
 

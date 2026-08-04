@@ -338,6 +338,60 @@ describe('integration health — truthfulness invariant (VAL-HLT-002)', () => {
     expect(noUrl.realCheckPerformed).toBe(false);
   });
 
+  it('realCheckPerformed is false for invalid URL (no network round trip)', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'not-a-valid-url' },
+      credentialsEncrypted: 'token',
+    });
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(false);
+    expect(result.healthError).toMatch(/not a valid URL/i);
+  });
+
+  it('realCheckPerformed is false for unsupported protocol (no network round trip)', async () => {
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'ftp://example.com' },
+      credentialsEncrypted: 'token',
+    });
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(false);
+    expect(result.healthError).toMatch(/http or https/i);
+  });
+
+  it('realCheckPerformed is false for SSRF-rejected addresses (no network round trip)', async () => {
+    // SSRF rejection happens during DNS pre-resolution, before any HTTP
+    // request is made, so realCheckPerformed must be false.
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://127.0.0.1:80' },
+      credentialsEncrypted: 'token',
+    });
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(false);
+  });
+
+  it('realCheckPerformed is true after an actual HTTP request (connection refused)', async () => {
+    // A non-private IP that no server is listening on still makes an actual
+    // HTTP request attempt (TCP connect), so realCheckPerformed is true.
+    const result = await checkIntegrationHealth({
+      id: '1',
+      type: 'custom_api',
+      provider: 'custom',
+      config: { baseUrl: 'http://172.15.0.1:80' },
+      credentialsEncrypted: 'token',
+    }, { timeoutMs: 500 });
+    expect(result.healthStatus).toBe('error');
+    expect(result.realCheckPerformed).toBe(true);
+  });
+
   it('newly created integration starts unknown, not healthy (VAL-HLT-007)', async () => {
     const integ = await createIntegration(app, companyId, {
       name: 'New API',
@@ -803,7 +857,7 @@ describe('integration health — SSRF protection', () => {
       });
 
       expect(result.healthStatus).toBe('error');
-      expect(result.realCheckPerformed).toBe(true);
+      expect(result.realCheckPerformed).toBe(false);
       expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
     });
   }
@@ -849,7 +903,7 @@ describe('integration health — SSRF protection', () => {
     }, { timeoutMs: 500 });
 
     expect(result.healthStatus).toBe('error');
-    expect(result.realCheckPerformed).toBe(true);
+    expect(result.realCheckPerformed).toBe(false);
     expect(result.healthError).toMatch(/localhost/i);
   });
 
@@ -865,7 +919,7 @@ describe('integration health — SSRF protection', () => {
     }, { timeoutMs: 500 });
 
     expect(result.healthStatus).toBe('error');
-    expect(result.realCheckPerformed).toBe(true);
+    expect(result.realCheckPerformed).toBe(false);
     expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
   });
 
@@ -879,7 +933,7 @@ describe('integration health — SSRF protection', () => {
     }, { timeoutMs: 500 });
 
     expect(result.healthStatus).toBe('error');
-    expect(result.realCheckPerformed).toBe(true);
+    expect(result.realCheckPerformed).toBe(false);
     expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
   });
 
@@ -901,7 +955,7 @@ describe('integration health — SSRF protection', () => {
       }, { timeoutMs: 1000 });
 
       expect(result.healthStatus).toBe('error');
-      expect(result.realCheckPerformed).toBe(true);
+      expect(result.realCheckPerformed).toBe(false);
       expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
       expect(result.healthError).toMatch(/rebind\.example\.com|127\.0\.0\.1/);
     } finally {
@@ -1003,7 +1057,7 @@ describe('integration health — SSRF protection', () => {
     }, { timeoutMs: 500 });
 
     expect(result.healthStatus).toBe('error');
-    expect(result.realCheckPerformed).toBe(true);
+    expect(result.realCheckPerformed).toBe(false);
     expect(result.healthError).toMatch(/private|loopback|SSRF|blocked/i);
   });
 });
