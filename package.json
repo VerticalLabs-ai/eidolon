@@ -22,6 +22,7 @@
     "db:generate": "pnpm --filter @eidolon/db generate",
     "db:migrate": "pnpm --filter @eidolon/db migrate",
     "clean": "rm -rf node_modules packages/*/node_modules server/node_modules ui/node_modules",
+    "cleanup:fixtures": "pnpm --filter server exec tsx scripts/cleanup-test-fixtures.ts",
     "promote": "bash scripts/promote-to-main.sh"
   },
   "devDependencies": {
