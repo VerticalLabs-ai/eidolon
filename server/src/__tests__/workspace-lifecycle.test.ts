@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import {
   deriveWorkspaceLeaseState,
   leaseWorkspace,
@@ -19,7 +19,7 @@ describe('managed workspace lifecycle', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    const app = createTestApp(db);
+    const app = await createTestServer(db);
     const company = await request(app).post('/api/companies').send({ name: 'Lifecycle Corp' }).expect(201);
     companyId = company.body.data.id;
     const agent = await request(app)

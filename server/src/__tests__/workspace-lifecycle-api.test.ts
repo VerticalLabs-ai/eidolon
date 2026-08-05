@@ -6,13 +6,13 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 
 const execFileAsync = promisify(execFile);
 
 describe('managed workspace lifecycle API', () => {
   let db: Awaited<ReturnType<typeof createTestDb>>;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let agentId: string;
   let executionId: string;
@@ -22,7 +22,7 @@ describe('managed workspace lifecycle API', () => {
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-lifecycle-api-'));
     vi.stubEnv('EIDOLON_WORKSPACE_ROOT', workspaceRoot);
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     const company = await request(app).post('/api/companies').send({ name: 'Lifecycle API Corp' }).expect(201);
     companyId = company.body.data.id;
     const agent = await request(app)

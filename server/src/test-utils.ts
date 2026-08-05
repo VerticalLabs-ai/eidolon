@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -288,4 +289,66 @@ export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
       process.env.AUTH_MODE = previousAuthMode;
     }
   }
+}
+
+/**
+ * Module-level set of all http.Server instances created by
+ * `createTestServer`. Cleared by `closeTestServers()` which is called in
+ * the `afterEach` hook in `test-setup.ts` so no listening server leaks
+ * across tests.
+ */
+const _testServers = new Set<http.Server>();
+
+/**
+ * Create a persistent listening `http.Server` wrapping an Express app built
+ * via `createTestApp`.
+ *
+ * supertest's `request(server)` reuses an already-listening server instead
+ * of creating + listening + closing a new `http.Server` per request. The
+ * per-request `listen(0)`/`close()` churn was the root cause of
+ * non-deterministic HTTP response desync on macOS + Node 24 (wrong status
+ * codes, socket hang up). Handing supertest a persistent listening server
+ * eliminates that churn entirely.
+ *
+ * The server is tracked in a module-level set for teardown via
+ * `closeTestServers()`. The underlying Express app is attached as
+ * `server.app` for convenience (e.g. reading Express settings).
+ */
+export async function createTestServer(
+  db: DbInstance,
+  authMode = 'local_trusted',
+): Promise<http.Server> {
+  const app = createTestApp(db, authMode);
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  (server as unknown as { app: typeof app }).app = app;
+  _testServers.add(server);
+  return server;
+}
+
+/**
+ * Close every server created via `createTestServer` and clear the tracking
+ * set. Called in the `afterEach` hook in `test-setup.ts` so no listening
+ * server leaks across tests (a file may create up to 7 servers per test via
+ * nested `describe` `beforeEach` hooks).
+ */
+export async function closeTestServers(): Promise<void> {
+  const servers = Array.from(_testServers);
+  _testServers.clear();
+  await Promise.all(
+    servers.map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          if (server.listening) {
+            // Destroy all open connections (keep-alive, in-flight) so
+            // server.close() resolves immediately without waiting for
+            // socket timeouts.  Available since Node 18.2.
+            server.closeAllConnections?.();
+            server.close(() => resolve());
+          } else {
+            resolve();
+          }
+        }),
+    ),
+  );
 }

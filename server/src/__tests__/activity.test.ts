@@ -2,16 +2,16 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { DbInstance } from '../types.js';
 import { activityRecordFromEvent } from '../routes/activity.js';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 
 describe('Activity API', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     const company = await request(app)
       .post('/api/companies')
       .send({ name: 'Activity Test Corp' })
@@ -120,7 +120,7 @@ describe('Activity API', () => {
     expect(firstPage.body.data.map((entry: { action: string }) => entry.action))
       .toEqual(['project.updated', 'task.created']);
 
-    const reloadedApp = createTestApp(db);
+    const reloadedApp = await createTestServer(db);
     const secondPage = await request(reloadedApp)
       .get(`/api/companies/${companyId}/activity`)
       .query({ project: projectId, limit: 2, offset: 2 })

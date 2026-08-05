@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import {
   discoverAdapterModels,
   getAdapter,
@@ -55,7 +55,7 @@ describe('Adapter registry', () => {
 describe('GET /api/adapters', () => {
   it('returns adapter capabilities and supported models', async () => {
     const db = await createTestDb();
-    const app = createTestApp(db);
+    const app = await createTestServer(db);
 
     const res = await request(app).get('/api/adapters').expect(200);
     expect(Array.isArray(res.body.data)).toBe(true);

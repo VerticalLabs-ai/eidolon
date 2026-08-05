@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { eq, and, sql } from 'drizzle-orm';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 describe('Files API — project scoping', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let projectId: string;
@@ -15,7 +15,7 @@ describe('Files API — project scoping', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
 
     const company = await request(app)
       .post('/api/companies')

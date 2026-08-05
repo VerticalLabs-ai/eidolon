@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as schema from '@eidolon/db';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDb = PgDatabase<any, any>;
@@ -320,7 +320,7 @@ describe('VAL-MIG-006: composite (company_id, project_id, created_at) indexes', 
 describe('VAL-MIG-004 / VAL-CROSS-002: unscoped records remain readable', () => {
   it('records with NULL project_id are returned by company-scoped queries', async () => {
     const db = await createTestDb();
-    const app = createTestApp(db);
+    const app = await createTestServer(db);
     const companyId = await seedCompany(db.drizzle, 'Unscoped Corp');
 
     // Create an unscoped knowledge document via existing API (backward compatible)
@@ -344,7 +344,7 @@ describe('VAL-MIG-004 / VAL-CROSS-002: unscoped records remain readable', () => 
 
   it('records from other companies are excluded', async () => {
     const db = await createTestDb();
-    const app = createTestApp(db);
+    const app = await createTestServer(db);
     const companyA = await seedCompany(db.drizzle, 'Company A');
     const companyB = await seedCompany(db.drizzle, 'Company B');
 

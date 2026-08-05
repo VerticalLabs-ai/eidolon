@@ -1,13 +1,13 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import request from 'supertest';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 
 describe('Templates API', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
 
   beforeEach(async () => {
     const db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
   });
 
   it('lists the built-in demo template when no database templates exist', async () => {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import http from 'node:http';
 import { eq, and, sql } from 'drizzle-orm';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 import {
   checkIntegrationHealth,
@@ -36,13 +36,13 @@ function restoreAllowPrivate(): void {
   }
 }
 
-async function createCompany(app: ReturnType<typeof createTestApp>, name: string) {
+async function createCompany(app: Awaited<ReturnType<typeof createTestServer>>, name: string) {
   const res = await request(app).post('/api/companies').send({ name }).expect(201);
   return res.body.data.id as string;
 }
 
 async function createProject(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   name: string,
 ) {
@@ -54,7 +54,7 @@ async function createProject(
 }
 
 async function createIntegration(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   opts: {
     name: string;
@@ -132,14 +132,14 @@ function startRecordingServer(
 
 describe('integration health — real HTTP checks (VAL-HLT-001)', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let recorder: Awaited<ReturnType<typeof startRecordingServer>>;
 
   beforeEach(async () => {
     allowPrivateAddresses();
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Test Co');
     recorder = await startRecordingServer(200);
   });
@@ -294,12 +294,12 @@ describe('integration health — real HTTP checks (VAL-HLT-001)', () => {
 // ---------------------------------------------------------------------------
 
 describe('integration health — truthfulness invariant (VAL-HLT-002)', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
 
   beforeEach(async () => {
     const db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Truth Co');
   });
 
@@ -418,12 +418,12 @@ describe('integration health — truthfulness invariant (VAL-HLT-002)', () => {
 // ---------------------------------------------------------------------------
 
 describe('integration health — unimplemented catalog providers (VAL-HLT-003)', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
 
   beforeEach(async () => {
     const db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Catalog Co');
   });
 
@@ -455,12 +455,12 @@ describe('integration health — unimplemented catalog providers (VAL-HLT-003)',
 // ---------------------------------------------------------------------------
 
 describe('integration health — missing credentials (VAL-HLT-004)', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
 
   beforeEach(async () => {
     const db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'No Creds Co');
   });
 
@@ -505,14 +505,14 @@ describe('integration health — missing credentials (VAL-HLT-004)', () => {
 
 describe('integration health — persistence (VAL-HLT-005)', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let recorder: Awaited<ReturnType<typeof startRecordingServer>>;
 
   beforeEach(async () => {
     allowPrivateAddresses();
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Persist Co');
     recorder = await startRecordingServer(200);
   });
@@ -595,13 +595,13 @@ describe('integration health — persistence (VAL-HLT-005)', () => {
 // ---------------------------------------------------------------------------
 
 describe('integration health — project scoping (VAL-HLT-008)', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let otherCompanyId: string;
 
   beforeEach(async () => {
     const db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Scope Co');
     otherCompanyId = await createCompany(app, 'Other Co');
   });
@@ -792,12 +792,12 @@ describe('integration health — bounded checks (VAL-HLT-009)', () => {
 
 describe('integration health — new integrations start unknown (VAL-HLT-007)', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Unknown Start Co');
   });
 

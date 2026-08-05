@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { sql } from 'drizzle-orm';
-import { createTestDb, createTestApp } from '../test-utils.js';
+import { createTestDb, createTestServer } from '../test-utils.js';
 
 /**
  * Fixture marker convention tests.
@@ -12,12 +12,12 @@ import { createTestDb, createTestApp } from '../test-utils.js';
  * and that __mtest__ name prefixes are preserved.
  */
 describe('Fixture marker convention', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
   });
 
   // VAL-MARK-001: Company creation stores the fixture marker

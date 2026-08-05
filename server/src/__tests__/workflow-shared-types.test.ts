@@ -15,19 +15,19 @@ import {
   type WorkflowNodeType,
   type WorkflowNodeStatus,
 } from '@eidolon/shared';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function createCompany(app: ReturnType<typeof createTestApp>) {
+async function createCompany(app: Awaited<ReturnType<typeof createTestServer>>) {
   const res = await request(app).post('/api/companies').send({ name: 'Test Co' }).expect(201);
   return res.body.data.id as string;
 }
 
-async function createProject(app: ReturnType<typeof createTestApp>, companyId: string) {
+async function createProject(app: Awaited<ReturnType<typeof createTestServer>>, companyId: string) {
   const res = await request(app)
     .post(`/api/companies/${companyId}/projects`)
     .send({ name: 'Test Project' })
@@ -300,13 +300,13 @@ describe('Shared type compatibility', () => {
 
 describe('Workflow API round-trip with shared schema', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let projectId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app);
     projectId = await createProject(app, companyId);
   });

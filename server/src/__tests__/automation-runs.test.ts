@@ -2,19 +2,19 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function createCompany(app: ReturnType<typeof createTestApp>, name: string) {
+async function createCompany(app: Awaited<ReturnType<typeof createTestServer>>, name: string) {
   const res = await request(app).post('/api/companies').send({ name }).expect(201);
   return res.body.data.id as string;
 }
 
-async function createProject(app: ReturnType<typeof createTestApp>, companyId: string, name: string) {
+async function createProject(app: Awaited<ReturnType<typeof createTestServer>>, companyId: string, name: string) {
   const res = await request(app)
     .post(`/api/companies/${companyId}/projects`)
     .send({ name })
@@ -22,7 +22,7 @@ async function createProject(app: ReturnType<typeof createTestApp>, companyId: s
   return res.body.data.id as string;
 }
 
-async function createAgent(app: ReturnType<typeof createTestApp>, companyId: string, name: string) {
+async function createAgent(app: Awaited<ReturnType<typeof createTestServer>>, companyId: string, name: string) {
   const res = await request(app)
     .post(`/api/companies/${companyId}/agents`)
     .send({ name, role: 'engineer', provider: 'anthropic', model: 'claude-sonnet-4-6' })
@@ -31,7 +31,7 @@ async function createAgent(app: ReturnType<typeof createTestApp>, companyId: str
 }
 
 async function createRoutine(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   opts: { name: string; prompt: string; agentId?: string; projectId?: string },
 ) {
@@ -43,7 +43,7 @@ async function createRoutine(
 }
 
 async function createWorkflow(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   opts: { name: string; projectId?: string; nodes?: unknown[] },
 ) {
@@ -99,7 +99,7 @@ async function getMessage(db: DbInstance, messageId: string) {
 // ---------------------------------------------------------------------------
 
 describe('Automation runs — routine trigger', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -108,7 +108,7 @@ describe('Automation runs — routine trigger', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Run Corp');
     otherCompanyId = await createCompany(app, 'Other Run Corp');
     projectId = await createProject(app, companyId, 'Project Alpha');
@@ -321,14 +321,14 @@ describe('Automation runs — routine trigger', () => {
 // ---------------------------------------------------------------------------
 
 describe('Automation runs — workflow execute', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let projectId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Workflow Corp');
     projectId = await createProject(app, companyId, 'Workflow Project');
   });
@@ -469,7 +469,7 @@ describe('Automation runs — workflow execute', () => {
 // ---------------------------------------------------------------------------
 
 describe('Automation runs — webhook trigger', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -478,7 +478,7 @@ describe('Automation runs — webhook trigger', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Webhook Corp');
     otherCompanyId = await createCompany(app, 'Other Webhook Corp');
     projectId = await createProject(app, companyId, 'Webhook Project');
@@ -742,13 +742,13 @@ describe('Automation runs — webhook trigger', () => {
 // ---------------------------------------------------------------------------
 
 describe('Automation runs — status invariants', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Invariant Corp');
   });
 
@@ -860,14 +860,14 @@ describe('Automation runs — status invariants', () => {
 // ---------------------------------------------------------------------------
 
 describe('Automation runs — cross-company isolation', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Company A');
     otherCompanyId = await createCompany(app, 'Company B');
   });

@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 describe('Project Outcomes API — VAL-OUT-*', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -14,7 +14,7 @@ describe('Project Outcomes API — VAL-OUT-*', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
 
     const company = await request(app).post('/api/companies').send({ name: 'Outcome Corp' }).expect(201);
     companyId = company.body.data.id;

@@ -4,20 +4,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function createCompany(app: ReturnType<typeof createTestApp>, name: string) {
+async function createCompany(app: Awaited<ReturnType<typeof createTestServer>>, name: string) {
   const res = await request(app).post('/api/companies').send({ name }).expect(201);
   return res.body.data.id as string;
 }
 
 async function createProject(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   name: string,
 ) {
@@ -29,7 +29,7 @@ async function createProject(
 }
 
 async function createIntegration(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   opts: {
     name: string;
@@ -114,7 +114,7 @@ function restoreEnv(key: string, value: string | undefined): void {
 
 describe('unified health surface — GET /integrations/health (VAL-HLT-010, 011, 012)', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let otherCompanyId: string;
   let projectId: string;
@@ -122,7 +122,7 @@ describe('unified health surface — GET /integrations/health (VAL-HLT-010, 011,
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Health Co');
     otherCompanyId = await createCompany(app, 'Other Health Co');
     projectId = await createProject(app, companyId, 'Proj Alpha');
@@ -373,7 +373,7 @@ describe('unified health surface — GET /integrations/health (VAL-HLT-010, 011,
 
 describe('MCP health re-check — POST /mcp/servers/:id/health (VAL-HLT-013, 014, 015)', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let otherCompanyId: string;
   let tempDir: string;
@@ -387,7 +387,7 @@ describe('MCP health re-check — POST /mcp/servers/:id/health (VAL-HLT-013, 014
     prevRemoteHostAllowlist = process.env.EIDOLON_MCP_REMOTE_HOST_ALLOWLIST;
 
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'MCP Health Co');
     otherCompanyId = await createCompany(app, 'Other MCP Health Co');
 
@@ -593,7 +593,7 @@ await server.connect(new StdioServerTransport());
 
 describe('MCP re-check updates unified health surface (VAL-CROSS-004)', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let tempDir: string;
   let prevStdioEnabled: string | undefined;
@@ -604,7 +604,7 @@ describe('MCP re-check updates unified health surface (VAL-CROSS-004)', () => {
     prevStdioAllowlist = process.env.EIDOLON_MCP_STDIO_COMMAND_ALLOWLIST;
 
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Cross-004 Co');
 
     const fixtureRoot = path.resolve(process.cwd(), 'server', '.tmp-tests');

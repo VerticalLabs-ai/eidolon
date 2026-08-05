@@ -1,5 +1,5 @@
 import { afterAll, afterEach } from 'vitest';
-import { closeTestDb } from './test-utils.js';
+import { closeTestDb, closeTestServers } from './test-utils.js';
 import { eventBus } from './realtime/events.js';
 import { clearRuntimeTotalsCache } from './routes/runtime.js';
 import { clearActiveRuntimeSessionControllers } from './services/runtime-sessions.js';
@@ -30,8 +30,12 @@ afterAll(async () => {
  * each test prevents this bleed. No test relies on this state persisting
  * across `it()` blocks (each test sets up its own state as needed).
  */
-afterEach(() => {
+afterEach(async () => {
   eventBus.removeAllListeners();
   clearRuntimeTotalsCache();
   clearActiveRuntimeSessionControllers();
+  // Close all persistent listening servers created via createTestServer so
+  // no server leaks across tests. This eliminates the per-request
+  // listen(0)/close() churn that caused supertest response desync.
+  await closeTestServers();
 });

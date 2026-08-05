@@ -10,13 +10,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { sessionsRouter } from '../routes/sessions.js';
 import { RuntimeSessionService } from '../services/runtime-sessions.js';
 
 describe('Hybrid Jarvis runtime foundation', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
   let tempDirs: string[];
@@ -39,7 +39,7 @@ describe('Hybrid Jarvis runtime foundation', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'fixture-host-provider-value');
     vi.stubEnv('CODEX_API_KEY', 'fixture-codex-key');
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
 
     const company = await request(app)
       .post('/api/companies')

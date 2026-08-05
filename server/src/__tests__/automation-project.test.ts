@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 describe('Automation project scoping', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -13,7 +13,7 @@ describe('Automation project scoping', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = (await request(app).post('/api/companies').send({ name: 'Automation Corp' }).expect(201)).body.data.id;
     otherCompanyId = (await request(app).post('/api/companies').send({ name: 'Other Corp' }).expect(201)).body.data.id;
     projectId = (await request(app).post(`/api/companies/${companyId}/projects`).send({ name: 'Project' }).expect(201)).body.data.id;

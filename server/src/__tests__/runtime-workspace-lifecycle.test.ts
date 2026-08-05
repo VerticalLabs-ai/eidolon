@@ -7,21 +7,21 @@ import { promisify } from 'node:util';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import { RuntimeSessionService } from '../services/runtime-sessions.js';
 
 const execFileAsync = promisify(execFile);
 
 describe('runtime workspace lease binding', () => {
   let db: Awaited<ReturnType<typeof createTestDb>>;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
   let agentId: string;
   let environmentId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     const company = await request(app).post('/api/companies').send({ name: 'Runtime Lease Corp' }).expect(201);
     companyId = company.body.data.id;
     const agent = await request(app)
