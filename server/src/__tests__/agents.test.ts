@@ -1,17 +1,17 @@
 import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
-import { createTestDb, createTestApp } from '../test-utils.js';
+import { createTestDb, createTestServer } from '../test-utils.js';
 import { decrypt } from '../services/crypto.js';
 
 describe('Agents API', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
 
     // Every test needs a company to attach agents to
     const res = await request(app)

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
@@ -10,21 +10,23 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { sessionsRouter } from '../routes/sessions.js';
 import { RuntimeSessionService } from '../services/runtime-sessions.js';
 
 describe('Hybrid Jarvis runtime foundation', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
   let tempDirs: string[];
+  let spawnedProcesses: ChildProcess[];
   let workspaceRoot: string;
   let runtimeRoot: string;
 
   beforeEach(async () => {
     tempDirs = [];
+    spawnedProcesses = [];
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-workspace-root-'));
     runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eidolon-runtime-root-'));
     tempDirs.push(workspaceRoot, runtimeRoot);
@@ -37,7 +39,7 @@ describe('Hybrid Jarvis runtime foundation', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'fixture-host-provider-value');
     vi.stubEnv('CODEX_API_KEY', 'fixture-codex-key');
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
 
     const company = await request(app)
       .post('/api/companies')
@@ -48,7 +50,24 @@ describe('Hybrid Jarvis runtime foundation', () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
-    await Promise.all(tempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+    // Kill any spawned subprocesses that are still alive so they do not leak
+    // across test files (a timed-out/failed test can leave a supervisor or
+    // fixture CLI process running, which holds temp dirs and ports).
+    for (const proc of spawnedProcesses) {
+      if (!proc.killed && proc.exitCode === null && proc.pid != null) {
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          // Process may have already exited.
+        }
+      }
+    }
+    spawnedProcesses = [];
+    await Promise.all(
+      tempDirs.map((dir) =>
+        dir ? fs.rm(dir, { recursive: true, force: true }) : Promise.resolve(),
+      ),
+    );
   });
 
   async function createCliFixture(): Promise<string> {
@@ -1641,6 +1660,7 @@ process.stdin.on("end", () => {
         stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
       },
     );
+    spawnedProcesses.push(supervisor);
     const stderr: Buffer[] = [];
     supervisor.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
     (supervisor.stdio[3] as Writable).write(String(Date.now()));

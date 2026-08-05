@@ -3,11 +3,11 @@ import request from 'supertest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import { MCPClientService } from '../services/mcp-client.js';
 
 describe('MCP client service integration', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
   let companyId: string;
   let tempDir: string;
@@ -21,7 +21,7 @@ describe('MCP client service integration', () => {
     previousRemoteHostAllowlist = process.env.EIDOLON_MCP_REMOTE_HOST_ALLOWLIST;
 
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     const fixtureRoot = path.resolve(process.cwd(), 'server', '.tmp-tests');
     await fs.mkdir(fixtureRoot, { recursive: true });
     tempDir = await fs.mkdtemp(path.join(fixtureRoot, 'eidolon-mcp-test-'));

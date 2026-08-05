@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
-import { createTestDb, createTestApp } from '../test-utils.js';
+import { createTestDb, createTestServer } from '../test-utils.js';
 import { setupActivityLogger } from '../routes/activity.js';
 
 describe('Companies API', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
   });
 
   // ---------------------------------------------------------------------------

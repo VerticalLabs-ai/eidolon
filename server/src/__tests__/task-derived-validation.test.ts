@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 /**
@@ -114,7 +114,7 @@ async function seedTaskWithProjectId(
 // ===========================================================================
 
 describe('release_active_task_checkouts SQL function — project_id derivation', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let projectId: string;
@@ -123,7 +123,7 @@ describe('release_active_task_checkouts SQL function — project_id derivation',
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await seedCompany(db, 'Checkout Release Corp');
     projectId = await seedProject(db, companyId, 'Release Project');
     agentId = await seedAgent(db, companyId, 'Checkout Agent');
@@ -241,14 +241,14 @@ describe('release_active_task_checkouts SQL function — project_id derivation',
 // ===========================================================================
 
 describe('stale project_id (project deleted) yields null project_id, not FK error', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let agentId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await seedCompany(db, 'Stale Project Corp');
     agentId = await seedAgent(db, companyId, 'Stale Agent');
   });
@@ -370,7 +370,7 @@ describe('stale project_id (project deleted) yields null project_id, not FK erro
 // ===========================================================================
 
 describe('cross-company project_id yields null project_id, not FK error', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -379,7 +379,7 @@ describe('cross-company project_id yields null project_id, not FK error', () => 
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await seedCompany(db, 'Company A');
     otherCompanyId = await seedCompany(db, 'Company B');
     agentId = await seedAgent(db, companyId, 'Cross-company Agent');
@@ -442,7 +442,7 @@ describe('cross-company project_id yields null project_id, not FK error', () => 
 // ===========================================================================
 
 describe('VAL-MIG-004 / VAL-CROSS-002: unfiltered reads for multiple resources', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -452,7 +452,7 @@ describe('VAL-MIG-004 / VAL-CROSS-002: unfiltered reads for multiple resources',
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await seedCompany(db, 'Unfiltered Corp');
     otherCompanyId = await seedCompany(db, 'Other Unfiltered Corp');
     projectId = await seedProject(db, companyId, 'Scoped Project');

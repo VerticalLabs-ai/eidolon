@@ -131,10 +131,13 @@ export function activityRecordFromEvent(event: EidolonEvent) {
 // Activity logging helper - listens to events and records them
 // ---------------------------------------------------------------------------
 
+/**
+ * Activity logging helper - listens to events and records them.
+ */
 export function setupActivityLogger(db: DbInstance): void {
   const { activityLog } = db.schema;
 
-  eventBus.onEvent(async (event) => {
+  const handler = async (event: EidolonEvent) => {
     if (event.type === 'company.deleted') {
       return;
     }
@@ -145,5 +148,7 @@ export function setupActivityLogger(db: DbInstance): void {
       // Activity logging should never break the application
       logger.debug({ err }, 'Failed to log activity event');
     }
-  });
+  };
+
+  eventBus.onEvent(handler);
 }

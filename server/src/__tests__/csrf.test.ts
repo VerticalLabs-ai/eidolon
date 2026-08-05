@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 
 describe('Origin-based CSRF defense', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
   const originalEnforce = process.env.EIDOLON_ENFORCE_CSRF;
   const originalCorsOrigin = process.env.CORS_ORIGIN;
@@ -15,7 +15,7 @@ describe('Origin-based CSRF defense', () => {
     process.env.CORS_ORIGIN = 'https://app.example.com';
 
     db = await createTestDb();
-    app = createTestApp(db, 'authenticated');
+    app = await createTestServer(db, 'authenticated');
   });
 
   afterEach(() => {

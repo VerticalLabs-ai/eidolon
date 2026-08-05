@@ -2,19 +2,19 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function createCompany(app: ReturnType<typeof createTestApp>, name: string) {
+async function createCompany(app: Awaited<ReturnType<typeof createTestServer>>, name: string) {
   const res = await request(app).post('/api/companies').send({ name }).expect(201);
   return res.body.data.id as string;
 }
 
-async function createProject(app: ReturnType<typeof createTestApp>, companyId: string, name: string) {
+async function createProject(app: Awaited<ReturnType<typeof createTestServer>>, companyId: string, name: string) {
   const res = await request(app)
     .post(`/api/companies/${companyId}/projects`)
     .send({ name })
@@ -22,7 +22,7 @@ async function createProject(app: ReturnType<typeof createTestApp>, companyId: s
   return res.body.data.id as string;
 }
 
-async function createAgent(app: ReturnType<typeof createTestApp>, companyId: string, name: string) {
+async function createAgent(app: Awaited<ReturnType<typeof createTestServer>>, companyId: string, name: string) {
   const res = await request(app)
     .post(`/api/companies/${companyId}/agents`)
     .send({ name, role: 'engineer', provider: 'anthropic', model: 'claude-sonnet-4-6' })
@@ -31,7 +31,7 @@ async function createAgent(app: ReturnType<typeof createTestApp>, companyId: str
 }
 
 async function createRoutine(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   opts: {
     name: string;
@@ -56,7 +56,7 @@ async function createRoutine(
 }
 
 async function createWorkflow(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   opts: {
     name: string;
@@ -74,7 +74,7 @@ async function createWorkflow(
 }
 
 async function createWebhook(
-  app: ReturnType<typeof createTestApp>,
+  app: Awaited<ReturnType<typeof createTestServer>>,
   companyId: string,
   opts: {
     name: string;
@@ -136,7 +136,7 @@ async function insertRun(
 // ---------------------------------------------------------------------------
 
 describe('Unified automations API — GET /automations', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -145,7 +145,7 @@ describe('Unified automations API — GET /automations', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Auto Corp');
     otherCompanyId = await createCompany(app, 'Other Corp');
     projectId = await createProject(app, companyId, 'Project Alpha');
@@ -373,7 +373,7 @@ describe('Unified automations API — GET /automations', () => {
 // ---------------------------------------------------------------------------
 
 describe('Unified automations API — GET /automations/runs', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -385,7 +385,7 @@ describe('Unified automations API — GET /automations/runs', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Runs Corp');
     otherCompanyId = await createCompany(app, 'Other Runs Corp');
     projectId = await createProject(app, companyId, 'Proj A');
@@ -536,7 +536,7 @@ describe('Unified automations API — GET /automations/runs', () => {
 // ---------------------------------------------------------------------------
 
 describe('Unified automations API — per-automation runs', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -545,7 +545,7 @@ describe('Unified automations API — per-automation runs', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Per-Auto Corp');
     otherCompanyId = await createCompany(app, 'Other Per-Auto Corp');
 
@@ -627,7 +627,7 @@ describe('Unified automations API — per-automation runs', () => {
 // ---------------------------------------------------------------------------
 
 describe('Unified automations API — webhook project scoping', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let otherCompanyId: string;
@@ -636,7 +636,7 @@ describe('Unified automations API — webhook project scoping', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Webhook Corp');
     otherCompanyId = await createCompany(app, 'Other Webhook Corp');
     projectId = await createProject(app, companyId, 'Hook Project');
@@ -734,14 +734,14 @@ describe('Unified automations API — webhook project scoping', () => {
 // ---------------------------------------------------------------------------
 
 describe('Unified automations API — project deletion and cross-area flows', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
   let projectId: string;
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await createCompany(app, 'Cross Corp');
     projectId = await createProject(app, companyId, 'Cross Project');
   });

@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import { createTestDb, createTestApp } from '../test-utils.js';
+import { createTestDb, createTestApp, createTestServer } from '../test-utils.js';
 
 describe('Health API', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
 
   beforeEach(async () => {
     const db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
   });
 
   afterEach(() => {
@@ -41,11 +41,12 @@ describe('Health API', () => {
 
       expect(vercelApp.get('trust proxy')).toBe(1);
 
-      const first = await request(vercelApp)
+      const vercelServer = await createTestServer(db);
+      const first = await request(vercelServer)
         .get('/api/health')
         .set('X-Forwarded-For', '198.51.100.10')
         .expect(200);
-      const second = await request(vercelApp)
+      const second = await request(vercelServer)
         .get('/api/health')
         .set('X-Forwarded-For', '198.51.100.11')
         .expect(200);

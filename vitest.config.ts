@@ -8,13 +8,36 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    isolate: true,
     include: ["packages/*/src/**/*.test.ts", "server/src/**/*.test.ts"],
-    // PGlite spins up an in-memory Postgres per test and runs full Drizzle
-    // migrations on each `createTestDb()`. Under parallel contention some
-    // test files exceed the default 5s. Keep the cap high enough to absorb
-    // that without making real regressions silent (30s is still a clear
-    // signal if a test is truly hanging).
+    // Database-per-file template-clone isolation: the first
+    // `createTestDb()` call in each file clones the `eidolon_test_template`
+    // database (all migrations pre-applied) into a unique
+    // `eidolon_test_<uuid>` database via `CREATE DATABASE ... TEMPLATE`, and
+    // subsequent calls TRUNCATE all public-schema tables (RESTART IDENTITY
+    // CASCADE) for a fast reset. `afterAll` in `test-setup.ts` drops the
+    // per-file database and closes the postgres.js pool. The
+    // `globalSetup` drops orphaned `eidolon_test_*` databases before the run.
+    // Real Postgres uses TCP (non-blocking), so there is no WASM event-loop
+    // contention and forks can scale higher than the previous PGlite cap.
+    setupFiles: ["./server/src/test-setup.ts"],
+    // With real Postgres there is no WASM blocking, so we can run more
+    // forks in parallel. Each fork clones the template database (fast
+    // file-level copy, no migrations) and creates a small connection pool.
+    // A cap of 6 forks balances speed with Postgres server load from
+    // concurrent database clone/drop operations (reduced from 8 to relieve
+    // connection contention that caused non-deterministic failures).
+    globalSetup: ["./server/src/test-global-setup.ts"],
+    poolOptions: {
+      forks: {
+        maxForks: 6,
+      },
+    },
+    // Template clone takes ~100-300ms on first call per file. Under
+    // parallel contention some files can exceed the default 5s, so keep
+    // the cap high enough to absorb that without making real regressions
+    // silent (60s is still a clear signal if a test hangs).
     testTimeout: 30_000,
-    hookTimeout: 30_000,
+    hookTimeout: 60_000,
   },
 });

@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 import {
   TaskCheckoutError,
   TaskCheckoutService,
@@ -13,7 +13,7 @@ import type { DbInstance } from '../types.js';
 
 describe('Task checkout protocol', () => {
   let db: DbInstance;
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
 
   async function insertCompany() {
@@ -118,7 +118,7 @@ describe('Task checkout protocol', () => {
 
   beforeEach(async () => {
     db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     companyId = await insertCompany();
   });
 

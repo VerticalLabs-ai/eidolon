@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { createTestApp, createTestDb } from '../test-utils.js';
+import { createTestServer, createTestDb } from '../test-utils.js';
 
 describe('Projects API', () => {
-  let app: ReturnType<typeof createTestApp>;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
   let companyId: string;
 
   beforeEach(async () => {
     const db = await createTestDb();
-    app = createTestApp(db);
+    app = await createTestServer(db);
     const company = await request(app)
       .post('/api/companies')
       .send({ name: 'Project Test Corp' })
