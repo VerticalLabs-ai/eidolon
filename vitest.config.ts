@@ -8,29 +8,34 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    isolate: true,
     include: ["packages/*/src/**/*.test.ts", "server/src/**/*.test.ts"],
-    // Per-file singleton PGlite: the first `createTestDb()` call in each file
-    // creates one in-memory Postgres + runs all Drizzle migrations; subsequent
-    // calls TRUNCATE public-schema tables (RESTART IDENTITY CASCADE) for a fast
-    // reset, and `afterAll` in `test-setup.ts` closes the client. This drops the
-    // suite from ~825 PGlite instances + ~825 full migration runs to one per file.
+    // Per-file schema isolation on the eidolon_test database: the first
+    // `createTestDb()` call in each file creates a unique PostgreSQL schema,
+    // runs all Drizzle migrations inside it, and sets search_path so all
+    // queries target that schema. Subsequent calls TRUNCATE the schema's
+    // tables (RESTART IDENTITY CASCADE) for a fast reset, and `afterAll` in
+    // `test-setup.ts` drops the schema and closes the postgres.js pool.
+    // Real Postgres uses TCP (non-blocking), so there is no WASM event-loop
+    // contention and forks can scale higher than the previous PGlite cap.
     setupFiles: ["./server/src/test-setup.ts"],
-    // Cap concurrent forks. Each fork runs one file's PGlite WASM instance plus
-    // supertest ephemeral HTTP servers; too many concurrent forks starve the
-    // event loop and cause intermittent request timeouts. A cap of 4 keeps CPU
-    // contention low while staying well within the performance budget (the
-    // singleton already removes per-test migration cost). The per-file afterAll
-    // in test-setup.ts closes each PGlite so memory stays flat.
+    // With real Postgres there is no WASM blocking, so we can run more
+    // forks in parallel. Each fork clones the template database (fast
+    // file-level copy, no migrations) and creates a small connection pool.
+    // A cap of 6 forks balances speed with Postgres server load from
+    // concurrent database clone/drop operations (reduced from 8 to relieve
+    // connection contention that caused non-deterministic failures).
+    globalSetup: ["./server/src/test-global-setup.ts"],
     poolOptions: {
       forks: {
-        maxForks: 4,
+        maxForks: 6,
       },
     },
-    // With the singleton approach each file creates one PGlite and migrates
-    // once (~200-400ms). Under parallel contention some files can still exceed
-    // the default 5s, so keep the cap high enough to absorb that without making
-    // real regressions silent (30s is still a clear signal if a test hangs).
+    // Template clone takes ~100-300ms on first call per file. Under
+    // parallel contention some files can exceed the default 5s, so keep
+    // the cap high enough to absorb that without making real regressions
+    // silent (60s is still a clear signal if a test hangs).
     testTimeout: 30_000,
-    hookTimeout: 30_000,
+    hookTimeout: 60_000,
   },
 });

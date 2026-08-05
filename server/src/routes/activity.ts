@@ -131,10 +131,19 @@ export function activityRecordFromEvent(event: EidolonEvent) {
 // Activity logging helper - listens to events and records them
 // ---------------------------------------------------------------------------
 
-export function setupActivityLogger(db: DbInstance): void {
+/**
+ * Activity logging helper - listens to events and records them.
+ *
+ * Returns a disposer function that removes the listener registered on
+ * `eventBus`. Callers that ignore the return value keep working unchanged
+ * (the listener simply remains registered for the process lifetime, as
+ * before). Tests that want to avoid cross-file listener leaks should capture
+ * the disposer and call it in teardown.
+ */
+export function setupActivityLogger(db: DbInstance): () => void {
   const { activityLog } = db.schema;
 
-  eventBus.onEvent(async (event) => {
+  const handler = async (event: EidolonEvent) => {
     if (event.type === 'company.deleted') {
       return;
     }
@@ -145,5 +154,11 @@ export function setupActivityLogger(db: DbInstance): void {
       // Activity logging should never break the application
       logger.debug({ err }, 'Failed to log activity event');
     }
-  });
+  };
+
+  eventBus.onEvent(handler);
+
+  return () => {
+    eventBus.removeListener('event', handler);
+  };
 }

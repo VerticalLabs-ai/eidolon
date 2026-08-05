@@ -1,102 +1,275 @@
-import { PGlite } from '@electric-sql/pglite';
-import { drizzle } from 'drizzle-orm/pglite';
-import { migrate } from 'drizzle-orm/pglite/migrator';
+import postgres from 'postgres';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import dotenv from 'dotenv';
 import * as schema from '@eidolon/db';
 import type { DbInstance } from './types.js';
 import { createApp } from './app.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_FOLDER = path.resolve(__dirname, '../../packages/db/drizzle');
+const TEMPLATE_DB = 'eidolon_test_template';
+
+// Load ONLY DATABASE_URL from .env. We must not load other env vars
+// (CLERK_SECRET_KEY, AUTH_MODE, etc.) because they change auth/CSRF
+// middleware behavior in tests. The previous PGlite approach loaded no
+// env files at all — tests rely on AUTH_MODE being set by createTestApp()
+// and other auth vars being absent.
+if (!process.env.DATABASE_URL) {
+  const envPath = path.resolve(__dirname, '../../.env');
+  if (existsSync(envPath)) {
+    const parsed = dotenv.parse(readFileSync(envPath));
+    if (parsed.DATABASE_URL) {
+      process.env.DATABASE_URL = parsed.DATABASE_URL;
+    }
+  }
+}
 
 /**
  * Module-level singleton state for the test database.
  *
  * Each Vitest test file runs in its own fork (worker process), so these
- * module-level variables are scoped to a single file — one PGlite instance
- * per file. The first `createTestDb()` call creates the instance and runs all
- * Drizzle migrations; subsequent calls within the same file TRUNCATE all
- * public-schema tables (a fast reset) and return the same `DbInstance`.
- * `closeTestDb()` (wired via `test-setup.ts`'s `afterAll`) closes the client
- * and resets these vars so memory does not accumulate across files.
+ * module-level variables are scoped to a single file. The first
+ * `createTestDb()` call clones the template database, stores the result,
+ * and subsequent calls TRUNCATE all tables (a fast reset). `closeTestDb()`
+ * drops the database and closes the postgres.js pools.
+ *
+ * Database-per-file isolation is used because several test files query
+ * `information_schema` and `pg_catalog` without filtering by schema. A
+ * dedicated database per file gives the same strong isolation that PGlite
+ * provided. A template database (`eidolon_test_template`) with all
+ * migrations pre-applied is cloned per file, eliminating per-file migration
+ * overhead and reducing Postgres server I/O load.
+ *
+ * Real Postgres communicates via TCP (non-blocking), eliminating the WASM
+ * event-loop stalls that corrupted supertest HTTP requests with PGlite.
  */
-let _pglite: PGlite | null = null;
+let _client: ReturnType<typeof postgres> | null = null;
+let _mgmtClient: ReturnType<typeof postgres> | null = null;
 let _dbInstance: DbInstance | null = null;
+let _testDbName: string | null = null;
+
+function getTestDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      'DATABASE_URL is not set. Ensure .env is present at the repo root.',
+    );
+  }
+  return url.replace(/\/postgres$/, '/eidolon_test');
+}
 
 /**
- * TRUNCATE every table in the `public` schema with `RESTART IDENTITY
- * CASCADE`. This clears all user data between tests while preserving the
- * migrated schema. Tables in other schemas (notably
- * `drizzle.__drizzle_migrations` in the `drizzle` schema) are excluded
- * automatically because the query only targets the `public` schema.
- * Future-proof: new tables added in later migrations are included without
- * code changes.
+ * Restore postgres.js timestamp serializers that drizzle-orm overrides
+ * with a transparent pass-through. Without this, raw SQL queries
+ * (db.execute(sql`...`)) that pass Date objects fail because the Date
+ * reaches the Bind message unserialized.
+ */
+function restoreDateSerializers(client: ReturnType<typeof postgres>): void {
+  const dateSerializer = (x: unknown): string =>
+    (x instanceof Date ? x : new Date(x as string)).toISOString();
+  for (const type of [1184, 1082, 1083, 1114, 1182, 1185, 1115]) {
+    client.options.serializers[type] = dateSerializer;
+  }
+}
+
+/**
+ * Wrap the drizzle instance's execute method to add a non-enumerable .rows
+ * property to resolved arrays, matching PGlite's return shape for
+ * compatibility with test helpers that access result.rows.
+ */
+function wrapExecute(drizzleDb: ReturnType<typeof drizzle>): void {
+  const originalExecute = drizzleDb.execute.bind(drizzleDb);
+  (drizzleDb as unknown as { execute: (query: unknown) => unknown }).execute =
+    function (query: unknown) {
+      const raw = originalExecute(query as never) as {
+        then: (
+          onFulfilled?: (value: unknown) => unknown,
+          onRejected?: (reason: unknown) => unknown,
+        ) => Promise<unknown>;
+      };
+      const originalThen = raw.then.bind(raw);
+      raw.then = (
+        onFulfilled?: (value: unknown) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) =>
+        originalThen(
+          (result: unknown) => {
+            if (
+              Array.isArray(result) &&
+              (result as { rows?: unknown }).rows === undefined
+            ) {
+              Object.defineProperty(result, 'rows', {
+                value: result,
+                enumerable: false,
+                configurable: true,
+              });
+            }
+            return onFulfilled ? onFulfilled(result) : result;
+          },
+          onRejected,
+        );
+      return raw;
+    };
+}
+
+/**
+ * Ensure the template database exists with all migrations applied. Uses a
+ * Postgres advisory lock for cross-fork coordination: the first fork to
+ * acquire the lock creates the template; concurrent forks wait and find it
+ * already present. The template is marked IS_TEMPLATE=true,
+ * ALLOW_CONNECTIONS=false so it can be cloned without interference.
+ */
+async function ensureTemplateDatabase(
+  mgmtClient: ReturnType<typeof postgres>,
+): Promise<void> {
+  // Advisory lock prevents concurrent template creation across forks.
+  await mgmtClient.unsafe('SELECT pg_advisory_lock(778899)');
+  try {
+    const existing = await mgmtClient`
+      SELECT 1 FROM pg_database WHERE datname = ${TEMPLATE_DB}
+    `;
+    if (existing.length > 0) {
+      // Template exists — assume migrations are current. If migrations
+      // change, drop eidolon_test_template manually and it will be
+      // recreated on the next run.
+      return;
+    }
+
+    // Create the template database.
+    await mgmtClient.unsafe(`CREATE DATABASE "${TEMPLATE_DB}"`);
+
+    // Connect to the template, run migrations, then disconnect.
+    const baseUrl = getTestDatabaseUrl();
+    const templateUrl = baseUrl.replace(
+      /\/eidolon_test$/,
+      `/${TEMPLATE_DB}`,
+    );
+    const templateClient = postgres(templateUrl, { max: 1 });
+    try {
+      restoreDateSerializers(templateClient);
+      const templateDb = drizzle(templateClient);
+      await migrate(templateDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    } finally {
+      await templateClient.end();
+    }
+
+    // Mark as template so it can be cloned without active connections.
+    await mgmtClient.unsafe(
+      `ALTER DATABASE "${TEMPLATE_DB}" WITH IS_TEMPLATE true ALLOW_CONNECTIONS false`,
+    );
+  } finally {
+    await mgmtClient.unsafe('SELECT pg_advisory_unlock(778899)');
+  }
+}
+
+/**
+ * TRUNCATE every user table in the `public` schema with `RESTART IDENTITY
+ * CASCADE`. Excludes `__drizzle_migrations` so the migrator doesn't re-run.
  */
 async function resetTestDb(): Promise<void> {
-  if (!_pglite) return;
+  if (!_client) return;
 
-  const result = await _pglite.query<{
-    tablename: string;
-  }>(`
+  const rows = await _client`
     SELECT tablename
     FROM pg_tables
     WHERE schemaname = 'public'
+      AND tablename != '__drizzle_migrations'
     ORDER BY tablename
-  `);
+  `;
 
-  const tables = result.rows.map((row) => row.tablename);
+  const tables = rows.map((row) => row.tablename as string);
   if (tables.length === 0) return;
 
   const tableList = tables.map((t) => `"public"."${t}"`).join(', ');
-  await _pglite.query(
+  await _client.unsafe(
     `TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`,
   );
 }
 
 /**
- * Create an in-memory Postgres-compatible database (via PGlite) for testing.
+ * Create a test database instance backed by real Postgres.
  *
- * Uses a module-level singleton: the first call per test file creates a
- * PGlite instance, runs all Drizzle migrations, and stores the result.
- * Subsequent calls TRUNCATE all public-schema tables (a fast reset, ~5-20ms)
- * and return the same `DbInstance`. This keeps the `createTestDb()` API
- * identical for callers (still safe in `beforeEach`) while avoiding ~825
- * full migration runs per suite. Cleanup happens via `closeTestDb()` in
- * `test-setup.ts`'s `afterAll`.
+ * Uses a module-level singleton with database-per-file isolation: the first
+ * call per test file clones the template database (fast — no migrations),
+ * stores the result, and subsequent calls TRUNCATE all public-schema tables
+ * (a fast reset, ~5-20ms) and return the same `DbInstance`.
  */
 export async function createTestDb(): Promise<DbInstance> {
-  if (_dbInstance && _pglite) {
+  if (_dbInstance && _client) {
     await resetTestDb();
     return _dbInstance;
   }
 
-  const client = await PGlite.create();
-  const drizzleDb = drizzle(client);
-  await migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
+  const testDbName = `eidolon_test_${randomUUID().replace(/-/g, '_')}`;
+  const baseUrl = getTestDatabaseUrl();
 
-  _pglite = client;
-  _dbInstance = {
-    drizzle: drizzleDb,
-    schema,
-  };
+  // Management client for CREATE/DROP DATABASE and template coordination.
+  const mgmtClient = postgres(baseUrl, { max: 1 });
 
-  return _dbInstance;
+  // Ensure the template database exists (creates it on first run).
+  await ensureTemplateDatabase(mgmtClient);
+
+  // Clone the template — much faster than running 18 migrations.
+  await mgmtClient.unsafe(
+    `CREATE DATABASE "${testDbName}" TEMPLATE "${TEMPLATE_DB}"`,
+  );
+
+  // Test client — connects to the per-file database.
+  const testUrl = baseUrl.replace(/\/eidolon_test$/, `/${testDbName}`);
+  const client = postgres(testUrl, {
+    max: 3,
+    connect_timeout: 30,
+    idle_timeout: 30,
+    prepare: false,
+  });
+
+  try {
+    const drizzleDb = drizzle(client);
+    restoreDateSerializers(client);
+    wrapExecute(drizzleDb);
+
+    const instance: DbInstance = { drizzle: drizzleDb, schema };
+    _client = client;
+    _mgmtClient = mgmtClient;
+    _testDbName = testDbName;
+    _dbInstance = instance;
+
+    return instance;
+  } catch (error) {
+    await client.end();
+    await mgmtClient.unsafe(
+      `DROP DATABASE IF EXISTS "${testDbName}" WITH (FORCE)`,
+    );
+    await mgmtClient.end();
+    throw error;
+  }
 }
 
 /**
- * Close the singleton PGlite client and reset module-level state.
+ * Drop the test database and close all postgres.js pools.
  *
  * Registered as an `afterAll` hook via `server/src/test-setup.ts` so each
- * test file releases its PGlite instance before the worker process exits,
- * preventing memory accumulation across files.
+ * test file releases its database and connections before the worker exits.
  */
 export async function closeTestDb(): Promise<void> {
-  if (_pglite) {
-    await _pglite.close();
+  if (_client) {
+    await _client.end();
   }
-  _pglite = null;
+  if (_mgmtClient && _testDbName) {
+    await _mgmtClient.unsafe(
+      `DROP DATABASE IF EXISTS "${_testDbName}" WITH (FORCE)`,
+    );
+    await _mgmtClient.end();
+  }
+  _client = null;
+  _mgmtClient = null;
   _dbInstance = null;
+  _testDbName = null;
 }
 
 /**

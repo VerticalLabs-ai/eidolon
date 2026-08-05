@@ -400,7 +400,12 @@ describe('MCP health re-check — POST /mcp/servers/:id/health (VAL-HLT-013, 014
     restoreEnv('EIDOLON_ENABLE_TENANT_STDIO_MCP', prevStdioEnabled);
     restoreEnv('EIDOLON_MCP_STDIO_COMMAND_ALLOWLIST', prevStdioAllowlist);
     restoreEnv('EIDOLON_MCP_REMOTE_HOST_ALLOWLIST', prevRemoteHostAllowlist);
-    await fs.rm(tempDir, { recursive: true, force: true });
+    // Guard: if beforeEach failed before tempDir was assigned (e.g. under
+    // connection contention), tempDir is undefined — skip removal instead of
+    // throwing and masking the real failure.
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('successful re-check connects, discovers tools, and persists status=connected (VAL-HLT-013)', async () => {
@@ -610,7 +615,12 @@ describe('MCP re-check updates unified health surface (VAL-CROSS-004)', () => {
   afterEach(async () => {
     restoreEnv('EIDOLON_ENABLE_TENANT_STDIO_MCP', prevStdioEnabled);
     restoreEnv('EIDOLON_MCP_STDIO_COMMAND_ALLOWLIST', prevStdioAllowlist);
-    await fs.rm(tempDir, { recursive: true, force: true });
+    // Guard: if beforeEach failed before tempDir was assigned (e.g. under
+    // connection contention), tempDir is undefined — skip removal instead of
+    // throwing and masking the real failure.
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('unified health reflects disconnected→healthy after successful re-check', async () => {
