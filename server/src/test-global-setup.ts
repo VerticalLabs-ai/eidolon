@@ -81,8 +81,30 @@ export async function setup(): Promise<void> {
       'test-global-setup: DATABASE_URL is not set. Ensure .env is present at the repo root.',
     );
   }
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch {
+    throw new Error('test-global-setup: DATABASE_URL is not a valid URL.');
+  }
+
+  const host = parsedUrl.hostname.toLowerCase();
+  const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  const allowDrops = process.env.EIDOLON_ALLOW_TEST_DB_DROPS === 'true';
+  const allowRemoteDrops = process.env.EIDOLON_ALLOW_REMOTE_TEST_DB_DROPS === 'true';
+  if (!allowDrops || (!isLocalHost && !allowRemoteDrops)) {
+    console.warn(
+      `test-global-setup: skipping orphan database cleanup for ${host}; ` +
+        'set EIDOLON_ALLOW_TEST_DB_DROPS=true (and, for remote hosts, ' +
+        'EIDOLON_ALLOW_REMOTE_TEST_DB_DROPS=true) to enable it.',
+    );
+    return;
+  }
+  console.info(`test-global-setup: cleaning orphan test databases on ${host}`);
+
   // Connect to the eidolon_test management database (never to a per-file db).
-  const mgmtUrl = baseUrl.replace(/\/postgres$/, '/eidolon_test');
+  parsedUrl.pathname = '/eidolon_test';
+  const mgmtUrl = parsedUrl.toString();
 
   const orphanList = psql(
     mgmtUrl,
