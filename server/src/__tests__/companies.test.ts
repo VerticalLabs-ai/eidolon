@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { createTestDb, createTestServer } from '../test-utils.js';
@@ -7,21 +7,10 @@ import { setupActivityLogger } from '../routes/activity.js';
 describe('Companies API', () => {
   let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
-  let activityLoggerDisposer: (() => void) | null = null;
 
   beforeEach(async () => {
     db = await createTestDb();
     app = await createTestServer(db);
-  });
-
-  afterEach(() => {
-    // Remove the activity-logger eventBus listener registered by tests in
-    // this file so it does not leak across files in the same worker. The
-    // disposer removes exactly the listener it registered.
-    if (activityLoggerDisposer) {
-      activityLoggerDisposer();
-      activityLoggerDisposer = null;
-    }
   });
 
   // ---------------------------------------------------------------------------
@@ -328,7 +317,7 @@ describe('Companies API', () => {
         metadata: {},
         createdAt: new Date(),
       });
-      activityLoggerDisposer = setupActivityLogger(db);
+      setupActivityLogger(db);
 
       await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(204);
       await new Promise((resolve) => setTimeout(resolve, 0));
