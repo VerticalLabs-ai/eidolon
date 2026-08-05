@@ -300,6 +300,75 @@ export function createTestApp(db: DbInstance, authMode = 'local_trusted') {
 const _testServers = new Set<http.Server>();
 
 /**
+ * Per-fork deterministic port block for `createTestServer`.
+ *
+ * Cross-fork ephemeral TCP port reuse was the root cause of the residual
+ * HTTP response desync under parallel forks (Stage 4): fork A closes a
+ * server's port, the OS reassigns it to fork B's new server, and a
+ * lingering client socket from A hits B's server → garbled HTTP (501 from
+ * Node's parser, or a foreign 404/200 response). To prevent this, each
+ * Vitest fork gets a DISJOINT 1000-port block derived from the per-fork id
+ * (`process.env.VITEST_POOL_ID`, 1-based): `base = 20000 + poolId * 1000`.
+ * Ports are handed out sequentially within the block. Within-fork reuse is
+ * safe because servers are created and fully closed serially via
+ * `closeAllConnections()` + `close()` (only CROSS-fork reuse must be
+ * prevented). On `EADDRINUSE` the next port in the block is tried.
+ * Servers bind explicitly to `127.0.0.1`.
+ */
+const PORT_BLOCK_BASE = 20_000;
+const PORT_BLOCK_SIZE = 1000;
+
+function getForkPortBase(): number {
+  // VITEST_POOL_ID is 1-based in Vitest's forks pool. Default to 1 when
+  // unset (e.g. a single-fork run or running outside the pool) — there is
+  // no other fork to collide with in that case.
+  const poolId = Number(process.env.VITEST_POOL_ID) || 1;
+  return PORT_BLOCK_BASE + poolId * PORT_BLOCK_SIZE;
+}
+
+/** Sequential port cursor within this fork's block. */
+let _forkPortOffset = 0;
+
+/**
+ * Bind `server` to `127.0.0.1` on an available port within this fork's
+ * port block. Tries the next port in the block on `EADDRINUSE`.
+ */
+function listenInForkBlock(server: http.Server): Promise<void> {
+  const base = getForkPortBase();
+  return new Promise<void>((resolve, reject) => {
+    const tryListen = (offset: number): void => {
+      if (offset >= PORT_BLOCK_SIZE) {
+        reject(
+          new Error(
+            `createTestServer: no available port in fork block ${base}-${base + PORT_BLOCK_SIZE - 1}`,
+          ),
+        );
+        return;
+      }
+      const port = base + offset;
+      const onListening = (): void => {
+        server.off('error', onError);
+        // Advance the cursor past the port we just bound.
+        _forkPortOffset = (offset + 1) % PORT_BLOCK_SIZE;
+        resolve();
+      };
+      const onError = (err: NodeJS.ErrnoException): void => {
+        server.off('listening', onListening);
+        if (err.code === 'EADDRINUSE') {
+          tryListen(offset + 1);
+        } else {
+          reject(err);
+        }
+      };
+      server.once('listening', onListening);
+      server.once('error', onError);
+      server.listen(port, '127.0.0.1');
+    };
+    tryListen(_forkPortOffset);
+  });
+}
+
+/**
  * Create a persistent listening `http.Server` wrapping an Express app built
  * via `createTestApp`.
  *
@@ -320,7 +389,11 @@ export async function createTestServer(
 ): Promise<http.Server> {
   const app = createTestApp(db, authMode);
   const server = http.createServer(app);
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  // Bind to a deterministic port within this fork's disjoint port block
+  // (see listenInForkBlock). This eliminates cross-fork ephemeral port
+  // reuse — the root cause of residual HTTP response desync under parallel
+  // forks — while keeping supertest's server-reuse behavior intact.
+  await listenInForkBlock(server);
   (server as unknown as { app: typeof app }).app = app;
   _testServers.add(server);
   return server;
