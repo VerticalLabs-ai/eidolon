@@ -74,6 +74,32 @@ function psql(mgmtUrl: string, sql: string): string {
   return (result.stdout ?? '').trim();
 }
 
+/**
+ * Derive a database URL string from `sourceUrl` with the database path set
+ * to `/${dbName}` using real URL parsing (not regex string-surgery) so
+ * query strings, trailing slashes, and non-`postgres` database names are
+ * handled correctly. Search params are preserved. Throws if `sourceUrl`
+ * is not a parseable URL. Mirrors the `withDatabase` helper in
+ * test-utils.ts (this file cannot import it because it is loaded by
+ * vitest's vite-node runner from the repo root where workspace deps are
+ * not directly resolvable).
+ */
+function withDatabaseUrl(sourceUrl: string, dbName: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    throw new Error(
+      `test-global-setup: DATABASE_URL is not a valid URL: ${sourceUrl}`,
+    );
+  }
+  parsed.pathname = `/${dbName}`;
+  return parsed.toString();
+}
+
+/** Local Postgres hosts that are safe for destructive cleanup. */
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
 export async function setup(): Promise<void> {
   const baseUrl = loadDatabaseUrl();
   if (!baseUrl) {
@@ -81,35 +107,50 @@ export async function setup(): Promise<void> {
       'test-global-setup: DATABASE_URL is not set. Ensure .env is present at the repo root.',
     );
   }
-  let parsedUrl: URL;
+
+  // Parse DATABASE_URL to enforce DB-safety guards BEFORE any destructive
+  // operation. The previous code derived the management URL with a fragile
+  // `.replace(/\/postgres$/, '/eidolon_test')` regex and performed no host
+  // check — destructive if pointed at a shared/staging/prod Postgres.
+  let sourceParsed: URL;
   try {
-    parsedUrl = new URL(baseUrl);
+    sourceParsed = new URL(baseUrl);
   } catch {
-    throw new Error('test-global-setup: DATABASE_URL is not a valid URL.');
-  }
-
-  const host = parsedUrl.hostname.toLowerCase();
-  const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-  const allowDrops = process.env.EIDOLON_ALLOW_TEST_DB_DROPS === 'true';
-  const allowRemoteDrops = process.env.EIDOLON_ALLOW_REMOTE_TEST_DB_DROPS === 'true';
-  if (!allowDrops || (!isLocalHost && !allowRemoteDrops)) {
-    console.warn(
-      `test-global-setup: skipping orphan database cleanup for ${host}; ` +
-        'set EIDOLON_ALLOW_TEST_DB_DROPS=true (and, for remote hosts, ' +
-        'EIDOLON_ALLOW_REMOTE_TEST_DB_DROPS=true) to enable it.',
+    throw new Error(
+      `test-global-setup: DATABASE_URL is not a valid URL: ${baseUrl}`,
     );
-    return;
   }
-  console.info(`test-global-setup: cleaning orphan test databases on ${host}`);
 
-  // Connect to the eidolon_test management database (never to a per-file db).
-  parsedUrl.pathname = '/eidolon_test';
-  const mgmtUrl = parsedUrl.toString();
+  // Derive the management URL safely and require its database name to be
+  // exactly 'eidolon_test' (fail closed).
+  const mgmtUrl = withDatabaseUrl(baseUrl, 'eidolon_test');
+  const mgmtDbName = new URL(mgmtUrl).pathname.replace(/^\/+/, '');
+  if (mgmtDbName !== 'eidolon_test') {
+    throw new Error(
+      `test-global-setup: management database must be exactly 'eidolon_test', got '${mgmtDbName}'`,
+    );
+  }
 
+  // Host guard: refuse destructive cleanup (terminate/DROP) on non-local
+  // Postgres hosts unless explicitly opted in via
+  // EIDOLON_TEST_ALLOW_REMOTE_DB=1.
+  const host = sourceParsed.hostname;
+  const isLocal = LOCAL_HOSTS.has(host);
+  const allowRemote = process.env.EIDOLON_TEST_ALLOW_REMOTE_DB === '1';
+  if (!isLocal && !allowRemote) {
+    throw new Error(
+      `test-global-setup: refusing destructive cleanup on non-local Postgres host '${host}'. ` +
+        `Set EIDOLON_TEST_ALLOW_REMOTE_DB=1 to override.`,
+    );
+  }
+
+  // Escape the '_' wildcard in the LIKE pattern so it matches a literal
+  // underscore (not any single character), keeping the match set tight.
+  // PROTECTED_DATABASES guard below still wins for any protected name.
   const orphanList = psql(
     mgmtUrl,
     `SELECT datname FROM pg_database
-       WHERE datname LIKE 'eidolon_test_%'
+       WHERE datname LIKE 'eidolon\\_test\\_%' ESCAPE '\\'
          AND datname NOT IN ('eidolon_test_template')
        ORDER BY datname`,
   );

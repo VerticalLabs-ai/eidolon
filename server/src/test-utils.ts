@@ -54,6 +54,28 @@ let _mgmtClient: ReturnType<typeof postgres> | null = null;
 let _dbInstance: DbInstance | null = null;
 let _testDbName: string | null = null;
 
+/**
+ * Derive a database URL string from `sourceUrl` with the database path set
+ * to `/${dbName}`. Uses real URL parsing (not regex string-surgery) so
+ * query strings, trailing slashes, and non-`postgres` database names in
+ * the source URL are handled correctly — the previous `.replace(...)`
+ * approach silently failed for those cases, leaving the URL pointing at
+ * the ORIGINAL database (which was then TRUNCATEd/cloned). Search params
+ * are preserved. Throws if `sourceUrl` is not a parseable URL.
+ */
+function withDatabase(sourceUrl: string, dbName: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    throw new Error(
+      `withDatabase: DATABASE_URL is not a valid URL: ${sourceUrl}`,
+    );
+  }
+  parsed.pathname = `/${dbName}`;
+  return parsed.toString();
+}
+
 function getTestDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {
@@ -61,7 +83,17 @@ function getTestDatabaseUrl(): string {
       'DATABASE_URL is not set. Ensure .env is present at the repo root.',
     );
   }
-  return url.replace(/\/postgres$/, '/eidolon_test');
+  const mgmtUrl = withDatabase(url, 'eidolon_test');
+  // Fail closed: the management database name MUST be exactly 'eidolon_test'.
+  // This guards against misconfiguration that could point destructive
+  // operations (TRUNCATE/clone/DROP) at the wrong database.
+  const dbName = new URL(mgmtUrl).pathname.replace(/^\/+/, '');
+  if (dbName !== 'eidolon_test') {
+    throw new Error(
+      `getTestDatabaseUrl: management database must be exactly 'eidolon_test', got '${dbName}'`,
+    );
+  }
+  return mgmtUrl;
 }
 
 /**
@@ -146,10 +178,7 @@ async function ensureTemplateDatabase(
 
     // Connect to the template, run migrations, then disconnect.
     const baseUrl = getTestDatabaseUrl();
-    const templateUrl = baseUrl.replace(
-      /\/eidolon_test$/,
-      `/${TEMPLATE_DB}`,
-    );
+    const templateUrl = withDatabase(baseUrl, TEMPLATE_DB);
     const templateClient = postgres(templateUrl, { max: 1 });
     try {
       restoreDateSerializers(templateClient);
@@ -221,7 +250,7 @@ export async function createTestDb(): Promise<DbInstance> {
   );
 
   // Test client — connects to the per-file database.
-  const testUrl = baseUrl.replace(/\/eidolon_test$/, `/${testDbName}`);
+  const testUrl = withDatabase(baseUrl, testDbName);
   const client = postgres(testUrl, {
     max: 3,
     connect_timeout: 30,
@@ -336,8 +365,14 @@ let _forkPortOffset = 0;
 function listenInForkBlock(server: http.Server): Promise<void> {
   const base = getForkPortBase();
   return new Promise<void>((resolve, reject) => {
+    // Wrap-scan: try up to PORT_BLOCK_SIZE DISTINCT offsets modulo the
+    // block size before reporting exhaustion. A fork whose cursor has
+    // advanced near the end of the block must still find free low ports
+    // by wrapping around to the start of the block.
+    const start = _forkPortOffset % PORT_BLOCK_SIZE;
+    let attempted = 0;
     const tryListen = (offset: number): void => {
-      if (offset >= PORT_BLOCK_SIZE) {
+      if (attempted >= PORT_BLOCK_SIZE) {
         reject(
           new Error(
             `createTestServer: no available port in fork block ${base}-${base + PORT_BLOCK_SIZE - 1}`,
@@ -345,6 +380,7 @@ function listenInForkBlock(server: http.Server): Promise<void> {
         );
         return;
       }
+      attempted += 1;
       const port = base + offset;
       const onListening = (): void => {
         server.off('error', onError);
@@ -355,7 +391,7 @@ function listenInForkBlock(server: http.Server): Promise<void> {
       const onError = (err: NodeJS.ErrnoException): void => {
         server.off('listening', onListening);
         if (err.code === 'EADDRINUSE') {
-          tryListen(offset + 1);
+          tryListen((offset + 1) % PORT_BLOCK_SIZE);
         } else {
           reject(err);
         }
@@ -364,7 +400,7 @@ function listenInForkBlock(server: http.Server): Promise<void> {
       server.once('error', onError);
       server.listen(port, '127.0.0.1');
     };
-    tryListen(_forkPortOffset);
+    tryListen(start);
   });
 }
 

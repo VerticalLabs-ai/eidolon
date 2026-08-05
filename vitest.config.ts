@@ -10,12 +10,14 @@ export default defineConfig({
     environment: "node",
     isolate: true,
     include: ["packages/*/src/**/*.test.ts", "server/src/**/*.test.ts"],
-    // Per-file schema isolation on the eidolon_test database: the first
-    // `createTestDb()` call in each file creates a unique PostgreSQL schema,
-    // runs all Drizzle migrations inside it, and sets search_path so all
-    // queries target that schema. Subsequent calls TRUNCATE the schema's
-    // tables (RESTART IDENTITY CASCADE) for a fast reset, and `afterAll` in
-    // `test-setup.ts` drops the schema and closes the postgres.js pool.
+    // Database-per-file template-clone isolation: the first
+    // `createTestDb()` call in each file clones the `eidolon_test_template`
+    // database (all migrations pre-applied) into a unique
+    // `eidolon_test_<uuid>` database via `CREATE DATABASE ... TEMPLATE`, and
+    // subsequent calls TRUNCATE all public-schema tables (RESTART IDENTITY
+    // CASCADE) for a fast reset. `afterAll` in `test-setup.ts` drops the
+    // per-file database and closes the postgres.js pool. The
+    // `globalSetup` drops orphaned `eidolon_test_*` databases before the run.
     // Real Postgres uses TCP (non-blocking), so there is no WASM event-loop
     // contention and forks can scale higher than the previous PGlite cap.
     setupFiles: ["./server/src/test-setup.ts"],
