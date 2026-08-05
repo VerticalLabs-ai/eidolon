@@ -5,6 +5,35 @@ import { clearRuntimeTotalsCache } from './routes/runtime.js';
 import { clearActiveRuntimeSessionControllers } from './services/runtime-sessions.js';
 
 /**
+ * Hermetic test environment — neutralize auth-relevant env vars that may
+ * leak from the developer's gitignored `.env` (or shell, or `.env.local`)
+ * into `process.env` before any test request runs.
+ *
+ * Why this is needed: the CSRF middleware (`middleware/csrf.ts`) reads
+ * `process.env.AUTH_MODE` at REQUEST time and skips CSRF enforcement when
+ * it is `'local_trusted'`, while the auth middleware captures `AUTH_MODE`
+ * at app-creation time. `createTestApp()` sets `AUTH_MODE` only for the
+ * duration of `createApp()` and restores the previous value afterward, so
+ * a leaked `AUTH_MODE=local_trusted` resurfaces at request time and causes
+ * `csrf.test.ts` to get 401 (auth gate) instead of the intended 403 (CSRF
+ * gate). `CLERK_SECRET_KEY` and `VITE_AUTH_MODE` are the other auth-relevant
+ * vars named in `test-utils.ts`'s env-loading comment; leaving them set can
+ * make authenticated-mode tests attempt real Clerk network calls or change
+ * frontend auth behavior. Tests must control auth exclusively via
+ * `createTestApp()`/`createTestServer()`'s `authMode` parameter.
+ *
+ * This runs at setup-file module top level, before any test file's tests
+ * (Vitest evaluates setupFiles before the test file's imports execute), so
+ * it neutralizes the leak before any request can observe it. It is NOT
+ * masking: the csrf tests then run under their intended enforced-CSRF
+ * condition and pass legitimately. `DATABASE_URL` is intentionally kept —
+ * tests need it to reach Postgres.
+ */
+delete process.env.AUTH_MODE;
+delete process.env.CLERK_SECRET_KEY;
+delete process.env.VITE_AUTH_MODE;
+
+/**
  * Per-file cleanup hook loaded via Vitest `setupFiles`.
  *
  * Each test file runs in its own fork, so the module-level singleton in
