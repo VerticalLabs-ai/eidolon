@@ -134,7 +134,12 @@ export async function setup(): Promise<void> {
   // Host guard: refuse destructive cleanup (terminate/DROP) on non-local
   // Postgres hosts unless explicitly opted in via
   // EIDOLON_TEST_ALLOW_REMOTE_DB=1.
-  const host = sourceParsed.hostname;
+  // Node's WHATWG URL parser returns IPv6 hostnames WITH surrounding
+  // brackets (e.g. `new URL('postgres://[::1]:5432/eidolon_test').hostname`
+  // === '[::1]'). Strip them so both '::1' and '[::1]' match the LOCAL_HOSTS
+  // set and IPv6-loopback DATABASE_URL is recognized as local. This only
+  // broadens local-loopback recognition; remote-host protection is unchanged.
+  const host = sourceParsed.hostname.replace(/^\[|\]$/g, '');
   const isLocal = LOCAL_HOSTS.has(host);
   const allowRemote = process.env.EIDOLON_TEST_ALLOW_REMOTE_DB === '1';
   if (!isLocal && !allowRemote) {
