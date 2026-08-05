@@ -85,7 +85,7 @@ eidolon/
 ## Tech stack
 
 - **Backend:** Node.js 24 LTS, Express 5, TypeScript
-- **Database:** Postgres via Drizzle ORM + `postgres.js`. Locally provisioned by the Supabase CLI (`supabase/config.toml`); migrations live in `packages/db/drizzle/`. Tests run against PGlite (in-memory Postgres) with the same migrations.
+- **Database:** Postgres via Drizzle ORM + `postgres.js`. Locally provisioned by the Supabase CLI (`supabase/config.toml`); migrations live in `packages/db/drizzle/`. Tests run against a real local Postgres: a migrated template database (`eidolon_test_template`) is cloned per test file into an isolated `eidolon_test_<uuid>` database (set `EIDOLON_TEST_ALLOW_REMOTE_DB=1` only to allow non-local hosts).
 - **Frontend:** React 19, Vite, Tailwind CSS v4, TanStack React Query, Framer Motion
 - **Auth:** Clerk (production) / `local_trusted` bypass (dev loopback)
 - **Real-time:** WebSocket (`ws`) with typed events and an in-process event bus
