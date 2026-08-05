@@ -93,22 +93,6 @@ const runtimeTotalsCacheCleanup = setInterval(
 );
 runtimeTotalsCacheCleanup.unref?.();
 
-/**
- * Clear the module-level runtime totals cache.
- *
- * Cleanup-only export for test teardown: `runtimeTotalsCache` is module-level
- * state that persists across test files when a single Vitest worker process
- * runs multiple files sequentially. Stale cached totals from one company/test
- * file can bleed into another file's `/api/runtime/state` responses. Calling
- * this in `afterEach` (via `test-setup.ts`) prevents that bleed. The prune
- * `setInterval` is `unref`'d so it never keeps the test process alive and is
- * harmless when it fires on an empty cache. No production request behavior
- * changes — the cache is purely a TTL'd read optimization.
- */
-export function clearRuntimeTotalsCache(): void {
-  runtimeTotalsCache.clear();
-}
-
 const RuntimeStateQuery = z.object({
   runningLimit: z.coerce.number().int().min(1).max(200).default(50),
   runningOffset: z.coerce.number().int().min(0).default(0),

@@ -57,25 +57,6 @@ function runtimeSessionProcessKey(companyId: string, sessionId: string): string 
   return `${companyId}:${sessionId}`;
 }
 
-/**
- * Clear the module-level active runtime session controllers map.
- *
- * Cleanup-only export for test teardown: `activeRuntimeSessionControllers` is
- * module-level state that persists across test files when a single Vitest
- * worker process runs multiple files sequentially. Aborting any lingering
- * controllers and clearing the map prevents a prior file's in-flight session
- * claim from interfering with a later file's runtime session operations. No
- * production request behavior changes — controllers are only ever added/removed
- * by `runSession`/`cancelSession` and orphaned entries are already reconciled
- * by the cancellation logic.
- */
-export function clearActiveRuntimeSessionControllers(): void {
-  for (const controller of activeRuntimeSessionControllers.values()) {
-    controller.abort();
-  }
-  activeRuntimeSessionControllers.clear();
-}
-
 function isRunnableRuntimeAdapterId(adapterId: string): boolean {
   return (
     isLocalCliAdapterId(adapterId) ||

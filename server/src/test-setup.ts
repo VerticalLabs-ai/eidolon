@@ -1,8 +1,6 @@
 import { afterAll, afterEach } from 'vitest';
 import { closeTestDb, closeTestServers } from './test-utils.js';
 import { eventBus } from './realtime/events.js';
-import { clearRuntimeTotalsCache } from './routes/runtime.js';
-import { clearActiveRuntimeSessionControllers } from './services/runtime-sessions.js';
 
 /**
  * Hermetic test environment — neutralize auth-relevant env vars that may
@@ -61,8 +59,6 @@ afterAll(async () => {
  */
 afterEach(async () => {
   eventBus.removeAllListeners();
-  clearRuntimeTotalsCache();
-  clearActiveRuntimeSessionControllers();
   // Close all persistent listening servers created via createTestServer so
   // no server leaks across tests. This eliminates the per-request
   // listen(0)/close() churn that caused supertest response desync.
