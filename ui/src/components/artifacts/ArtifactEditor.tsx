@@ -150,7 +150,7 @@ export function ArtifactEditor({
   };
 
   const handleEditorState = useCallback(
-    (state: { dirty: boolean; save: () => Promise<void>; discard: () => void }) => {
+    (state: { dirty: boolean; save: () => Promise<boolean>; discard: () => void }) => {
       setDirtyEditorGuard({
         isDirty: () => state.dirty,
         save: state.save,

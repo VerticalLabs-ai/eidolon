@@ -105,6 +105,7 @@ function CompanyIconRail() {
   const { data: companies } = useCompanies();
   const [pendingCompanyId, setPendingCompanyId] = useState<string | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
   const defaultColors = [
     "#F0B429",
@@ -125,28 +126,59 @@ function CompanyIconRail() {
     const guard = getDirtyEditorGuard();
     if (id !== companyId && guard) {
       setPendingCompanyId(id);
+      setSwitchError(null);
       return;
     }
     navigate(`/company/${id}`);
   };
 
-  const resolveCompanySwitch = async (action: "save" | "discard" | "cancel") => {
+  const resolveCompanySwitch = (action: "save" | "discard" | "cancel") => {
     const id = pendingCompanyId;
-    setPendingCompanyId(null);
+    if (!id) return;
+
+    if (action === "cancel") {
+      setPendingCompanyId(null);
+      setSwitchError(null);
+      return;
+    }
+
     const guard = getDirtyEditorGuard();
-    if (!id || !guard || action === "cancel") return;
+
     if (action === "discard") {
-      guard.discard();
+      guard?.discard();
+      setPendingCompanyId(null);
+      setSwitchError(null);
       navigate(`/company/${id}`);
       return;
     }
-    setSavingDraft(true);
-    try {
-      await guard.save();
+
+    // action === "save"
+    if (!guard) {
+      setPendingCompanyId(null);
       navigate(`/company/${id}`);
-    } finally {
-      setSavingDraft(false);
+      return;
     }
+
+    setSavingDraft(true);
+    setSwitchError(null);
+    void guard
+      .save()
+      .then((success) => {
+        if (success) {
+          setPendingCompanyId(null);
+          navigate(`/company/${id}`);
+        } else {
+          setSwitchError(
+            "Save failed. Your draft is preserved. Try again or discard changes.",
+          );
+        }
+      })
+      .catch(() => {
+        setSwitchError(
+          "Save failed. Your draft is preserved. Try again or discard changes.",
+        );
+      })
+      .finally(() => setSavingDraft(false));
   };
 
   return (
@@ -204,10 +236,15 @@ function CompanyIconRail() {
         <div className="w-full max-w-sm rounded-lg border border-white/[0.1] bg-surface p-5 shadow-2xl">
           <h2 id="company-switch-title" className="text-sm font-semibold text-text-primary">Unsaved artifact changes</h2>
           <p className="mt-2 text-xs text-text-secondary">Save your draft before switching companies?</p>
+          {switchError && (
+            <div role="alert" className="mt-3 rounded-md border border-error/20 bg-error/10 px-3 py-2 text-xs text-error">
+              {switchError}
+            </div>
+          )}
           <div className="mt-5 flex justify-end gap-2">
-            <button type="button" className="rounded px-3 py-2 text-xs text-text-secondary hover:bg-white/[0.06]" onClick={() => void resolveCompanySwitch("cancel")}>Cancel</button>
-            <button type="button" className="rounded px-3 py-2 text-xs text-warning hover:bg-warning/10" onClick={() => void resolveCompanySwitch("discard")}>Discard</button>
-            <button type="button" disabled={savingDraft} className="rounded bg-accent px-3 py-2 text-xs font-medium text-surface disabled:opacity-50" onClick={() => void resolveCompanySwitch("save")}>{savingDraft ? "Saving…" : "Save"}</button>
+            <button type="button" className="rounded px-3 py-2 text-xs text-text-secondary hover:bg-white/[0.06] disabled:opacity-50" onClick={() => resolveCompanySwitch("cancel")} disabled={savingDraft}>Cancel</button>
+            <button type="button" className="rounded px-3 py-2 text-xs text-warning hover:bg-warning/10 disabled:opacity-50" onClick={() => resolveCompanySwitch("discard")} disabled={savingDraft}>Discard</button>
+            <button type="button" disabled={savingDraft} className="rounded bg-accent px-3 py-2 text-xs font-medium text-surface disabled:opacity-50" onClick={() => resolveCompanySwitch("save")}>{savingDraft ? "Saving…" : "Save"}</button>
           </div>
         </div>
       </div>

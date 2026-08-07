@@ -15,7 +15,7 @@ interface SheetEditorProps {
   conflictState?: ConflictState | null;
   wsConnected?: boolean;
   onRemoteUpdate?: (content: Record<string, unknown>, title: string) => void;
-  onStateChange?: (state: { dirty: boolean; save: () => Promise<void>; discard: () => void }) => void;
+  onStateChange?: (state: { dirty: boolean; save: () => Promise<boolean>; discard: () => void }) => void;
 }
 
 export interface ConflictState {
@@ -57,6 +57,47 @@ function parseSheet(content: Record<string, unknown>): SheetContent {
 
 function genId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Moves focus to the next (or previous) focusable element OUTSIDE the given
+ * grid container. Returns true if focus was moved, false if no suitable
+ * element was found.
+ */
+function focusOutsideGrid(
+  gridEl: HTMLElement,
+  direction: "next" | "prev",
+): boolean {
+  const selector =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  const allFocusable = Array.from(
+    document.querySelectorAll<HTMLElement>(selector),
+  ).filter((el) => el.offsetParent !== null);
+
+  const gridFocusable = allFocusable.filter((el) => gridEl.contains(el));
+  if (gridFocusable.length === 0) return false;
+
+  const firstInGridIdx = allFocusable.indexOf(gridFocusable[0]);
+  const lastInGridIdx = allFocusable.indexOf(
+    gridFocusable[gridFocusable.length - 1],
+  );
+
+  if (direction === "next") {
+    for (let i = lastInGridIdx + 1; i < allFocusable.length; i++) {
+      if (!gridEl.contains(allFocusable[i])) {
+        allFocusable[i].focus();
+        return true;
+      }
+    }
+  } else {
+    for (let i = firstInGridIdx - 1; i >= 0; i--) {
+      if (!gridEl.contains(allFocusable[i])) {
+        allFocusable[i].focus();
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export function SheetEditor({
@@ -126,14 +167,16 @@ export function SheetEditor({
     };
   }, [columns, rows]);
 
-  const handleSave = useCallback(async () => {
-    if (!isDirty || saving) return;
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (!isDirty || saving) return false;
     setSaveError(null);
     try {
       await onSave({ title, content: buildContent() });
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       setSaveError(msg);
+      return false;
     }
   }, [isDirty, saving, title, buildContent, onSave]);
 
@@ -251,15 +294,36 @@ export function SheetEditor({
       e.preventDefault();
       setFocusedCell({ row: rowIndex, col: colIndex + 1 });
     } else if (e.key === "Tab") {
-      const hasPrevious = e.shiftKey && (colIndex > 0 || rowIndex > 0);
-      const hasNext = !e.shiftKey && (colIndex < columns.length - 1 || rowIndex < rows.length - 1);
-      if (!hasPrevious && !hasNext) return;
+      const isLastCell =
+        colIndex === columns.length - 1 && rowIndex === rows.length - 1;
+      const isFirstCell = colIndex === 0 && rowIndex === 0;
+
+      // At grid boundaries, move focus OUTSIDE the grid (not to header
+      // buttons or the add-row button which are still inside the grid).
+      if (e.shiftKey && isFirstCell) {
+        if (gridRef.current && focusOutsideGrid(gridRef.current, "prev")) {
+          e.preventDefault();
+        }
+        return;
+      }
+      if (!e.shiftKey && isLastCell) {
+        if (gridRef.current && focusOutsideGrid(gridRef.current, "next")) {
+          e.preventDefault();
+        }
+        return;
+      }
+
+      // Normal in-grid Tab navigation between cells
       e.preventDefault();
       if (e.shiftKey && colIndex > 0) {
         setFocusedCell({ row: rowIndex, col: colIndex - 1 });
       } else if (!e.shiftKey && colIndex < columns.length - 1) {
         setFocusedCell({ row: rowIndex, col: colIndex + 1 });
-      } else if (!e.shiftKey && colIndex === columns.length - 1 && rowIndex < rows.length - 1) {
+      } else if (
+        !e.shiftKey &&
+        colIndex === columns.length - 1 &&
+        rowIndex < rows.length - 1
+      ) {
         setFocusedCell({ row: rowIndex + 1, col: 0 });
       } else if (e.shiftKey && colIndex === 0 && rowIndex > 0) {
         setFocusedCell({ row: rowIndex - 1, col: columns.length - 1 });

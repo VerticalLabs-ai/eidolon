@@ -9,12 +9,27 @@ import { useEventToasts } from "@/lib/toasts";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { CommandPalette } from "@/components/ui/CommandPalette";
 import { ProjectCreationProvider } from "@/components/projects/ProjectCreationProvider";
+import { CompanySwitchDialog } from "@/components/artifacts/CompanySwitchDialog";
+import { useCompanySwitchGuard, EffectiveCompanyContext } from "@/lib/useCompanySwitchGuard";
 
 export function AppShell() {
   const { companyId } = useParams();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarWasOpenRef = useRef(false);
+
+  // Central guard: intercepts companyId changes from ALL navigation paths
+  // (Sidebar clicks, direct URL changes, browser Back/Forward, in-app links).
+  // When a dirty artifact editor is open, the URL is reverted to keep the
+  // editor mounted, and a Save/Discard/Cancel dialog is shown.
+  const {
+    effectiveCompanyId,
+    pendingCompanyId,
+    switchError,
+    savingSwitch,
+    resolveSwitch,
+  } = useCompanySwitchGuard(companyId!);
+
   const { data: company } = useCompany(companyId);
   const { status } = useWebSocket(companyId);
 
@@ -45,6 +60,7 @@ export function AppShell() {
   useEventToasts(companyId);
 
   return (
+    <EffectiveCompanyContext.Provider value={effectiveCompanyId}>
     <ProjectCreationProvider companyId={companyId!}>
       <div className="flex h-dvh bg-surface">
         <CommandPalette />
@@ -58,6 +74,14 @@ export function AppShell() {
               fontSize: "13px",
             },
           }}
+        />
+        <CompanySwitchDialog
+          open={!!pendingCompanyId}
+          saving={savingSwitch}
+          error={switchError}
+          onCancel={() => resolveSwitch("cancel")}
+          onDiscard={() => resolveSwitch("discard")}
+          onSave={() => resolveSwitch("save")}
         />
         <Sidebar
           companyName={company?.name}
@@ -109,5 +133,6 @@ export function AppShell() {
         </div>
       </div>
     </ProjectCreationProvider>
+    </EffectiveCompanyContext.Provider>
   );
 }

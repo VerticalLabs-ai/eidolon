@@ -1,6 +1,7 @@
 export interface DirtyEditorGuard {
   isDirty: () => boolean;
-  save: () => Promise<void>;
+  /** Returns true on success, false on failure (error is surfaced in the editor). */
+  save: () => Promise<boolean>;
   discard: () => void;
 }
 

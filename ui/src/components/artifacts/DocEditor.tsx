@@ -16,7 +16,7 @@ interface DocEditorProps {
   conflictState?: ConflictState | null;
   wsConnected?: boolean;
   onRemoteUpdate?: (content: Record<string, unknown>, title: string) => void;
-  onStateChange?: (state: { dirty: boolean; save: () => Promise<void>; discard: () => void }) => void;
+  onStateChange?: (state: { dirty: boolean; save: () => Promise<boolean>; discard: () => void }) => void;
 }
 
 export interface ConflictState {
@@ -86,17 +86,19 @@ export function DocEditor({
     onRemoteUpdate?.(artifact.content, artifact.title);
   }, [artifact]);
 
-  const handleSave = useCallback(async () => {
-    if (!isDirty || saving) return;
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (!isDirty || saving) return false;
     setSaveError(null);
     try {
       await onSave({
         title,
         content: { format: "markdown", body },
       });
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       setSaveError(msg);
+      return false;
     }
   }, [isDirty, saving, title, body, onSave]);
 

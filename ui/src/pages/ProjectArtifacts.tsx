@@ -9,6 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
 import { ArtifactTypePicker } from "@/components/artifacts/ArtifactTypePicker";
 import { ArtifactEditor } from "@/components/artifacts/ArtifactEditor";
+import { useEffectiveCompanyId } from "@/lib/useCompanySwitchGuard";
 import type { Artifact, ArtifactType } from "@/lib/api";
 
 interface ProjectArtifactsProps {
@@ -30,6 +31,11 @@ function defaultSheetContent(): Record<string, unknown> {
 }
 
 export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps) {
+  // effectiveCompanyId lags behind the URL companyId while a dirty-editor
+  // switch is pending confirmation. Using it for the ArtifactEditor key
+  // keeps the editor mounted (and the draft preserved) during the guard.
+  const effectiveCompanyId = useEffectiveCompanyId() ?? companyId;
+  const editorCompanyId = effectiveCompanyId ?? companyId;
   const [filters, setFilters] = useState<ArtifactListFilters>({
     type: "",
     status: "active",
@@ -40,22 +46,19 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const qc = useQueryClient();
 
-  // VAL-CROSS-020/028: Reset all Artifacts UI state when the company or project changes.
-  // This prevents cross-company leakage (no stale C1 rows or selected artifact
-  // lingering when the user switches to C2 or a different project).
-  const prevCompanyId = useRef(companyId);
+  // Reset Artifacts UI state when the effective company changes (confirmed).
+  // Using editorCompanyId (from context) ensures this only fires after the
+  // AppShell guard confirms the switch, not during the guard check.
+  const prevEditorCompanyId = useRef(editorCompanyId);
   useEffect(() => {
-    if (prevCompanyId.current !== companyId) {
-      if (selectedId) {
-        toast.warning("Company changed — unsaved artifact draft discarded.");
-      }
+    if (prevEditorCompanyId.current !== editorCompanyId) {
       setSelectedId(null);
       setPickerOpen(false);
       setFilters({ type: "", status: "active", projectId: "" });
       setOffset(0);
-      prevCompanyId.current = companyId;
+      prevEditorCompanyId.current = editorCompanyId;
     }
-  }, [companyId, projectId, selectedId]);
+  }, [editorCompanyId, projectId]);
 
   const queryParams = {
     projectId,
@@ -117,8 +120,8 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   if (selectedId) {
     return (
       <ArtifactEditor
-        key={`${companyId}-${projectId}-${selectedId}`}
-        companyId={companyId}
+        key={`${editorCompanyId}-${projectId}-${selectedId}`}
+        companyId={editorCompanyId}
         artifactId={selectedId}
         projectId={projectId}
         onBack={() => setSelectedId(null)}
