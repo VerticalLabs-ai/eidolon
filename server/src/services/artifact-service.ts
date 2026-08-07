@@ -80,6 +80,7 @@ export async function listArtifacts(db: DbInstance, companyId: string, filters: 
 
 export async function updateArtifact(db: DbInstance, companyId: string, id: string, input: {
   version?: number; title?: string; content?: unknown; projectId?: string | null; message?: string;
+  status?: 'deleted' | 'archived' | 'active';
 }, editor: Editor) {
   const current = await getArtifact(db, companyId, id);
   const version = input.version;
@@ -93,6 +94,7 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
       title: input.title ?? current.title, content: nextContent as Record<string, unknown>,
       projectId: input.projectId === undefined ? current.projectId : input.projectId,
       version: current.version + 1, updatedAt: new Date(),
+      ...(input.status !== undefined ? { status: input.status, deletedAt: input.status === 'deleted' ? new Date() : null } : {}),
       lastEditedByUserId: editor.userId ?? null, lastEditedByAgentId: editor.agentId ?? null,
     }).where(and(eq(db.schema.artifacts.id, id), eq(db.schema.artifacts.companyId, companyId), eq(db.schema.artifacts.version, version))).returning();
     if (!row) throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', { current: await getArtifact(db, companyId, id) });
@@ -110,11 +112,11 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
 
 export async function setArtifactStatus(db: DbInstance, companyId: string, id: string, status: 'deleted' | 'archived' | 'active', editor: Editor) {
   const current = await getArtifact(db, companyId, id);
-  const updated = await updateArtifact(db, companyId, id, { version: current.version, content: current.content, message: `status:${status}` }, editor);
-  const [row] = await db.drizzle.update(db.schema.artifacts).set({ status, deletedAt: status === 'deleted' ? new Date() : null, updatedAt: new Date() })
-    .where(and(eq(db.schema.artifacts.id, id), eq(db.schema.artifacts.companyId, companyId))).returning();
-  emit(status === 'deleted' ? 'artifact.deleted' : status === 'archived' ? 'artifact.archived' : 'artifact.updated', companyId, row);
-  return row ?? updated;
+  const updated = await updateArtifact(db, companyId, id, {
+    version: current.version, content: current.content, message: `status:${status}`, status,
+  }, editor);
+  emit(status === 'deleted' ? 'artifact.deleted' : status === 'archived' ? 'artifact.archived' : 'artifact.updated', companyId, updated);
+  return updated;
 }
 
 export async function listRevisions(db: DbInstance, companyId: string, id: string) {
