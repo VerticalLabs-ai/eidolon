@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
-import { validateArtifactContent, type ArtifactTypeSchema } from '@eidolon/shared';
+import { ArtifactTypeSchema, validateArtifactContent } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
