@@ -14,6 +14,8 @@ interface SheetEditorProps {
   saving?: boolean;
   conflictState?: ConflictState | null;
   wsConnected?: boolean;
+  onRemoteUpdate?: (content: Record<string, unknown>, title: string) => void;
+  onStateChange?: (state: { dirty: boolean; save: () => Promise<void>; discard: () => void }) => void;
 }
 
 export interface ConflictState {
@@ -64,29 +66,51 @@ export function SheetEditor({
   saving,
   conflictState,
   wsConnected,
+  onRemoteUpdate,
+  onStateChange,
 }: SheetEditorProps) {
   const parsed = parseSheet(artifact.content);
   const [title, setTitle] = useState(artifact.title);
   const [columns, setColumns] = useState<SheetColumn[]>(parsed.columns);
   const [rows, setRows] = useState<SheetRow[]>(parsed.rows);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const [focusedCell, setFocusedCell] = useState<{ row: number; col: number } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
-
-  // Sync local state when artifact changes
-  useEffect(() => {
-    setTitle(artifact.title);
-    const p = parseSheet(artifact.content);
-    setColumns(p.columns);
-    setRows(p.rows);
-    setSaveError(null);
-  }, [artifact.id, artifact.version, artifact.title, artifact.content]);
 
   const currentParsed = parseSheet(artifact.content);
   const isDirty =
     title !== artifact.title ||
     JSON.stringify(columns) !== JSON.stringify(currentParsed.columns) ||
     JSON.stringify(rows) !== JSON.stringify(currentParsed.rows);
+
+  // Realtime updates must not replace an in-progress local draft.
+  useEffect(() => {
+    const next = parseSheet(artifact.content);
+    const incomingChanged =
+      artifact.title !== title ||
+      JSON.stringify(next.columns) !== JSON.stringify(columns) ||
+      JSON.stringify(next.rows) !== JSON.stringify(rows);
+    if (incomingChanged && isDirty) {
+      setRemoteUpdate(true);
+      return;
+    }
+    setTitle(artifact.title);
+    setColumns(next.columns);
+    setRows(next.rows);
+    setSaveError(null);
+    setRemoteUpdate(false);
+  }, [artifact.id, artifact.version, artifact.title, artifact.content]);
+
+  const discardDraft = useCallback(() => {
+    const next = parseSheet(artifact.content);
+    setTitle(artifact.title);
+    setColumns(next.columns);
+    setRows(next.rows);
+    setSaveError(null);
+    setRemoteUpdate(false);
+    onRemoteUpdate?.(artifact.content, artifact.title);
+  }, [artifact, onRemoteUpdate]);
 
   const buildContent = useCallback((): Record<string, unknown> => {
     return {
@@ -112,6 +136,10 @@ export function SheetEditor({
       setSaveError(msg);
     }
   }, [isDirty, saving, title, buildContent, onSave]);
+
+  useEffect(() => {
+    onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });
+  }, [discardDraft, handleSave, isDirty, onStateChange]);
 
   // Ctrl/Cmd+S
   useEffect(() => {
@@ -223,6 +251,9 @@ export function SheetEditor({
       e.preventDefault();
       setFocusedCell({ row: rowIndex, col: colIndex + 1 });
     } else if (e.key === "Tab") {
+      const hasPrevious = e.shiftKey && (colIndex > 0 || rowIndex > 0);
+      const hasNext = !e.shiftKey && (colIndex < columns.length - 1 || rowIndex < rows.length - 1);
+      if (!hasPrevious && !hasNext) return;
       e.preventDefault();
       if (e.shiftKey && colIndex > 0) {
         setFocusedCell({ row: rowIndex, col: colIndex - 1 });
@@ -299,6 +330,13 @@ export function SheetEditor({
       </div>
 
       {/* Conflict banner */}
+      {remoteUpdate && !conflictState && (
+        <div role="alert" className="flex items-center gap-2 border-b border-warning/20 bg-warning/10 px-4 py-2 text-xs text-warning">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span className="flex-1">This artifact changed elsewhere. Your draft is preserved.</span>
+          <Button variant="ghost" size="sm" onClick={discardDraft}>Reload remote</Button>
+        </div>
+      )}
       {conflictState && (
         <div
           role="alert"

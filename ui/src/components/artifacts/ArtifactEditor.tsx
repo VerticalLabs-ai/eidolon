@@ -16,6 +16,7 @@ import { useWebSocket } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import type { ArtifactType } from "@/lib/api";
+import { setDirtyEditorGuard } from "@/lib/dirty-editor";
 
 interface ArtifactEditorProps {
   companyId: string;
@@ -42,6 +43,8 @@ export function ArtifactEditor({
   const [conflict, setConflict] = useState<
     (DocConflictState & { type?: ArtifactType }) | null
   >(null);
+
+  useEffect(() => () => setDirtyEditorGuard(null), []);
 
   // Realtime: listen for artifact.updated and artifact.deleted to refresh
   useServerEvents(companyId, "artifact.updated", (event) => {
@@ -146,6 +149,17 @@ export function ArtifactEditor({
     refetch();
   };
 
+  const handleEditorState = useCallback(
+    (state: { dirty: boolean; save: () => Promise<void>; discard: () => void }) => {
+      setDirtyEditorGuard({
+        isDirty: () => state.dirty,
+        save: state.save,
+        discard: state.discard,
+      });
+    },
+    [],
+  );
+
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -241,6 +255,7 @@ export function ArtifactEditor({
               saving={updateMutation.isPending}
               conflictState={conflictState}
               wsConnected={wsStatus === "connected"}
+              onStateChange={handleEditorState}
             />
           ) : artifact.type === "sheet" ? (
             <SheetEditor
@@ -250,6 +265,7 @@ export function ArtifactEditor({
               saving={updateMutation.isPending}
               conflictState={conflictState}
               wsConnected={wsStatus === "connected"}
+              onStateChange={handleEditorState}
             />
           ) : (
             <div className="flex h-full items-center justify-center p-6">

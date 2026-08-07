@@ -15,6 +15,8 @@ interface DocEditorProps {
   saving?: boolean;
   conflictState?: ConflictState | null;
   wsConnected?: boolean;
+  onRemoteUpdate?: (content: Record<string, unknown>, title: string) => void;
+  onStateChange?: (state: { dirty: boolean; save: () => Promise<void>; discard: () => void }) => void;
 }
 
 export interface ConflictState {
@@ -46,23 +48,43 @@ export function DocEditor({
   saving,
   conflictState,
   wsConnected,
+  onRemoteUpdate,
+  onStateChange,
 }: DocEditorProps) {
   const parsed = parseDocContent(artifact.content);
   const [title, setTitle] = useState(artifact.title);
   const [body, setBody] = useState(parsed.body);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
 
   // Sync local state when artifact changes (e.g. from realtime or revision restore)
-  useEffect(() => {
-    setTitle(artifact.title);
-    const p = parseDocContent(artifact.content);
-    setBody(p.body);
-    setSaveError(null);
-  }, [artifact.id, artifact.version, artifact.title, artifact.content]);
-
   const isDirty =
     title !== artifact.title || body !== parseDocContent(artifact.content).body;
+
+  // Never overwrite a draft when a realtime refetch supplies a newer artifact.
+  useEffect(() => {
+    const next = parseDocContent(artifact.content);
+    const incomingChanged =
+      artifact.title !== title || next.body !== body;
+    if (incomingChanged && isDirty) {
+      setRemoteUpdate(true);
+      return;
+    }
+    setTitle(artifact.title);
+    setBody(next.body);
+    setSaveError(null);
+    setRemoteUpdate(false);
+  }, [artifact.id, artifact.version, artifact.title, artifact.content]);
+
+  const discardDraft = useCallback(() => {
+    const next = parseDocContent(artifact.content);
+    setTitle(artifact.title);
+    setBody(next.body);
+    setSaveError(null);
+    setRemoteUpdate(false);
+    onRemoteUpdate?.(artifact.content, artifact.title);
+  }, [artifact]);
 
   const handleSave = useCallback(async () => {
     if (!isDirty || saving) return;
@@ -77,6 +99,10 @@ export function DocEditor({
       setSaveError(msg);
     }
   }, [isDirty, saving, title, body, onSave]);
+
+  useEffect(() => {
+    onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });
+  }, [discardDraft, handleSave, isDirty, onStateChange]);
 
   // Keyboard shortcut: Ctrl/Cmd+S to save
   useEffect(() => {
@@ -129,6 +155,13 @@ export function DocEditor({
       </div>
 
       {/* Conflict banner */}
+      {remoteUpdate && !conflictState && (
+        <div role="alert" className="flex items-center gap-2 border-b border-warning/20 bg-warning/10 px-4 py-2 text-xs text-warning">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span className="flex-1">This artifact changed elsewhere. Your draft is preserved.</span>
+          <Button variant="ghost" size="sm" onClick={discardDraft}>Reload remote</Button>
+        </div>
+      )}
       {conflictState && (
         <div
           role="alert"
