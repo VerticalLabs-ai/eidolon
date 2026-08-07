@@ -16,6 +16,7 @@ import {
   updateArtifact,
 } from './artifact-service.js';
 import { AppError } from '../middleware/error-handler.js';
+import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import type { DbInstance } from '../types.js';
 import type { z } from 'zod';
 
@@ -144,6 +145,17 @@ export class ArtifactToolService {
     args: Record<string, unknown>,
     context: { companyId: string; agentId: string; projectId?: string | null },
   ): Promise<ArtifactToolResult> {
+    // Agent editor context is only trusted when the agent actually belongs to
+    // the company scope. This guards against a forged/out-of-company agent id
+    // producing agent-authored artifacts; the loop constructs this context
+    // server-side, but the ownership check is enforced here regardless.
+    if (!(await agentBelongsToCompany(this.db, context.companyId, context.agentId))) {
+      return {
+        content: [{ type: 'text', text: 'Error (403): Agent does not belong to this company' }],
+        isError: true,
+      };
+    }
+
     const editor = {
       agentId: context.agentId,
       editSource: 'agent' as const,

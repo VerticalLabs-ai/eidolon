@@ -1,15 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
 import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
 import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision } from '../services/artifact-service.js';
+import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import { ArtifactTypeSchema } from '@eidolon/shared';
-import { AppError } from '../middleware/error-handler.js';
 import type { DbInstance } from '../types.js';
-
-const AgentIdSchema = z.string().uuid();
-
 
 const CreateBody = z.object({
   type: ArtifactTypeSchema, title: z.string().trim().min(1).max(500),
@@ -27,18 +23,15 @@ const ListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0),
 });
 
-async function editor(req: any, companyId: string, db: DbInstance) {
-  // Support agent-authored artifacts via X-Eidolon-Agent-Id header.
-  // The agent must belong to the request's company before it can be used for attribution.
+async function editor(db: DbInstance, companyId: string, req: any) {
+  // Support agent-authored artifacts via X-Eidolon-Agent-Id header (used by
+  // MCP-server tool calls and built-in agent tools). The header is
+  // caller-controlled, so the agent id is only trusted for attribution when it
+  // names an agent that actually belongs to the path company. A forged or
+  // out-of-company agent id is ignored and attribution stays with the user.
   const agentId = req.get('X-Eidolon-Agent-Id');
-  if (agentId) {
-    if (!AgentIdSchema.safeParse(agentId).success) {
-      throw new AppError(400, 'INVALID_AGENT_ID', 'X-Eidolon-Agent-Id must be a UUID');
-    }
-    const [agent] = await db.drizzle.select({ id: db.schema.agents.id }).from(db.schema.agents)
-      .where(and(eq(db.schema.agents.id, agentId), eq(db.schema.agents.companyId, companyId)));
-    if (!agent) throw new AppError(403, 'INVALID_AGENT_ID', 'Agent does not belong to this company');
-    return { agentId, userId: req.user?.id ?? null, editSource: 'agent' as const };
+  if (agentId && (await agentBelongsToCompany(db, companyId, agentId))) {
+    return { agentId, userId: null, editSource: 'agent' as const };
   }
   return { userId: req.user?.id ?? null, editSource: 'user' as const };
 }
@@ -52,7 +45,7 @@ export function artifactsRouter(db: DbInstance): Router {
   });
   router.post('/artifacts', validate(CreateBody), async (req, res) => {
     const { companyId } = routeParams(req);
-    const row = await createArtifact(db, companyId, (req as any).validated.body, await editor(req, companyId, db));
+    const row = await createArtifact(db, companyId, (req as any).validated.body, await editor(db, companyId, req));
     res.status(201).json({ data: row });
   });
   router.get('/artifacts', validate(ListQuery, 'query'), async (req, res) => {
@@ -76,7 +69,7 @@ export function artifactsRouter(db: DbInstance): Router {
   router.post('/artifacts/:id/revisions/:version/restore', async (req, res) => {
     const { companyId, id } = routeParams(req);
     const revision = await getRevision(db, companyId, id, Number(req.params.version));
-    const row = await updateArtifact(db, companyId, id, { version: (await getArtifact(db, companyId, id)).version, content: revision.content, message: 'restore revision' }, await editor(req, companyId, db));
+    const row = await updateArtifact(db, companyId, id, { version: (await getArtifact(db, companyId, id)).version, content: revision.content, message: 'restore revision' }, await editor(db, companyId, req));
     res.json({ data: row });
   });
   router.get('/artifacts/:id/revisions', async (req, res) => {
@@ -89,19 +82,19 @@ export function artifactsRouter(db: DbInstance): Router {
   });
   router.patch('/artifacts/:id', validate(UpdateBody), async (req, res) => {
     const { companyId, id } = routeParams(req);
-    res.json({ data: await updateArtifact(db, companyId, id, (req as any).validated.body, await editor(req, companyId, db)) });
+    res.json({ data: await updateArtifact(db, companyId, id, (req as any).validated.body, await editor(db, companyId, req)) });
   });
   router.delete('/artifacts/:id', async (req, res) => {
     const { companyId, id } = routeParams(req);
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(req, companyId, db)) });
+    res.json({ data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)) });
   });
   router.post('/artifacts/:id/archive', async (req, res) => {
     const { companyId, id } = routeParams(req);
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'archived', await editor(req, companyId, db)) });
+    res.json({ data: await setArtifactStatus(db, companyId, id, 'archived', await editor(db, companyId, req)) });
   });
   router.post('/artifacts/:id/restore', async (req, res) => {
     const { companyId, id } = routeParams(req);
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'active', await editor(req, companyId, db)) });
+    res.json({ data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)) });
   });
   return router;
 }
