@@ -24,6 +24,7 @@ import { Integrations } from "@/pages/Integrations";
 import { CompanySettings } from "@/pages/CompanySettings";
 import { Templates } from "@/pages/Templates";
 import { Approvals } from "@/pages/Approvals";
+import { CompanyArtifacts } from "@/pages/CompanyArtifacts";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -112,6 +113,7 @@ export function App() {
           <Route path="analytics" element={<Analytics />} />
           <Route path="integrations" element={<Integrations />} />
           <Route path="approvals" element={<Approvals />} />
+          <Route path="artifacts" element={<CompanyArtifacts />} />
           <Route path="settings" element={<CompanySettings />} />
         </Route>
       </Routes>
