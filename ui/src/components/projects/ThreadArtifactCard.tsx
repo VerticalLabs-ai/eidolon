@@ -1,4 +1,5 @@
 import { FileText, Table, Link2 } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const typeIcons: Record<string, typeof FileText> = {
   document: FileText,
@@ -16,6 +17,12 @@ const typeLabels: Record<string, string> = {
 /**
  * Inline artifact card rendered in thread items when the agent's response
  * references a produced artifact via payload.artifactId/artifactType.
+ *
+ * Links to the registered Artifacts tab route and passes the artifactId via
+ * a query param so the Artifacts page auto-selects and opens the editor.
+ * Project-scoped artifacts navigate to the project's Artifacts tab
+ * (`?tab=artifacts&artifactId=…`); company-scoped artifacts navigate to the
+ * company Artifacts route (`?artifactId=…`).
  */
 export function ThreadArtifactCard({
   artifactId,
@@ -31,13 +38,13 @@ export function ThreadArtifactCard({
   const Icon = typeIcons[artifactType] ?? Link2;
   const label = typeLabels[artifactType] ?? artifactType;
 
-  const href = projectId
-    ? `/company/${companyId}/projects/${projectId}/artifacts/${artifactId}`
-    : `/company/${companyId}/artifacts/${artifactId}`;
+  const to = projectId
+    ? `/company/${companyId}/projects/${projectId}?tab=artifacts&artifactId=${encodeURIComponent(artifactId)}`
+    : `/company/${companyId}/artifacts?artifactId=${encodeURIComponent(artifactId)}`;
 
   return (
-    <a
-      href={href}
+    <Link
+      to={to}
       data-testid="thread-artifact-card"
       data-artifact-id={artifactId}
       data-artifact-type={artifactType}
@@ -53,6 +60,6 @@ export function ThreadArtifactCard({
         </div>
       </div>
       <Link2 className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />
-    </a>
+    </Link>
   );
 }

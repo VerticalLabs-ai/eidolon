@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   useArtifacts,
@@ -44,7 +45,27 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   const [offset, setOffset] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
+
+  // Auto-select an artifact passed via the ?artifactId= query param (e.g. from
+  // a ThreadArtifactCard link in a thread). On back, clear the param so the
+  // list view is shown rather than re-opening the editor.
+  useEffect(() => {
+    const paramId = searchParams.get("artifactId");
+    if (paramId && !selectedId) {
+      setSelectedId(paramId);
+    }
+  }, [searchParams, selectedId]);
+
+  const handleBack = useCallback(() => {
+    setSelectedId(null);
+    const next = new URLSearchParams(searchParams);
+    if (next.has("artifactId")) {
+      next.delete("artifactId");
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   // Reset Artifacts UI state when the effective company changes (confirmed).
   // Using editorCompanyId (from context) ensures this only fires after the
@@ -124,7 +145,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
         companyId={editorCompanyId}
         artifactId={selectedId}
         projectId={projectId}
-        onBack={() => setSelectedId(null)}
+        onBack={handleBack}
       />
     );
   }
