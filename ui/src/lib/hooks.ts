@@ -965,8 +965,12 @@ export function useChatThread(
 export function useSendChatMessage(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { content: string; targetAgentId?: string; threadId?: string }) =>
-      api.sendChatMessage(companyId, data),
+    mutationFn: (data: {
+      content: string;
+      targetAgentId?: string;
+      threadId?: string;
+      mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+    }) => api.sendChatMessage(companyId, data),
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["chat-threads", companyId] });
       if (vars.threadId) {

@@ -1208,6 +1208,8 @@ export interface SendChatResult {
   threadId: string;
   respondingAgentId: string | null;
   respondingAgentName: string | null;
+  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  mentionDispatch?: { dispatchedAgents?: Array<{ agentId: string; agentName: string }> };
 }
 
 export const getChatThreads = (companyId: string) =>
@@ -1218,7 +1220,12 @@ export const getChatThread = (companyId: string, threadId: string) =>
 
 export const sendChatMessage = (
   companyId: string,
-  data: { content: string; targetAgentId?: string; threadId?: string },
+  data: {
+    content: string;
+    targetAgentId?: string;
+    threadId?: string;
+    mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  },
 ) =>
   request<SendChatResult>(`/companies/${companyId}/chat/send`, {
     method: "POST",

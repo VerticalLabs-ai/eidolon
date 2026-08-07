@@ -176,14 +176,33 @@ export function chatRouter(db: DbInstance): Router {
       }
     }
 
-    // Insert the board message using raw SQL to avoid FK constraint issues
-    // (the fromAgentId is NULL for board-sent messages since 'board' is not a real agent).
-    // from_agent_id and to_agent_id are now nullable (migration 0019).
-    // Use db.execute() which works with both postgres.js and PGlite.
-    await db.drizzle.execute(
-      sql`INSERT INTO messages (id, company_id, from_agent_id, to_agent_id, thread_id, content, type, metadata, created_at)
-          VALUES (${userMessageId}, ${companyId}, NULL, ${targetAgentId ?? null}, ${threadId}, ${body.content}, 'directive', '{}', ${now})`,
-    );
+    // VAL-MENTION-018: resolve @-mentions against company membership before
+    // persisting, so only company-scoped mentions are stored/dispatched.
+    // Mentions are persisted durably in the message metadata so thread reads
+    // return them for the UI to render chips + artifact cards.
+    const mentionService = new MentionService(db);
+    const resolvedMentions: Array<{ entityType: 'agent' | 'user'; entityId: string; label: string }> = [];
+    for (const m of body.mentions) {
+      const valid = await mentionService.resolveMention(companyId, m.entityType, m.entityId);
+      if (valid) resolvedMentions.push({ entityType: m.entityType, entityId: m.entityId, label: m.label });
+    }
+
+    const userMetadata = { mentions: resolvedMentions };
+
+    // Insert the board message. from_agent_id is NULL for board-sent messages
+    // (migration 0019 made it nullable), so the Drizzle insert helper works
+    // without FK constraint issues and serializes timestamp/jsonb correctly.
+    await db.drizzle.insert(messages).values({
+      id: userMessageId,
+      companyId,
+      fromAgentId: null,
+      toAgentId: targetAgentId ?? null,
+      threadId,
+      content: body.content,
+      type: 'directive',
+      metadata: userMetadata,
+      createdAt: new Date(now),
+    });
 
     // Emit WebSocket event for real-time updates
     eventBus.emitEvent({
@@ -195,6 +214,7 @@ export function chatRouter(db: DbInstance): Router {
         fromBoard: true,
         targetAgentId,
         respondingAgentName,
+        mentions: resolvedMentions,
       },
       timestamp: new Date(now).toISOString(),
     });
@@ -203,10 +223,9 @@ export function chatRouter(db: DbInstance): Router {
     // Agent mentions wake the agent with company-level context (projectId=null);
     // any produced artifacts are company-scoped and linked back to the thread.
     let mentionDispatchInfo: Record<string, unknown> | undefined;
-    if (body.mentions && body.mentions.length > 0) {
-      const mentionService = new MentionService(db);
-      const agentMentions = body.mentions.filter((m) => m.entityType === 'agent');
-      const userMentions = body.mentions.filter((m) => m.entityType === 'user');
+    if (resolvedMentions.length > 0) {
+      const agentMentions = resolvedMentions.filter((m) => m.entityType === 'agent');
+      const userMentions = resolvedMentions.filter((m) => m.entityType === 'user');
 
       // Dispatch user mentions (notifications) in company scope — fire and forget
       if (userMentions.length > 0) {
@@ -223,8 +242,8 @@ export function chatRouter(db: DbInstance): Router {
           .catch((err) => logger.error({ err }, '[boardchat-mention] user dispatch error'));
       }
 
-      // For agent mentions, verify they belong to the company synchronously,
-      // then dispatch the agent run in the background (fire and forget).
+      // For agent mentions, fetch the agent rows (already company-validated
+      // above) and dispatch the agent run in the background (fire and forget).
       if (agentMentions.length > 0) {
         const { tasks, agents: agentsTable } = db.schema;
         const validAgentMentions: Array<{ id: string; name: string; status: string; mention: any }> = [];
@@ -289,10 +308,17 @@ export function chatRouter(db: DbInstance): Router {
 
                 const responseMsgId = randomUUID();
                 const responseNow = Date.now();
-                await db.drizzle.execute(
-                  sql`INSERT INTO messages (id, company_id, from_agent_id, to_agent_id, thread_id, content, type, metadata, created_at)
-                      VALUES (${responseMsgId}, ${companyId}, ${aId}, NULL, ${threadId}, ${responseContent.slice(0, 10_000)}, 'response', ${JSON.stringify(responseMetadata)}, ${responseNow})`,
-                );
+                await db.drizzle.insert(messages).values({
+                  id: responseMsgId,
+                  companyId,
+                  fromAgentId: aId,
+                  toAgentId: null,
+                  threadId,
+                  content: responseContent.slice(0, 10_000),
+                  type: 'response',
+                  metadata: responseMetadata,
+                  createdAt: new Date(responseNow),
+                });
 
                 eventBus.emitEvent({
                   type: 'message.sent',
@@ -322,6 +348,7 @@ export function chatRouter(db: DbInstance): Router {
         threadId,
         respondingAgentId: targetAgentId,
         respondingAgentName,
+        mentions: resolvedMentions,
         mentionDispatch: mentionDispatchInfo,
       },
     });

@@ -441,7 +441,7 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
   // VAL-MENTION-018: BoardChat agent mention dispatches in company scope
   // =========================================================================
   describe('VAL-MENTION-018: BoardChat mention dispatch', () => {
-    it('accepts mentions in the chat send body and persists them', async () => {
+    it('accepts mentions in the chat send body and persists them in message metadata', async () => {
       const res = await request(app)
         .post(`/api/companies/${companyId}/chat/send`)
         .send({
@@ -453,6 +453,27 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
       expect(res.body.data).toBeDefined();
       expect(res.body.data.threadId).toBeDefined();
       expect(res.body.data.messageId).toBeDefined();
+      // The persisted (company-resolved) mentions are echoed in the response
+      expect(res.body.data.mentions).toHaveLength(1);
+      expect(res.body.data.mentions[0]).toEqual({
+        entityType: 'agent',
+        entityId: agentId,
+        label: 'Cross Agent',
+      });
+
+      // Thread read returns the mentions in the user message metadata
+      const threadRes = await request(app)
+        .get(`/api/companies/${companyId}/chat/threads/${res.body.data.threadId}`)
+        .expect(200);
+
+      const userMsg = threadRes.body.data.find(
+        (m: { id: string }) => m.id === res.body.data.messageId,
+      );
+      expect(userMsg).toBeDefined();
+      expect(userMsg.metadata.mentions).toHaveLength(1);
+      expect(userMsg.metadata.mentions[0].entityType).toBe('agent');
+      expect(userMsg.metadata.mentions[0].entityId).toBe(agentId);
+      expect(userMsg.metadata.mentions[0].label).toBe('Cross Agent');
     });
 
     it('rejects mentions for agents not in the company (no dispatch)', async () => {
@@ -477,6 +498,16 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
       // The mention should not dispatch to the other company's agent
       // (mentionDispatch should be undefined since no valid agents were found)
       expect(res.body.data.mentionDispatch).toBeUndefined();
+      // Cross-company mentions are filtered out and not persisted
+      expect(res.body.data.mentions).toHaveLength(0);
+
+      const threadRes = await request(app)
+        .get(`/api/companies/${companyId}/chat/threads/${res.body.data.threadId}`)
+        .expect(200);
+      const userMsg = threadRes.body.data.find(
+        (m: { id: string }) => m.id === res.body.data.messageId,
+      );
+      expect(userMsg.metadata.mentions).toHaveLength(0);
     });
   });
 });
