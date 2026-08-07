@@ -15,6 +15,7 @@ export * from './types/budget.js';
 export * from './types/analytics.js';
 export * from './types/events.js';
 export * from './types/artifact.js';
+export * from './types/mention.js';
 
 // Validators (re-exports schemas + common helpers) -----------------------
 export {

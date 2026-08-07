@@ -300,6 +300,18 @@ export function useUpdateThreadItem(companyId: string, projectId: string, thread
   });
 }
 
+// ── Mentions ───────────────────────────────────────────────────────────────
+
+export function useMentionSearch(companyId: string | undefined, query: string) {
+  return useQuery({
+    queryKey: ["mention-search", companyId, query],
+    queryFn: async () =>
+      unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, query)),
+    enabled: !!companyId,
+    staleTime: 10_000,
+  });
+}
+
 // ── Project Plans ─────────────────────────────────────────────────────────
 
 export function useProjectPlans(

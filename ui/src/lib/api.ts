@@ -477,6 +477,7 @@ export interface TaskThreadItem {
   authorAgentId?: string | null;
   content: string | null;
   payload: TaskThreadPayload;
+  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
   interactionType?: "suggested_tasks" | "confirmation" | "form" | null;
   status: TaskThreadItemStatus;
   idempotencyKey?: string | null;
@@ -512,6 +513,7 @@ export interface ProjectThread {
 export interface ProjectThreadItem extends Omit<TaskThreadItem, "taskId"> {
   taskId: string | null;
   projectThreadId: string | null;
+  projectId: string | null;
 }
 
 export interface ProjectThreadDetail extends ProjectThread {
@@ -705,6 +707,7 @@ export interface CreateThreadItemInput {
   kind?: ProjectThreadItem["kind"];
   content?: string;
   payload?: TaskThreadPayload;
+  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
   interactionType?: NonNullable<ProjectThreadItem["interactionType"]>;
   status?: Extract<TaskThreadItemStatus, "pending" | "accepted" | "rejected" | "answered" | "linked">;
 }
@@ -766,6 +769,23 @@ export const updateThreadItem = (
     `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items/${itemId}`,
     { method: "PATCH", body: JSON.stringify(data) },
   );
+
+// ── Mentions ─────────────────────────────────────────────────────────────
+
+export interface MentionableEntity {
+  entityType: "agent" | "user";
+  entityId: string;
+  label: string;
+  subtitle?: string;
+}
+
+export const searchMentions = (companyId: string, query: string) => {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  return request<ApiResponse<MentionableEntity[]>>(
+    `/companies/${companyId}/mentions/search?${params.toString()}`,
+  );
+};
 
 // ── Project Plans ────────────────────────────────────────────────────────
 

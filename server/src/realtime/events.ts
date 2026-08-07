@@ -101,7 +101,8 @@ export interface ProjectThreadEvent extends ServerEvent {
   type:
     | 'project.thread.created'
     | 'project.thread.item.created'
-    | 'project.thread.item.updated';
+    | 'project.thread.item.updated'
+    | 'thread.mention';
 }
 
 export interface GoalEvent extends ServerEvent {

@@ -21,6 +21,12 @@ const ListQuery = z.object({
 });
 
 function editor(req: any) {
+  // Support agent-authored artifacts via X-Eidolon-Agent-Id header.
+  // This is used by MCP-server tool calls and built-in agent tools.
+  const agentId = req.get('X-Eidolon-Agent-Id');
+  if (agentId) {
+    return { agentId, userId: null, editSource: 'agent' as const };
+  }
   return { userId: req.user?.id ?? null, editSource: 'user' as const };
 }
 

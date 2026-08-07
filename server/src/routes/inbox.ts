@@ -49,6 +49,7 @@ const ACTIVITY_KINDS_OF_INTEREST = new Set([
   'agent.terminated',
   'agent.status_changed',
   'task.timed_out',
+  'thread.mention',
 ]);
 
 const MarkBody = z.object({
