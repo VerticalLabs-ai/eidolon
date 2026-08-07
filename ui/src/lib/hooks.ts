@@ -1941,3 +1941,148 @@ export function useAddApprovalComment(companyId: string) {
     },
   });
 }
+
+// ── Artifacts ────────────────────────────────────────────────────────────
+
+export function useArtifacts(
+  companyId: string | undefined,
+  params?: api.ArtifactListParams,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, params ?? {}],
+    queryFn: async () => {
+      const res = await api.listArtifacts(companyId!, params);
+      const body = res as unknown as { data: api.Artifact[]; meta: api.ArtifactListMeta };
+      return {
+        rows: body.data,
+        meta: body.meta,
+      };
+    },
+    enabled: !!companyId,
+  });
+}
+
+export function useProjectArtifacts(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, "project", projectId],
+    queryFn: async () => {
+      const res = await api.listProjectArtifacts(companyId!, projectId!);
+      const body = res as unknown as { data: api.Artifact[] };
+      return body.data;
+    },
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useArtifact(
+  companyId: string | undefined,
+  id: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, id],
+    queryFn: async () => {
+      const res = await api.getArtifact(companyId!, id!);
+      return unwrap<api.Artifact>(res);
+    },
+    enabled: !!companyId && !!id,
+  });
+}
+
+export function useCreateArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createArtifact>[1]) =>
+      api.createArtifact(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useUpdateArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      id: string;
+      version: number;
+      title?: string;
+      content?: Record<string, unknown>;
+      message?: string;
+    }) =>
+      api.updateArtifact(companyId, args.id, {
+        version: args.version,
+        title: args.title,
+        content: args.content,
+        message: args.message,
+      }),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId, args.id] });
+      qc.invalidateQueries({
+        queryKey: ["artifacts", companyId, args.id, "revisions"],
+      });
+    },
+  });
+}
+
+export function useDeleteArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteArtifact(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useArchiveArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.archiveArtifact(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useRestoreArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.restoreArtifact(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useArtifactRevisions(
+  companyId: string | undefined,
+  id: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, id, "revisions"],
+    queryFn: async () => {
+      const res = await api.listRevisions(companyId!, id!);
+      return unwrap<api.ArtifactRevision[]>(res);
+    },
+    enabled: !!companyId && !!id,
+  });
+}
+
+export function useRestoreRevision(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { id: string; version: number }) =>
+      api.restoreRevision(companyId, args.id, args.version),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId, args.id] });
+      qc.invalidateQueries({
+        queryKey: ["artifacts", companyId, args.id, "revisions"],
+      });
+    },
+  });
+}

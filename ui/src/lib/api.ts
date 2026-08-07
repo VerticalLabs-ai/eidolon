@@ -2503,3 +2503,162 @@ export const addApprovalComment = (
     `/companies/${companyId}/approvals/${id}/comments`,
     { method: "POST", body: JSON.stringify({ content }) },
   );
+
+// ── Artifacts ────────────────────────────────────────────────────────────
+
+export type ArtifactType =
+  | "document"
+  | "sheet"
+  | "board"
+  | "slide_deck"
+  | "timeline"
+  | "gallery"
+  | "dashboard"
+  | "app"
+  | "code";
+
+export type ArtifactStatus = "active" | "archived" | "deleted";
+
+export interface Artifact {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  folderId: string | null;
+  type: ArtifactType;
+  title: string;
+  content: Record<string, unknown>;
+  contentSchemaVersion: number;
+  status: ArtifactStatus;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  lastEditedByUserId: string | null;
+  lastEditedByAgentId: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface ArtifactRevision {
+  id: string;
+  artifactId: string;
+  version: number;
+  content: Record<string, unknown>;
+  editedByUserId: string | null;
+  editedByAgentId: string | null;
+  editSource: "user" | "agent" | "system";
+  message: string | null;
+  createdAt: string;
+}
+
+export interface ArtifactListMeta {
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ArtifactListParams {
+  projectId?: string;
+  type?: ArtifactType;
+  status?: ArtifactStatus;
+  limit?: number;
+  offset?: number;
+}
+
+function artifactListQuery(params: ArtifactListParams): string {
+  const sp = new URLSearchParams();
+  if (params.projectId) sp.set("projectId", params.projectId);
+  if (params.type) sp.set("type", params.type);
+  if (params.status) sp.set("status", params.status);
+  if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export const listArtifacts = (companyId: string, params?: ArtifactListParams) =>
+  request<ApiResponse<Artifact[]>>(
+    `/companies/${companyId}/artifacts${artifactListQuery(params ?? {})}`,
+  );
+
+export const listProjectArtifacts = (
+  companyId: string,
+  projectId: string,
+) =>
+  request<ApiResponse<Artifact[]>>(
+    `/companies/${companyId}/projects/${projectId}/artifacts`,
+  );
+
+export const getArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}`);
+
+export const createArtifact = (
+  companyId: string,
+  data: {
+    type: ArtifactType;
+    title: string;
+    content: Record<string, unknown>;
+    projectId?: string | null;
+  },
+) =>
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateArtifact = (
+  companyId: string,
+  id: string,
+  data: {
+    version: number;
+    title?: string;
+    content?: Record<string, unknown>;
+    message?: string;
+  },
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const deleteArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}`,
+    { method: "DELETE" },
+  );
+
+export const archiveArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/archive`,
+    { method: "POST" },
+  );
+
+export const restoreArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/restore`,
+    { method: "POST" },
+  );
+
+export const listRevisions = (companyId: string, id: string) =>
+  request<ApiResponse<ArtifactRevision[]>>(
+    `/companies/${companyId}/artifacts/${id}/revisions`,
+  );
+
+export const getRevision = (
+  companyId: string,
+  id: string,
+  version: number,
+) =>
+  request<ApiResponse<ArtifactRevision>>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${version}`,
+  );
+
+export const restoreRevision = (
+  companyId: string,
+  id: string,
+  version: number,
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
+    { method: "POST" },
+  );
