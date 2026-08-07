@@ -45,3 +45,49 @@ export const SheetContentSchema = z
 
 export type DocumentContent = z.infer<typeof DocumentContentSchema>;
 export type SheetContent = z.infer<typeof SheetContentSchema>;
+
+const BoardContentSchema = z.object({
+  columns: z.array(z.object({ id: z.string().min(1), title: z.string() })),
+  cards: z.array(z.object({
+    id: z.string().min(1), columnId: z.string().min(1), title: z.string(), order: z.number(),
+    payload: z.record(z.string(), z.unknown()).optional(),
+  })),
+});
+const SlideDeckContentSchema = z.object({
+  slides: z.array(z.object({ id: z.string().min(1), layout: z.string(), blocks: z.array(z.record(z.string(), z.unknown())) })),
+});
+const TimelineContentSchema = z.object({
+  tasks: z.array(z.object({
+    id: z.string().min(1), title: z.string(), start: z.string(), end: z.string(),
+    dependsOn: z.array(z.string()).optional(), progress: z.number().min(0).max(100).optional(),
+  })),
+});
+const GalleryContentSchema = z.object({
+  items: z.array(z.object({ id: z.string().min(1), type: z.string(), url: z.string(), caption: z.string().optional() })),
+});
+const DashboardContentSchema = z.object({
+  dataSources: z.array(z.object({ id: z.string(), type: z.string(), config: z.record(z.string(), z.unknown()) })),
+  widgets: z.array(z.object({ id: z.string(), type: z.string(), dataSourceId: z.string(), config: z.record(z.string(), z.unknown()) })),
+});
+const AppContentSchema = z.object({ definition: z.record(z.string(), z.unknown()), files: z.array(z.object({ path: z.string(), content: z.string() })) });
+const CodeContentSchema = z.object({
+  language: z.string(), entrypoint: z.string().optional(),
+  files: z.array(z.object({ path: z.string(), content: z.string() })),
+});
+
+export const ArtifactTypeSchema = z.enum([
+  'document', 'sheet', 'board', 'slide_deck', 'timeline', 'gallery', 'dashboard', 'app', 'code',
+]);
+export const ArtifactContentSchema = z.union([
+  DocumentContentSchema, SheetContentSchema, BoardContentSchema, SlideDeckContentSchema,
+  TimelineContentSchema, GalleryContentSchema, DashboardContentSchema, AppContentSchema, CodeContentSchema,
+]);
+
+export function validateArtifactContent(type: z.infer<typeof ArtifactTypeSchema>, content: unknown): z.SafeParseReturnType<unknown, unknown> {
+  const schemas: Record<string, z.ZodType> = {
+    document: DocumentContentSchema, sheet: SheetContentSchema, board: BoardContentSchema,
+    slide_deck: SlideDeckContentSchema, timeline: TimelineContentSchema, gallery: GalleryContentSchema,
+    dashboard: DashboardContentSchema, app: AppContentSchema, code: CodeContentSchema,
+  };
+  return (schemas[type] ?? z.never()).safeParse(content);
+}
