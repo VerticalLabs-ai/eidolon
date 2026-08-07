@@ -12,6 +12,7 @@ import {
   Bot,
   BrainCircuit,
   FileText,
+  FolderKanban,
   Globe,
   Inbox,
   LayoutDashboard,
@@ -79,6 +80,7 @@ const navSections: NavSection[] = [
     label: "Knowledge",
     items: [
       { to: "/documents", icon: BookOpen, label: "Documents" },
+      { to: "/artifacts", icon: FolderKanban, label: "Artifacts" },
       { to: "/prompts", icon: FileText, label: "Prompt Studio" },
     ],
   },

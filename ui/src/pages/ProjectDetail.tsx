@@ -14,6 +14,7 @@ import { isHttpUrl } from "@/lib/urls";
 import { TaskBoard } from "@/pages/TaskBoard";
 import { ProjectHome } from "@/pages/ProjectHome";
 import { ProjectDrive } from "@/pages/ProjectDrive";
+import { ProjectArtifacts } from "@/pages/ProjectArtifacts";
 import { ProjectThreadComposer } from "@/components/projects/ProjectThreadComposer";
 import { ProjectPlansPanel } from "@/components/projects/ProjectPlansPanel";
 import { ProjectDecisionsPanel } from "@/components/projects/ProjectDecisionsPanel";
@@ -21,13 +22,14 @@ import { ProjectOutcomesPanel } from "@/components/projects/ProjectOutcomesPanel
 import { AutomationRunsPanel } from "@/components/projects/AutomationRunsPanel";
 import type { Tab } from "@/components/ui/Tabs";
 
-const VALID_TABS = ["home", "work", "drive", "activity"] as const;
+const VALID_TABS = ["home", "work", "drive", "artifacts", "activity"] as const;
 type ValidTab = (typeof VALID_TABS)[number];
 
 const tabs: Tab[] = [
   { id: "home", label: "Home" },
   { id: "work", label: "Work" },
   { id: "drive", label: "Drive" },
+  { id: "artifacts", label: "Artifacts" },
   { id: "activity", label: "Activity" },
 ];
 
@@ -201,6 +203,9 @@ export function ProjectDetail() {
         )}
         {activeTab === "drive" && (
           <ProjectDrive companyId={companyId ?? ""} projectId={project.id} />
+        )}
+        {activeTab === "artifacts" && (
+          <ProjectArtifacts companyId={companyId ?? ""} projectId={project.id} />
         )}
         {activeTab === "activity" && (
           <ProjectActivity key={project.id} companyId={companyId ?? ""} projectId={project.id} />

@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { MentionSchema } from '@eidolon/shared';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
+import { MentionService } from '../services/mention-service.js';
 
 const THREAD_TYPES = ['conversation', 'plan_review', 'decision_review', 'standup'] as const;
 const THREAD_STATUSES = ['active', 'archived'] as const;
@@ -37,6 +39,7 @@ const CreateThreadItemBody = z.object({
   kind: z.enum(ITEM_KINDS).default('comment'),
   content: z.string().max(20_000).optional(),
   payload: z.record(z.unknown()).default({}),
+  mentions: z.array(MentionSchema).default([]),
   interactionType: z.enum(INTERACTION_TYPES).optional(),
   status: z.enum(ITEM_STATUSES).optional(),
   authorAgentId: z.string().uuid().nullable().optional(),
@@ -238,6 +241,16 @@ export function projectThreadsRouter(db: DbInstance): Router {
       }
     }
 
+    // Filter mentions to only those that resolve within the company
+    const mentionService = new MentionService(db);
+    const resolvedMentions = [];
+    for (const m of body.mentions) {
+      const valid = await mentionService.resolveMention(companyId, m.entityType, m.entityId);
+      if (valid) {
+        resolvedMentions.push(m);
+      }
+    }
+
     const [row] = await db.drizzle
       .insert(taskThreadItems)
       .values({
@@ -250,6 +263,7 @@ export function projectThreadsRouter(db: DbInstance): Router {
         authorAgentId: body.authorAgentId ?? null,
         content: body.content ?? null,
         payload: body.payload,
+        mentions: resolvedMentions,
         interactionType: body.interactionType ?? null,
         status: body.status ?? 'pending',
         idempotencyKey: body.idempotencyKey ?? null,
@@ -264,6 +278,25 @@ export function projectThreadsRouter(db: DbInstance): Router {
       payload: { threadId, item: row },
       timestamp: now.toISOString(),
     });
+
+    // Dispatch mentions (agent wake / user notification) — fire and forget
+    // but catch errors so the POST response isn't blocked by dispatch failures.
+    if (resolvedMentions.length > 0) {
+      mentionService
+        .dispatchMentions({
+          companyId,
+          projectId,
+          threadId,
+          itemId: row.id,
+          content: body.content ?? '',
+          mentions: resolvedMentions,
+          authorUserId: req.user?.id ?? null,
+        })
+        .catch((err) => {
+          // Log but don't fail the request — the thread item is already persisted.
+          console.error('[mention-dispatch] Error:', err);
+        });
+    }
 
     res.status(201).json({ data: row });
   });

@@ -45,6 +45,8 @@ import { sessionsRouter } from './routes/sessions.js';
 import { skillsRouter } from './routes/skills.js';
 import { routinesRouter } from './routes/routines.js';
 import { automationsRouter } from './routes/automations.js';
+import { artifactsRouter } from './routes/artifacts.js';
+import { mentionsRouter } from './routes/mentions.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -192,6 +194,9 @@ export function createApp(db: DbInstance): express.Express {
   // Unified inbox feed
   app.use('/api/companies/:companyId/inbox', requireAuth, requireOrgMember(), inboxRouter(db));
 
+  // Mention search (company-scoped agents + teammates for the picker)
+  app.use('/api/companies/:companyId/mentions', requireAuth, requireOrgMember(), mentionsRouter(db));
+
   // Company runtime snapshot
   app.use('/api/companies/:companyId/runtime', requireAuth, requireOrgMember(), runtimeRouter(db));
 
@@ -202,6 +207,7 @@ export function createApp(db: DbInstance): express.Express {
 
   // Unified automations surface (aggregates routines, workflows, webhooks)
   app.use('/api/companies/:companyId/automations', requireAuth, requireOrgMember(), automationsRouter(db));
+  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), artifactsRouter(db));
 
   // Local execution environments
   app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));

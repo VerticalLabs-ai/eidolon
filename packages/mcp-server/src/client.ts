@@ -331,6 +331,57 @@ export class EidolonClient {
       { method: "POST", body },
     );
   }
+
+  // -------------------------------------------------------------------------
+  // Artifacts
+  // -------------------------------------------------------------------------
+
+  createArtifact(
+    companyId: string,
+    body: {
+      type: string;
+      title: string;
+      content: Record<string, unknown>;
+      projectId?: string | null;
+    },
+  ) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/artifacts`,
+      { method: "POST", body },
+    );
+  }
+
+  updateArtifact(
+    companyId: string,
+    artifactId: string,
+    body: {
+      version: number;
+      content?: Record<string, unknown>;
+      title?: string;
+      message?: string;
+    },
+  ) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/artifacts/${artifactId}`,
+      { method: "PATCH", body },
+    );
+  }
+
+  getArtifact(companyId: string, artifactId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/artifacts/${artifactId}`,
+    );
+  }
+
+  listArtifacts(
+    companyId: string,
+    query?: { projectId?: string; type?: string; status?: string },
+  ) {
+    return this.request<{ rows: Record<string, unknown>[]; total: number }>(
+      `/api/companies/${companyId}/artifacts`,
+      { query },
+    );
+  }
 }
 
 function safeJsonParse(text: string): unknown {
