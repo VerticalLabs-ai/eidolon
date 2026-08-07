@@ -6,12 +6,14 @@ import { clsx } from "clsx";
 import { motion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
 import { useEffect } from "react";
+import { useState } from "react";
 import {
   BarChart3,
   BookOpen,
   Bot,
   BrainCircuit,
   FileText,
+  FolderKanban,
   Globe,
   Inbox,
   LayoutDashboard,
@@ -26,6 +28,7 @@ import {
   Zap,
 } from "lucide-react";
 import { NavLink, useNavigate, useParams } from "react-router-dom";
+import { getDirtyEditorGuard } from "@/lib/dirty-editor";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -79,6 +82,7 @@ const navSections: NavSection[] = [
     label: "Knowledge",
     items: [
       { to: "/documents", icon: BookOpen, label: "Documents" },
+      { to: "/artifacts", icon: FolderKanban, label: "Artifacts" },
       { to: "/prompts", icon: FileText, label: "Prompt Studio" },
     ],
   },
@@ -99,6 +103,8 @@ function CompanyIconRail() {
   const { companyId } = useParams();
   const navigate = useNavigate();
   const { data: companies } = useCompanies();
+  const [pendingCompanyId, setPendingCompanyId] = useState<string | null>(null);
+  const [savingDraft, setSavingDraft] = useState(false);
 
   const defaultColors = [
     "#F0B429",
@@ -115,7 +121,36 @@ function CompanyIconRail() {
     return company.brandColor || defaultColors[index % defaultColors.length];
   }
 
+  const navigateToCompany = (id: string) => {
+    const guard = getDirtyEditorGuard();
+    if (id !== companyId && guard) {
+      setPendingCompanyId(id);
+      return;
+    }
+    navigate(`/company/${id}`);
+  };
+
+  const resolveCompanySwitch = async (action: "save" | "discard" | "cancel") => {
+    const id = pendingCompanyId;
+    setPendingCompanyId(null);
+    const guard = getDirtyEditorGuard();
+    if (!id || !guard || action === "cancel") return;
+    if (action === "discard") {
+      guard.discard();
+      navigate(`/company/${id}`);
+      return;
+    }
+    setSavingDraft(true);
+    try {
+      await guard.save();
+      navigate(`/company/${id}`);
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
   return (
+    <>
     <div className="flex h-full w-14 shrink-0 flex-col items-center gap-2 border-r border-white/[0.06] bg-surface/60 py-3 lg:w-12">
       {/* Eidolon logo at top */}
       <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 lg:h-9 lg:w-9">
@@ -133,7 +168,7 @@ function CompanyIconRail() {
             <button
               key={company.id}
               type="button"
-              onClick={() => navigate(`/company/${company.id}`)}
+              onClick={() => navigateToCompany(company.id)}
               title={company.name}
               aria-label={`Switch to ${company.name}`}
               className={clsx(
@@ -164,6 +199,20 @@ function CompanyIconRail() {
         <Plus className="h-4 w-4" />
       </button>
     </div>
+    {pendingCompanyId && (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="company-switch-title">
+        <div className="w-full max-w-sm rounded-lg border border-white/[0.1] bg-surface p-5 shadow-2xl">
+          <h2 id="company-switch-title" className="text-sm font-semibold text-text-primary">Unsaved artifact changes</h2>
+          <p className="mt-2 text-xs text-text-secondary">Save your draft before switching companies?</p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" className="rounded px-3 py-2 text-xs text-text-secondary hover:bg-white/[0.06]" onClick={() => void resolveCompanySwitch("cancel")}>Cancel</button>
+            <button type="button" className="rounded px-3 py-2 text-xs text-warning hover:bg-warning/10" onClick={() => void resolveCompanySwitch("discard")}>Discard</button>
+            <button type="button" disabled={savingDraft} className="rounded bg-accent px-3 py-2 text-xs font-medium text-surface disabled:opacity-50" onClick={() => void resolveCompanySwitch("save")}>{savingDraft ? "Saving…" : "Save"}</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

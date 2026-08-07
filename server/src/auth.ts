@@ -96,6 +96,121 @@ function getClerkClient(): ClerkClient | null {
 }
 
 // ---------------------------------------------------------------------------
+// Company membership lookup
+// ---------------------------------------------------------------------------
+
+export interface CompanyMember {
+  id: string;
+  name: string;
+  email?: string;
+  imageUrl?: string | null;
+  role?: string | null;
+}
+
+/**
+ * Return the real user members of a company (organization).
+ *
+ * In `local_trusted` mode, the only user is the dev user, who is implicitly a
+ * member of every company (per `requireOrgMember`). In Clerk mode, this queries
+ * the Clerk organization's memberships and returns real Clerk user IDs.
+ *
+ * Never throws — on any Clerk error, returns an empty array so callers can
+ * degrade gracefully (e.g. the mention picker simply shows no teammates).
+ */
+export async function getCompanyMembers(
+  companyId: string,
+): Promise<CompanyMember[]> {
+  // In local_trusted mode, the only user is the dev user, who is implicitly a
+  // member of every company (per `requireOrgMember`). Also, when no Clerk
+  // secret key is configured (e.g. test environments), the Clerk client is
+  // unavailable — fall back to the dev user in that case too.
+  if (process.env.AUTH_MODE === 'local_trusted' || !getClerkClient()) {
+    return [
+      {
+        id: 'dev-user-000',
+        name: 'Dev User',
+        email: 'dev@localhost',
+        imageUrl: null,
+        role: 'owner',
+      },
+    ];
+  }
+
+  const client = getClerkClient()!;
+
+  try {
+    const memberships = await client.organizations.getOrganizationMembershipList({
+      organizationId: companyId,
+      limit: 100,
+    });
+
+    const members: CompanyMember[] = [];
+    for (const m of memberships.data) {
+      const pub = m.publicUserData;
+      const userId = pub?.userId ?? '';
+      if (!userId) continue;
+
+      const firstName = pub?.firstName ?? '';
+      const lastName = pub?.lastName ?? '';
+      const name =
+        [firstName, lastName].filter(Boolean).join(' ') ||
+        pub?.identifier ||
+        userId;
+
+      members.push({
+        id: userId,
+        name,
+        email: pub?.identifier ?? undefined,
+        imageUrl: pub?.imageUrl ?? null,
+        role: m.role ?? null,
+      });
+    }
+    return members;
+  } catch (err) {
+    logger.debug(
+      { err, companyId },
+      'getCompanyMembers: Clerk org memberships lookup failed',
+    );
+    return [];
+  }
+}
+
+/**
+ * Check whether a specific user is a member of the given company (organization).
+ *
+ * In `local_trusted` mode, the dev user is always a member. In Clerk mode,
+ * this queries Clerk org memberships.
+ */
+export async function isCompanyMember(
+  companyId: string,
+  userId: string,
+): Promise<boolean> {
+  // Same fallback as getCompanyMembers: local_trusted or no Clerk key → dev user.
+  if (process.env.AUTH_MODE === 'local_trusted' || !getClerkClient()) {
+    return userId === 'dev-user-000';
+  }
+
+  const client = getClerkClient()!;
+
+  try {
+    const memberships = await client.organizations.getOrganizationMembershipList({
+      organizationId: companyId,
+      limit: 100,
+    });
+    return memberships.data.some(
+      (m: { publicUserData?: { userId?: string } | null }) =>
+        m.publicUserData?.userId === userId,
+    );
+  } catch (err) {
+    logger.debug(
+      { err, companyId, userId },
+      'isCompanyMember: Clerk org memberships lookup failed',
+    );
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 

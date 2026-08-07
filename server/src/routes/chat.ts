@@ -2,9 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import { MentionSchema } from '@eidolon/shared';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { MentionService } from '../services/mention-service.js';
+import { AgenticLoop } from '../services/agentic-loop.js';
+import logger from '../utils/logger.js';
 
 /**
  * Board Director Chat routes.
@@ -20,6 +24,8 @@ const SendMessageBody = z.object({
   content: z.string().min(1).max(10_000),
   targetAgentId: z.string().uuid().optional(),
   threadId: z.string().uuid().optional(),
+  // VAL-MENTION-018: support @-mentions from BoardChat (company-level scope)
+  mentions: z.array(MentionSchema).default([]),
 });
 
 export function chatRouter(db: DbInstance): Router {
@@ -30,14 +36,14 @@ export function chatRouter(db: DbInstance): Router {
   router.get('/threads', async (req, res) => {
     const companyId = routeParams(req).companyId;
 
-    // Find all threads that involve the board (either from or to)
+    // Find all threads that involve the board (NULL from_agent_id = board-sent)
     const rows = await db.drizzle
       .select()
       .from(messages)
       .where(
         and(
           eq(messages.companyId, companyId),
-          sql`(${messages.fromAgentId} = ${BOARD_SENDER_ID} OR ${messages.toAgentId} = ${BOARD_SENDER_ID})`,
+          sql`(${messages.fromAgentId} IS NULL OR ${messages.toAgentId} IS NULL)`,
         ),
       )
       .orderBy(desc(messages.createdAt));
@@ -70,9 +76,9 @@ export function chatRouter(db: DbInstance): Router {
       const thread = threadMap.get(tid)!;
       thread.messageCount++;
 
-      // Track participating agents (skip the board sentinel)
-      if (row.fromAgentId !== BOARD_SENDER_ID) thread.participantAgentIds.add(row.fromAgentId);
-      if (row.toAgentId !== BOARD_SENDER_ID) thread.participantAgentIds.add(row.toAgentId);
+      // Track participating agents (skip NULL = board sender)
+      if (row.fromAgentId) thread.participantAgentIds.add(row.fromAgentId);
+      if (row.toAgentId) thread.participantAgentIds.add(row.toAgentId);
     }
 
     const threadList = Array.from(threadMap.values()).map((t) => ({
@@ -171,17 +177,12 @@ export function chatRouter(db: DbInstance): Router {
     }
 
     // Insert the board message using raw SQL to avoid FK constraint issues
-    // (the fromAgentId '__board__' is not a real agent)
-    const rawDb = (db.drizzle as any).run
-      ? db.drizzle
-      : db.drizzle;
-
-    // Use drizzle's run method via the underlying better-sqlite3 connection
-    // Since we can't bypass FK with drizzle ORM, we temporarily disable FK checks
-    // Actually, safer: insert with raw SQL through drizzle
-    await (db.drizzle as any).run(
-      sql`INSERT INTO messages (id, company_id, from_agent_id, to_agent_id, thread_id, content, message_type, metadata, created_at)
-          VALUES (${userMessageId}, ${companyId}, ${BOARD_SENDER_ID}, ${targetAgentId ?? BOARD_SENDER_ID}, ${threadId}, ${body.content}, 'text', '{}', ${now})`,
+    // (the fromAgentId is NULL for board-sent messages since 'board' is not a real agent).
+    // from_agent_id and to_agent_id are now nullable (migration 0019).
+    // Use db.execute() which works with both postgres.js and PGlite.
+    await db.drizzle.execute(
+      sql`INSERT INTO messages (id, company_id, from_agent_id, to_agent_id, thread_id, content, type, metadata, created_at)
+          VALUES (${userMessageId}, ${companyId}, NULL, ${targetAgentId ?? null}, ${threadId}, ${body.content}, 'directive', '{}', ${now})`,
     );
 
     // Emit WebSocket event for real-time updates
@@ -198,12 +199,130 @@ export function chatRouter(db: DbInstance): Router {
       timestamp: new Date(now).toISOString(),
     });
 
+    // VAL-MENTION-018: dispatch @-mentions from BoardChat in company scope
+    // Agent mentions wake the agent with company-level context (projectId=null);
+    // any produced artifacts are company-scoped and linked back to the thread.
+    let mentionDispatchInfo: Record<string, unknown> | undefined;
+    if (body.mentions && body.mentions.length > 0) {
+      const mentionService = new MentionService(db);
+      const agentMentions = body.mentions.filter((m) => m.entityType === 'agent');
+      const userMentions = body.mentions.filter((m) => m.entityType === 'user');
+
+      // Dispatch user mentions (notifications) in company scope — fire and forget
+      if (userMentions.length > 0) {
+        mentionService
+          .dispatchMentions({
+            companyId,
+            projectId: null,
+            threadId: threadId,
+            itemId: userMessageId,
+            content: body.content,
+            mentions: userMentions,
+            authorUserId: req.user?.id ?? null,
+          })
+          .catch((err) => logger.error({ err }, '[boardchat-mention] user dispatch error'));
+      }
+
+      // For agent mentions, verify they belong to the company synchronously,
+      // then dispatch the agent run in the background (fire and forget).
+      if (agentMentions.length > 0) {
+        const { tasks, agents: agentsTable } = db.schema;
+        const validAgentMentions: Array<{ id: string; name: string; status: string; mention: any }> = [];
+        for (const mention of agentMentions) {
+          const [agent] = await db.drizzle
+            .select()
+            .from(agentsTable)
+            .where(and(eq(agentsTable.id, mention.entityId), eq(agentsTable.companyId, companyId)))
+            .limit(1);
+          if (agent) {
+            validAgentMentions.push({ id: agent.id, name: agent.name, status: agent.status, mention });
+          }
+        }
+
+        if (validAgentMentions.length > 0) {
+          mentionDispatchInfo = {
+            dispatchedAgents: validAgentMentions.map((a) => ({ agentId: a.id, agentName: a.name })),
+          };
+
+          // Fire-and-forget: create task, run agent loop, post response as message
+          (async () => {
+            for (const { id: aId, name: aName, status: aStatus, mention } of validAgentMentions) {
+              if (aStatus === 'paused' || aStatus === 'offline') continue;
+              try {
+                const agentTaskNow = new Date();
+                const [task] = await db.drizzle
+                  .insert(tasks)
+                  .values({
+                    companyId,
+                    projectId: null,
+                    title: `@${mention.label}: ${body.content.slice(0, 100)}`,
+                    description: body.content,
+                    type: 'feature',
+                    priority: 'medium',
+                    status: 'todo',
+                    assigneeAgentId: aId,
+                    createdAt: agentTaskNow,
+                    updatedAt: agentTaskNow,
+                  })
+                  .returning();
+
+                await db.drizzle
+                  .update(agentsTable)
+                  .set({ status: 'working', updatedAt: agentTaskNow })
+                  .where(eq(agentsTable.id, aId));
+
+                const loop = new AgenticLoop(db, { maxIterations: 8 });
+                const result = await loop.run(aId, task.id, companyId);
+                const producedArtifacts = loop.getProducedArtifacts();
+
+                const responseContent = result.finalOutput || '(Agent completed with no output)';
+                const responseMetadata: Record<string, unknown> = {
+                  agentResponse: true,
+                  agentId: aId,
+                  agentName: aName,
+                };
+                if (producedArtifacts.length > 0) {
+                  responseMetadata.artifactId = producedArtifacts[0].artifactId;
+                  responseMetadata.artifactType = producedArtifacts[0].artifactType;
+                  responseMetadata.artifacts = producedArtifacts;
+                }
+
+                const responseMsgId = randomUUID();
+                const responseNow = Date.now();
+                await db.drizzle.execute(
+                  sql`INSERT INTO messages (id, company_id, from_agent_id, to_agent_id, thread_id, content, type, metadata, created_at)
+                      VALUES (${responseMsgId}, ${companyId}, ${aId}, NULL, ${threadId}, ${responseContent.slice(0, 10_000)}, 'response', ${JSON.stringify(responseMetadata)}, ${responseNow})`,
+                );
+
+                eventBus.emitEvent({
+                  type: 'message.sent',
+                  companyId,
+                  payload: {
+                    messageId: responseMsgId,
+                    threadId,
+                    fromBoard: false,
+                    agentId: aId,
+                    agentName: aName,
+                    artifacts: producedArtifacts,
+                  },
+                  timestamp: new Date(responseNow).toISOString(),
+                });
+              } catch (err) {
+                logger.error({ err, agentId: aId }, '[boardchat-mention] agent dispatch error');
+              }
+            }
+          })().catch((err) => logger.error({ err }, '[boardchat-mention] async dispatch error'));
+        }
+      }
+    }
+
     res.status(201).json({
       data: {
         messageId: userMessageId,
         threadId,
         respondingAgentId: targetAgentId,
         respondingAgentName,
+        mentionDispatch: mentionDispatchInfo,
       },
     });
   });
