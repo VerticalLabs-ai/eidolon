@@ -1,5 +1,10 @@
 import { Component, type ReactNode } from "react";
-import { Routes, Route } from "react-router-dom";
+import {
+  createBrowserRouter,
+  createRoutesFromElements,
+  Route,
+  RouterProvider,
+} from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { AuthGuard } from "@/components/auth/AuthGuard";
 import { Login } from "@/pages/Login";
@@ -63,60 +68,71 @@ class ErrorBoundary extends Component<
   }
 }
 
+// Route definitions converted to data-router route objects via
+// createRoutesFromElements. Using createBrowserRouter (instead of the
+// low-level BrowserRouter) enables data-router hooks such as useBlocker,
+// which the AppShell uses to intercept navigation when an artifact editor has
+// unsaved changes.
+const router = createBrowserRouter(
+  createRoutesFromElements(
+    <>
+      {/* Public routes */}
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+
+      {/* Protected routes */}
+      <Route
+        path="/"
+        element={
+          <AuthGuard>
+            <CompanyList />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/templates"
+        element={
+          <AuthGuard>
+            <Templates />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/company/:companyId"
+        element={
+          <AuthGuard>
+            <AppShell />
+          </AuthGuard>
+        }
+      >
+        <Route index element={<CompanyDashboard />} />
+        <Route path="inbox" element={<Inbox />} />
+        <Route path="projects" element={<ProjectList />} />
+        <Route path="projects/:projectId" element={<ProjectDetail />} />
+        <Route path="issues" element={<TaskBoard title="Issues" />} />
+        <Route path="tasks/:taskId" element={<TaskDetail />} />
+        <Route path="goals" element={<GoalTree />} />
+        <Route path="agents" element={<AgentList />} />
+        <Route path="agents/:agentId" element={<AgentDetail />} />
+        <Route path="jarvis" element={<JarvisRuntime />} />
+        <Route path="org-chart" element={<OrgChart />} />
+        <Route path="workspace" element={<VirtualWorkspace />} />
+        <Route path="documents" element={<Documents />} />
+        <Route path="prompts" element={<PromptStudio />} />
+        <Route path="analytics" element={<Analytics />} />
+        <Route path="integrations" element={<Integrations />} />
+        <Route path="approvals" element={<Approvals />} />
+        <Route path="artifacts" element={<CompanyArtifacts />} />
+        <Route path="settings" element={<CompanySettings />} />
+      </Route>
+    </>,
+  ),
+);
+
 export function App() {
   return (
     <ErrorBoundary>
-      <Routes>
-        {/* Public routes */}
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
-
-        {/* Protected routes */}
-        <Route
-          path="/"
-          element={
-            <AuthGuard>
-              <CompanyList />
-            </AuthGuard>
-          }
-        />
-        <Route
-          path="/templates"
-          element={
-            <AuthGuard>
-              <Templates />
-            </AuthGuard>
-          }
-        />
-        <Route
-          path="/company/:companyId"
-          element={
-            <AuthGuard>
-              <AppShell />
-            </AuthGuard>
-          }
-        >
-          <Route index element={<CompanyDashboard />} />
-          <Route path="inbox" element={<Inbox />} />
-          <Route path="projects" element={<ProjectList />} />
-          <Route path="projects/:projectId" element={<ProjectDetail />} />
-          <Route path="issues" element={<TaskBoard title="Issues" />} />
-          <Route path="tasks/:taskId" element={<TaskDetail />} />
-          <Route path="goals" element={<GoalTree />} />
-          <Route path="agents" element={<AgentList />} />
-          <Route path="agents/:agentId" element={<AgentDetail />} />
-          <Route path="jarvis" element={<JarvisRuntime />} />
-          <Route path="org-chart" element={<OrgChart />} />
-          <Route path="workspace" element={<VirtualWorkspace />} />
-          <Route path="documents" element={<Documents />} />
-          <Route path="prompts" element={<PromptStudio />} />
-          <Route path="analytics" element={<Analytics />} />
-          <Route path="integrations" element={<Integrations />} />
-          <Route path="approvals" element={<Approvals />} />
-          <Route path="artifacts" element={<CompanyArtifacts />} />
-          <Route path="settings" element={<CompanySettings />} />
-        </Route>
-      </Routes>
+      <RouterProvider router={router} />
     </ErrorBoundary>
   );
 }

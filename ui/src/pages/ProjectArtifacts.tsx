@@ -10,7 +10,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
 import { ArtifactTypePicker } from "@/components/artifacts/ArtifactTypePicker";
 import { ArtifactEditor } from "@/components/artifacts/ArtifactEditor";
-import { useEffectiveCompanyId } from "@/lib/useCompanySwitchGuard";
 import type { Artifact, ArtifactType } from "@/lib/api";
 
 interface ProjectArtifactsProps {
@@ -32,11 +31,9 @@ function defaultSheetContent(): Record<string, unknown> {
 }
 
 export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps) {
-  // effectiveCompanyId lags behind the URL companyId while a dirty-editor
-  // switch is pending confirmation. Using it for the ArtifactEditor key
-  // keeps the editor mounted (and the draft preserved) during the guard.
-  const effectiveCompanyId = useEffectiveCompanyId() ?? companyId;
-  const editorCompanyId = effectiveCompanyId ?? companyId;
+  // useBlocker in AppShell prevents navigation away from this company when the
+  // editor is dirty, so the URL companyId stays stable and the editor remains
+  // mounted with its draft intact. No effectiveCompanyId lag is needed.
   const [filters, setFilters] = useState<ArtifactListFilters>({
     type: "",
     status: "active",
@@ -67,19 +64,17 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
     }
   }, [searchParams, setSearchParams]);
 
-  // Reset Artifacts UI state when the effective company changes (confirmed).
-  // Using editorCompanyId (from context) ensures this only fires after the
-  // AppShell guard confirms the switch, not during the guard check.
-  const prevEditorCompanyId = useRef(editorCompanyId);
+  // Reset Artifacts UI state when the company changes.
+  const prevCompanyId = useRef(companyId);
   useEffect(() => {
-    if (prevEditorCompanyId.current !== editorCompanyId) {
+    if (prevCompanyId.current !== companyId) {
       setSelectedId(null);
       setPickerOpen(false);
       setFilters({ type: "", status: "active", projectId: "" });
       setOffset(0);
-      prevEditorCompanyId.current = editorCompanyId;
+      prevCompanyId.current = companyId;
     }
-  }, [editorCompanyId, projectId]);
+  }, [companyId, projectId]);
 
   const queryParams = {
     projectId,
@@ -141,8 +136,8 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   if (selectedId) {
     return (
       <ArtifactEditor
-        key={`${editorCompanyId}-${projectId}-${selectedId}`}
-        companyId={editorCompanyId}
+        key={`${companyId}-${projectId}-${selectedId}`}
+        companyId={companyId}
         artifactId={selectedId}
         projectId={projectId}
         onBack={handleBack}
