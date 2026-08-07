@@ -15,7 +15,9 @@ const UpdateBody = z.object({
   content: z.unknown().optional(), projectId: z.string().uuid().nullable().optional(), message: z.string().max(2000).optional(),
 });
 const ListQuery = z.object({
-  projectId: z.string().uuid().optional(), type: ArtifactTypeSchema.optional(),
+  projectId: z.union([z.string().uuid(), z.literal('null')]).optional(),
+  unscoped: z.coerce.boolean().optional(),
+  type: ArtifactTypeSchema.optional(),
   status: z.enum(['active', 'archived', 'deleted']).default('active'), folderId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0),
 });
@@ -44,8 +46,16 @@ export function artifactsRouter(db: DbInstance): Router {
   });
   router.get('/artifacts', validate(ListQuery, 'query'), async (req, res) => {
     const { companyId } = routeParams(req);
-    const result = await listArtifacts(db, companyId, (req as any).validated.query);
     const query = (req as any).validated.query;
+    // Normalize projectId: 'null' string or unscoped flag → null (unscoped filter)
+    const filters: any = { limit: query.limit, offset: query.offset, status: query.status, type: query.type, folderId: query.folderId };
+    if (query.unscoped === true || query.projectId === 'null') {
+      filters.projectId = null;
+      filters.filterNullProject = true;
+    } else if (query.projectId && query.projectId !== 'null') {
+      filters.projectId = query.projectId;
+    }
+    const result = await listArtifacts(db, companyId, filters);
     res.json({ data: result.rows, meta: { total: result.total, limit: query.limit, offset: query.offset } });
   });
   router.get('/artifacts/:id/revisions/:version', async (req, res) => {

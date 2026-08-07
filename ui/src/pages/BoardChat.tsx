@@ -22,7 +22,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { Agent } from "@/lib/api";
 
-const BOARD_SENDER_ID = "__board__";
+const BOARD_SENDER_ID = "__board__"; // Legacy sentinel; board messages now use null fromAgentId
 
 /** Role badge colors (muted, no gradients) */
 const roleBadgeClass: Record<string, string> = {
@@ -368,7 +368,7 @@ export function BoardChat() {
           ) : (
             <>
               {(threadMessages ?? []).map((msg) => {
-                const isBoard = msg.fromAgentId === BOARD_SENDER_ID;
+                const isBoard = !msg.fromAgentId || msg.fromAgentId === BOARD_SENDER_ID;
                 const agent = !isBoard ? agentMap.get(msg.fromAgentId) : null;
 
                 return (

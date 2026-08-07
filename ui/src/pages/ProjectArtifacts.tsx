@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import {
   useArtifacts,
@@ -39,6 +39,23 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const qc = useQueryClient();
+
+  // VAL-CROSS-020/028: Reset all Artifacts UI state when the company or project changes.
+  // This prevents cross-company leakage (no stale C1 rows or selected artifact
+  // lingering when the user switches to C2 or a different project).
+  const prevCompanyId = useRef(companyId);
+  useEffect(() => {
+    if (prevCompanyId.current !== companyId) {
+      if (selectedId) {
+        toast.warning("Company changed — unsaved artifact draft discarded.");
+      }
+      setSelectedId(null);
+      setPickerOpen(false);
+      setFilters({ type: "", status: "active", projectId: "" });
+      setOffset(0);
+      prevCompanyId.current = companyId;
+    }
+  }, [companyId, projectId, selectedId]);
 
   const queryParams = {
     projectId,
@@ -100,6 +117,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   if (selectedId) {
     return (
       <ArtifactEditor
+        key={`${companyId}-${projectId}-${selectedId}`}
         companyId={companyId}
         artifactId={selectedId}
         projectId={projectId}

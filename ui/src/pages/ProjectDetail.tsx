@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil } from "lucide-react";
+import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil, FileEdit } from "lucide-react";
 import { toast } from "sonner";
-import { useArchiveProject, useProject } from "@/lib/hooks";
+import { useArchiveProject, useProject, useProjectWork } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Tabs } from "@/components/ui/Tabs";
@@ -21,6 +21,7 @@ import { ProjectDecisionsPanel } from "@/components/projects/ProjectDecisionsPan
 import { ProjectOutcomesPanel } from "@/components/projects/ProjectOutcomesPanel";
 import { AutomationRunsPanel } from "@/components/projects/AutomationRunsPanel";
 import type { Tab } from "@/components/ui/Tabs";
+import { formatDistanceToNow } from "date-fns";
 
 const VALID_TABS = ["home", "work", "drive", "artifacts", "activity"] as const;
 type ValidTab = (typeof VALID_TABS)[number];
@@ -40,6 +41,62 @@ const statusVariant: Record<string, "default" | "success" | "warning" | "info" |
   completed: "success",
   archived: "default",
 };
+
+// ── Work view: Artifacts panel (VAL-ART-057) ─────────────────────────────
+
+function WorkArtifactsPanel({
+  companyId,
+  projectId,
+  onNavigateToArtifacts,
+}: {
+  companyId: string;
+  projectId: string;
+  onNavigateToArtifacts: () => void;
+}) {
+  const { data: workSummary } = useProjectWork(companyId, projectId);
+  const artifacts = workSummary?.artifacts ?? [];
+
+  return (
+    <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4" aria-label="Artifacts">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
+          <FileEdit className="h-4 w-4" />
+        </span>
+        <h2 className="text-sm font-semibold text-text-primary font-display">Artifacts</h2>
+      </div>
+      {artifacts.length === 0 ? (
+        <p className="py-4 text-center text-sm text-text-muted" role="status">
+          No artifacts yet
+        </p>
+      ) : (
+        <ul>
+          {artifacts.slice(0, 5).map((artifact) => (
+            <li
+              key={artifact.id}
+              className="flex items-center gap-2 border-b border-white/[0.04] py-2 last:border-b-0"
+            >
+              <FileEdit className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-text-primary">{artifact.title}</p>
+                <p className="text-xs text-text-muted capitalize">
+                  {artifact.type} · v{artifact.version} ·{" "}
+                  {formatDistanceToNow(new Date(artifact.updatedAt), { addSuffix: true })}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={onNavigateToArtifacts}
+        className="mt-3 w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs font-medium text-accent transition-colors hover:bg-accent/[0.06] cursor-pointer"
+      >
+        View all artifacts →
+      </button>
+    </div>
+  );
+}
 
 export function ProjectDetail() {
   const { companyId, projectId } = useParams();
@@ -184,6 +241,11 @@ export function ProjectDetail() {
         {activeTab === "work" && (
           <div className="space-y-4 p-5 sm:p-6">
             <TaskBoard title="Work" />
+            <WorkArtifactsPanel
+              companyId={companyId ?? ""}
+              projectId={project.id}
+              onNavigateToArtifacts={() => handleTabChange("artifacts")}
+            />
             <div className="mx-auto max-w-6xl">
               <ProjectPlansPanel companyId={companyId ?? ""} projectId={project.id} />
             </div>

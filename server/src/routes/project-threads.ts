@@ -52,6 +52,12 @@ const ResolveInteractionBody = z.object({
   answers: z.record(z.unknown()).optional(),
 });
 
+// VAL-MENTION-011: editing a thread item's content + reconciling mentions
+const EditThreadItemBody = z.object({
+  content: z.string().max(20_000).optional(),
+  mentions: z.array(MentionSchema).optional(),
+});
+
 export function projectThreadsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const { projectThreads, taskThreadItems } = db.schema;
@@ -350,6 +356,88 @@ export function projectThreadsRouter(db: DbInstance): Router {
         payload: { threadId, itemId, item: updated },
         timestamp: now.toISOString(),
       });
+
+      res.json({ data: updated });
+    },
+  );
+
+  // PATCH /api/companies/:companyId/projects/:projectId/threads/:threadId/items/:itemId/content
+  // VAL-MENTION-011: edit a thread item's content and reconcile mentions
+  router.patch(
+    '/:threadId/items/:itemId/content',
+    validate(EditThreadItemBody),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof EditThreadItemBody>;
+      const { companyId, projectId, threadId, itemId } = routeParams(req);
+      const now = new Date();
+
+      await validateProjectOwnership(db, companyId, projectId);
+      await getThreadOrThrow(companyId, projectId, threadId);
+      const item = await getThreadItemOrThrow(companyId, threadId, itemId);
+
+      // Reconcile mentions: resolve new mentions, keep existing retained ones
+      const mentionService = new MentionService(db);
+      let reconciledMentions = item.mentions as any[] ?? [];
+
+      if (body.mentions !== undefined) {
+        // Resolve all incoming mentions against the company
+        const resolved = [];
+        for (const m of body.mentions) {
+          const valid = await mentionService.resolveMention(companyId, m.entityType, m.entityId);
+          if (valid) resolved.push(m);
+        }
+        // Reconcile: keep existing mentions that are still present (by entityId),
+        // add new ones, drop removed ones. This preserves stable IDs for retained mentions.
+        const incomingIds = new Set(resolved.map((m) => `${m.entityType}:${m.entityId}`));
+        const retained = reconciledMentions.filter((m) =>
+          incomingIds.has(`${m.entityType}:${m.entityId}`),
+        );
+        const retainedIds = new Set(retained.map((m) => `${m.entityType}:${m.entityId}`));
+        const added = resolved.filter((m) => !retainedIds.has(`${m.entityType}:${m.entityId}`));
+        reconciledMentions = [...retained, ...added];
+      }
+
+      const updateData: Record<string, unknown> = {
+        mentions: reconciledMentions,
+        updatedAt: now,
+      };
+      if (body.content !== undefined) {
+        updateData.content = body.content;
+      }
+
+      const [updated] = await db.drizzle
+        .update(taskThreadItems)
+        .set(updateData as any)
+        .where(eq(taskThreadItems.id, item.id))
+        .returning();
+
+      eventBus.emitEvent({
+        type: 'project.thread.item.updated',
+        companyId,
+        payload: { threadId, itemId, item: updated },
+        timestamp: now.toISOString(),
+      });
+
+      // Dispatch any newly added mentions (agent wake / user notification)
+      if (body.mentions !== undefined) {
+        const oldIds = new Set((item.mentions as any[] ?? []).map((m) => `${m.entityType}:${m.entityId}`));
+        const newMentions = reconciledMentions.filter((m) => !oldIds.has(`${m.entityType}:${m.entityId}`));
+        if (newMentions.length > 0) {
+          mentionService
+            .dispatchMentions({
+              companyId,
+              projectId,
+              threadId,
+              itemId: item.id,
+              content: body.content ?? item.content ?? '',
+              mentions: newMentions,
+              authorUserId: req.user?.id ?? null,
+            })
+            .catch((err) => {
+              console.error('[mention-dispatch] Error on edit:', err);
+            });
+        }
+      }
 
       res.json({ data: updated });
     },

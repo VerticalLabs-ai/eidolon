@@ -354,6 +354,8 @@ export interface ProjectHomeSummary {
   };
   // VER-513 composed fields
   healthSummary: HealthSummary;
+  // VAL-ART-056: artifacts section (active only, top 10)
+  artifacts: ArtifactSummary[];
 }
 
 export const getProjectHome = (companyId: string, projectId: string) =>
@@ -946,6 +948,8 @@ export interface ProjectWorkSummary {
   };
   // VER-513 composed fields
   automationRuns: AutomationRun[];
+  // VAL-ART-057: artifacts section (active only, top 10)
+  artifacts: ArtifactSummary[];
 }
 
 export const getProjectWork = (companyId: string, projectId: string) =>
@@ -2557,6 +2561,23 @@ export interface Artifact {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+}
+
+/** Lightweight artifact summary used in composed views (home/work). */
+export interface ArtifactSummary {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  type: ArtifactType;
+  title: string;
+  status: ArtifactStatus;
+  version: number;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  lastEditedByUserId: string | null;
+  lastEditedByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ArtifactRevision {

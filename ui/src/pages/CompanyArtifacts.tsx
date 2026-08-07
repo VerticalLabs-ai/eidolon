@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -38,6 +38,24 @@ export function CompanyArtifacts() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const qc = useQueryClient();
 
+  // VAL-CROSS-020/028: Reset all Artifacts UI state when the company changes.
+  // This prevents cross-company leakage (no stale C1 rows or selected artifact
+  // lingering when the user switches to C2). If an editor was open with
+  // unsaved content, warn the user that the draft was discarded.
+  const prevCompanyId = useRef(companyId);
+  useEffect(() => {
+    if (prevCompanyId.current !== companyId) {
+      if (selectedId) {
+        toast.warning("Company changed — unsaved artifact draft discarded.");
+      }
+      setSelectedId(null);
+      setPickerOpen(false);
+      setFilters({ type: "", status: "active", projectId: "" });
+      setOffset(0);
+      prevCompanyId.current = companyId;
+    }
+  }, [companyId, selectedId]);
+
   const { data: projects } = useProjects(companyId);
   const projectOptions = (projects ?? []).map((p) => ({
     value: p.id,
@@ -45,10 +63,10 @@ export function CompanyArtifacts() {
   }));
 
   // For company-level view: when "No project" is selected (projectId === ""),
-  // fetch all artifacts and filter client-side for projectId === null.
+  // use the server-side ?projectId=null filter to get only unscoped artifacts.
   // When a specific project is selected, use the API's projectId filter.
   const queryParams = {
-    ...(filters.projectId ? { projectId: filters.projectId } : {}),
+    ...(filters.projectId ? { projectId: filters.projectId } : { projectId: "null" as const }),
     ...(filters.type ? { type: filters.type as ArtifactType } : {}),
     status: filters.status,
     limit: PAGE_SIZE,
@@ -60,21 +78,14 @@ export function CompanyArtifacts() {
     queryParams,
   );
 
-  // When "No project" is selected, filter to only unscoped artifacts
+  // No need for client-side filtering anymore — the API now supports ?projectId=null
   const displayedArtifacts = useMemo(() => {
-    const rows = data?.rows ?? [];
-    if (!filters.projectId) {
-      return rows.filter((a) => a.projectId === null);
-    }
-    return rows;
-  }, [data?.rows, filters.projectId]);
+    return data?.rows ?? [];
+  }, [data?.rows]);
 
   const displayedTotal = useMemo(() => {
-    if (!filters.projectId) {
-      return displayedArtifacts.length;
-    }
     return data?.meta.total ?? 0;
-  }, [displayedArtifacts.length, data?.meta.total, filters.projectId]);
+  }, [data?.meta.total]);
   const createMutation = useCreateArtifact(companyId!);
 
   useServerEvents(companyId, "artifact.created", () => {
@@ -123,6 +134,7 @@ export function CompanyArtifacts() {
   if (selectedId) {
     return (
       <ArtifactEditor
+        key={`${companyId}-${selectedId}`}
         companyId={companyId!}
         artifactId={selectedId}
         onBack={() => setSelectedId(null)}

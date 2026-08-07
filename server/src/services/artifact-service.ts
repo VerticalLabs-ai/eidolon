@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import { ArtifactTypeSchema, validateArtifactContent } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
@@ -56,13 +56,17 @@ export async function getArtifact(db: DbInstance, companyId: string, id: string)
 }
 
 export async function listArtifacts(db: DbInstance, companyId: string, filters: {
-  projectId?: string; type?: ArtifactType; status?: 'active' | 'archived' | 'deleted'; folderId?: string;
+  projectId?: string | null; filterNullProject?: boolean; type?: ArtifactType; status?: 'active' | 'archived' | 'deleted'; folderId?: string;
   limit: number; offset: number;
 }) {
-  if (filters.projectId) await validateProjectOwnership(db, companyId, filters.projectId);
+  if (filters.projectId && !filters.filterNullProject) await validateProjectOwnership(db, companyId, filters.projectId);
   const a = db.schema.artifacts;
   const conditions = [eq(a.companyId, companyId)];
-  if (filters.projectId) conditions.push(eq(a.projectId, filters.projectId));
+  if (filters.filterNullProject) {
+    conditions.push(isNull(a.projectId));
+  } else if (filters.projectId) {
+    conditions.push(eq(a.projectId, filters.projectId));
+  }
   if (filters.type) conditions.push(eq(a.type, filters.type));
   if (filters.status) conditions.push(eq(a.status, filters.status));
   if (filters.folderId) conditions.push(eq(a.folderId, filters.folderId));
