@@ -215,6 +215,16 @@ export function inboxRouter(db: DbInstance): Router {
 
     for (const row of recentActivity) {
       if (!ACTIVITY_KINDS_OF_INTEREST.has(row.action)) continue;
+      // thread.mention notifications are recipient-scoped: only the
+      // mentioned user should see them in their inbox. Filter out
+      // thread.mention entries whose metadata.mentionedUserId does not
+      // match the requesting user to prevent cross-user notification leakage.
+      if (row.action === 'thread.mention') {
+        const mentionedUserId = row.metadata?.mentionedUserId;
+        if (typeof mentionedUserId !== 'string' || mentionedUserId !== userId) {
+          continue;
+        }
+      }
       items.push({
         id: `activity:${row.id}`,
         kind: 'activity',

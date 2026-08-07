@@ -9,11 +9,12 @@
 //      - User mention → inbox notification + thread.mention realtime event
 // ---------------------------------------------------------------------------
 
-import { eq, and, ilike, or, desc } from 'drizzle-orm';
+import { eq, and, ilike, or, desc, sql } from 'drizzle-orm';
 import type { Mention, MentionableEntity } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 import { ArtifactToolService } from './artifact-tools.js';
 import { AgenticLoop } from './agentic-loop.js';
+import { getCompanyMembers, isCompanyMember } from '../auth.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 
@@ -88,36 +89,46 @@ export class MentionService {
       });
     }
 
-    // Search teammates (users).
-    // In local_trusted mode, the only user is the dev user.
-    const users = this.searchTeammates(companyId, q, limit - results.length);
+    // Search teammates (users) via real company membership lookup.
+    const users = await this.searchTeammates(companyId, q, limit - results.length);
     results.push(...users);
 
     return results.slice(0, limit);
   }
 
-  private searchTeammates(
-    _companyId: string,
+  private async searchTeammates(
+    companyId: string,
     q: string,
     remaining: number,
-  ): MentionableEntity[] {
+  ): Promise<MentionableEntity[]> {
     if (remaining <= 0) return [];
 
-    // In local_trusted mode, the only user is the dev user (dev-user-000).
-    // The dev user ID is a well-known pattern that never conflicts with Clerk
-    // user IDs (which use the user_xxx format), so it's safe to always include.
-    // In Clerk mode, org membership queries would replace this.
-    const devUser: MentionableEntity = {
-      entityType: 'user',
-      entityId: 'dev-user-000',
-      label: 'Dev User',
-      subtitle: 'You',
-    };
-    if (!q || 'dev user'.includes(q.toLowerCase())) {
-      return [devUser];
+    // Query real company members via Clerk org membership (or the dev user
+    // in local_trusted mode). Never hard-coded — always reflects actual
+    // company membership.
+    let members;
+    try {
+      members = await getCompanyMembers(companyId);
+    } catch (err) {
+      logger.debug({ err, companyId }, 'searchTeammates: membership lookup failed');
+      return [];
     }
 
-    return [];
+    const ql = q.trim().toLowerCase();
+    const entities: MentionableEntity[] = [];
+    for (const m of members) {
+      if (ql && !m.name.toLowerCase().includes(ql) && !(m.email ?? '').toLowerCase().includes(ql)) {
+        continue;
+      }
+      entities.push({
+        entityType: 'user',
+        entityId: m.id,
+        label: m.name,
+        subtitle: m.email ?? 'Teammate',
+      });
+      if (entities.length >= remaining) break;
+    }
+    return entities;
   }
 
   // -------------------------------------------------------------------------
@@ -139,14 +150,17 @@ export class MentionService {
       return !!agent;
     }
 
-    // User mention — in local_trusted, dev-user-000 always resolves.
-    // Clerk user IDs use a different format (user_xxx), so this is safe.
+    // User mention — verify via real company membership lookup.
+    // In local_trusted, the dev user is a member of every company.
+    // In Clerk mode, queries org memberships to verify the user belongs
+    // to this company.
     if (entityType === 'user') {
-      if (entityId === 'dev-user-000') {
-        return true;
+      try {
+        return await isCompanyMember(companyId, entityId);
+      } catch (err) {
+        logger.debug({ err, companyId, entityId }, 'resolveMention: membership lookup failed');
+        return false;
       }
-      // In Clerk mode, would verify org membership
-      return false;
     }
 
     return false;
@@ -382,6 +396,166 @@ export class MentionService {
       payload: { threadId: ctx.threadId, item: queueItem },
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Process queued mentions for an agent that has resumed / changed status.
+  //
+  // Finds thread items with payload.queuedMention.agentId == agentId that
+  // have not yet been processed, marks them as processed (to prevent
+  // double-dispatch), and dispatches the original mention to the now-active
+  // agent. Called when an agent transitions from paused/offline to an active
+  // status (idle/working/error).
+  // -------------------------------------------------------------------------
+
+  async processQueuedMentions(
+    agentId: string,
+  ): Promise<{ processed: number; dispatched: number; errors: number }> {
+    const { taskThreadItems, agents } = this.db.schema;
+
+    // Look up the agent to get its company + name
+    const [agent] = await this.db.drizzle
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+
+    if (!agent) {
+      return { processed: 0, dispatched: 0, errors: 0 };
+    }
+
+    // Safety guard: don't process queued mentions if the agent is still
+    // paused or offline — dispatching would just re-queue them. This method
+    // is intended to be called after the agent has resumed to an active
+    // status (idle/working/error).
+    if (agent.status === 'paused' || agent.status === 'offline') {
+      return { processed: 0, dispatched: 0, errors: 0 };
+    }
+
+    // Find unprocessed queued mention items for this agent.
+    // Queued mentions are stored as execution_event thread items with
+    // payload.queuedMention.agentId == agentId and processed != true.
+    const queuedItems = await this.db.drizzle
+      .select()
+      .from(taskThreadItems)
+      .where(
+        and(
+          eq(taskThreadItems.companyId, agent.companyId),
+          eq(taskThreadItems.kind, 'execution_event'),
+          sql`${taskThreadItems.payload}->'queuedMention'->>'agentId' = ${agentId}`,
+          sql`COALESCE((${taskThreadItems.payload}->'queuedMention'->>'processed')::bool, false) = false`,
+        ),
+      )
+      .orderBy(desc(taskThreadItems.createdAt));
+
+    let processed = 0;
+    let dispatched = 0;
+    let errors = 0;
+
+    for (const queuedItem of queuedItems) {
+      const payload = queuedItem.payload as Record<string, unknown> | null;
+      const queuedMention = payload?.queuedMention as
+        | { agentId?: string; itemId?: string; content?: string }
+        | undefined;
+      if (!queuedMention?.itemId) continue;
+
+      // Mark the queued item as processed FIRST to prevent double-dispatch
+      // if processQueuedMentions is called again concurrently.
+      const now = new Date();
+      await this.db.drizzle
+        .update(taskThreadItems)
+        .set({
+          payload: {
+            ...payload,
+            queuedMention: { ...queuedMention, processed: true, processedAt: now.toISOString() },
+          },
+          content: `@${agent.name} resumed. Processing queued mention…`,
+          updatedAt: now,
+        } as any)
+        .where(eq(taskThreadItems.id, queuedItem.id));
+
+      processed++;
+
+      // Fetch the original mention item to get the full context
+      const [originalItem] = await this.db.drizzle
+        .select()
+        .from(taskThreadItems)
+        .where(eq(taskThreadItems.id, queuedMention.itemId))
+        .limit(1);
+
+      if (!originalItem) {
+        logger.warn(
+          { queuedItemId: queuedItem.id, originalItemId: queuedMention.itemId },
+          'processQueuedMentions: original mention item not found',
+        );
+        errors++;
+        continue;
+      }
+
+      // Build the dispatch context from the original mention item
+      const threadId = queuedItem.projectThreadId ?? originalItem.projectThreadId;
+      if (!threadId) {
+        logger.warn(
+          { queuedItemId: queuedItem.id },
+          'processQueuedMentions: queued item has no threadId',
+        );
+        errors++;
+        continue;
+      }
+
+      const ctx: MentionDispatchContext = {
+        companyId: agent.companyId,
+        projectId: originalItem.projectId ?? queuedItem.projectId ?? null,
+        threadId,
+        itemId: originalItem.id,
+        content: queuedMention.content ?? originalItem.content ?? '',
+        mentions: [
+          {
+            entityType: 'agent',
+            entityId: agentId,
+            label: agent.name,
+          },
+        ],
+        authorUserId: originalItem.authorUserId ?? null,
+      };
+
+      try {
+        const result = await this.dispatchAgentMention(ctx, {
+          entityType: 'agent',
+          entityId: agentId,
+          label: agent.name,
+        });
+        if (result.status === 'dispatched') {
+          dispatched++;
+        } else if (result.status === 'skipped') {
+          errors++;
+        }
+        // 'queued' would mean the agent is paused again — leave it for the
+        // next resume cycle.
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { err, agentId, queuedItemId: queuedItem.id },
+          'processQueuedMentions: dispatch failed for queued mention',
+        );
+        errors++;
+        // Post a failure item so the thread reflects the error
+        await this.postAgentFailureItem(ctx, {
+          entityType: 'agent',
+          entityId: agentId,
+          label: agent.name,
+        }, errorMsg);
+      }
+    }
+
+    if (processed > 0) {
+      logger.info(
+        { agentId, processed, dispatched, errors },
+        'processQueuedMentions: processed queued mentions on agent resume',
+      );
+    }
+
+    return { processed, dispatched, errors };
   }
 
   // -------------------------------------------------------------------------

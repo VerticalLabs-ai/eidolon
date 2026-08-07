@@ -166,10 +166,20 @@ export function ProjectThreadPanel({
     event.preventDefault();
     const trimmed = composer.text.trim();
     if (!trimmed || !targetThreadId || createItem.isPending) return;
+
+    // Reconcile structured mentions against the current draft text.
+    // Chips are tracked separately from the editable text input, so a user
+    // can delete the @Label text while the structured mention entry lingers.
+    // Drop any mention whose @Label is no longer present in the draft to
+    // prevent dispatching stale mentions.
+    const reconciledMentions = composer.mentions.filter((m) =>
+      trimmed.includes(`@${m.label}`),
+    );
+
     createItem.mutate({
       kind: "comment",
       content: trimmed,
-      mentions: composer.mentions.length > 0 ? composer.mentions : undefined,
+      mentions: reconciledMentions.length > 0 ? reconciledMentions : undefined,
     });
   }
 
