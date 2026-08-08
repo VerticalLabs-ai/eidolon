@@ -614,6 +614,40 @@ describe('TimelineContentSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects an unparsable start date', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: 'not-a-date', end: '2026-01-10', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((i) => i.path.join('.'));
+      expect(paths).toContain('tasks.0.start');
+    }
+  });
+
+  it('rejects an unparsable end date', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: 'also-not-a-date', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((i) => i.path.join('.'));
+      expect(paths).toContain('tasks.0.end');
+    }
+  });
+
+  it('rejects unparsable start and end dates (both fields)', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: 'garbage', end: 'trash', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((i) => i.path.join('.'));
+      expect(paths).toContain('tasks.0.start');
+      expect(paths).toContain('tasks.0.end');
+    }
+  });
+
   it('rejects end before start', () => {
     const result = TimelineContentSchema.safeParse({
       tasks: [{ id: 't1', title: 'A', start: '2026-02-01', end: '2026-01-01', progress: 0 }],

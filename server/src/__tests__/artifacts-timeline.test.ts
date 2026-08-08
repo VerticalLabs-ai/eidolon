@@ -254,6 +254,56 @@ describe('Timeline artifact API — real-Postgres integration', () => {
   // =========================================================================
 
   describe('VAL-TIMELINE-004: validate task dates', () => {
+    it('rejects an unparsable start date with 400 and a per-task field-level path', async () => {
+      const content = {
+        tasks: [
+          { id: 't1', title: 'Bad', start: 'not-a-date', end: '2026-01-10', progress: 0 },
+        ],
+      };
+      const res = await createTimeline({ content }).expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+    });
+
+    it('rejects an unparsable end date with 400 and a per-task field-level path', async () => {
+      const content = {
+        tasks: [
+          { id: 't1', title: 'Bad', start: '2026-01-01', end: 'also-bad', progress: 0 },
+        ],
+      };
+      const res = await createTimeline({ content }).expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+    });
+
+    it('rejects both unparsable start and end with 400', async () => {
+      const content = {
+        tasks: [
+          { id: 't1', title: 'Bad', start: 'garbage', end: 'trash', progress: 0 },
+        ],
+      };
+      const res = await createTimeline({ content }).expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+    });
+
+    it('rejects an update with unparsable dates and leaves content/version untouched', async () => {
+      const created = await createTimeline().expect(201);
+      const id = created.body.data.id;
+
+      const res = await request(app)
+        .patch(`/api/companies/${companyId}/artifacts/${id}`)
+        .send({
+          content: { tasks: [{ id: 'task_1', title: 'Planning', start: 'not-a-date', end: '2026-01-10', progress: 50 }] },
+          version: 1,
+        })
+        .expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+
+      const after = await request(app)
+        .get(`/api/companies/${companyId}/artifacts/${id}`)
+        .expect(200);
+      expect(after.body.data.version).toBe(1);
+      expect(after.body.data.content).toEqual(TIMELINE_CONTENT);
+    });
+
     it('rejects a task with end before start with 400', async () => {
       const content = {
         tasks: [

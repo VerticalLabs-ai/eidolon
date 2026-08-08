@@ -18,7 +18,7 @@ import { useServerEvents } from "@/lib/ws";
 import { useWebSocket } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
-import type { ArtifactType } from "@/lib/api";
+import type { ArtifactType, Artifact } from "@/lib/api";
 import { setDirtyEditorGuard } from "@/lib/dirty-editor";
 
 /** Header labels for the artifact types that have a dedicated editor. */
@@ -117,24 +117,46 @@ export function ArtifactEditor({
       } catch (err) {
         if (err instanceof ApiError && err.status === 409) {
           const body = err.body as {
+            details?: {
+              current?: {
+                version: number;
+                title: string;
+                content: Record<string, unknown>;
+              };
+            };
             current?: {
               version: number;
               title: string;
               content: Record<string, unknown>;
             };
           };
-          if (body?.current) {
+          const current = body?.details?.current ?? body?.current;
+          if (current) {
             setConflict({
-              currentVersion: body.current.version,
-              currentTitle: body.current.title,
-              currentContent: body.current.content,
+              currentVersion: current.version,
+              currentTitle: current.title,
+              currentContent: current.content,
+            });
+            // Refresh the cached artifact version so "Save again to
+            // overwrite" actually succeeds on the next attempt instead of
+            // looping on the stale version. The editors preserve the local
+            // draft because their useEffect sees isDirty and only sets
+            // remoteUpdate (which is hidden while conflictState is set).
+            qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
+              if (!old) return old;
+              return {
+                ...old,
+                version: current.version,
+                title: current.title,
+                content: current.content,
+              };
             });
           }
         }
         throw err;
       }
     },
-    [artifact, artifactId, updateMutation],
+    [artifact, artifactId, updateMutation, qc, companyId],
   );
 
   const handleRestore = useCallback(
@@ -146,23 +168,40 @@ export function ArtifactEditor({
       } catch (err) {
         if (err instanceof ApiError && err.status === 409) {
           const body = err.body as {
+            details?: {
+              current?: {
+                version: number;
+                title: string;
+                content: Record<string, unknown>;
+              };
+            };
             current?: {
               version: number;
               title: string;
               content: Record<string, unknown>;
             };
           };
-          if (body?.current) {
+          const current = body?.details?.current ?? body?.current;
+          if (current) {
             setConflict({
-              currentVersion: body.current.version,
-              currentTitle: body.current.title,
-              currentContent: body.current.content,
+              currentVersion: current.version,
+              currentTitle: current.title,
+              currentContent: current.content,
+            });
+            qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
+              if (!old) return old;
+              return {
+                ...old,
+                version: current.version,
+                title: current.title,
+                content: current.content,
+              };
             });
           }
         }
       }
     },
-    [artifact, artifactId, restoreMutation],
+    [artifact, artifactId, restoreMutation, qc, companyId],
   );
 
   const handleDiscardConflict = () => {

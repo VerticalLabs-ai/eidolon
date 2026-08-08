@@ -164,17 +164,38 @@ export const TimelineContentSchema = z
         taskIds.add(task.id);
       }
 
-      // Date validation: end must be >= start
+      // Date parsability: reject unparsable start/end BEFORE the date-order
+      // check runs. Without this, `new Date('not-a-date')` produces an Invalid
+      // Date whose comparisons are always false, so the end<start check
+      // silently passes and TimelineEditor later throws RangeError on
+      // toISOString().
       const start = new Date(task.start);
       const end = new Date(task.end);
-      if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
-        if (end < start) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['tasks', index, 'end'],
-            message: `Task end date is before its start date`,
-          });
-        }
+      let datesValid = true;
+      if (Number.isNaN(start.getTime())) {
+        datesValid = false;
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tasks', index, 'start'],
+          message: `Task start date "${task.start}" is not a valid date`,
+        });
+      }
+      if (Number.isNaN(end.getTime())) {
+        datesValid = false;
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tasks', index, 'end'],
+          message: `Task end date "${task.end}" is not a valid date`,
+        });
+      }
+
+      // Date validation: end must be >= start (only when both parse)
+      if (datesValid && end < start) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tasks', index, 'end'],
+          message: `Task end date is before its start date`,
+        });
       }
     });
 
