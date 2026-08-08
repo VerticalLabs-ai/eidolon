@@ -19,6 +19,7 @@ import { MemoryService } from './memory.js';
 import { MCPClientService } from './mcp-client.js';
 import { BudgetEnforcer } from './budget-enforcer.js';
 import { decrypt } from './crypto.js';
+import { providerEnvKeyName, resolveProviderApiKey } from './provider-key.js';
 import { continuationRetryDueAt, retryDueAt } from './execution-retry.js';
 import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
@@ -217,9 +218,12 @@ export class AgenticLoop {
     }
 
     const providerName: string = agent.provider;
+    // Fall back to the server-level env var when the agent has no per-agent key.
+    apiKey = resolveProviderApiKey(providerName, apiKey);
     if (!apiKey && providerName !== 'ollama' && providerName !== 'local') {
       throw new Error(
-        `Agent ${agent.name} has no API key configured for provider "${providerName}".`,
+        `Agent ${agent.name} has no API key configured for provider "${providerName}" ` +
+        `(no per-agent key and no server-level ${providerEnvKeyName(providerName) ?? 'env var'}).`,
       );
     }
 
