@@ -75,6 +75,7 @@ function hasScope(token: Pick<ScopedServiceToken, 'scopes'>, required: ServiceSc
 
 export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
   const tokens = deps.tokens ?? parseServiceTokens();
+  logger.info({ configuredServiceTokens: tokens.length }, 'Scoped service tokens configured');
   const requireOrgMember = deps.requireOrgMember();
 
   function matchToken(req: Request): ScopedServiceToken | null {
