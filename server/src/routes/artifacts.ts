@@ -5,6 +5,7 @@ import { routeParams } from '../utils/route-params.js';
 import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision } from '../services/artifact-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import { ArtifactTypeSchema } from '@eidolon/shared';
+import { AppError } from '../middleware/error-handler.js';
 import type { DbInstance } from '../types.js';
 
 const CreateBody = z.object({
@@ -27,11 +28,16 @@ async function editor(db: DbInstance, companyId: string, req: any) {
   // Support agent-authored artifacts via X-Eidolon-Agent-Id header (used by
   // MCP-server tool calls and built-in agent tools). The header is
   // caller-controlled, so the agent id is only trusted for attribution when it
-  // names an agent that actually belongs to the path company. A forged or
-  // out-of-company agent id is ignored and attribution stays with the user.
+  // names an agent that actually belongs to the path company.
+  // VAL-ART-098: when the header is PRESENT but the agent does NOT belong to
+  // the path company, reject with 403 (do NOT fall back to user-authored).
+  // Only fall back to the user-authored flow when the header is ABSENT.
   const agentId = req.get('X-Eidolon-Agent-Id');
-  if (agentId && (await agentBelongsToCompany(db, companyId, agentId))) {
-    return { agentId, userId: null, editSource: 'agent' as const };
+  if (agentId) {
+    if (await agentBelongsToCompany(db, companyId, agentId)) {
+      return { agentId, userId: null, editSource: 'agent' as const };
+    }
+    throw new AppError(403, 'AGENT_NOT_IN_COMPANY', 'The specified agent does not belong to this company');
   }
   return { userId: req.user?.id ?? null, editSource: 'user' as const };
 }

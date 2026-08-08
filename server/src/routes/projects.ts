@@ -874,6 +874,14 @@ export function projectsRouter(db: DbInstance): Router {
       .where(eq(projects.id, id))
       .returning();
 
+    // VAL-ART-058/072: re-scope the project's artifacts to company-level by
+    // clearing their projectId. Artifacts are NOT deleted — they remain
+    // accessible at the company level with full revision history intact.
+    await db.drizzle
+      .update(artifacts)
+      .set({ projectId: null, updatedAt: new Date() })
+      .where(and(eq(artifacts.projectId, id), eq(artifacts.companyId, companyId)));
+
     eventBus.emitEvent({
       type: 'project.deleted',
       companyId,

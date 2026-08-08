@@ -437,6 +437,22 @@ export function projectThreadsRouter(db: DbInstance): Router {
               console.error('[mention-dispatch] Error on edit:', err);
             });
         }
+
+        // VAL-MENTION-011: cancel any pending queued agent dispatch for
+        // mentions that were removed by this edit. Removed agent mentions
+        // should not trigger a delayed agent response the user no longer wants.
+        const newIds = new Set(reconciledMentions.map((m) => `${m.entityType}:${m.entityId}`));
+        const removedAgentMentions = (item.mentions as any[] ?? []).filter(
+          (m) => m.entityType === 'agent' && !newIds.has(`${m.entityType}:${m.entityId}`),
+        );
+        if (removedAgentMentions.length > 0) {
+          const removedAgentIds = removedAgentMentions.map((m) => m.entityId);
+          mentionService
+            .cancelQueuedMentions(companyId, threadId, removedAgentIds)
+            .catch((err) => {
+              console.error('[mention-cancel] Error on edit:', err);
+            });
+        }
       }
 
       res.json({ data: updated });

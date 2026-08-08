@@ -504,7 +504,7 @@ describe('Artifact tool service — built-in agent tools', () => {
 
   // -- VAL-ART-098: Built-in agent tools enforce owning-company scope --
 
-  it('forged agent header for a non-member agent is ignored (attribution stays user)', async () => {
+  it('forged agent header for a non-member agent is rejected with 403', async () => {
     const otherCompany = await request(app)
       .post('/api/companies')
       .send({ name: '__mtest__ Other Tool Corp' })
@@ -512,7 +512,7 @@ describe('Artifact tool service — built-in agent tools', () => {
     const otherCompanyId = otherCompany.body.data.id;
 
     // Agent belongs to companyId, not otherCompanyId. Forging its id in the
-    // header must NOT attribute the artifact to the agent in otherCompanyId.
+    // header must be rejected with 403 — no artifact is created.
     const res = await request(app)
       .post(`/api/companies/${otherCompanyId}/artifacts`)
       .set('X-Eidolon-Agent-Id', agentId)
@@ -521,18 +521,9 @@ describe('Artifact tool service — built-in agent tools', () => {
         title: '__mtest__ Cross Company',
         content: { format: 'markdown', body: 'test' },
       })
-      .expect(201);
+      .expect(403);
 
-    // Artifact is created in the path company, but the forged agent id is
-    // ignored: attribution falls back to the user, not the out-of-company agent.
-    expect(res.body.data.companyId).toBe(otherCompanyId);
-    expect(res.body.data.createdByAgentId).toBeNull();
-
-    const revRes = await request(app)
-      .get(`/api/companies/${otherCompanyId}/artifacts/${res.body.data.id}/revisions`)
-      .expect(200);
-    expect(revRes.body.data[0].editSource).toBe('user');
-    expect(revRes.body.data[0].editedByAgentId).toBeNull();
+    expect(res.body.code).toBe('AGENT_NOT_IN_COMPANY');
   });
 
   it('agent header for a member agent produces editSource=agent with correct agentId', async () => {
@@ -556,7 +547,7 @@ describe('Artifact tool service — built-in agent tools', () => {
     expect(revRes.body.data[0].editedByAgentId).toBe(agentId);
   });
 
-  it('forged unknown agent id in header is ignored (attribution stays user)', async () => {
+  it('forged unknown agent id in header is rejected with 403', async () => {
     const res = await request(app)
       .post(`/api/companies/${companyId}/artifacts`)
       .set('X-Eidolon-Agent-Id', randomUUID())
@@ -565,14 +556,9 @@ describe('Artifact tool service — built-in agent tools', () => {
         title: '__mtest__ Unknown Agent Doc',
         content: { format: 'markdown', body: 'forged' },
       })
-      .expect(201);
+      .expect(403);
 
-    expect(res.body.data.createdByAgentId).toBeNull();
-
-    const revRes = await request(app)
-      .get(`/api/companies/${companyId}/artifacts/${res.body.data.id}/revisions`)
-      .expect(200);
-    expect(revRes.body.data[0].editSource).toBe('user');
+    expect(res.body.code).toBe('AGENT_NOT_IN_COMPANY');
   });
 
   // -- VAL-ART-070: Agent and user revisions are distinguishable --

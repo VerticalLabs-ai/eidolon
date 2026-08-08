@@ -444,6 +444,7 @@ export class MentionService {
           eq(taskThreadItems.kind, 'execution_event'),
           sql`${taskThreadItems.payload}->'queuedMention'->>'agentId' = ${agentId}`,
           sql`COALESCE((${taskThreadItems.payload}->'queuedMention'->>'processed')::bool, false) = false`,
+          sql`COALESCE((${taskThreadItems.payload}->'queuedMention'->>'cancelled')::bool, false) = false`,
         ),
       )
       .orderBy(desc(taskThreadItems.createdAt));
@@ -556,6 +557,79 @@ export class MentionService {
     }
 
     return { processed, dispatched, errors };
+  }
+
+  // -------------------------------------------------------------------------
+  // Cancel queued dispatch for removed agent mentions.
+  //
+  // When a thread item is edited to remove an agent mention, any pending
+  // queued dispatch for that agent (stored as execution_event items with
+  // payload.queuedMention) must be cancelled so the agent does not process
+  // a mention the user no longer intends. Marks the queued item as
+  // cancelled and updates its content to reflect the cancellation.
+  // -------------------------------------------------------------------------
+
+  async cancelQueuedMentions(
+    companyId: string,
+    threadId: string,
+    removedAgentIds: string[],
+  ): Promise<{ cancelled: number }> {
+    if (removedAgentIds.length === 0) return { cancelled: 0 };
+
+    const { taskThreadItems } = this.db.schema;
+    let cancelled = 0;
+
+    for (const agentId of removedAgentIds) {
+      // Find unprocessed, non-cancelled queued mention items for this agent
+      // within this thread.
+      const queuedItems = await this.db.drizzle
+        .select()
+        .from(taskThreadItems)
+        .where(
+          and(
+            eq(taskThreadItems.companyId, companyId),
+            eq(taskThreadItems.projectThreadId, threadId),
+            eq(taskThreadItems.kind, 'execution_event'),
+            sql`${taskThreadItems.payload}->'queuedMention'->>'agentId' = ${agentId}`,
+            sql`COALESCE((${taskThreadItems.payload}->'queuedMention'->>'processed')::bool, false) = false`,
+            sql`COALESCE((${taskThreadItems.payload}->'queuedMention'->>'cancelled')::bool, false) = false`,
+          ),
+        );
+
+      for (const queuedItem of queuedItems) {
+        const payload = queuedItem.payload as Record<string, unknown> | null;
+        const queuedMention = payload?.queuedMention as Record<string, unknown> | undefined;
+        if (!queuedMention) continue;
+
+        const now = new Date();
+        await this.db.drizzle
+          .update(taskThreadItems)
+          .set({
+            payload: {
+              ...payload,
+              queuedMention: {
+                ...queuedMention,
+                cancelled: true,
+                cancelledAt: now.toISOString(),
+              },
+            },
+            content: 'Mention removed by editor — queued dispatch cancelled.',
+            updatedAt: now,
+          } as any)
+          .where(eq(taskThreadItems.id, queuedItem.id));
+
+        cancelled++;
+      }
+    }
+
+    if (cancelled > 0) {
+      logger.info(
+        { companyId, threadId, removedAgentIds, cancelled },
+        'cancelQueuedMentions: cancelled queued dispatch for removed agent mentions',
+      );
+    }
+
+    return { cancelled };
   }
 
   // -------------------------------------------------------------------------

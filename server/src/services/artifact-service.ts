@@ -44,7 +44,7 @@ export async function createArtifact(db: DbInstance, companyId: string, input: {
     return artifact;
   });
   emit('artifact.created', companyId, created);
-  emit('artifact.revision.created', companyId, { artifactId: created.id, version: 1 });
+  emit('artifact.revision.created', companyId, { artifactId: created.id, version: 1, editSource: editor.editSource ?? 'user' });
   return created;
 }
 
@@ -106,7 +106,7 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
     return row;
   });
   emit('artifact.updated', companyId, updated);
-  emit('artifact.revision.created', companyId, { artifactId: id, version: updated.version });
+  emit('artifact.revision.created', companyId, { artifactId: id, version: updated.version, editSource: editor.editSource ?? 'user' });
   return updated;
 }
 
