@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectThreadPanel } from "../src/components/projects/ProjectThreadPanel";
 import { ProjectThreadComposer } from "../src/components/projects/ProjectThreadComposer";
@@ -12,6 +13,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/hooks", () => mocks);
+
+// Mock useServerEvents so ProjectThreadPanel's realtime subscriptions are
+// no-ops in the test environment (no WebSocket connection).
+vi.mock("@/lib/ws", () => ({
+  useServerEvents: vi.fn(),
+  useWebSocket: () => ({ status: "disconnected" }),
+}));
 
 const thread = {
   id: "thread-1",
@@ -45,7 +53,14 @@ const baseItem = {
 const item = (overrides: Partial<typeof baseItem> = {}) => ({ ...baseItem, ...overrides });
 
 function wrapper({ children }: { children: React.ReactNode }) {
-  return <MemoryRouter>{children}</MemoryRouter>;
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  );
 }
 
 function panelResult(

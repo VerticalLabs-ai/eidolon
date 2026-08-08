@@ -28,7 +28,7 @@ export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
             className={clsx(
-              "relative flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all duration-200 cursor-pointer",
+              "relative flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all duration-200 cursor-pointer rounded-t-md outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
               isActive
                 ? "text-accent"
                 : "text-text-secondary hover:text-text-primary",

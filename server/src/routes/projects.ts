@@ -65,6 +65,7 @@ export function projectsRouter(db: DbInstance): Router {
     projectOutcomes,
     integrations,
     automationRuns,
+    artifacts,
   } = db.schema;
 
   // GET /api/companies/:companyId/projects - list all projects for a company
@@ -201,6 +202,8 @@ export function projectsRouter(db: DbInstance): Router {
       // VER-513: integration health counts + automation run status counts
       integrationHealthRows,
       automationRunStatusRows,
+      // Artifacts — top 10 active artifacts for the project (VAL-ART-056)
+      artifactRows,
     ] = await Promise.all([
       // counts.taskCount
       db.drizzle
@@ -454,6 +457,33 @@ export function projectsRouter(db: DbInstance): Router {
           ),
         )
         .groupBy(automationRuns.status),
+      // Artifacts — top 10 active artifacts for the project (VAL-ART-056)
+      db.drizzle
+        .select({
+          id: artifacts.id,
+          companyId: artifacts.companyId,
+          projectId: artifacts.projectId,
+          type: artifacts.type,
+          title: artifacts.title,
+          status: artifacts.status,
+          version: artifacts.version,
+          createdByUserId: artifacts.createdByUserId,
+          createdByAgentId: artifacts.createdByAgentId,
+          lastEditedByUserId: artifacts.lastEditedByUserId,
+          lastEditedByAgentId: artifacts.lastEditedByAgentId,
+          createdAt: artifacts.createdAt,
+          updatedAt: artifacts.updatedAt,
+        })
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.companyId, companyId),
+            eq(artifacts.projectId, id),
+            eq(artifacts.status, 'active'),
+          ),
+        )
+        .orderBy(desc(artifacts.updatedAt), desc(artifacts.id))
+        .limit(10),
     ]);
 
     // Build the per-status breakdown map (all statuses default to 0)
@@ -558,6 +588,8 @@ export function projectsRouter(db: DbInstance): Router {
         activePlanProgress,
         // VER-513 composed fields
         healthSummary,
+        // VAL-ART-056: artifacts section (active only, top 10 by updatedAt desc)
+        artifacts: artifactRows,
       },
     });
   });
@@ -585,6 +617,8 @@ export function projectsRouter(db: DbInstance): Router {
       activeThreadCountRow,
       pendingInteractionCountRow,
       automationRunRows,
+      // VAL-ART-057: active artifacts for the project (top 10 by updatedAt desc)
+      workArtifactRows,
     ] = await Promise.all([
       // plans — all plans for the project (step counts fetched separately below)
       db.drizzle
@@ -647,6 +681,33 @@ export function projectsRouter(db: DbInstance): Router {
         )
         .orderBy(desc(automationRuns.createdAt), desc(automationRuns.id))
         .limit(20),
+      // VAL-ART-057: active artifacts for the project (top 10 by updatedAt desc)
+      db.drizzle
+        .select({
+          id: artifacts.id,
+          companyId: artifacts.companyId,
+          projectId: artifacts.projectId,
+          type: artifacts.type,
+          title: artifacts.title,
+          status: artifacts.status,
+          version: artifacts.version,
+          createdByUserId: artifacts.createdByUserId,
+          createdByAgentId: artifacts.createdByAgentId,
+          lastEditedByUserId: artifacts.lastEditedByUserId,
+          lastEditedByAgentId: artifacts.lastEditedByAgentId,
+          createdAt: artifacts.createdAt,
+          updatedAt: artifacts.updatedAt,
+        })
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.companyId, companyId),
+            eq(artifacts.projectId, id),
+            eq(artifacts.status, 'active'),
+          ),
+        )
+        .orderBy(desc(artifacts.updatedAt), desc(artifacts.id))
+        .limit(10),
     ]);
 
     // Fetch step counts for plans (two-step approach for PGlite compatibility)
@@ -727,6 +788,8 @@ export function projectsRouter(db: DbInstance): Router {
         },
         // VER-513: recent automation runs scoped to this project
         automationRuns: automationRunRows,
+        // VAL-ART-057: active artifacts for the project (top 10 by updatedAt desc)
+        artifacts: workArtifactRows,
       },
     });
   });
@@ -810,6 +873,14 @@ export function projectsRouter(db: DbInstance): Router {
       .set({ status: 'archived', updatedAt: new Date() })
       .where(eq(projects.id, id))
       .returning();
+
+    // VAL-ART-058/072: re-scope the project's artifacts to company-level by
+    // clearing their projectId. Artifacts are NOT deleted — they remain
+    // accessible at the company level with full revision history intact.
+    await db.drizzle
+      .update(artifacts)
+      .set({ projectId: null, updatedAt: new Date() })
+      .where(and(eq(artifacts.projectId, id), eq(artifacts.companyId, companyId)));
 
     eventBus.emitEvent({
       type: 'project.deleted',

@@ -10,6 +10,7 @@ import {
 } from '../providers/index.js';
 import type { ChatMessage, CompletionResult, ProviderConfig } from '../providers/types.js';
 import { decrypt } from './crypto.js';
+import { providerEnvKeyName, resolveProviderApiKey } from './provider-key.js';
 import { BudgetEnforcer } from './budget-enforcer.js';
 import { KnowledgeService } from './knowledge.js';
 import { MemoryService } from './memory.js';
@@ -134,10 +135,12 @@ export class AgentExecutor {
 
     // For providers that require an API key, validate presence
     const providerName: string = agent.provider;
+    // Fall back to the server-level env var when the agent has no per-agent key.
+    apiKey = resolveProviderApiKey(providerName, apiKey);
     if (!apiKey && providerName !== 'ollama' && providerName !== 'local') {
       throw new Error(
-        `Agent ${agent.name} has no API key configured for provider "${providerName}". ` +
-        `Set an encrypted API key on the agent before executing.`,
+        `Agent ${agent.name} has no API key configured for provider "${providerName}" ` +
+        `(no per-agent key and no server-level ${providerEnvKeyName(providerName) ?? 'env var'}).`,
       );
     }
 
