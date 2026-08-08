@@ -2,6 +2,7 @@ import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import { ArtifactTypeSchema, validateArtifactContent } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
+import { hasSession, mergeExternalUpdate, updateSessionAfterFlush } from '../realtime/coedit-session.js';
 import type { DbInstance } from '../types.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import type { z } from 'zod';
@@ -16,6 +17,50 @@ function assertContent(type: ArtifactType, content: unknown): void {
 
 function emit(type: 'artifact.created' | 'artifact.updated' | 'artifact.revision.created' | 'artifact.deleted' | 'artifact.archived', companyId: string, artifact: unknown) {
   eventBus.emitEvent({ type, companyId, payload: { artifact }, timestamp: new Date().toISOString() });
+}
+
+/**
+ * Direct DB save: writes content + revision row without the co-edit session
+ * check or optimistic version check. Used by `flushSession` to persist the
+ * co-edit session's merged content. The caller is responsible for ensuring
+ * the content is valid and the version is correct.
+ */
+export async function saveArtifactContent(
+  db: DbInstance,
+  companyId: string,
+  id: string,
+  content: Record<string, unknown>,
+  expectedVersion: number,
+  editor: Editor,
+  message?: string,
+) {
+  const current = await getArtifact(db, companyId, id);
+  assertContent(current.type, content);
+  const updated = await db.drizzle.transaction(async (tx) => {
+    const [row] = await tx.update(db.schema.artifacts).set({
+      content: content as Record<string, unknown>,
+      version: current.version + 1,
+      updatedAt: new Date(),
+      lastEditedByUserId: editor.userId ?? null,
+      lastEditedByAgentId: editor.agentId ?? null,
+    }).where(and(
+      eq(db.schema.artifacts.id, id),
+      eq(db.schema.artifacts.companyId, companyId),
+      eq(db.schema.artifacts.version, expectedVersion),
+    )).returning();
+    if (!row) {
+      throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', { current: await getArtifact(db, companyId, id) });
+    }
+    await tx.insert(db.schema.artifactRevisions).values({
+      artifactId: id, version: row.version, content: content as Record<string, unknown>,
+      editedByUserId: editor.userId ?? null, editedByAgentId: editor.agentId ?? null,
+      editSource: editor.editSource ?? 'user', message: message ?? null,
+    });
+    return row;
+  });
+  emit('artifact.updated', companyId, updated);
+  emit('artifact.revision.created', companyId, { artifactId: id, version: updated.version, editSource: editor.editSource ?? 'user' });
+  return updated;
 }
 
 export async function createArtifact(db: DbInstance, companyId: string, input: {
@@ -93,6 +138,35 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
   status?: 'deleted' | 'archived' | 'active';
 }, editor: Editor) {
   const current = await getArtifact(db, companyId, id);
+
+  // ── Co-edit session integration (M3) ──────────────────────────────────
+  // When an active co-edit session exists for this artifact, route content
+  // updates through the session (merge, no 409). This supersedes the M1 LWW
+  // 409 for live co-editors. The 409 path below remains for stale
+  // single-client writes (no active session).
+  if (input.content !== undefined && hasSession(id)) {
+    const result = mergeExternalUpdate(id, input.content as Record<string, unknown>, editor);
+    if (result) {
+      // The session merged the content. Flush to DB directly via
+      // saveArtifactContent (bypasses the co-edit check to avoid recursion).
+      const sessionContent = result.merged;
+      const updated = await saveArtifactContent(db, companyId, id, sessionContent, current.version, editor, input.message);
+      // Update the session's version + lastSavedContent to reflect the flush
+      updateSessionAfterFlush(id, updated.version, sessionContent);
+      if (input.title !== undefined && updated.title !== input.title) {
+        const [titleUpdated] = await db.drizzle.update(db.schema.artifacts).set({
+          title: input.title, updatedAt: new Date(),
+        }).where(and(eq(db.schema.artifacts.id, id), eq(db.schema.artifacts.companyId, companyId))).returning();
+        if (titleUpdated) {
+          emit('artifact.updated', companyId, titleUpdated);
+          return titleUpdated;
+        }
+      }
+      return updated;
+    }
+  }
+
+  // ── Standard optimistic version check (M1 path) ──────────────────────
   const version = input.version;
   if (version === undefined) throw new AppError(400, 'VERSION_REQUIRED', 'version is required for artifact updates');
   if (version !== current.version) throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', { current: current });

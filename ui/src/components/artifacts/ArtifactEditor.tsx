@@ -9,6 +9,7 @@ import { SlideEditor } from "./SlideEditor";
 import { TimelineEditor } from "./TimelineEditor";
 import { RevisionHistory } from "./RevisionHistory";
 import { PresenceIndicator } from "./PresenceIndicator";
+import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
 import {
   useArtifact,
   useUpdateArtifact,
@@ -19,10 +20,13 @@ import {
 } from "@/lib/hooks";
 import { useServerEvents } from "@/lib/ws";
 import { useWebSocket } from "@/lib/ws";
+import { useCoEditSession, useCoEditCursors } from "@/lib/coedit";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import type { ArtifactType, Artifact } from "@/lib/api";
 import { setDirtyEditorGuard } from "@/lib/dirty-editor";
+import { applyOp } from "@eidolon/shared";
+import type { CoEditOp } from "@eidolon/shared";
 
 /** Header labels for the artifact types that have a dedicated editor. */
 const EDITOR_TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
@@ -75,6 +79,45 @@ export function ArtifactEditor({
   const handlePresenceInput = useCallback(() => {
     void notifyTyping();
   }, [notifyTyping]);
+
+  // ── Co-editing (M3) ───────────────────────────────────────────────────
+  // Join the co-edit session on open. Remote operations are applied to the
+  // editor's local state via a ref callback (not through the query cache,
+  // which would conflict with the editor's draft-sync logic). The cache is
+  // also updated for other components (artifact list, etc.).
+  const applyRemoteOpRef = useRef<((op: CoEditOp) => void) | null>(null);
+  const coedit = useCoEditSession({
+    companyId,
+    artifactId,
+    userId: selfUserId ?? "dev-user-000",
+    name: "You",
+    onRemoteOp: useCallback((op: CoEditOp, _userId: string) => {
+      // Apply to editor's local state via the ref callback
+      applyRemoteOpRef.current?.(op);
+      // Also update the query cache for other components (list, etc.)
+      if (artifact) {
+        const newContent = applyOp(artifact.type, artifact.content, op);
+        qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
+          if (!old) return old;
+          return { ...old, content: newContent };
+        });
+      }
+    }, [artifact, companyId, artifactId, qc]),
+    onStateSync: useCallback((content: Record<string, unknown>, version: number) => {
+      qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
+        if (!old) return old;
+        return { ...old, content, version };
+      });
+    }, [companyId, artifactId, qc]),
+    onSaved: useCallback((version: number, content: Record<string, unknown>) => {
+      qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
+        if (!old) return old;
+        return { ...old, content, version };
+      });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId, artifactId, "revisions"] });
+    }, [companyId, artifactId, qc]),
+  });
+  const remoteCursors = useCoEditCursors(artifactId);
 
   // Also leave presence beforeunload (tab close) — best-effort.
   useEffect(() => {
@@ -361,10 +404,11 @@ export function ArtifactEditor({
       {/* Editor + revision history */}
       <div className="flex flex-1 overflow-hidden">
         <div
-          className="flex-1 overflow-hidden"
+          className="relative flex-1 overflow-hidden"
           onInput={handlePresenceInput}
           onKeyDown={handlePresenceInput}
         >
+          <CoEditCursorOverlay cursors={remoteCursors} selfUserId={selfUserId} />
           {artifact.type === "document" ? (
             <DocEditor
               artifact={artifact}
@@ -374,6 +418,10 @@ export function ArtifactEditor({
               conflictState={conflictState}
               wsConnected={wsStatus === "connected"}
               onStateChange={handleEditorState}
+              coeditSendOp={coedit.joined ? coedit.sendOp : undefined}
+              coeditSendCursor={coedit.joined ? coedit.sendCursor : undefined}
+              coeditSave={coedit.joined ? coedit.save : undefined}
+              applyRemoteOpRef={coedit.joined ? applyRemoteOpRef : undefined}
             />
           ) : artifact.type === "sheet" ? (
             <SheetEditor
@@ -384,6 +432,10 @@ export function ArtifactEditor({
               conflictState={conflictState}
               wsConnected={wsStatus === "connected"}
               onStateChange={handleEditorState}
+              coeditSendOp={coedit.joined ? coedit.sendOp : undefined}
+              coeditSendCursor={coedit.joined ? coedit.sendCursor : undefined}
+              coeditSave={coedit.joined ? coedit.save : undefined}
+              applyRemoteOpRef={coedit.joined ? applyRemoteOpRef : undefined}
             />
           ) : artifact.type === "board" ? (
             <BoardEditor
@@ -394,6 +446,10 @@ export function ArtifactEditor({
               conflictState={conflictState}
               wsConnected={wsStatus === "connected"}
               onStateChange={handleEditorState}
+              coeditSendOp={coedit.joined ? coedit.sendOp : undefined}
+              coeditSendCursor={coedit.joined ? coedit.sendCursor : undefined}
+              coeditSave={coedit.joined ? coedit.save : undefined}
+              applyRemoteOpRef={coedit.joined ? applyRemoteOpRef : undefined}
             />
           ) : artifact.type === "slide_deck" ? (
             <SlideEditor

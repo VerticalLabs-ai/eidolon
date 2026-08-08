@@ -159,6 +159,17 @@ class WebSocketClient {
       }
     };
   }
+
+  /**
+   * Send a message to the server over the WebSocket connection. No-ops if
+   * the connection is not open. Used by the co-editing system to send
+   * operations, cursors, and save requests.
+   */
+  send(msg: Record<string, unknown>): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
 }
 
 // Singleton

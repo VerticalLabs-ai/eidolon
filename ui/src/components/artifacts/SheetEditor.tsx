@@ -3,6 +3,7 @@ import { Save, Plus, Trash2, AlertTriangle, CloudOff } from "lucide-react";
 import { clsx } from "clsx";
 import { Button } from "@/components/ui/Button";
 import type { Artifact } from "@/lib/api";
+import type { CoEditOp } from "@eidolon/shared";
 
 interface SheetEditorProps {
   artifact: Artifact;
@@ -16,6 +17,10 @@ interface SheetEditorProps {
   wsConnected?: boolean;
   onRemoteUpdate?: (content: Record<string, unknown>, title: string) => void;
   onStateChange?: (state: { dirty: boolean; save: () => Promise<boolean>; discard: () => void }) => void;
+  coeditSendOp?: (op: CoEditOp) => void;
+  coeditSendCursor?: (position: number | { rowId: string; colKey: string } | { cardId: string } | null) => void;
+  coeditSave?: () => void;
+  applyRemoteOpRef?: React.MutableRefObject<((op: CoEditOp) => void) | null>;
 }
 
 export interface ConflictState {
@@ -109,6 +114,10 @@ export function SheetEditor({
   wsConnected,
   onRemoteUpdate,
   onStateChange,
+  coeditSendOp: _coeditSendOp,
+  coeditSendCursor: _coeditSendCursor,
+  coeditSave,
+  applyRemoteOpRef: _applyRemoteOpRef,
 }: SheetEditorProps) {
   const parsed = parseSheet(artifact.content);
   const [title, setTitle] = useState(artifact.title);
@@ -171,14 +180,18 @@ export function SheetEditor({
     if (!isDirty || saving) return false;
     setSaveError(null);
     try {
-      await onSave({ title, content: buildContent() });
+      if (coeditSave) {
+        coeditSave();
+      } else {
+        await onSave({ title, content: buildContent() });
+      }
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       setSaveError(msg);
       return false;
     }
-  }, [isDirty, saving, title, buildContent, onSave]);
+  }, [isDirty, saving, title, buildContent, onSave, coeditSave]);
 
   useEffect(() => {
     onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });

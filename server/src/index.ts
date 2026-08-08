@@ -30,7 +30,7 @@ const { db, app, client, connectionString } = await getServer({
 });
 
 const server = createServer(app);
-setupWebSocketServer(server);
+setupWebSocketServer(server, { db });
 
 const scheduler = new HeartbeatScheduler(db);
 
