@@ -48,7 +48,7 @@ export function artifactsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   router.get('/projects/:projectId/artifacts', async (req, res) => {
     const { companyId, projectId } = routeParams(req);
-    const result = await listArtifacts(db, companyId, { projectId, limit: 50, offset: 0 });
+    const result = await listArtifacts(db, companyId, { projectId, status: 'active', limit: 50, offset: 0 });
     res.json({ data: result.rows, meta: { total: result.total, limit: 50, offset: 0 } });
   });
   router.post('/artifacts', validate(CreateBody), async (req, res) => {
