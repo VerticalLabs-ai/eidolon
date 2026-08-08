@@ -3,6 +3,7 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import { URL } from 'node:url';
 import logger from '../utils/logger.js';
 import { eventBus, type EidolonEvent } from './events.js';
+import { authenticateRequest } from '../auth.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -13,6 +14,8 @@ interface TrackedClient {
   subscribedCompanies: Set<string>;
   isAlive: boolean;
   connectedAt: Date;
+  canSubscribeToAnyCompany: boolean;
+  authorizedCompanyId: string | null;
 }
 
 interface InboundMessage {
@@ -36,20 +39,36 @@ export function setupWebSocketServer(server: HttpServer): WebSocketServer {
   server.on('upgrade', (request: IncomingMessage, socket, head) => {
     const pathname = new URL(request.url ?? '/', `http://${request.headers.host}`).pathname;
     if (pathname === '/ws') {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
-      });
+      void authenticateRequest({
+        method: request.method ?? 'GET',
+        url: request.url ?? '/ws',
+        headers: request.headers,
+      }).then((session) => {
+        const localTrusted = process.env.AUTH_MODE === 'local_trusted';
+        const authorized = localTrusted || !!session?.user;
+        if (!authorized) {
+          socket.destroy();
+          return;
+        }
+        const canSubscribeToAnyCompany = localTrusted || session?.user.role === 'admin';
+        const authorizedCompanyId = session?.session.activeOrganizationId ?? null;
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit('connection', ws, request, { canSubscribeToAnyCompany, authorizedCompanyId });
+        });
+      }).catch(() => socket.destroy());
     } else {
       socket.destroy();
     }
   });
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, _request: IncomingMessage, auth: { canSubscribeToAnyCompany: boolean; authorizedCompanyId: string | null }) => {
     const tracked: TrackedClient = {
       ws,
       subscribedCompanies: new Set(),
       isAlive: true,
       connectedAt: new Date(),
+      canSubscribeToAnyCompany: auth.canSubscribeToAnyCompany,
+      authorizedCompanyId: auth.authorizedCompanyId,
     };
     clients.set(ws, tracked);
 
@@ -117,6 +136,10 @@ function handleClientMessage(client: TrackedClient, msg: InboundMessage): void {
   switch (msg.type) {
     case 'subscribe':
       if (msg.companyId) {
+        if (!client.canSubscribeToAnyCompany && client.authorizedCompanyId !== msg.companyId) {
+          client.ws.send(JSON.stringify({ type: 'error', message: 'Not authorized for this company' }));
+          break;
+        }
         client.subscribedCompanies.add(msg.companyId);
         client.ws.send(
           JSON.stringify({ type: 'subscribed', companyId: msg.companyId }),
