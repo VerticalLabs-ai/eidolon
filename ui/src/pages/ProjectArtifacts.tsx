@@ -4,12 +4,14 @@ import { toast } from "sonner";
 import {
   useArtifacts,
   useCreateArtifact,
+  useProjectPresence,
 } from "@/lib/hooks";
 import { useServerEvents } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
 import { ArtifactTypePicker } from "@/components/artifacts/ArtifactTypePicker";
 import { ArtifactEditor } from "@/components/artifacts/ArtifactEditor";
+import { ProjectPresenceBadge } from "@/components/artifacts/PresenceIndicator";
 import {
   artifactTypeLabel,
   defaultArtifactContent,
@@ -94,6 +96,10 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   );
   const createMutation = useCreateArtifact(companyId);
 
+  // Project-aggregated presence (VAL-CROSS-014): users viewing any artifact
+  // in this project, live-updated via WS presence.* events.
+  const { data: projectPresence } = useProjectPresence(companyId, projectId);
+
   // Realtime: refresh artifact list on any artifact.* event
   useServerEvents(companyId, "artifact.created", () => {
     qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
@@ -155,6 +161,9 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
           <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold text-text-primary font-display focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface rounded">
             Artifacts
           </h2>
+          {projectPresence && projectPresence.length > 0 && (
+            <ProjectPresenceBadge presence={projectPresence} />
+          )}
         </div>
         <ArtifactList
           artifacts={data?.rows ?? []}

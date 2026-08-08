@@ -63,6 +63,13 @@ export interface RoutineEvent extends ServerEvent {
     | 'jarvis.digest_ready';
 }
 
+export interface PresenceEvent extends ServerEvent {
+  type:
+    | 'presence.join'
+    | 'presence.leave'
+    | 'presence.typing';
+}
+
 export interface EnvironmentEvent extends ServerEvent {
   type:
     | 'environment.created'
@@ -160,6 +167,7 @@ export type EidolonEvent =
   | ExecutionEvent
   | RuntimeEvent
   | ArtifactEvent
+  | PresenceEvent
   | RoutineEvent;
 
 // ---------------------------------------------------------------------------

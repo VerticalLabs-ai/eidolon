@@ -2714,3 +2714,62 @@ export const restoreRevision = (
     `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
     { method: "POST" },
   );
+
+// ── Presence (M3) ───────────────────────────────────────────────────────
+
+export interface PresenceEntry {
+  userId: string;
+  name: string;
+  typing: boolean;
+}
+
+export interface ProjectPresenceEntry {
+  userId: string;
+  name: string;
+  artifactIds: string[];
+  typing: boolean;
+}
+
+export const joinPresence = (
+  companyId: string,
+  artifactId: string,
+) =>
+  request<ApiResponse<{ artifactId: string; userId: string; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence/join`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+
+export const leavePresence = (
+  companyId: string,
+  artifactId: string,
+) =>
+  request<ApiResponse<{ artifactId: string; userId: string; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence/leave`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+
+export const setTypingPresence = (
+  companyId: string,
+  artifactId: string,
+  typing: boolean,
+) =>
+  request<ApiResponse<{ artifactId: string; userId: string; typing: boolean; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence/typing`,
+    { method: "POST", body: JSON.stringify({ typing }) },
+  );
+
+export const getArtifactPresence = (
+  companyId: string,
+  artifactId: string,
+) =>
+  request<ApiResponse<{ artifactId: string; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence`,
+  );
+
+export const getProjectPresence = (
+  companyId: string,
+  projectId: string,
+) =>
+  request<ApiResponse<{ projectId: string; presence: ProjectPresenceEntry[] }>>(
+    `/companies/${companyId}/presence?projectId=${projectId}`,
+  );

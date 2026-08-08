@@ -1,4 +1,5 @@
 // Eidolon hooks — v2 with projects, delete, toasts
+import { useRef, useCallback, useState } from "react";
 import {
   useQuery,
   useQueries,
@@ -6,6 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import * as api from "./api";
+import { useServerEvents } from "./ws";
 import type { GoalFilters, TaskFilters, FileFilters } from "./api";
 
 // Helper: server wraps responses in { data: ... }, unwrap it
@@ -2101,4 +2103,171 @@ export function useRestoreRevision(companyId: string) {
       });
     },
   });
+}
+
+// ── Presence (M3) ───────────────────────────────────────────────────────
+//
+// Presence is ephemeral realtime state. The hooks below provide:
+//  - useArtifactPresence: a query seeded by GET + live-patched by WS events
+//    (presence.join/leave/typing) so indicators appear/clear without reload.
+//  - usePresenceActions: fire-and-forget join/leave/typing mutations + a
+//    heartbeat refresher. The caller joins on mount and leaves on unmount.
+//  - useProjectPresence: aggregated presence across artifact types in a
+//    project (VAL-CROSS-014), also live-patched by WS events.
+
+export function useArtifactPresence(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+) {
+  const qc = useQueryClient();
+  const queryKey = ["presence", companyId, artifactId];
+
+  // Live-patch the cached presence list from WS events.
+  useServerEvents(companyId, "presence.join", (event) => {
+    const payload = event.payload as { artifactId?: string; userId?: string; name?: string };
+    if (!artifactId || payload?.artifactId !== artifactId) return;
+    qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
+      const next = old ?? [];
+      if (next.some((p) => p.userId === payload.userId)) return next;
+      return [...next, { userId: payload.userId!, name: payload.name!, typing: false }];
+    });
+  });
+
+  useServerEvents(companyId, "presence.leave", (event) => {
+    const payload = event.payload as { artifactId?: string; userId?: string };
+    if (!artifactId || payload?.artifactId !== artifactId) return;
+    qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
+      if (!old) return old;
+      return old.filter((p) => p.userId !== payload.userId);
+    });
+  });
+
+  useServerEvents(companyId, "presence.typing", (event) => {
+    const payload = event.payload as { artifactId?: string; userId?: string; typing?: boolean };
+    if (!artifactId || payload?.artifactId !== artifactId) return;
+    qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
+      if (!old) return old;
+      return old.map((p) =>
+        p.userId === payload.userId ? { ...p, typing: payload.typing ?? false } : p,
+      );
+    });
+  });
+
+  return useQuery({
+    queryKey,
+    queryFn: async () => {
+      const res = await api.getArtifactPresence(companyId!, artifactId!);
+      const body = res as unknown as { data: { presence: api.PresenceEntry[] } };
+      return body.data.presence;
+    },
+    enabled: !!companyId && !!artifactId,
+    // Presence is realtime; don't refetch aggressively — WS events keep it fresh.
+    staleTime: 30_000,
+  });
+}
+
+export function useProjectPresence(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  const qc = useQueryClient();
+  const queryKey = ["presence", "project", companyId, projectId];
+
+  // Live-patch: any presence.join/leave re-invalidates the aggregated list so
+  // the project-level indicator updates without reload.
+  const invalidate = () => {
+    if (!projectId) return;
+    qc.invalidateQueries({ queryKey });
+  };
+  useServerEvents(companyId, "presence.join", invalidate);
+  useServerEvents(companyId, "presence.leave", invalidate);
+
+  return useQuery({
+    queryKey,
+    queryFn: async () => {
+      const res = await api.getProjectPresence(companyId!, projectId!);
+      const body = res as unknown as { data: { presence: api.ProjectPresenceEntry[] } };
+      return body.data.presence;
+    },
+    enabled: !!companyId && !!projectId,
+    staleTime: 10_000,
+  });
+}
+
+/**
+ * Presence actions for an artifact editor. Callers should join on mount and
+ * leave on unmount. `notifyTyping` debounces typing notifications and sends
+ * a clear after a short idle window. Returns a cleanup function for unmount.
+ */
+export function usePresenceActions(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+) {
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef = useRef(false);
+  const [selfUserId, setSelfUserId] = useState<string | undefined>(undefined);
+
+  const join = useCallback(async () => {
+    if (!companyId || !artifactId) return;
+    try {
+      const res = await api.joinPresence(companyId, artifactId);
+      const body = res as unknown as { data: { userId: string } };
+      setSelfUserId(body.data.userId);
+    } catch {
+      /* presence is best-effort */
+    }
+    // Heartbeat to keep the session alive (refreshes lastActiveAt).
+    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    heartbeatRef.current = setInterval(async () => {
+      try {
+        await api.joinPresence(companyId, artifactId);
+      } catch {
+        /* ignore */
+      }
+    }, 30_000);
+  }, [companyId, artifactId]);
+
+  const leave = useCallback(async () => {
+    if (!companyId || !artifactId) return;
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    isTypingRef.current = false;
+    try {
+      await api.leavePresence(companyId, artifactId);
+    } catch {
+      /* presence is best-effort */
+    }
+  }, [companyId, artifactId]);
+
+  /** Notify that the user is typing. Debounced; auto-clears after idle. */
+  const notifyTyping = useCallback(async () => {
+    if (!companyId || !artifactId) return;
+    // Reset the idle-clear timer on each keystroke.
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      try {
+        await api.setTypingPresence(companyId, artifactId, true);
+      } catch {
+        /* ignore */
+      }
+    }
+    typingTimerRef.current = setTimeout(async () => {
+      isTypingRef.current = false;
+      try {
+        await api.setTypingPresence(companyId, artifactId, false);
+      } catch {
+        /* ignore */
+      }
+    }, 2_500);
+  }, [companyId, artifactId]);
+
+  return { join, leave, notifyTyping, selfUserId };
 }

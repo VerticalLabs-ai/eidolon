@@ -8,11 +8,14 @@ import { BoardEditor } from "./BoardEditor";
 import { SlideEditor } from "./SlideEditor";
 import { TimelineEditor } from "./TimelineEditor";
 import { RevisionHistory } from "./RevisionHistory";
+import { PresenceIndicator } from "./PresenceIndicator";
 import {
   useArtifact,
   useUpdateArtifact,
   useArtifactRevisions,
   useRestoreRevision,
+  useArtifactPresence,
+  usePresenceActions,
 } from "@/lib/hooks";
 import { useServerEvents } from "@/lib/ws";
 import { useWebSocket } from "@/lib/ws";
@@ -51,6 +54,40 @@ export function ArtifactEditor({
   const restoreMutation = useRestoreRevision(companyId);
   const { status: wsStatus } = useWebSocket(companyId);
   const qc = useQueryClient();
+
+  // ── Presence (M3) ──────────────────────────────────────────────────────
+  // Join on open, leave on unmount. The presence list is live-patched by WS
+  // events (presence.join/leave/typing) so indicators appear/clear without a
+  // reload. Typing is detected via input/keydown events bubbling to the
+  // editor container (no per-editor wiring needed).
+  const { data: presence } = useArtifactPresence(companyId, artifactId);
+  const { join: joinPresence, leave: leavePresence, notifyTyping, selfUserId } =
+    usePresenceActions(companyId, artifactId);
+
+  useEffect(() => {
+    if (!companyId || !artifactId) return;
+    void joinPresence();
+    return () => {
+      void leavePresence();
+    };
+  }, [companyId, artifactId, joinPresence, leavePresence]);
+
+  const handlePresenceInput = useCallback(() => {
+    void notifyTyping();
+  }, [notifyTyping]);
+
+  // Also leave presence beforeunload (tab close) — best-effort.
+  useEffect(() => {
+    if (!companyId || !artifactId) return;
+    const onBeforeUnload = () => {
+      // sendBeacon isn't trivially available for JSON POST with credentials;
+      // the server stale-sweep (90s TTL) handles this case. This is a
+      // best-effort enhancement only.
+      void leavePresence();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [companyId, artifactId, leavePresence]);
 
   const [conflict, setConflict] = useState<
     (DocConflictState & { type?: ArtifactType }) | null
@@ -298,13 +335,23 @@ export function ArtifactEditor({
         <span className="text-xs text-text-secondary">
           {EDITOR_TYPE_LABELS[artifact.type] ?? artifact.type}
         </span>
+        {/* Presence indicators (M3) — other viewers + typing, live via WS */}
+        {presence && presence.length > 0 && (
+          <div className="ml-auto">
+            <PresenceIndicator
+              presence={presence}
+              selfUserId={selfUserId}
+              artifactKind={EDITOR_TYPE_LABELS[artifact.type] ?? artifact.type}
+            />
+          </div>
+        )}
         {conflict && (
           <Button
             variant="ghost"
             size="sm"
             icon={<RotateCcw className="h-3 w-3" />}
             onClick={handleDiscardConflict}
-            className="ml-auto"
+            className={presence && presence.length > 0 ? "" : "ml-auto"}
           >
             Discard & Reload
           </Button>
@@ -313,7 +360,11 @@ export function ArtifactEditor({
 
       {/* Editor + revision history */}
       <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 overflow-hidden">
+        <div
+          className="flex-1 overflow-hidden"
+          onInput={handlePresenceInput}
+          onKeyDown={handlePresenceInput}
+        >
           {artifact.type === "document" ? (
             <DocEditor
               artifact={artifact}
