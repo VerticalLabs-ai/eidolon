@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
+import { createServiceTokenMiddleware } from './middleware/service-tokens.js';
 import { apiRateLimit } from './middleware/rate-limit.js';
 import { originCsrf } from './middleware/csrf.js';
 import healthRouter from './routes/health.js';
@@ -52,6 +53,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function createApp(db: DbInstance): express.Express {
   const app = express();
   const { requireAuth, requireOrgMember } = createAuthMiddleware();
+  const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
+    requireAuth,
+    requireOrgMember,
+  });
 
   // Vercel overwrites forwarded IP headers before invoking the function.
   // Trust only that single proxy hop; direct/self-hosted deployments stay untrusted.
@@ -168,7 +173,11 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/agents/:agentId/memories', requireAuth, requireOrgMember(), memoriesRouter(db));
 
   // Prompt Studio (company-scoped)
-  app.use('/api/companies/:companyId/prompts', requireAuth, requireOrgMember(), companyPromptsRouter(db));
+  app.use(
+    '/api/companies/:companyId/prompts',
+    requireServiceOrOrgMember('prompts:read'),
+    companyPromptsRouter(db, requireServiceScope('prompts:write')),
+  );
 
   // Agent evaluations & performance
   app.use('/api/companies/:companyId/evaluations', requireAuth, requireOrgMember(), evaluationsRouter(db));
