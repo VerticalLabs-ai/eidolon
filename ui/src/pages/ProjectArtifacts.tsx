@@ -38,12 +38,21 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
     type: "",
     status: "active",
     projectId: "",
+    sort: "updatedAt",
+    order: "desc",
   });
   const [offset, setOffset] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  // Move focus into the Artifacts content area on mount so keyboard users
+  // can Tab through the filters and artifact list (VAL-ART-064/VAL-CROSS-017).
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
 
   // Auto-select an artifact passed via the ?artifactId= query param (e.g. from
   // a ThreadArtifactCard link in a thread). On back, clear the param so the
@@ -70,7 +79,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
     if (prevCompanyId.current !== companyId) {
       setSelectedId(null);
       setPickerOpen(false);
-      setFilters({ type: "", status: "active", projectId: "" });
+      setFilters({ type: "", status: "active", projectId: "", sort: "updatedAt", order: "desc" });
       setOffset(0);
       prevCompanyId.current = companyId;
     }
@@ -82,6 +91,8 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
     status: filters.status,
     limit: PAGE_SIZE,
     offset,
+    sort: filters.sort,
+    order: filters.order,
   };
 
   const { data, isLoading, isError, refetch } = useArtifacts(
@@ -107,7 +118,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   // Reset offset when filters change
   useEffect(() => {
     setOffset(0);
-  }, [filters.type, filters.status, filters.projectId, projectId]);
+  }, [filters.type, filters.status, filters.projectId, filters.sort, filters.order, projectId]);
 
   const handleCreate = useCallback(
     async (type: ArtifactType) => {
@@ -149,7 +160,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
     <div className="p-5 sm:p-6">
       <div className="mx-auto max-w-4xl space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-text-primary font-display">
+          <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold text-text-primary font-display focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface rounded">
             Artifacts
           </h2>
         </div>

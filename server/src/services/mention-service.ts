@@ -61,7 +61,10 @@ export class MentionService {
     const results: MentionableEntity[] = [];
     const q = query.trim();
 
-    // Search agents by name within the company
+    // Search agents by name within the company.
+    // VAL-ART-084: filter out paused/offline agents so they are not
+    // selectable in the mention picker. Only active, idle, working, or
+    // error-status agents are available for mention dispatch.
     const conditions = [eq(agents.companyId, companyId)];
     if (q) {
       conditions.push(or(ilike(agents.name, `%${q}%`), ilike(agents.title, `%${q}%`))!);
@@ -81,6 +84,8 @@ export class MentionService {
       .limit(limit);
 
     for (const a of agentRows) {
+      // Skip paused/offline agents — they cannot be dispatched
+      if (a.status === 'paused' || a.status === 'offline') continue;
       results.push({
         entityType: 'agent',
         entityId: a.id,

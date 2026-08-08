@@ -123,6 +123,45 @@ describe('Mention search and persistence — real-Postgres integration', () => {
     expect(entities.some((e: any) => e.label === 'Bob Agent')).toBe(false);
   });
 
+  // -- VAL-ART-084: Offline/paused agents are filtered from mention search --
+
+  it('GET /mentions/search excludes paused and offline agents', async () => {
+    // Set the existing agent to paused
+    await request(app)
+      .patch(`/api/companies/${companyId}/agents/${agentId}`)
+      .send({ status: 'paused' })
+      .expect(200);
+
+    // Create another agent and set it to offline
+    const offlineAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: 'Offline Agent', role: 'engineer', provider: 'anthropic', model: 'claude-sonnet-4-6' })
+      .expect(201);
+    await request(app)
+      .patch(`/api/companies/${companyId}/agents/${offlineAgent.body.data.id}`)
+      .send({ status: 'offline' })
+      .expect(200);
+
+    // Create an active agent that should appear
+    const activeAgent = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: 'Active Agent', role: 'engineer', provider: 'anthropic', model: 'claude-sonnet-4-6' })
+      .expect(201);
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/mentions/search?q=`)
+      .expect(200);
+
+    const entities = res.body.data;
+    const agentResults = entities.filter((e: any) => e.entityType === 'agent');
+
+    // Paused and offline agents should NOT appear
+    expect(agentResults.some((e: any) => e.entityId === agentId)).toBe(false);
+    expect(agentResults.some((e: any) => e.entityId === offlineAgent.body.data.id)).toBe(false);
+    // Active agent SHOULD appear
+    expect(agentResults.some((e: any) => e.entityId === activeAgent.body.data.id)).toBe(true);
+  });
+
   // -- VAL-MENTION-004: Posted mentions persist on the thread item --
 
   it('POST thread item with agent mention persists mentions[] on the item', async () => {

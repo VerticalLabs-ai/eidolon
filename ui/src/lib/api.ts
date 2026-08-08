@@ -2611,6 +2611,8 @@ export interface ArtifactListParams {
   status?: ArtifactStatus;
   limit?: number;
   offset?: number;
+  sort?: "updatedAt" | "title" | "type" | "createdAt";
+  order?: "asc" | "desc";
 }
 
 function artifactListQuery(params: ArtifactListParams): string {
@@ -2620,6 +2622,8 @@ function artifactListQuery(params: ArtifactListParams): string {
   if (params.status) sp.set("status", params.status);
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params.sort) sp.set("sort", params.sort);
+  if (params.order) sp.set("order", params.order);
   const qs = sp.toString();
   return qs ? `?${qs}` : "";
 }

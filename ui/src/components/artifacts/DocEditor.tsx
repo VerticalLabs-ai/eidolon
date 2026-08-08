@@ -130,7 +130,7 @@ export function DocEditor({
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Untitled document"
           aria-label="Document title"
-          className="flex-1 bg-transparent text-sm font-semibold text-text-primary font-display outline-none placeholder:text-text-secondary/40 focus:outline-none focus:ring-1 focus:ring-accent/30 rounded px-1 py-0.5"
+          className="flex-1 bg-transparent text-sm font-semibold text-text-primary font-display placeholder:text-text-secondary/40 rounded px-1 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
         />
         <span className="shrink-0 text-xs text-text-secondary tabular-nums">
           v{version}
@@ -139,6 +139,8 @@ export function DocEditor({
           <span
             className="flex items-center gap-1 text-xs text-warning"
             title="Realtime connection lost — your draft is preserved"
+            role="status"
+            aria-label="Realtime disconnected"
           >
             <CloudOff className="h-3.5 w-3.5" />
             Disconnected
@@ -155,6 +157,18 @@ export function DocEditor({
           Save
         </Button>
       </div>
+
+      {/* WS disconnect banner — visible indicator when realtime is down */}
+      {wsConnected === false && (
+        <div
+          role="status"
+          aria-label="Realtime connection disconnected"
+          className="flex items-center gap-2 border-b border-warning/20 bg-warning/10 px-4 py-2 text-xs text-warning"
+        >
+          <CloudOff className="h-4 w-4 shrink-0" />
+          <span>Realtime connection lost. Your draft is preserved — you can still save.</span>
+        </div>
+      )}
 
       {/* Conflict banner */}
       {remoteUpdate && !conflictState && (
@@ -182,10 +196,14 @@ export function DocEditor({
       {saveError && !conflictState && (
         <div
           role="alert"
+          aria-label="Save failed"
           className="flex items-center gap-2 border-b border-error/20 bg-error/10 px-4 py-2 text-xs text-error"
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span>Not saved: {saveError}. Your draft is preserved.</span>
+          <span className="flex-1">Not saved: {saveError}. Your draft is preserved.</span>
+          <Button variant="ghost" size="sm" onClick={handleSave} disabled={!isDirty || saving}>
+            Retry save
+          </Button>
         </div>
       )}
 

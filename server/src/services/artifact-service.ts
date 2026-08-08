@@ -58,6 +58,8 @@ export async function getArtifact(db: DbInstance, companyId: string, id: string)
 export async function listArtifacts(db: DbInstance, companyId: string, filters: {
   projectId?: string | null; filterNullProject?: boolean; type?: ArtifactType; status?: 'active' | 'archived' | 'deleted'; folderId?: string;
   limit: number; offset: number;
+  sort?: 'updatedAt' | 'title' | 'type' | 'createdAt';
+  order?: 'asc' | 'desc';
 }) {
   if (filters.projectId && !filters.filterNullProject) await validateProjectOwnership(db, companyId, filters.projectId);
   const a = db.schema.artifacts;
@@ -71,8 +73,16 @@ export async function listArtifacts(db: DbInstance, companyId: string, filters: 
   if (filters.status) conditions.push(eq(a.status, filters.status));
   if (filters.folderId) conditions.push(eq(a.folderId, filters.folderId));
   const where = and(...conditions);
+
+  // Build order clause from sort/order params.
+  // Default: updatedAt desc. Tie-breaker: id desc (stable, deterministic).
+  const sortCol = filters.sort === 'title' ? a.title
+    : filters.sort === 'type' ? a.type
+    : filters.sort === 'createdAt' ? a.createdAt
+    : a.updatedAt;
+  const orderDir = filters.order === 'asc' ? asc : desc;
   const [rows, count] = await Promise.all([
-    db.drizzle.select().from(a).where(where).orderBy(desc(a.updatedAt), desc(a.id)).limit(filters.limit).offset(filters.offset),
+    db.drizzle.select().from(a).where(where).orderBy(orderDir(sortCol), desc(a.id)).limit(filters.limit).offset(filters.offset),
     db.drizzle.select({ total: sql<number>`count(*)` }).from(a).where(where),
   ]);
   return { rows, total: Number(count[0]?.total ?? 0) };

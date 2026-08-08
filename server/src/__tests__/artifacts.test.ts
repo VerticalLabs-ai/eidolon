@@ -438,6 +438,48 @@ describe('Artifact CRUD API — real-Postgres integration', () => {
       expect(sheets.body.data).toHaveLength(1);
       expect(sheets.body.data[0].type).toBe('sheet');
     });
+
+    // VAL-ART-094: Sort/order params
+    it('VAL-ART-094: supports sort=title&order=asc', async () => {
+      await createDoc({ title: 'Zebra' }).expect(201);
+      await createDoc({ title: 'Alpha' }).expect(201);
+      await createDoc({ title: 'Mango' }).expect(201);
+
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/artifacts?sort=title&order=asc`)
+        .expect(200);
+
+      const titles = res.body.data.map((a: { title: string }) => a.title);
+      // Alpha, Mango, Zebra (ascending by title)
+      expect(titles).toEqual(['Alpha', 'Mango', 'Zebra']);
+    });
+
+    it('VAL-ART-094: supports sort=title&order=desc', async () => {
+      await createDoc({ title: 'Zebra' }).expect(201);
+      await createDoc({ title: 'Alpha' }).expect(201);
+      await createDoc({ title: 'Mango' }).expect(201);
+
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/artifacts?sort=title&order=desc`)
+        .expect(200);
+
+      const titles = res.body.data.map((a: { title: string }) => a.title);
+      // Zebra, Mango, Alpha (descending by title)
+      expect(titles).toEqual(['Zebra', 'Mango', 'Alpha']);
+    });
+
+    it('VAL-ART-094: supports sort=type for mixed-type ordering', async () => {
+      await createDoc({ title: 'Doc1' }).expect(201);
+      await createDoc({ type: 'sheet', title: 'Sheet1', content: SHEET_CONTENT }).expect(201);
+
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/artifacts?sort=type&order=asc`)
+        .expect(200);
+
+      const types = res.body.data.map((a: { type: string }) => a.type);
+      // document before sheet (alphabetical)
+      expect(types).toEqual(['document', 'sheet']);
+    });
   });
 
   // =========================================================================

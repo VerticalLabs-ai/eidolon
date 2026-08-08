@@ -22,6 +22,8 @@ const ListQuery = z.object({
   type: ArtifactTypeSchema.optional(),
   status: z.enum(['active', 'archived', 'deleted']).default('active'), folderId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0),
+  sort: z.enum(['updatedAt', 'title', 'type', 'createdAt']).optional(),
+  order: z.enum(['asc', 'desc']).optional(),
 });
 
 async function editor(db: DbInstance, companyId: string, req: any) {
@@ -58,7 +60,7 @@ export function artifactsRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     const query = (req as any).validated.query;
     // Normalize projectId: 'null' string or unscoped flag → null (unscoped filter)
-    const filters: any = { limit: query.limit, offset: query.offset, status: query.status, type: query.type, folderId: query.folderId };
+    const filters: any = { limit: query.limit, offset: query.offset, status: query.status, type: query.type, folderId: query.folderId, sort: query.sort, order: query.order };
     if (query.unscoped === true || query.projectId === 'null') {
       filters.projectId = null;
       filters.filterNullProject = true;

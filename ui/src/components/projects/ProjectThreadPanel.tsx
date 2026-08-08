@@ -302,7 +302,7 @@ export function ProjectThreadPanel({
                 value={composer.text}
                 onChange={(event) => handleTextChange(event.target.value)}
                 placeholder="Write a comment… use @ to mention"
-                className="h-9 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus:border-accent/60"
+                className="h-9 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:border-accent/60"
               />
               {showPicker && (
                 <MentionPicker

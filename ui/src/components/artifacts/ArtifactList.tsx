@@ -35,6 +35,8 @@ export interface ArtifactListFilters {
   type: ArtifactType | "";
   status: ArtifactStatus;
   projectId: string | "";
+  sort: "updatedAt" | "title" | "type" | "createdAt";
+  order: "asc" | "desc";
 }
 
 interface ArtifactListProps {
@@ -89,6 +91,16 @@ export function ArtifactList({
       { value: "active", label: "Active" },
       { value: "archived", label: "Archived" },
       { value: "deleted", label: "Deleted" },
+    ],
+    [],
+  );
+
+  const sortOptions = useMemo(
+    () => [
+      { value: "updatedAt", label: "Last updated" },
+      { value: "createdAt", label: "Created" },
+      { value: "title", label: "Title" },
+      { value: "type", label: "Type" },
     ],
     [],
   );
@@ -160,6 +172,33 @@ export function ArtifactList({
             className="w-auto min-w-[160px]"
           />
         )}
+        <Select
+          label="Sort by"
+          options={sortOptions}
+          value={filters.sort}
+          onChange={(e) =>
+            onFiltersChange({
+              ...filters,
+              sort: e.target.value as ArtifactListFilters["sort"],
+            })
+          }
+          className="w-auto min-w-[130px]"
+        />
+        <Select
+          label="Order"
+          options={[
+            { value: "desc", label: "Descending" },
+            { value: "asc", label: "Ascending" },
+          ]}
+          value={filters.order}
+          onChange={(e) =>
+            onFiltersChange({
+              ...filters,
+              order: e.target.value as ArtifactListFilters["order"],
+            })
+          }
+          className="w-auto min-w-[120px]"
+        />
         <div className="ml-auto pb-1.5">
           <Button
             variant="primary"

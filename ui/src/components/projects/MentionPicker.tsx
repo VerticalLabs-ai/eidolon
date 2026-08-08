@@ -128,6 +128,26 @@ export function MentionPicker({
       aria-activedescendant={`mention-option-${activeIndex}`}
       style={style}
       className="max-h-60 w-72 overflow-y-auto rounded-lg border border-white/10 bg-surface shadow-xl"
+      onKeyDown={(e) => {
+        // Backup inline handler in case the global listener is intercepted
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          if (results.length === 0) return;
+          setActiveIndex((i) => Math.min(i + 1, results.length - 1));
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          if (results.length === 0) return;
+          setActiveIndex((i) => Math.max(i - 1, 0));
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          if (results[activeIndex]) {
+            onSelect(results[activeIndex]);
+          }
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+      }}
     >
       <ul ref={listRef} className="py-1">
         {results.map((entity, index) => (
@@ -141,7 +161,7 @@ export function MentionPicker({
             onMouseEnter={() => setActiveIndex(index)}
             className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm ${
               index === activeIndex
-                ? "bg-accent/10 text-text-primary"
+                ? "bg-accent/20 text-text-primary ring-1 ring-accent/30"
                 : "text-text-secondary hover:bg-white/[0.03]"
             }`}
           >

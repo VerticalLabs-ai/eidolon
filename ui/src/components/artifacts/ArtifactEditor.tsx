@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { ArrowLeft, FileText, Grid3x3, AlertCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -43,6 +43,15 @@ export function ArtifactEditor({
   const [conflict, setConflict] = useState<
     (DocConflictState & { type?: ArtifactType }) | null
   >(null);
+  const backBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Focus the back button when the editor opens so keyboard users can
+  // Tab through the editor controls (VAL-ART-065/VAL-CROSS-017).
+  useEffect(() => {
+    if (!isLoading && artifact) {
+      backBtnRef.current?.focus();
+    }
+  }, [isLoading, artifact]);
 
   useEffect(() => () => setDirtyEditorGuard(null), []);
 
@@ -215,6 +224,7 @@ export function ArtifactEditor({
       {/* Editor header with back button */}
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2">
         <button
+          ref={backBtnRef}
           onClick={onBack}
           className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary hover:text-accent hover:bg-accent/10 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-label="Back to artifacts list"
