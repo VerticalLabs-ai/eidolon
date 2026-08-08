@@ -12,6 +12,7 @@ import {
   Bot,
   BrainCircuit,
   FileText,
+  FolderKanban,
   Globe,
   Inbox,
   LayoutDashboard,
@@ -79,6 +80,7 @@ const navSections: NavSection[] = [
     label: "Knowledge",
     items: [
       { to: "/documents", icon: BookOpen, label: "Documents" },
+      { to: "/artifacts", icon: FolderKanban, label: "Artifacts" },
       { to: "/prompts", icon: FileText, label: "Prompt Studio" },
     ],
   },
@@ -115,6 +117,13 @@ function CompanyIconRail() {
     return company.brandColor || defaultColors[index % defaultColors.length];
   }
 
+  // The useBlocker hook in AppShell intercepts company-switch navigation when a
+  // dirty artifact editor is open, so the Sidebar can navigate directly — no
+  // local guard needed (which would otherwise duplicate the dialog).
+  const navigateToCompany = (id: string) => {
+    navigate(`/company/${id}`);
+  };
+
   return (
     <div className="flex h-full w-14 shrink-0 flex-col items-center gap-2 border-r border-white/[0.06] bg-surface/60 py-3 lg:w-12">
       {/* Eidolon logo at top */}
@@ -133,7 +142,7 @@ function CompanyIconRail() {
             <button
               key={company.id}
               type="button"
-              onClick={() => navigate(`/company/${company.id}`)}
+              onClick={() => navigateToCompany(company.id)}
               title={company.name}
               aria-label={`Switch to ${company.name}`}
               className={clsx(

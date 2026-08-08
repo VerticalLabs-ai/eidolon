@@ -1,14 +1,17 @@
-import { ExternalLink, FolderKanban, Activity, FileText, Target, AlertTriangle, Zap, TrendingUp, ChevronDown, ChevronRight } from "lucide-react";
+import { ExternalLink, FolderKanban, Activity, FileText, Target, AlertTriangle, Zap, TrendingUp, ChevronDown, ChevronRight, FileEdit } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { clsx } from "clsx";
 import { useProjectHome, useGoals } from "@/lib/hooks";
+import { useServerEvents } from "@/lib/ws";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card as UICard } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { isHttpUrl } from "@/lib/urls";
-import type { ProjectHomeSummary, Task, Activity as ActivityType, AgentFile, Goal } from "@/lib/api";
+import type { ProjectHomeSummary, Task, Activity as ActivityType, AgentFile, Goal, ArtifactSummary } from "@/lib/api";
 import { ProjectThreadPanel } from "@/components/projects/ProjectThreadPanel";
 import { PlanProgressCard } from "@/components/projects/PlanProgressCard";
 import { PendingDecisionsCard } from "@/components/projects/PendingDecisionsCard";
@@ -365,10 +368,71 @@ function RecentFilesCard({ files }: { files: AgentFile[] }) {
   );
 }
 
+// ── Artifacts card with link to the Artifacts tab (VAL-ART-056) ──────────
+
+function ArtifactsCard({
+  artifacts,
+  onNavigateToArtifacts,
+}: {
+  artifacts: ArtifactSummary[];
+  onNavigateToArtifacts: () => void;
+}) {
+  return (
+    <Card title="Artifacts" icon={<FileEdit className="h-4 w-4" />}>
+      {artifacts.length === 0 ? (
+        <CardEmpty message="No artifacts yet" />
+      ) : (
+        <ul>
+          {artifacts.slice(0, 5).map((artifact) => (
+            <li
+              key={artifact.id}
+              className="flex items-center gap-2 border-b border-white/[0.04] py-2 last:border-b-0"
+            >
+              <FileEdit className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-text-primary">{artifact.title}</p>
+                <p className="text-xs text-text-muted capitalize">
+                  {artifact.type} · v{artifact.version} ·{" "}
+                  {formatDistanceToNow(new Date(artifact.updatedAt), { addSuffix: true })}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={onNavigateToArtifacts}
+        className="mt-3 w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs font-medium text-accent transition-colors hover:bg-accent/[0.06] cursor-pointer"
+      >
+        View all artifacts →
+      </button>
+    </Card>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────────────────
 
 export function ProjectHome({ companyId, projectId }: { companyId: string; projectId: string }) {
   const { data: summary, isLoading, isError, refetch } = useProjectHome(companyId, projectId);
+  const [, setSearchParams] = useSearchParams();
+  const qc = useQueryClient();
+
+  const navigateToArtifacts = () => {
+    setSearchParams({ tab: "artifacts" }, { replace: true });
+  };
+
+  // Realtime: live-update the Project Home artifacts section on artifact
+  // events (VAL-CROSS-011). Invalidating the project-home query causes
+  // TanStack Query to refetch the composed view, so the artifacts card and
+  // counts reflect new/updated/deleted artifacts without a manual reload.
+  const invalidateHome = () => {
+    qc.invalidateQueries({ queryKey: ["project-home", companyId, projectId] });
+  };
+  useServerEvents(companyId, "artifact.created", invalidateHome);
+  useServerEvents(companyId, "artifact.updated", invalidateHome);
+  useServerEvents(companyId, "artifact.deleted", invalidateHome);
+  useServerEvents(companyId, "artifact.archived", invalidateHome);
 
   if (isLoading) {
     return (
@@ -416,6 +480,7 @@ export function ProjectHome({ companyId, projectId }: { companyId: string; proje
         <GoalsSummaryCard goalProgress={summary.goalProgress} companyId={companyId} projectId={projectId} />
         <RecentActivityCard activities={summary.recentActivity} />
         <RecentFilesCard files={summary.recentFiles} />
+        <ArtifactsCard artifacts={summary.artifacts ?? []} onNavigateToArtifacts={navigateToArtifacts} />
         <ProjectThreadPanel companyId={companyId} projectId={projectId} />
         <PendingDecisionsCard companyId={companyId} projectId={projectId} />
         <PlanProgressCard companyId={companyId} projectId={projectId} />

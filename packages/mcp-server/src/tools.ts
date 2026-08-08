@@ -585,6 +585,95 @@ export function registerEidolonTools(
   );
 
   // -----------------------------------------------------------------------
+  // ARTIFACT TOOLS
+  // -----------------------------------------------------------------------
+
+  const artifactTypeArg = z
+    .enum(["document", "sheet", "board", "slide_deck", "timeline", "gallery", "dashboard", "app", "code"])
+    .describe("Artifact type (document, sheet, board, etc.)");
+
+  server.registerTool(
+    "eidolon_create_artifact",
+    {
+      title: "Create artifact",
+      description:
+        "Create a new typed artifact (document, sheet, board, etc.) as a work product. Content must match the type schema: " +
+        'document={format:"markdown",body:"<string>"}, sheet={columns:[{id,key}],rows:[{id,cells:{key:{value}}}]}, ' +
+        "board={columns:[{id,title}],cards:[{id,columnId,title,order,payload?}]} (every card.columnId must match a column id).",
+      inputSchema: {
+        companyId: companyIdArg,
+        type: artifactTypeArg,
+        title: z.string().min(1).max(500),
+        content: z.record(z.unknown()),
+        projectId: z.string().uuid().nullable().optional(),
+      },
+    },
+    async ({ companyId, ...body }) =>
+      asJsonContent(
+        await client.createArtifact(requireCompanyId(config, companyId), body),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_update_artifact",
+    {
+      title: "Update artifact",
+      description:
+        "Update an existing artifact's content or title. Requires the current version for optimistic concurrency.",
+      inputSchema: {
+        companyId: companyIdArg,
+        artifactId: z.string().uuid(),
+        version: z.number().int().positive(),
+        content: z.record(z.unknown()).optional(),
+        title: z.string().min(1).max(500).optional(),
+        message: z.string().max(2000).optional(),
+      },
+    },
+    async ({ companyId, artifactId, ...body }) =>
+      asJsonContent(
+        await client.updateArtifact(
+          requireCompanyId(config, companyId),
+          artifactId,
+          body,
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_get_artifact",
+    {
+      title: "Get artifact",
+      description: "Retrieve a single artifact by ID with full content and metadata.",
+      inputSchema: {
+        companyId: companyIdArg,
+        artifactId: z.string().uuid(),
+      },
+    },
+    async ({ companyId, artifactId }) =>
+      asJsonContent(
+        await client.getArtifact(requireCompanyId(config, companyId), artifactId),
+      ),
+  );
+
+  server.registerTool(
+    "eidolon_list_artifacts",
+    {
+      title: "List artifacts",
+      description: "List artifacts in a company, optionally filtered by project and type.",
+      inputSchema: {
+        companyId: companyIdArg,
+        projectId: z.string().uuid().optional(),
+        type: artifactTypeArg.optional(),
+        status: z.enum(["active", "archived", "deleted"]).optional(),
+      },
+    },
+    async ({ companyId, ...query }) =>
+      asJsonContent(
+        await client.listArtifacts(requireCompanyId(config, companyId), query),
+      ),
+  );
+
+  // -----------------------------------------------------------------------
   // ESCAPE HATCH — arbitrary API call
   // -----------------------------------------------------------------------
 
