@@ -597,7 +597,9 @@ export function registerEidolonTools(
     {
       title: "Create artifact",
       description:
-        "Create a new typed artifact (document, sheet, etc.) as a work product. Content must match the type schema.",
+        "Create a new typed artifact (document, sheet, board, etc.) as a work product. Content must match the type schema: " +
+        'document={format:"markdown",body:"<string>"}, sheet={columns:[{id,key}],rows:[{id,cells:{key:{value}}}]}, ' +
+        "board={columns:[{id,title}],cards:[{id,columnId,title,order,payload?}]} (every card.columnId must match a column id).",
       inputSchema: {
         companyId: companyIdArg,
         type: artifactTypeArg,

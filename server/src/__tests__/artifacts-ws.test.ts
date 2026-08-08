@@ -11,6 +11,17 @@ import type { DbInstance } from '../types.js';
 
 const DOC_CONTENT = { format: 'markdown' as const, body: '# Hello' };
 const DOC_CONTENT_V2 = { format: 'markdown' as const, body: '# Updated' };
+const BOARD_CONTENT = {
+  columns: [
+    { id: 'col_todo', title: 'Todo' },
+    { id: 'col_done', title: 'Done' },
+  ],
+  cards: [{ id: 'card_a', columnId: 'col_todo', title: 'Card A', order: 0 }],
+};
+const BOARD_CONTENT_V2 = {
+  columns: BOARD_CONTENT.columns,
+  cards: [{ id: 'card_a', columnId: 'col_done', title: 'Card A', order: 0 }],
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -286,6 +297,54 @@ describe('Artifact WebSocket delivery — real WS client', () => {
     // Company B subscriber received NO artifact.* events
     const bArtifact = filterArtifactEvents(msgsB);
     expect(bArtifact).toHaveLength(0);
+  });
+
+  // =========================================================================
+  // E. VAL-BOARD-015: board create/update reach a second client on the same
+  //    company; a client subscribed to another company receives nothing.
+  // =========================================================================
+
+  it('VAL-BOARD-015: a second client on the same company receives board artifact.created/updated; another company receives none', async () => {
+    wsA = await openWs(port);
+    wsB = await openWs(port);
+    await subscribe(wsA, companyId);
+    await subscribe(wsB, otherCompanyId);
+
+    // Create the board (client A is the "second client" — it did not issue the
+    // HTTP request, so no manual reload/polling is involved).
+    const collectCreateA = collectUntil(wsA, (m) => m.type === 'artifact.created');
+    const collectCreateB = collectUntil(wsB, () => false, 800);
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/artifacts`)
+      .send({ type: 'board', title: '__mtest__ WS Board', content: BOARD_CONTENT, projectId })
+      .expect(201);
+    const createdA = filterArtifactEvents(await collectCreateA).find(
+      (m) => m.type === 'artifact.created',
+    );
+    expect(createdA).toBeDefined();
+    expect(
+      (createdA!.payload as { artifact: { type: string } }).artifact.type,
+    ).toBe('board');
+    expect(filterArtifactEvents(await collectCreateB)).toHaveLength(0);
+
+    // Update the board — the same client sees artifact.updated with v2.
+    const collectUpdateA = collectUntil(wsA, (m) => m.type === 'artifact.updated');
+    const collectUpdateB = collectUntil(wsB, () => false, 800);
+    await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${created.body.data.id}`)
+      .send({ content: BOARD_CONTENT_V2, version: 1 })
+      .expect(200);
+    const updatedA = filterArtifactEvents(await collectUpdateA).find(
+      (m) => m.type === 'artifact.updated',
+    );
+    expect(updatedA).toBeDefined();
+    const payload = updatedA!.payload as {
+      artifact: { type: string; version: number; content: typeof BOARD_CONTENT_V2 };
+    };
+    expect(payload.artifact.type).toBe('board');
+    expect(payload.artifact.version).toBe(2);
+    expect(payload.artifact.content.cards[0].columnId).toBe('col_done');
+    expect(filterArtifactEvents(await collectUpdateB)).toHaveLength(0);
   });
 
   it('VAL-ART-063: creating an artifact in company B does not deliver to company A subscriber', async () => {

@@ -11,20 +11,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
 import { ArtifactTypePicker } from "@/components/artifacts/ArtifactTypePicker";
 import { ArtifactEditor } from "@/components/artifacts/ArtifactEditor";
+import {
+  artifactTypeLabel,
+  defaultArtifactContent,
+} from "@/components/artifacts/artifact-defaults";
 import type { Artifact, ArtifactType } from "@/lib/api";
 
 const PAGE_SIZE = 20;
-
-function defaultDocContent(): Record<string, unknown> {
-  return { format: "markdown", body: "" };
-}
-
-function defaultSheetContent(): Record<string, unknown> {
-  return {
-    columns: [{ id: "col_1", key: "column1" }],
-    rows: [{ id: "row_1", cells: { column1: { value: "" } } }],
-  };
-}
 
 export function CompanyArtifacts() {
   const { companyId } = useParams();
@@ -136,18 +129,17 @@ export function CompanyArtifacts() {
     async (type: ArtifactType) => {
       setPickerOpen(false);
       try {
-        const content =
-          type === "document" ? defaultDocContent() : defaultSheetContent();
+        const label = artifactTypeLabel(type);
         // Create at company level (no project) unless a project filter is active
         const projectId = filters.projectId || null;
         const result = await createMutation.mutateAsync({
           type,
-          title: `Untitled ${type === "document" ? "Document" : "Sheet"}`,
-          content,
+          title: `Untitled ${label}`,
+          content: defaultArtifactContent(type),
           projectId,
         });
         const created = (result as unknown as { data: Artifact }).data;
-        toast.success(`${type === "document" ? "Document" : "Sheet"} created`);
+        toast.success(`${label} created`);
         setSelectedId(created.id);
         qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
       } catch (err) {

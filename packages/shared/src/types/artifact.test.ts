@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DocumentContentSchema,
   SheetContentSchema,
+  BoardContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
 } from './artifact.js';
@@ -165,6 +166,215 @@ describe('SheetContentSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
+// BoardContentSchema
+// ---------------------------------------------------------------------------
+
+describe('BoardContentSchema', () => {
+  it('accepts a minimal valid board (1 column, 1 card)', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'col1', title: 'First card', order: 0 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts empty columns and cards', () => {
+    const result = BoardContentSchema.safeParse({ columns: [], cards: [] });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts multiple columns with cards spread across them', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [
+        { id: 'col1', title: 'Todo' },
+        { id: 'col2', title: 'Doing' },
+        { id: 'col3', title: 'Done' },
+      ],
+      cards: [
+        { id: 'card1', columnId: 'col1', title: 'A', order: 0 },
+        { id: 'card2', columnId: 'col2', title: 'B', order: 0 },
+        { id: 'card3', columnId: 'col2', title: 'C', order: 1 },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a card with an optional payload', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [
+        {
+          id: 'card1',
+          columnId: 'col1',
+          title: 'A',
+          order: 0,
+          payload: { description: 'details', priority: 3 },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a column with an empty title', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: '' }],
+      cards: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a card referencing an unknown column id', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'nope', title: 'Orphan', order: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects any card when there are no columns', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [],
+      cards: [{ id: 'card1', columnId: 'col1', title: 'Orphan', order: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate column ids', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [
+        { id: 'col1', title: 'Todo' },
+        { id: 'col1', title: 'Doing' },
+      ],
+      cards: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate card ids', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [
+        { id: 'card1', columnId: 'col1', title: 'A', order: 0 },
+        { id: 'card1', columnId: 'col1', title: 'B', order: 1 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a column missing id', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ title: 'Todo' }],
+      cards: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a column with an empty id', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: '', title: 'Todo' }],
+      cards: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a column missing title', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1' }],
+      cards: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a card missing id', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ columnId: 'col1', title: 'A', order: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a card missing columnId', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', title: 'A', order: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a card missing title', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'col1', order: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a card missing order', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'col1', title: 'A' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a card with a non-numeric order', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'col1', title: 'A', order: '0' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a card with a non-finite order', () => {
+    const result = BoardContentSchema.safeParse({
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'col1', title: 'A', order: Number.NaN }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects missing columns field entirely', () => {
+    const result = BoardContentSchema.safeParse({ cards: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects missing cards field entirely', () => {
+    const result = BoardContentSchema.safeParse({ columns: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects columns that are not an array', () => {
+    const result = BoardContentSchema.safeParse({ columns: {}, cards: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects cards that are not an array', () => {
+    const result = BoardContentSchema.safeParse({ columns: [], cards: {} });
+    expect(result.success).toBe(false);
+  });
+
+  it('preserves every card and column on a successful parse', () => {
+    const content = {
+      columns: [
+        { id: 'col1', title: 'Todo' },
+        { id: 'col2', title: 'Done' },
+      ],
+      cards: [
+        { id: 'card1', columnId: 'col1', title: 'A', order: 0 },
+        { id: 'card2', columnId: 'col2', title: 'B', order: 0 },
+      ],
+    };
+    const result = BoardContentSchema.safeParse(content);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.columns).toHaveLength(2);
+      expect(result.data.cards).toHaveLength(2);
+      expect(result.data).toEqual(content);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ArtifactTypeSchema
 // ---------------------------------------------------------------------------
 
@@ -200,6 +410,22 @@ describe('validateArtifactContent', () => {
       rows: [{ id: 'r1', cells: { name: { value: 'Alice' } } }],
     });
     expect(result.success).toBe(true);
+  });
+
+  it('validates board content against the board schema', () => {
+    const result = validateArtifactContent('board', {
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'col1', title: 'A', order: 0 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects board content with an orphan card', () => {
+    const result = validateArtifactContent('board', {
+      columns: [{ id: 'col1', title: 'Todo' }],
+      cards: [{ id: 'card1', columnId: 'missing', title: 'A', order: 0 }],
+    });
+    expect(result.success).toBe(false);
   });
 
   it('rejects invalid document content', () => {

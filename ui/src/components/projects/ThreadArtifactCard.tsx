@@ -1,9 +1,10 @@
-import { FileText, Table, Link2 } from "lucide-react";
+import { FileText, Table, LayoutGrid, Link2 } from "lucide-react";
 import { Link } from "react-router-dom";
 
 const typeIcons: Record<string, typeof FileText> = {
   document: FileText,
   sheet: Table,
+  board: LayoutGrid,
 };
 
 const typeLabels: Record<string, string> = {

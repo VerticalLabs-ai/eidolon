@@ -43,16 +43,62 @@ export const SheetContentSchema = z
     });
   });
 
+const boardColumnSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+});
+
+const boardCardSchema = z.object({
+  id: z.string().min(1),
+  columnId: z.string().min(1),
+  title: z.string(),
+  order: z.number().finite(),
+  payload: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const BoardContentSchema = z
+  .object({
+    columns: z.array(boardColumnSchema),
+    cards: z.array(boardCardSchema),
+  })
+  .superRefine((board, ctx) => {
+    const columnIds = new Set<string>();
+    board.columns.forEach((column, columnIndex) => {
+      if (columnIds.has(column.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['columns', columnIndex, 'id'],
+          message: `Duplicate column id "${column.id}"`,
+        });
+        return;
+      }
+      columnIds.add(column.id);
+    });
+
+    const cardIds = new Set<string>();
+    board.cards.forEach((card, cardIndex) => {
+      if (cardIds.has(card.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cards', cardIndex, 'id'],
+          message: `Duplicate card id "${card.id}"`,
+        });
+      } else {
+        cardIds.add(card.id);
+      }
+      if (!columnIds.has(card.columnId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cards', cardIndex, 'columnId'],
+          message: `Card references unknown column id "${card.columnId}"`,
+        });
+      }
+    });
+  });
+
 export type DocumentContent = z.infer<typeof DocumentContentSchema>;
 export type SheetContent = z.infer<typeof SheetContentSchema>;
-
-const BoardContentSchema = z.object({
-  columns: z.array(z.object({ id: z.string().min(1), title: z.string() })),
-  cards: z.array(z.object({
-    id: z.string().min(1), columnId: z.string().min(1), title: z.string(), order: z.number(),
-    payload: z.record(z.string(), z.unknown()).optional(),
-  })),
-});
+export type BoardContent = z.infer<typeof BoardContentSchema>;
 const SlideDeckContentSchema = z.object({
   slides: z.array(z.object({ id: z.string().min(1), layout: z.string(), blocks: z.array(z.record(z.string(), z.unknown())) })),
 });

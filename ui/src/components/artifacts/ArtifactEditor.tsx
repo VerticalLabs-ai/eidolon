@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { ArrowLeft, FileText, Grid3x3, AlertCircle, RotateCcw } from "lucide-react";
+import { ArrowLeft, FileText, Grid3x3, LayoutGrid, AlertCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { DocEditor, type ConflictState as DocConflictState } from "./DocEditor";
 import { SheetEditor } from "./SheetEditor";
+import { BoardEditor } from "./BoardEditor";
 import { RevisionHistory } from "./RevisionHistory";
 import {
   useArtifact,
@@ -17,6 +18,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import type { ArtifactType } from "@/lib/api";
 import { setDirtyEditorGuard } from "@/lib/dirty-editor";
+
+/** Header labels for the artifact types that have a dedicated editor. */
+const EDITOR_TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
+  document: "Document",
+  sheet: "Sheet",
+  board: "Board",
+};
 
 interface ArtifactEditorProps {
   companyId: string;
@@ -234,12 +242,14 @@ export function ArtifactEditor({
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
           {artifact.type === "document" ? (
             <FileText className="h-3.5 w-3.5" />
+          ) : artifact.type === "board" ? (
+            <LayoutGrid className="h-3.5 w-3.5" />
           ) : (
             <Grid3x3 className="h-3.5 w-3.5" />
           )}
         </span>
         <span className="text-xs text-text-secondary">
-          {artifact.type === "document" ? "Document" : "Sheet"}
+          {EDITOR_TYPE_LABELS[artifact.type] ?? artifact.type}
         </span>
         {conflict && (
           <Button
@@ -277,12 +287,22 @@ export function ArtifactEditor({
               wsConnected={wsStatus === "connected"}
               onStateChange={handleEditorState}
             />
+          ) : artifact.type === "board" ? (
+            <BoardEditor
+              artifact={artifact}
+              version={artifact.version}
+              onSave={handleSave}
+              saving={updateMutation.isPending}
+              conflictState={conflictState}
+              wsConnected={wsStatus === "connected"}
+              onStateChange={handleEditorState}
+            />
           ) : (
             <div className="flex h-full items-center justify-center p-6">
               <EmptyState
                 icon={<AlertCircle className="h-6 w-6" />}
                 title="Unsupported type"
-                description={`Artifact type "${artifact.type}" is not supported in M1.`}
+                description={`Artifact type "${artifact.type}" does not have an editor yet.`}
               />
             </div>
           )}

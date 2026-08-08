@@ -82,6 +82,7 @@ export function ArtifactList({
       { value: "", label: "All types" },
       { value: "document", label: "Document" },
       { value: "sheet", label: "Sheet" },
+      { value: "board", label: "Board" },
     ],
     [],
   );
@@ -216,7 +217,7 @@ export function ArtifactList({
         <EmptyState
           icon={<FileText className="h-6 w-6" />}
           title="No artifacts yet"
-          description="Create a document or sheet to get started."
+          description="Create a document, sheet, or board to get started."
           action={
             <Button
               variant="primary"

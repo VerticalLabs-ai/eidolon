@@ -32,7 +32,7 @@ const TYPE_OPTIONS: TypeOption[] = [
     label: "Board",
     description: "Kanban board with cards and columns",
     icon: <LayoutGrid className="h-5 w-5" />,
-    enabled: false,
+    enabled: true,
   },
   {
     type: "slide_deck",

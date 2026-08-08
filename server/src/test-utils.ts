@@ -14,6 +14,9 @@ import { createApp } from './app.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_FOLDER = path.resolve(__dirname, '../../packages/db/drizzle');
 const TEMPLATE_DB = 'eidolon_test_template';
+const DEADLOCK_DETECTED = '40P01';
+const LOCK_NOT_AVAILABLE = '55P03';
+const TRUNCATE_MAX_RETRIES = 5;
 
 // Load ONLY DATABASE_URL from .env. We must not load other env vars
 // (CLERK_SECRET_KEY, AUTH_MODE, etc.) because they change auth/CSRF
@@ -216,9 +219,24 @@ async function resetTestDb(): Promise<void> {
   if (tables.length === 0) return;
 
   const tableList = tables.map((t) => `"public"."${t}"`).join(', ');
-  await _client.unsafe(
-    `TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`,
-  );
+  const statement = `TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`;
+
+  // Routes that respond before their fire-and-forget follow-up writes finish
+  // (mention dispatch, activity logging) can still hold row locks when the
+  // next test resets. TRUNCATE takes ACCESS EXCLUSIVE on every table at once,
+  // so that overlap deadlocks. Postgres aborts one side; retrying settles it
+  // once the stragglers drain.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await _client.unsafe(statement);
+      return;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      const transient = code === DEADLOCK_DETECTED || code === LOCK_NOT_AVAILABLE;
+      if (!transient || attempt >= TRUNCATE_MAX_RETRIES) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
 }
 
 /**
