@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, AlertCircle, RotateCcw } from "lucide-react";
+import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, AlertCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { DocEditor, type ConflictState as DocConflictState } from "./DocEditor";
 import { SheetEditor } from "./SheetEditor";
 import { BoardEditor } from "./BoardEditor";
 import { SlideEditor } from "./SlideEditor";
+import { TimelineEditor } from "./TimelineEditor";
 import { RevisionHistory } from "./RevisionHistory";
 import {
   useArtifact,
@@ -26,6 +27,7 @@ const EDITOR_TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
   sheet: "Sheet",
   board: "Board",
   slide_deck: "Slides",
+  timeline: "Timeline",
 };
 
 interface ArtifactEditorProps {
@@ -248,6 +250,8 @@ export function ArtifactEditor({
             <LayoutGrid className="h-3.5 w-3.5" />
           ) : artifact.type === "slide_deck" ? (
             <Presentation className="h-3.5 w-3.5" />
+          ) : artifact.type === "timeline" ? (
+            <GanttChartSquare className="h-3.5 w-3.5" />
           ) : (
             <Grid3x3 className="h-3.5 w-3.5" />
           )}
@@ -303,6 +307,16 @@ export function ArtifactEditor({
             />
           ) : artifact.type === "slide_deck" ? (
             <SlideEditor
+              artifact={artifact}
+              version={artifact.version}
+              onSave={handleSave}
+              saving={updateMutation.isPending}
+              conflictState={conflictState}
+              wsConnected={wsStatus === "connected"}
+              onStateChange={handleEditorState}
+            />
+          ) : artifact.type === "timeline" ? (
+            <TimelineEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}

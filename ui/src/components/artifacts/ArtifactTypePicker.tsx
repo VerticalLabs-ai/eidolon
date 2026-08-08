@@ -46,7 +46,7 @@ const TYPE_OPTIONS: TypeOption[] = [
     label: "Timeline",
     description: "Gantt timeline with tasks and dependencies",
     icon: <GanttChartSquare className="h-5 w-5" />,
-    enabled: false,
+    enabled: true,
   },
   {
     type: "gallery",

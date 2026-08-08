@@ -6,6 +6,7 @@ const TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
   sheet: "Sheet",
   board: "Board",
   slide_deck: "Slides",
+  timeline: "Timeline",
 };
 
 export function artifactTypeLabel(type: ArtifactType): string {
@@ -39,6 +40,18 @@ export function defaultArtifactContent(type: ArtifactType): Record<string, unkno
             id: "slide_1",
             layout: "title",
             blocks: [{ type: "heading", content: { text: "" } }],
+          },
+        ],
+      };
+    case "timeline":
+      return {
+        tasks: [
+          {
+            id: "task_1",
+            title: "",
+            start: new Date().toISOString().slice(0, 10),
+            end: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+            progress: 0,
           },
         ],
       };

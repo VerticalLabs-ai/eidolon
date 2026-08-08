@@ -4,6 +4,7 @@ import {
   SheetContentSchema,
   BoardContentSchema,
   SlideDeckContentSchema,
+  TimelineContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
 } from './artifact.js';
@@ -517,6 +518,194 @@ describe('SlideDeckContentSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
+// TimelineContentSchema
+// ---------------------------------------------------------------------------
+
+describe('TimelineContentSchema', () => {
+  it('accepts a minimal valid timeline (1 task)', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'Task A', start: '2026-01-01', end: '2026-01-10', progress: 50 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an empty tasks array', () => {
+    const result = TimelineContentSchema.safeParse({ tasks: [] });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts tasks with dependencies', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [
+        { id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: 0 },
+        { id: 't2', title: 'B', start: '2026-01-05', end: '2026-01-10', dependsOn: ['t1'], progress: 0 },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts equal start and end (zero-duration task)', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'Milestone', start: '2026-01-15', end: '2026-01-15', progress: 0 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts progress at 0 and 100', () => {
+    const r0 = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: 0 }],
+    });
+    const r100 = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: 100 }],
+    });
+    expect(r0.success).toBe(true);
+    expect(r100.success).toBe(true);
+  });
+
+  it('accepts tasks without optional fields (no dependsOn, no progress)', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects missing tasks field', () => {
+    const result = TimelineContentSchema.safeParse({ notTasks: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects tasks not an array', () => {
+    const result = TimelineContentSchema.safeParse({ tasks: {} });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects task missing id', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ title: 'A', start: '2026-01-01', end: '2026-01-05' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects task with empty id', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: '', title: 'A', start: '2026-01-01', end: '2026-01-05' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects task missing title', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', start: '2026-01-01', end: '2026-01-05' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects task missing start', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', end: '2026-01-05' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects task missing end', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects end before start', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-02-01', end: '2026-01-01', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate task ids', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [
+        { id: 'dup', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: 0 },
+        { id: 'dup', title: 'B', start: '2026-01-01', end: '2026-01-05', progress: 0 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a dependency referencing a nonexistent task', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [
+        { id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', dependsOn: ['ghost'], progress: 0 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a direct cycle (A→B→A)', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [
+        { id: 'a', title: 'A', start: '2026-01-01', end: '2026-01-05', dependsOn: ['b'], progress: 0 },
+        { id: 'b', title: 'B', start: '2026-01-01', end: '2026-01-05', dependsOn: ['a'], progress: 0 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an indirect cycle (A→B→C→A)', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [
+        { id: 'a', title: 'A', start: '2026-01-01', end: '2026-01-05', dependsOn: ['c'], progress: 0 },
+        { id: 'b', title: 'B', start: '2026-01-01', end: '2026-01-05', dependsOn: ['a'], progress: 0 },
+        { id: 'c', title: 'C', start: '2026-01-01', end: '2026-01-05', dependsOn: ['b'], progress: 0 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a self-dependency', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [
+        { id: 'a', title: 'A', start: '2026-01-01', end: '2026-01-05', dependsOn: ['a'], progress: 0 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects progress > 100', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: 150 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects progress < 0', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: -10 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects document content under the timeline type', () => {
+    const result = TimelineContentSchema.safeParse({ format: 'markdown', body: '# nope' });
+    expect(result.success).toBe(false);
+  });
+
+  it('preserves every task on a successful parse', () => {
+    const content = {
+      tasks: [
+        { id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: 50 },
+        { id: 't2', title: 'B', start: '2026-01-05', end: '2026-01-10', dependsOn: ['t1'], progress: 0 },
+      ],
+    };
+    const result = TimelineContentSchema.safeParse(content);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.tasks).toHaveLength(2);
+      expect(result.data).toEqual(content);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ArtifactTypeSchema
 // ---------------------------------------------------------------------------
 
@@ -589,6 +778,37 @@ describe('validateArtifactContent', () => {
 
   it('rejects invalid slide_deck content (missing slides)', () => {
     const result = validateArtifactContent('slide_deck', { foo: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('validates timeline content against the timeline schema', () => {
+    const result = validateArtifactContent('timeline', {
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', progress: 50 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects timeline content with end before start', () => {
+    const result = validateArtifactContent('timeline', {
+      tasks: [{ id: 't1', title: 'A', start: '2026-02-01', end: '2026-01-01', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects timeline content with a dependency cycle', () => {
+    const result = validateArtifactContent('timeline', {
+      tasks: [
+        { id: 'a', title: 'A', start: '2026-01-01', end: '2026-01-05', dependsOn: ['b'], progress: 0 },
+        { id: 'b', title: 'B', start: '2026-01-01', end: '2026-01-05', dependsOn: ['a'], progress: 0 },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects timeline content with a dangling dependency', () => {
+    const result = validateArtifactContent('timeline', {
+      tasks: [{ id: 't1', title: 'A', start: '2026-01-01', end: '2026-01-05', dependsOn: ['ghost'], progress: 0 }],
+    });
     expect(result.success).toBe(false);
   });
 

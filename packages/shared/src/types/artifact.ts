@@ -136,12 +136,97 @@ export const SlideDeckContentSchema = z
   });
 
 export type SlideDeckContent = z.infer<typeof SlideDeckContentSchema>;
-const TimelineContentSchema = z.object({
-  tasks: z.array(z.object({
-    id: z.string().min(1), title: z.string(), start: z.string(), end: z.string(),
-    dependsOn: z.array(z.string()).optional(), progress: z.number().min(0).max(100).optional(),
-  })),
+
+const timelineTaskSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  start: z.string().min(1),
+  end: z.string().min(1),
+  dependsOn: z.array(z.string()).optional(),
+  progress: z.number().min(0).max(100).optional(),
 });
+
+export const TimelineContentSchema = z
+  .object({
+    tasks: z.array(timelineTaskSchema),
+  })
+  .superRefine((timeline, ctx) => {
+    const taskIds = new Set<string>();
+    timeline.tasks.forEach((task, index) => {
+      // Duplicate task id detection
+      if (taskIds.has(task.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tasks', index, 'id'],
+          message: `Duplicate task id "${task.id}"`,
+        });
+      } else {
+        taskIds.add(task.id);
+      }
+
+      // Date validation: end must be >= start
+      const start = new Date(task.start);
+      const end = new Date(task.end);
+      if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+        if (end < start) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['tasks', index, 'end'],
+            message: `Task end date is before its start date`,
+          });
+        }
+      }
+    });
+
+    // Dependency reference validation + cycle detection
+    const adj = new Map<string, string[]>();
+    timeline.tasks.forEach((task) => {
+      const deps = task.dependsOn ?? [];
+      adj.set(task.id, []);
+      deps.forEach((dep) => {
+        if (!taskIds.has(dep)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['tasks', timeline.tasks.indexOf(task), 'dependsOn'],
+            message: `Task "${task.id}" depends on unknown task id "${dep}"`,
+          });
+        } else {
+          adj.get(task.id)?.push(dep);
+        }
+      });
+    });
+
+    // Cycle detection via DFS
+    const WHITE = 0; // unvisited
+    const GRAY = 1; // in current DFS stack
+    const BLACK = 2; // fully explored
+    const color = new Map<string, number>();
+    for (const id of taskIds) color.set(id, WHITE);
+
+    function dfs(node: string): boolean {
+      color.set(node, GRAY);
+      for (const neighbor of adj.get(node) ?? []) {
+        const c = color.get(neighbor);
+        if (c === GRAY) return true; // back edge → cycle
+        if (c === WHITE && dfs(neighbor)) return true;
+      }
+      color.set(node, BLACK);
+      return false;
+    }
+
+    for (const id of taskIds) {
+      if (color.get(id) === WHITE && dfs(id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tasks'],
+          message: `Dependency graph contains a cycle`,
+        });
+        break; // one cycle error is sufficient
+      }
+    }
+  });
+
+export type TimelineContent = z.infer<typeof TimelineContentSchema>;
 const GalleryContentSchema = z.object({
   items: z.array(z.object({ id: z.string().min(1), type: z.string(), url: z.string(), caption: z.string().optional() })),
 });
