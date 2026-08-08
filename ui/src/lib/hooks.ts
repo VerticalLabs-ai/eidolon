@@ -2204,12 +2204,14 @@ export function usePresenceActions(
   artifactId: string | undefined,
 ) {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const presenceGenerationRef = useRef(0);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
   const [selfUserId, setSelfUserId] = useState<string | undefined>(undefined);
 
   const join = useCallback(async () => {
     if (!companyId || !artifactId) return;
+    const generation = ++presenceGenerationRef.current;
     try {
       const res = await api.joinPresence(companyId, artifactId);
       const body = res as unknown as { data: { userId: string } };
@@ -2217,6 +2219,8 @@ export function usePresenceActions(
     } catch {
       /* presence is best-effort */
     }
+    // Do not arm a heartbeat if leave() ran while join was in flight.
+    if (generation !== presenceGenerationRef.current) return;
     // Heartbeat to keep the session alive (refreshes lastActiveAt).
     if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     heartbeatRef.current = setInterval(async () => {
@@ -2230,6 +2234,7 @@ export function usePresenceActions(
 
   const leave = useCallback(async () => {
     if (!companyId || !artifactId) return;
+    presenceGenerationRef.current++;
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
       heartbeatRef.current = null;
