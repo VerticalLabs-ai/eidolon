@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import { eq, and, or, isNull, desc, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
@@ -363,7 +363,7 @@ export function globalPromptsRouter(db: DbInstance): Router {
 // Router: Company-scoped prompts
 // ---------------------------------------------------------------------------
 
-export function companyPromptsRouter(db: DbInstance): Router {
+export function companyPromptsRouter(db: DbInstance, requireWriteAccess: RequestHandler): Router {
   const router = Router({ mergeParams: true });
   const { promptTemplates, promptVersions, agents } = db.schema;
 
@@ -443,7 +443,7 @@ export function companyPromptsRouter(db: DbInstance): Router {
   });
 
   // POST /api/companies/:companyId/prompts -- create template
-  router.post('/', validate(CreatePromptBody), async (req, res) => {
+  router.post('/', requireWriteAccess, validate(CreatePromptBody), async (req, res) => {
     const { companyId } = routeParams(req);
     const body = req.body as z.infer<typeof CreatePromptBody>;
     const now = new Date();
@@ -483,7 +483,7 @@ export function companyPromptsRouter(db: DbInstance): Router {
   });
 
   // PATCH /api/companies/:companyId/prompts/:id -- update (creates new version)
-  router.patch('/:id', validate(UpdatePromptBody), async (req, res) => {
+  router.patch('/:id', requireWriteAccess, validate(UpdatePromptBody), async (req, res) => {
     const { id } = routeParams(req);
     const body = req.body as z.infer<typeof UpdatePromptBody>;
 
@@ -533,7 +533,7 @@ export function companyPromptsRouter(db: DbInstance): Router {
   });
 
   // DELETE /api/companies/:companyId/prompts/:id
-  router.delete('/:id', async (req, res) => {
+  router.delete('/:id', requireWriteAccess, async (req, res) => {
     const { id } = routeParams(req);
 
     const [existing] = await db.drizzle
@@ -572,7 +572,7 @@ export function companyPromptsRouter(db: DbInstance): Router {
   });
 
   // POST /api/companies/:companyId/prompts/:id/apply -- apply template to agent
-  router.post('/:id/apply', validate(ApplyPromptBody), async (req, res) => {
+  router.post('/:id/apply', requireWriteAccess, validate(ApplyPromptBody), async (req, res) => {
     const { id, companyId } = routeParams(req);
     const body = req.body as z.infer<typeof ApplyPromptBody>;
 
