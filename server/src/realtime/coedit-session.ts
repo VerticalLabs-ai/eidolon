@@ -247,6 +247,8 @@ export async function joinSession(
       dirty: false,
     };
     sessions.set(artifactId, session);
+  } else if (session.companyId !== companyId) {
+    throw new Error('Artifact session belongs to a different company');
   }
 
   const color = colorForUser(userId);
@@ -292,8 +294,14 @@ export async function leaveSession(
     if (session.dirty) {
       try {
         await flushSession(artifactId, { editSource: 'system' });
-      } catch {
-        // Best-effort flush on leave; don't crash
+      } catch (err) {
+        // Retain the dirty session so a later participant can retry the flush.
+        console.error('Failed to flush co-edit session on leave', {
+          artifactId,
+          companyId: session.companyId,
+          err,
+        });
+        return;
       }
     }
     sessions.delete(artifactId);
@@ -328,10 +336,16 @@ export function applyOperation(
   artifactId: string,
   op: CoEditOp,
   userId: string,
+  ws: WebSocket,
 ): void {
   const session = sessions.get(artifactId);
   if (!session) {
     throw new Error('No active co-edit session for artifact ' + artifactId);
+  }
+
+  const sender = session.participants.get(userId);
+  if (!sender || sender.ws !== ws) {
+    throw new Error('Not authorized for this co-edit session');
   }
 
   // Apply the op to the canonical state
@@ -339,7 +353,6 @@ export function applyOperation(
   session.dirty = true;
 
   // Ack to sender
-  const sender = session.participants.get(userId);
   if (sender) {
     sendTo(sender.ws, {
       type: 'coedit.op.ack',
