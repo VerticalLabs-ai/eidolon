@@ -2,8 +2,10 @@ import { ExternalLink, FolderKanban, Activity, FileText, Target, AlertTriangle, 
 import { formatDistanceToNow } from "date-fns";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { clsx } from "clsx";
 import { useProjectHome, useGoals } from "@/lib/hooks";
+import { useServerEvents } from "@/lib/ws";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card as UICard } from "@/components/ui/Card";
@@ -414,10 +416,23 @@ function ArtifactsCard({
 export function ProjectHome({ companyId, projectId }: { companyId: string; projectId: string }) {
   const { data: summary, isLoading, isError, refetch } = useProjectHome(companyId, projectId);
   const [, setSearchParams] = useSearchParams();
+  const qc = useQueryClient();
 
   const navigateToArtifacts = () => {
     setSearchParams({ tab: "artifacts" }, { replace: true });
   };
+
+  // Realtime: live-update the Project Home artifacts section on artifact
+  // events (VAL-CROSS-011). Invalidating the project-home query causes
+  // TanStack Query to refetch the composed view, so the artifacts card and
+  // counts reflect new/updated/deleted artifacts without a manual reload.
+  const invalidateHome = () => {
+    qc.invalidateQueries({ queryKey: ["project-home", companyId, projectId] });
+  };
+  useServerEvents(companyId, "artifact.created", invalidateHome);
+  useServerEvents(companyId, "artifact.updated", invalidateHome);
+  useServerEvents(companyId, "artifact.deleted", invalidateHome);
+  useServerEvents(companyId, "artifact.archived", invalidateHome);
 
   if (isLoading) {
     return (

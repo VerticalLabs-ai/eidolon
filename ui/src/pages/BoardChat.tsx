@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import {
   MessageCircle,
   Send,
@@ -8,6 +8,8 @@ import {
   ArrowLeft,
   Users,
   Bot,
+  CheckSquare,
+  Link2,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { clsx } from "clsx";
@@ -455,8 +457,19 @@ export function BoardChat() {
                 // stores them on the user/bound message). Agent responses carry
                 // artifactId/artifactType in metadata when an artifact was produced.
                 const msgMentions = (msg.metadata?.mentions as MentionEntry[] | undefined);
-                const artifactId = msg.metadata?.artifactId;
-                const artifactType = msg.metadata?.artifactType;
+                // VAL-CROSS-007: render ALL artifacts from metadata.artifacts[]
+                // (agent can produce multiple). Fall back to single
+                // metadata.artifactId/artifactType for backward compat.
+                const msgMeta = msg.metadata as Record<string, unknown> | undefined;
+                const artifactsList = Array.isArray(msgMeta?.artifacts)
+                  ? (msgMeta.artifacts as Array<{ artifactId: string; artifactType: string }>)
+                  : msgMeta?.artifactId != null && msgMeta?.artifactType != null
+                    ? [{ artifactId: String(msgMeta.artifactId), artifactType: String(msgMeta.artifactType) }]
+                    : [];
+                // VAL-CROSS-026: task outcome link from metadata
+                const taskId =
+                  (msgMeta?.mentionDispatch as { taskId?: string } | undefined)?.taskId ??
+                  (typeof msgMeta?.taskId === "string" ? msgMeta.taskId : undefined);
 
                 return (
                   <div
@@ -537,16 +550,36 @@ export function BoardChat() {
                         </p>
                       </div>
 
-                      {/* Artifact card from agent response metadata */}
-                      {artifactId != null && artifactType != null && (
-                        <div className="mt-1.5 max-w-full">
+                      {/* Artifact card(s) from agent response metadata */}
+                      {artifactsList.map((a) => (
+                        <div key={a.artifactId} className="mt-1.5 max-w-full">
                           <ThreadArtifactCard
-                            artifactId={String(artifactId)}
-                            artifactType={String(artifactType)}
+                            artifactId={a.artifactId}
+                            artifactType={a.artifactType}
                             companyId={companyId!}
                             projectId={null}
                           />
                         </div>
+                      ))}
+                      {/* Task outcome link from agent response (VAL-CROSS-026) */}
+                      {taskId != null && (
+                        <Link
+                          to={`/company/${companyId}/tasks/${encodeURIComponent(taskId)}`}
+                          data-testid="thread-task-link"
+                          data-task-id={taskId}
+                          className="mt-1.5 max-w-full flex items-center gap-3 rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 transition-colors hover:border-accent/30 hover:bg-accent/[0.04]"
+                        >
+                          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-accent/10 text-accent">
+                            <CheckSquare className="h-4 w-4" aria-hidden="true" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-text-primary">Task created</div>
+                            <div className="truncate text-xs text-text-muted">
+                              Click to view task on the board
+                            </div>
+                          </div>
+                          <Link2 className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />
+                        </Link>
                       )}
                     </div>
                   </div>

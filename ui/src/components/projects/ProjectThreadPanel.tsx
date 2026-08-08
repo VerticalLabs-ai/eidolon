@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useMemo } from "react";
-import { MessageCircle, Send } from "lucide-react";
+import { MessageCircle, Send, CheckSquare, Link2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
   useCreateThreadItem,
   useProjectThreadItems,
@@ -265,15 +266,55 @@ export function ProjectThreadPanel({
                         {renderContent(item.content, item.mentions)}
                       </p>
                     )}
-                    {/* Render artifact card if the agent produced an artifact */}
-                    {item.payload?.artifactId != null && item.payload?.artifactType != null && (
-                      <ThreadArtifactCard
-                        artifactId={String(item.payload.artifactId)}
-                        artifactType={String(item.payload.artifactType)}
-                        companyId={companyId}
-                        projectId={item.projectId ?? projectId}
-                      />
-                    )}
+                    {/* Render artifact card(s) if the agent produced artifact(s) */}
+                    {(() => {
+                      const p = item.payload as Record<string, unknown>;
+                      // VAL-CROSS-007: render ALL artifacts from payload.artifacts[]
+                      // (agent can produce multiple). Fall back to single
+                      // payload.artifactId/artifactType for backward compat.
+                      const artifactsList = Array.isArray(p?.artifacts)
+                        ? (p.artifacts as Array<{ artifactId: string; artifactType: string }>)
+                        : p?.artifactId != null && p?.artifactType != null
+                          ? [{ artifactId: String(p.artifactId), artifactType: String(p.artifactType) }]
+                          : [];
+                      return artifactsList.map((a) => (
+                        <ThreadArtifactCard
+                          key={a.artifactId}
+                          artifactId={a.artifactId}
+                          artifactType={a.artifactType}
+                          companyId={companyId}
+                          projectId={item.projectId ?? projectId}
+                        />
+                      ));
+                    })()}
+                    {/* VAL-CROSS-026: render task outcome link when agent
+                        response includes task data alongside artifacts */}
+                    {(() => {
+                      const p = item.payload as Record<string, unknown>;
+                      const taskId =
+                        (p?.mentionDispatch as { taskId?: string } | undefined)?.taskId ??
+                        (typeof p?.taskId === "string" ? p.taskId : undefined);
+                      if (!taskId) return null;
+                      return (
+                        <Link
+                          to={`/company/${companyId}/tasks/${encodeURIComponent(taskId)}`}
+                          data-testid="thread-task-link"
+                          data-task-id={taskId}
+                          className="mt-2 flex items-center gap-3 rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 transition-colors hover:border-accent/30 hover:bg-accent/[0.04]"
+                        >
+                          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-accent/10 text-accent">
+                            <CheckSquare className="h-4 w-4" aria-hidden="true" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-text-primary">Task created</div>
+                            <div className="truncate text-xs text-text-muted">
+                              Click to view task on the board
+                            </div>
+                          </div>
+                          <Link2 className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />
+                        </Link>
+                      );
+                    })()}
                     <InteractionActions
                       item={item}
                       onResolve={(status) => resolveInteraction(item, status)}
