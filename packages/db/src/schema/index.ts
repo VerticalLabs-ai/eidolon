@@ -40,3 +40,7 @@ export {
   routines,
 } from './runtime.js';
 export { automationRuns } from './automation_runs.js';
+export {
+  artifacts,
+  artifactRevisions,
+} from './artifacts.js';
