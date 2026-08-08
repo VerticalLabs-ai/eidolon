@@ -463,7 +463,7 @@ export class MentionService {
       // Mark the queued item as processed FIRST to prevent double-dispatch
       // if processQueuedMentions is called again concurrently.
       const now = new Date();
-      await this.db.drizzle
+      const [claimedItem] = await this.db.drizzle
         .update(taskThreadItems)
         .set({
           payload: {
@@ -473,7 +473,19 @@ export class MentionService {
           content: `@${agent.name} resumed. Processing queued mention…`,
           updatedAt: now,
         } as any)
-        .where(eq(taskThreadItems.id, queuedItem.id));
+        .where(
+          and(
+            eq(taskThreadItems.id, queuedItem.id),
+            sql`COALESCE((${taskThreadItems.payload}->'queuedMention'->>'processed')::bool, false) = false`,
+            sql`COALESCE((${taskThreadItems.payload}->'queuedMention'->>'cancelled')::bool, false) = false`,
+          ),
+        )
+        .returning({ id: taskThreadItems.id });
+
+      // Another worker may have claimed or cancelled this item since the
+      // initial select. Only the worker that successfully updates it may
+      // dispatch the mention.
+      if (!claimedItem) continue;
 
       processed++;
 
