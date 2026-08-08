@@ -44,3 +44,4 @@ export {
   artifacts,
   artifactRevisions,
 } from './artifacts.js';
+export { testUsers } from './test_users.js';

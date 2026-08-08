@@ -47,6 +47,7 @@ import { routinesRouter } from './routes/routines.js';
 import { automationsRouter } from './routes/automations.js';
 import { artifactsRouter } from './routes/artifacts.js';
 import { mentionsRouter } from './routes/mentions.js';
+import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -118,6 +119,11 @@ export function createApp(db: DbInstance): express.Express {
 
   // Public endpoints (no auth required)
   app.use('/api', healthRouter);
+
+  // Local-trusted test user creation (guarded to AUTH_MODE=local_trusted
+  // inside the route handler; returns 404 otherwise). Available without
+  // auth so validators can create test users programmatically.
+  app.use('/api/auth/local-trusted', localTrustedAuthRouter(db));
 
   // Adapter registry introspection (public read; no secrets leaked)
   app.use('/api/adapters', adaptersRouter());

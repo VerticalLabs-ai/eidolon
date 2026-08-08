@@ -61,14 +61,32 @@ export function inboxRouter(db: DbInstance): Router {
   const { approvals, agentCollaborations, activityLog, inboxReadStates, taskThreadItems } =
     db.schema;
 
+  // Capture auth mode at router creation time (during createApp() when
+  // AUTH_MODE is set). In tests, AUTH_MODE is only set during createApp()
+  // and restored afterward, so checking process.env at request time would
+  // always be undefined.
+  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+
   // -------------------------------------------------------------------------
   // GET / — unified feed with readAt per item
   // -------------------------------------------------------------------------
+  // In local_trusted mode, a `userId` query parameter overrides the
+  // authenticated user so validators can check a test user's inbox
+  // (e.g. mention notifications for a second user created via
+  // /api/auth/local-trusted/create-test-user).
   router.get('/', async (req, res) => {
     const companyId = routeParams(req).companyId;
-    const userId = req.user?.id;
+    let userId = req.user?.id;
     if (!userId) {
       throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');
+    }
+
+    // local_trusted: allow userId override for test user inbox queries
+    if (isLocalTrusted) {
+      const overrideUserId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+      if (overrideUserId) {
+        userId = overrideUserId;
+      }
     }
     const limit = Math.min(
       Math.max(Number.parseInt(String(req.query.limit ?? '100'), 10) || 100, 1),

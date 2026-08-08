@@ -14,7 +14,7 @@ import type { Mention, MentionableEntity } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 import { ArtifactToolService } from './artifact-tools.js';
 import { AgenticLoop } from './agentic-loop.js';
-import { getCompanyMembers, isCompanyMember } from '../auth.js';
+import { getCompanyMembers, isCompanyMember, type CompanyMember } from '../auth.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 
@@ -111,12 +111,12 @@ export class MentionService {
     // Query real company members via Clerk org membership (or the dev user
     // in local_trusted mode). Never hard-coded — always reflects actual
     // company membership.
-    let members;
+    let members: CompanyMember[];
     try {
       members = await getCompanyMembers(companyId);
     } catch (err) {
       logger.debug({ err, companyId }, 'searchTeammates: membership lookup failed');
-      return [];
+      members = [];
     }
 
     const ql = q.trim().toLowerCase();
@@ -133,6 +133,40 @@ export class MentionService {
       });
       if (entities.length >= remaining) break;
     }
+
+    // Also include test users created via the
+    // /api/auth/local-trusted/create-test-user endpoint. This enables
+    // validators to create a second user, mention them, and verify inbox
+    // notifications + thread.mention WS events. The test_users table is
+    // empty in production (the endpoint is guarded to local_trusted mode),
+    // so this query is harmless in Clerk mode.
+    if (entities.length < remaining) {
+      const { testUsers } = this.db.schema;
+      const testUserRows = await this.db.drizzle
+        .select({
+          id: testUsers.id,
+          name: testUsers.name,
+          email: testUsers.email,
+        })
+        .from(testUsers)
+        .where(eq(testUsers.companyId, companyId))
+        .orderBy(testUsers.name)
+        .limit(remaining - entities.length);
+
+      for (const tu of testUserRows) {
+        if (ql && !tu.name.toLowerCase().includes(ql) && !tu.email.toLowerCase().includes(ql)) {
+          continue;
+        }
+        entities.push({
+          entityType: 'user',
+          entityId: tu.id,
+          label: tu.name,
+          subtitle: tu.email,
+        });
+        if (entities.length >= remaining) break;
+      }
+    }
+
     return entities;
   }
 
@@ -158,14 +192,30 @@ export class MentionService {
     // User mention — verify via real company membership lookup.
     // In local_trusted, the dev user is a member of every company.
     // In Clerk mode, queries org memberships to verify the user belongs
-    // to this company.
+    // to this company. In local_trusted mode, also check test users
+    // created via the create-test-user endpoint.
     if (entityType === 'user') {
+      // First check real company membership (dev user in local_trusted,
+      // Clerk org members in production).
       try {
-        return await isCompanyMember(companyId, entityId);
+        if (await isCompanyMember(companyId, entityId)) {
+          return true;
+        }
       } catch (err) {
         logger.debug({ err, companyId, entityId }, 'resolveMention: membership lookup failed');
-        return false;
       }
+
+      // Also check the test_users table for additional test users
+      // created via the create-test-user endpoint. The table is empty
+      // in production (endpoint guarded to local_trusted mode), so this
+      // is harmless in Clerk mode.
+      const { testUsers } = this.db.schema;
+      const [testUser] = await this.db.drizzle
+        .select({ id: testUsers.id })
+        .from(testUsers)
+        .where(and(eq(testUsers.id, entityId), eq(testUsers.companyId, companyId)))
+        .limit(1);
+      return !!testUser;
     }
 
     return false;

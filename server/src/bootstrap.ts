@@ -58,6 +58,7 @@ import {
   automationRuns,
   artifacts,
   artifactRevisions,
+  testUsers,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -114,6 +115,7 @@ const SCHEMA_BUNDLE = {
   automationRuns,
   artifacts,
   artifactRevisions,
+  testUsers,
 } as const;
 
 export interface BootstrapOptions {
