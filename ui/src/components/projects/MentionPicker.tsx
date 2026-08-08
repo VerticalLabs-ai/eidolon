@@ -28,33 +28,53 @@ export function MentionPicker({
 
   const results = entities ?? [];
 
-  // Reset active index when results change
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [query]);
+  // Refs mirror the latest values so the keyboard handler (registered once)
+  // always reads current state without re-registering on every render.
+  const resultsRef = useRef(results);
+  resultsRef.current = results;
+  const activeIndexRef = useRef(activeIndex);
+  activeIndexRef.current = activeIndex;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
-  // Keyboard navigation
+  // Reset active index when results change (not just query) — clamps to 0
+  // if the previous index is now out of bounds. This ensures the highlight
+  // is always valid after async search results arrive.
+  useEffect(() => {
+    setActiveIndex((prev) => (prev >= results.length && results.length > 0 ? 0 : prev));
+  }, [results]);
+
+  // Keyboard navigation — single stable listener using refs. Registered once
+  // on mount so there is no gap between cleanup and re-registration where a
+  // keypress could be missed. Guards against empty results so ArrowDown/Up
+  // cannot drive activeIndex to -1 (which would make Enter a no-op).
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
+      const currentResults = resultsRef.current;
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setActiveIndex((i) => Math.min(i + 1, results.length - 1));
+        if (currentResults.length === 0) return;
+        setActiveIndex((i) => Math.min(i + 1, currentResults.length - 1));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
+        if (currentResults.length === 0) return;
         setActiveIndex((i) => Math.max(i - 1, 0));
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (results[activeIndex]) {
-          onSelect(results[activeIndex]);
+        const idx = activeIndexRef.current;
+        if (currentResults[idx]) {
+          onSelectRef.current(currentResults[idx]);
         }
       } else if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
       }
     }
     window.addEventListener("keydown", handleKey, true);
     return () => window.removeEventListener("keydown", handleKey, true);
-  }, [results, activeIndex, onSelect, onClose]);
+  }, []);
 
   // Scroll active item into view
   useEffect(() => {

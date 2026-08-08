@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { MessageCircle, Send } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useCreateThreadItem,
   useProjectThreadItems,
   useResolveThreadItem,
 } from "@/lib/hooks";
+import { useServerEvents } from "@/lib/ws";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -100,6 +102,7 @@ export function ProjectThreadPanel({
     mutate: () => undefined,
   };
 
+  const qc = useQueryClient();
   const [composer, setComposer] = useState<ComposerState>({ text: "", mentions: [] });
   const [showPicker, setShowPicker] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
@@ -114,6 +117,18 @@ export function ProjectThreadPanel({
       createItem.reset?.();
     }
   }, [createItem.isSuccess]);
+
+  // Realtime: live-render new/updated thread items without reload (VAL-MENTION-012).
+  // Invalidating the thread query keys triggers TanStack Query to refetch, so a
+  // second client sees new mention items appear live.
+  useServerEvents(companyId, "project.thread.item.created", () => {
+    qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId] });
+  });
+  useServerEvents(companyId, "project.thread.item.updated", () => {
+    qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+    qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId] });
+  });
 
   // Handle text input, detecting @ mentions
   function handleTextChange(value: string) {
