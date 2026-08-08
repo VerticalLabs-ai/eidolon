@@ -171,6 +171,25 @@ async function insertGoal(runner: SqlRunner, companyId: string, title: string): 
   return id;
 }
 
+/** Insert an artifact + revision for a company (with an agent FK). */
+async function insertArtifact(
+  runner: SqlRunner,
+  companyId: string,
+  agentId: string | null,
+  title: string,
+): Promise<{ artifactId: string; revisionId: string }> {
+  const artifactId = randomUUID();
+  const revisionId = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO artifacts (id, company_id, type, title, content, status, version, created_by_agent_id, last_edited_by_agent_id, created_at, updated_at) VALUES ('${artifactId}', '${companyId}', 'document', '${title}', '{"format":"markdown","body":"test"}', 'active', 1, ${agentId ? `'${agentId}'` : 'NULL'}, ${agentId ? `'${agentId}'` : 'NULL'}, '${ts}', '${ts}')`,
+  );
+  await runner.query(
+    `INSERT INTO artifact_revisions (id, artifact_id, version, content, edit_source, edited_by_agent_id, created_at) VALUES ('${revisionId}', '${artifactId}', 1, '{"format":"markdown","body":"test"}', 'agent', ${agentId ? `'${agentId}'` : 'NULL'}, '${ts}')`,
+  );
+  return { artifactId, revisionId };
+}
+
 /** Count rows in a table for a given company_id (or by id for the companies table). */
 async function countForCompany(runner: SqlRunner, table: string, companyId: string): Promise<number> {
   const column = table === 'companies' ? 'id' : 'company_id';
@@ -549,5 +568,33 @@ describe('Cleanup script logic', () => {
     const result = await runCleanup(runner, { execute: true });
     expect(result.companyCount).toBe(1);
     expect(result.mode).toBe('execute');
+  });
+
+  // VAL-CROSS-025: Cleanup removes artifacts + revisions despite FK constraints
+  it('removes artifacts and artifact_revisions despite agent FK constraints', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ artifact-cleanup');
+    const agentId = await insertAgent(runner, fixtureId, 'Artifact Agent');
+    const { artifactId, revisionId } = await insertArtifact(runner, fixtureId, agentId, 'Test Doc');
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    // Artifacts and revisions should be removed
+    expect(await countForCompany(runner, 'artifacts', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'agents', fixtureId)).toBe(0);
+
+    // Artifact revisions (indirect child) should also be gone
+    const revCount = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM artifact_revisions WHERE artifact_id = '${artifactId}'`,
+    );
+    expect(parseInt(revCount[0]?.count ?? '0', 10)).toBe(0);
+
+    // Verify the revision ID is gone
+    const revStillExists = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM artifact_revisions WHERE id = '${revisionId}'`,
+    );
+    expect(parseInt(revStillExists[0]?.count ?? '0', 10)).toBe(0);
   });
 });

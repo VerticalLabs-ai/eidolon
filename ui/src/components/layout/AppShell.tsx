@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Outlet, useParams } from "react-router-dom";
+import { Outlet, useParams, useBlocker, type BlockerFunction } from "react-router-dom";
 import { Menu } from "lucide-react";
 import { Toaster } from "sonner";
 import { Sidebar } from "./Sidebar";
@@ -9,12 +9,102 @@ import { useEventToasts } from "@/lib/toasts";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { CommandPalette } from "@/components/ui/CommandPalette";
 import { ProjectCreationProvider } from "@/components/projects/ProjectCreationProvider";
+import { CompanySwitchDialog } from "@/components/artifacts/CompanySwitchDialog";
+import { getDirtyEditorGuard } from "@/lib/dirty-editor";
+
+/** Extract the companyId segment from a pathname like /company/:id/... */
+function companyIdFromPath(pathname: string): string | null {
+  const m = pathname.match(/\/company\/([^/?]+)/);
+  return m?.[1] ?? null;
+}
 
 export function AppShell() {
   const { companyId } = useParams();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarWasOpenRef = useRef(false);
+
+  // useBlocker (React Router v7 data-router API) intercepts navigation BEFORE
+  // the route changes. When a dirty artifact editor is open and the navigation
+  // changes the companyId, the blocker fires — preventing the ArtifactEditor
+  // from unmounting (and losing its draft) before the user confirms.
+  // This replaces the previous passive-useEffect guard which ran AFTER the
+  // route had already rendered, causing the editor to unmount first.
+  const blocker = useBlocker(
+    useCallback<BlockerFunction>(
+      ({ currentLocation, nextLocation }) => {
+        const guard = getDirtyEditorGuard();
+        if (!guard) return false;
+        return (
+          companyIdFromPath(currentLocation.pathname) !==
+          companyIdFromPath(nextLocation.pathname)
+        );
+      },
+      [],
+    ),
+  );
+
+  const [savingSwitch, setSavingSwitch] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
+
+  // Clear transient switch state once the blocker returns to unblocked (after
+  // cancel/proceed/discard resolves the blocked navigation).
+  useEffect(() => {
+    if (blocker.state === "unblocked") {
+      setSavingSwitch(false);
+      setSwitchError(null);
+    }
+  }, [blocker.state]);
+
+  const resolveSwitch = useCallback(
+    (action: "save" | "discard" | "cancel") => {
+      if (blocker.state !== "blocked") return;
+
+      if (action === "cancel") {
+        blocker.reset();
+        setSwitchError(null);
+        return;
+      }
+
+      if (action === "discard") {
+        const guard = getDirtyEditorGuard();
+        guard?.discard();
+        setSwitchError(null);
+        blocker.proceed();
+        return;
+      }
+
+      // action === "save"
+      const guard = getDirtyEditorGuard();
+      if (!guard) {
+        setSwitchError(null);
+        blocker.proceed();
+        return;
+      }
+
+      setSavingSwitch(true);
+      setSwitchError(null);
+      void guard
+        .save()
+        .then((success) => {
+          if (success) {
+            blocker.proceed();
+          } else {
+            setSwitchError(
+              "Save failed. Your draft is preserved. Try again or discard changes.",
+            );
+          }
+        })
+        .catch(() => {
+          setSwitchError(
+            "Save failed. Your draft is preserved. Try again or discard changes.",
+          );
+        })
+        .finally(() => setSavingSwitch(false));
+    },
+    [blocker],
+  );
+
   const { data: company } = useCompany(companyId);
   const { status } = useWebSocket(companyId);
 
@@ -58,6 +148,14 @@ export function AppShell() {
               fontSize: "13px",
             },
           }}
+        />
+        <CompanySwitchDialog
+          open={blocker.state === "blocked"}
+          saving={savingSwitch}
+          error={switchError}
+          onCancel={() => resolveSwitch("cancel")}
+          onDiscard={() => resolveSwitch("discard")}
+          onSave={() => resolveSwitch("save")}
         />
         <Sidebar
           companyName={company?.name}

@@ -14,10 +14,8 @@ export const messages = pgTable(
       .notNull()
       .references(() => companies.id),
     fromAgentId: text('from_agent_id')
-      .notNull()
       .references(() => agents.id),
     toAgentId: text('to_agent_id')
-      .notNull()
       .references(() => agents.id),
     type: text('type', {
       enum: ['directive', 'report', 'question', 'response', 'notification'],

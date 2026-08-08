@@ -80,6 +80,12 @@ class WebSocketClient {
       this.ws.onopen = () => {
         this.reconnectAttempts = 0;
         this.setStatus("connected");
+        // Send subscribe message so the server broadcasts events for this company
+        if (this.companyId) {
+          this.ws?.send(
+            JSON.stringify({ type: "subscribe", companyId: this.companyId }),
+          );
+        }
       };
 
       this.ws.onmessage = (event) => {

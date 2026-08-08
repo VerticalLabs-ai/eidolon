@@ -48,6 +48,15 @@ export interface RuntimeEvent extends ServerEvent {
     | 'runtime.workspace_finalized';
 }
 
+export interface ArtifactEvent extends ServerEvent {
+  type:
+    | 'artifact.created'
+    | 'artifact.updated'
+    | 'artifact.revision.created'
+    | 'artifact.deleted'
+    | 'artifact.archived';
+}
+
 export interface RoutineEvent extends ServerEvent {
   type:
     | 'routine.triggered'
@@ -92,7 +101,8 @@ export interface ProjectThreadEvent extends ServerEvent {
   type:
     | 'project.thread.created'
     | 'project.thread.item.created'
-    | 'project.thread.item.updated';
+    | 'project.thread.item.updated'
+    | 'thread.mention';
 }
 
 export interface GoalEvent extends ServerEvent {
@@ -149,6 +159,7 @@ export type EidolonEvent =
   | EnvironmentEvent
   | ExecutionEvent
   | RuntimeEvent
+  | ArtifactEvent
   | RoutineEvent;
 
 // ---------------------------------------------------------------------------
