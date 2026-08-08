@@ -243,6 +243,7 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
       expect(Object.keys(data).sort()).toEqual([
         'activePlanProgress',
         'activeWork',
+        'artifacts',
         'counts',
         'failedWork',
         'goalProgress',
@@ -681,6 +682,7 @@ describe('Project Home Summary Endpoint — VAL-HOME-*', () => {
       expect(data.recentThreadItems).toEqual([]);
       expect(data.pendingDecisions).toEqual([]);
       expect(data.activePlanProgress).toEqual([]);
+      expect(data.artifacts).toEqual([]);
     });
   });
 

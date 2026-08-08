@@ -78,6 +78,15 @@ const INDIRECT_TABLES: ReadonlyArray<{
     parentTable: 'approvals',
     parentCol: 'id',
   },
+  {
+    // artifact_revisions has no company_id column; it references artifacts
+    // via artifact_id. Must be deleted before artifacts (and before agents,
+    // since edited_by_agent_id references agents(id) with NO ACTION).
+    table: 'artifact_revisions',
+    childCol: 'artifact_id',
+    parentTable: 'artifacts',
+    parentCol: 'id',
+  },
 ];
 
 /**
@@ -114,6 +123,10 @@ const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
   'project_plans',
   'project_threads',
   'agent_executions',
+  // artifacts must be deleted before agents (created_by_agent_id /
+  // last_edited_by_agent_id reference agents(id) with NO ACTION).
+  // artifact_revisions are handled as an indirect child via INDIRECT_TABLES.
+  'artifacts',
 ];
 
 /**

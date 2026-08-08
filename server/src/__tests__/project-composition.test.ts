@@ -140,6 +140,9 @@ describe('Project Composition Endpoints — VAL-CROSS-006/007/010, VAL-DEC-007',
       expect(data).toHaveProperty('recentActivity');
       expect(data).toHaveProperty('recentFiles');
       expect(data).toHaveProperty('goalProgress');
+      // VAL-ART-056: artifacts section is now present
+      expect(data).toHaveProperty('artifacts');
+      expect(Array.isArray(data.artifacts)).toBe(true);
     });
   });
 
@@ -292,6 +295,9 @@ describe('Project Composition Endpoints — VAL-CROSS-006/007/010, VAL-DEC-007',
       expect(data).toHaveProperty('plans');
       expect(data).toHaveProperty('outcomes');
       expect(data).toHaveProperty('threadSummary');
+      // VAL-ART-057: artifacts section is now present
+      expect(data).toHaveProperty('artifacts');
+      expect(Array.isArray(data.artifacts)).toBe(true);
     });
 
     it('returns empty arrays and zero counts for an empty project', async () => {
@@ -304,6 +310,7 @@ describe('Project Composition Endpoints — VAL-CROSS-006/007/010, VAL-DEC-007',
         activeThreadCount: 0,
         pendingInteractionCount: 0,
       });
+      expect(data.artifacts).toEqual([]);
     });
   });
 

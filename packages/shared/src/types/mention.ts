@@ -1,0 +1,31 @@
+import { z } from 'zod';
+
+// ---------------------------------------------------------------------------
+// @-mention structured types (M1 agent collaboration)
+// ---------------------------------------------------------------------------
+
+export const MentionEntityTypeSchema = z.enum(['agent', 'user']);
+
+export const MentionSchema = z.object({
+  entityType: MentionEntityTypeSchema,
+  entityId: z.string().min(1),
+  label: z.string().min(1).max(255),
+});
+
+export const MentionsSchema = z.array(MentionSchema).default([]);
+
+export type Mention = z.infer<typeof MentionSchema>;
+export type MentionEntityType = z.infer<typeof MentionEntityTypeSchema>;
+
+// ---------------------------------------------------------------------------
+// Mentionable entity (for picker UI)
+// ---------------------------------------------------------------------------
+
+export const MentionableEntitySchema = z.object({
+  entityType: MentionEntityTypeSchema,
+  entityId: z.string().min(1),
+  label: z.string().min(1).max(255),
+  subtitle: z.string().optional(),
+});
+
+export type MentionableEntity = z.infer<typeof MentionableEntitySchema>;

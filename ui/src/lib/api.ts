@@ -354,6 +354,8 @@ export interface ProjectHomeSummary {
   };
   // VER-513 composed fields
   healthSummary: HealthSummary;
+  // VAL-ART-056: artifacts section (active only, top 10)
+  artifacts: ArtifactSummary[];
 }
 
 export const getProjectHome = (companyId: string, projectId: string) =>
@@ -477,6 +479,7 @@ export interface TaskThreadItem {
   authorAgentId?: string | null;
   content: string | null;
   payload: TaskThreadPayload;
+  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
   interactionType?: "suggested_tasks" | "confirmation" | "form" | null;
   status: TaskThreadItemStatus;
   idempotencyKey?: string | null;
@@ -512,6 +515,7 @@ export interface ProjectThread {
 export interface ProjectThreadItem extends Omit<TaskThreadItem, "taskId"> {
   taskId: string | null;
   projectThreadId: string | null;
+  projectId: string | null;
 }
 
 export interface ProjectThreadDetail extends ProjectThread {
@@ -705,6 +709,7 @@ export interface CreateThreadItemInput {
   kind?: ProjectThreadItem["kind"];
   content?: string;
   payload?: TaskThreadPayload;
+  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
   interactionType?: NonNullable<ProjectThreadItem["interactionType"]>;
   status?: Extract<TaskThreadItemStatus, "pending" | "accepted" | "rejected" | "answered" | "linked">;
 }
@@ -766,6 +771,23 @@ export const updateThreadItem = (
     `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items/${itemId}`,
     { method: "PATCH", body: JSON.stringify(data) },
   );
+
+// ── Mentions ─────────────────────────────────────────────────────────────
+
+export interface MentionableEntity {
+  entityType: "agent" | "user";
+  entityId: string;
+  label: string;
+  subtitle?: string;
+}
+
+export const searchMentions = (companyId: string, query: string) => {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  return request<ApiResponse<MentionableEntity[]>>(
+    `/companies/${companyId}/mentions/search?${params.toString()}`,
+  );
+};
 
 // ── Project Plans ────────────────────────────────────────────────────────
 
@@ -926,6 +948,8 @@ export interface ProjectWorkSummary {
   };
   // VER-513 composed fields
   automationRuns: AutomationRun[];
+  // VAL-ART-057: artifacts section (active only, top 10)
+  artifacts: ArtifactSummary[];
 }
 
 export const getProjectWork = (companyId: string, projectId: string) =>
@@ -1184,6 +1208,8 @@ export interface SendChatResult {
   threadId: string;
   respondingAgentId: string | null;
   respondingAgentName: string | null;
+  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  mentionDispatch?: { dispatchedAgents?: Array<{ agentId: string; agentName: string }> };
 }
 
 export const getChatThreads = (companyId: string) =>
@@ -1194,7 +1220,12 @@ export const getChatThread = (companyId: string, threadId: string) =>
 
 export const sendChatMessage = (
   companyId: string,
-  data: { content: string; targetAgentId?: string; threadId?: string },
+  data: {
+    content: string;
+    targetAgentId?: string;
+    threadId?: string;
+    mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  },
 ) =>
   request<SendChatResult>(`/companies/${companyId}/chat/send`, {
     method: "POST",
@@ -2502,4 +2533,180 @@ export const addApprovalComment = (
   request<ApprovalComment>(
     `/companies/${companyId}/approvals/${id}/comments`,
     { method: "POST", body: JSON.stringify({ content }) },
+  );
+
+// ── Artifacts ────────────────────────────────────────────────────────────
+
+export type ArtifactType =
+  | "document"
+  | "sheet"
+  | "board"
+  | "slide_deck"
+  | "timeline"
+  | "gallery"
+  | "dashboard"
+  | "app"
+  | "code";
+
+export type ArtifactStatus = "active" | "archived" | "deleted";
+
+export interface Artifact {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  folderId: string | null;
+  type: ArtifactType;
+  title: string;
+  content: Record<string, unknown>;
+  contentSchemaVersion: number;
+  status: ArtifactStatus;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  lastEditedByUserId: string | null;
+  lastEditedByAgentId: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+/** Lightweight artifact summary used in composed views (home/work). */
+export interface ArtifactSummary {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  type: ArtifactType;
+  title: string;
+  status: ArtifactStatus;
+  version: number;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  lastEditedByUserId: string | null;
+  lastEditedByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArtifactRevision {
+  id: string;
+  artifactId: string;
+  version: number;
+  content: Record<string, unknown>;
+  editedByUserId: string | null;
+  editedByAgentId: string | null;
+  editSource: "user" | "agent" | "system";
+  message: string | null;
+  createdAt: string;
+}
+
+export interface ArtifactListMeta {
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ArtifactListParams {
+  projectId?: string;
+  type?: ArtifactType;
+  status?: ArtifactStatus;
+  limit?: number;
+  offset?: number;
+}
+
+function artifactListQuery(params: ArtifactListParams): string {
+  const sp = new URLSearchParams();
+  if (params.projectId) sp.set("projectId", params.projectId);
+  if (params.type) sp.set("type", params.type);
+  if (params.status) sp.set("status", params.status);
+  if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export const listArtifacts = (companyId: string, params?: ArtifactListParams) =>
+  request<ApiResponse<Artifact[]>>(
+    `/companies/${companyId}/artifacts${artifactListQuery(params ?? {})}`,
+  );
+
+export const listProjectArtifacts = (
+  companyId: string,
+  projectId: string,
+) =>
+  request<ApiResponse<Artifact[]>>(
+    `/companies/${companyId}/projects/${projectId}/artifacts`,
+  );
+
+export const getArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}`);
+
+export const createArtifact = (
+  companyId: string,
+  data: {
+    type: ArtifactType;
+    title: string;
+    content: Record<string, unknown>;
+    projectId?: string | null;
+  },
+) =>
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateArtifact = (
+  companyId: string,
+  id: string,
+  data: {
+    version: number;
+    title?: string;
+    content?: Record<string, unknown>;
+    message?: string;
+  },
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const deleteArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}`,
+    { method: "DELETE" },
+  );
+
+export const archiveArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/archive`,
+    { method: "POST" },
+  );
+
+export const restoreArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/restore`,
+    { method: "POST" },
+  );
+
+export const listRevisions = (companyId: string, id: string) =>
+  request<ApiResponse<ArtifactRevision[]>>(
+    `/companies/${companyId}/artifacts/${id}/revisions`,
+  );
+
+export const getRevision = (
+  companyId: string,
+  id: string,
+  version: number,
+) =>
+  request<ApiResponse<ArtifactRevision>>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${version}`,
+  );
+
+export const restoreRevision = (
+  companyId: string,
+  id: string,
+  version: number,
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
+    { method: "POST" },
   );
