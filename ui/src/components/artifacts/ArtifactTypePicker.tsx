@@ -39,7 +39,7 @@ const TYPE_OPTIONS: TypeOption[] = [
     label: "Slides",
     description: "Slide deck with layouts and blocks",
     icon: <Presentation className="h-5 w-5" />,
-    enabled: false,
+    enabled: true,
   },
   {
     type: "timeline",

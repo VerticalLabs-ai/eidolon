@@ -3,6 +3,7 @@ import {
   DocumentContentSchema,
   SheetContentSchema,
   BoardContentSchema,
+  SlideDeckContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
 } from './artifact.js';
@@ -375,6 +376,147 @@ describe('BoardContentSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
+// SlideDeckContentSchema
+// ---------------------------------------------------------------------------
+
+describe('SlideDeckContentSchema', () => {
+  it('accepts a minimal valid deck (1 slide with layout + blocks)', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [
+        { id: 's1', layout: 'title', blocks: [{ type: 'text', content: { text: 'Hello' } }] },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an empty slides array', () => {
+    const result = SlideDeckContentSchema.safeParse({ slides: [] });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a slide with no blocks', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', layout: 'blank', blocks: [] }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts multiple slides with different layouts and blocks', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [
+        { id: 's1', layout: 'title', blocks: [{ type: 'heading', content: { text: 'Title' } }] },
+        { id: 's2', layout: 'content', blocks: [{ type: 'text', content: { text: 'Body' } }, { type: 'image', content: { url: 'https://example.com/x.png' } }] },
+        { id: 's3', layout: 'split', blocks: [{ type: 'list', content: { items: ['a', 'b'] } }] },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects missing slides field entirely', () => {
+    const result = SlideDeckContentSchema.safeParse({ notSlides: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects slides that are not an array', () => {
+    const result = SlideDeckContentSchema.safeParse({ slides: {} });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a slide missing id', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ layout: 'title', blocks: [] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a slide with an empty id', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: '', layout: 'title', blocks: [] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a slide missing layout', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', blocks: [] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a slide with an empty layout', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', layout: '', blocks: [] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a slide missing blocks', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', layout: 'title' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-array blocks', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', layout: 'title', blocks: 'nope' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a block missing type', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', layout: 'title', blocks: [{ content: { text: 'x' } }] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a block with an empty type', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', layout: 'title', blocks: [{ type: '', content: {} }] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a block missing content', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [{ id: 's1', layout: 'title', blocks: [{ type: 'text' }] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate slide ids', () => {
+    const result = SlideDeckContentSchema.safeParse({
+      slides: [
+        { id: 's1', layout: 'title', blocks: [] },
+        { id: 's1', layout: 'content', blocks: [] },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects document content under the slide_deck type', () => {
+    const result = SlideDeckContentSchema.safeParse({ format: 'markdown', body: '# nope' });
+    expect(result.success).toBe(false);
+  });
+
+  it('preserves every slide and block on a successful parse', () => {
+    const content = {
+      slides: [
+        { id: 's1', layout: 'title', blocks: [{ type: 'heading', content: { text: 'Hi' } }] },
+        { id: 's2', layout: 'content', blocks: [{ type: 'text', content: { text: 'World' } }] },
+      ],
+    };
+    const result = SlideDeckContentSchema.safeParse(content);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.slides).toHaveLength(2);
+      expect(result.data).toEqual(content);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ArtifactTypeSchema
 // ---------------------------------------------------------------------------
 
@@ -425,6 +567,28 @@ describe('validateArtifactContent', () => {
       columns: [{ id: 'col1', title: 'Todo' }],
       cards: [{ id: 'card1', columnId: 'missing', title: 'A', order: 0 }],
     });
+    expect(result.success).toBe(false);
+  });
+
+  it('validates slide_deck content against the slide_deck schema', () => {
+    const result = validateArtifactContent('slide_deck', {
+      slides: [{ id: 's1', layout: 'title', blocks: [{ type: 'text', content: { text: 'Hi' } }] }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects slide_deck content with duplicate slide ids', () => {
+    const result = validateArtifactContent('slide_deck', {
+      slides: [
+        { id: 's1', layout: 'title', blocks: [] },
+        { id: 's1', layout: 'content', blocks: [] },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects invalid slide_deck content (missing slides)', () => {
+    const result = validateArtifactContent('slide_deck', { foo: 1 });
     expect(result.success).toBe(false);
   });
 

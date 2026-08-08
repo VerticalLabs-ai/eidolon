@@ -83,6 +83,7 @@ export function ArtifactList({
       { value: "document", label: "Document" },
       { value: "sheet", label: "Sheet" },
       { value: "board", label: "Board" },
+      { value: "slide_deck", label: "Slides" },
     ],
     [],
   );

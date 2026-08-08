@@ -5,6 +5,7 @@ const TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
   document: "Document",
   sheet: "Sheet",
   board: "Board",
+  slide_deck: "Slides",
 };
 
 export function artifactTypeLabel(type: ArtifactType): string {
@@ -30,6 +31,16 @@ export function defaultArtifactContent(type: ArtifactType): Record<string, unkno
           { id: "col_done", title: "Done" },
         ],
         cards: [],
+      };
+    case "slide_deck":
+      return {
+        slides: [
+          {
+            id: "slide_1",
+            layout: "title",
+            blocks: [{ type: "heading", content: { text: "" } }],
+          },
+        ],
       };
     case "document":
     default:

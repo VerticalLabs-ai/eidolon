@@ -99,9 +99,43 @@ export const BoardContentSchema = z
 export type DocumentContent = z.infer<typeof DocumentContentSchema>;
 export type SheetContent = z.infer<typeof SheetContentSchema>;
 export type BoardContent = z.infer<typeof BoardContentSchema>;
-const SlideDeckContentSchema = z.object({
-  slides: z.array(z.object({ id: z.string().min(1), layout: z.string(), blocks: z.array(z.record(z.string(), z.unknown())) })),
+
+/**
+ * A block is the atomic content unit on a slide. It has a `type` (e.g.
+ * "text", "heading", "image", "list") and a `content` record holding the
+ * type-specific payload (text string, url, items array, etc.).
+ */
+const slideBlockSchema = z.object({
+  type: z.string().min(1),
+  content: z.record(z.string(), z.unknown()),
 });
+
+const slideSchema = z.object({
+  id: z.string().min(1),
+  layout: z.string().min(1),
+  blocks: z.array(slideBlockSchema),
+});
+
+export const SlideDeckContentSchema = z
+  .object({
+    slides: z.array(slideSchema),
+  })
+  .superRefine((deck, ctx) => {
+    const slideIds = new Set<string>();
+    deck.slides.forEach((slide, index) => {
+      if (slideIds.has(slide.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['slides', index, 'id'],
+          message: `Duplicate slide id "${slide.id}"`,
+        });
+      } else {
+        slideIds.add(slide.id);
+      }
+    });
+  });
+
+export type SlideDeckContent = z.infer<typeof SlideDeckContentSchema>;
 const TimelineContentSchema = z.object({
   tasks: z.array(z.object({
     id: z.string().min(1), title: z.string(), start: z.string(), end: z.string(),

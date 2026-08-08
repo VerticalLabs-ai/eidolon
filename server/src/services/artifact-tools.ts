@@ -43,10 +43,13 @@ export const ARTIFACT_TOOL_DEFINITIONS = [
       'Create a new typed artifact (document, sheet, board, etc.) as an outcome of the current task. ' +
       'The artifact will be linked back to the originating thread item. ' +
       'Content must match the type schema: document={format:"markdown",body:"<string>"}, ' +
-      'sheet={columns:[{id,key}],rows:[{id,cells:{key:{value}}}]}, or ' +
+      'sheet={columns:[{id,key}],rows:[{id,cells:{key:{value}}}]}, ' +
       'board={columns:[{id,title}],cards:[{id,columnId,title,order,payload?}]} where every ' +
       'card.columnId must equal one of the column ids, column/card ids must be unique, and ' +
-      'order is a number ordering the cards within their column.',
+      'order is a number ordering the cards within their column, or ' +
+      'slide_deck={slides:[{id,layout,blocks:[{type,content}]}]} where slide ids must be ' +
+      'unique, layout is a non-empty string, and each block has a non-empty type and a ' +
+      'content object (e.g. {type:"text",content:{text:"hello"}}).',
     inputSchema: {
       type: 'object',
       properties: {
