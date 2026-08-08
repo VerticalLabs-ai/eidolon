@@ -43,7 +43,7 @@ export function chatRouter(db: DbInstance): Router {
       .where(
         and(
           eq(messages.companyId, companyId),
-          sql`(${messages.fromAgentId} IS NULL OR ${messages.toAgentId} IS NULL)`,
+          sql`(${messages.fromAgentId} IS NULL OR ${messages.toAgentId} IS NULL OR ${messages.fromAgentId} = '__board__' OR ${messages.toAgentId} = '__board__')`,
         ),
       )
       .orderBy(desc(messages.createdAt));
@@ -299,6 +299,7 @@ export function chatRouter(db: DbInstance): Router {
                   agentResponse: true,
                   agentId: aId,
                   agentName: aName,
+                  taskId: task.id,
                 };
                 if (producedArtifacts.length > 0) {
                   responseMetadata.artifactId = producedArtifacts[0].artifactId;
@@ -329,6 +330,7 @@ export function chatRouter(db: DbInstance): Router {
                     fromBoard: false,
                     agentId: aId,
                     agentName: aName,
+                    taskId: task.id,
                     artifacts: producedArtifacts,
                   },
                   timestamp: new Date(responseNow).toISOString(),
