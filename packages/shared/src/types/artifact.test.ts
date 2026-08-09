@@ -7,6 +7,7 @@ import {
   TimelineContentSchema,
   GalleryContentSchema,
   DashboardContentSchema,
+  AppContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
 } from './artifact.js';
@@ -1122,6 +1123,107 @@ describe('DashboardContentSchema', () => {
     const bad = validateArtifactContent('dashboard', {
       dataSources: [],
       widgets: [{ id: 'w1', type: 'chart', dataSourceId: 'dsMissing', config: {} }],
+    });
+    expect(bad.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AppContentSchema
+// ---------------------------------------------------------------------------
+
+describe('AppContentSchema', () => {
+  it('accepts a definition with name + entrypoint and one file', () => {
+    const result = AppContentSchema.safeParse({
+      definition: { name: 'demo', entrypoint: 'index.html' },
+      files: [{ path: 'index.html', content: '<h1>Hello</h1>' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an empty definition and empty files array', () => {
+    const result = AppContentSchema.safeParse({ definition: {}, files: [] });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts multiple files with distinct paths', () => {
+    const result = AppContentSchema.safeParse({
+      definition: { name: 'demo2', entrypoint: 'index.html' },
+      files: [
+        { path: 'index.html', content: '<h1>Hi</h1>' },
+        { path: 'style.css', content: 'body{color:red}' },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a file missing path', () => {
+    const result = AppContentSchema.safeParse({
+      definition: {},
+      files: [{ content: 'x' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a file missing content', () => {
+    const result = AppContentSchema.safeParse({
+      definition: {},
+      files: [{ path: 'a' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a file with an empty path', () => {
+    const result = AppContentSchema.safeParse({
+      definition: {},
+      files: [{ path: '', content: 'x' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate file paths', () => {
+    const result = AppContentSchema.safeParse({
+      definition: {},
+      files: [
+        { path: 'index.html', content: 'a' },
+        { path: 'index.html', content: 'b' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects content missing definition', () => {
+    const result = AppContentSchema.safeParse({ files: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects content missing files', () => {
+    const result = AppContentSchema.safeParse({ definition: {} });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects files that is not an array', () => {
+    const result = AppContentSchema.safeParse({ definition: {}, files: 'notarray' });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a definition with extra unknown fields', () => {
+    const result = AppContentSchema.safeParse({
+      definition: { name: 'x', entrypoint: 'index.html', custom: 42 },
+      files: [{ path: 'index.html', content: '' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('validates app content via validateArtifactContent', () => {
+    const ok = validateArtifactContent('app', {
+      definition: { name: 'demo', entrypoint: 'index.html' },
+      files: [{ path: 'index.html', content: '<h1>Hello</h1>' }],
+    });
+    expect(ok.success).toBe(true);
+    const bad = validateArtifactContent('app', {
+      definition: {},
+      files: [{ content: 'no path' }],
     });
     expect(bad.success).toBe(false);
   });

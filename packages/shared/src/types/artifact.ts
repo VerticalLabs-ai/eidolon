@@ -380,7 +380,49 @@ export const DashboardContentSchema = z
   });
 
 export type DashboardContent = z.infer<typeof DashboardContentSchema>;
-const AppContentSchema = z.object({ definition: z.record(z.string(), z.unknown()), files: z.array(z.object({ path: z.string(), content: z.string() })) });
+
+// ---------------------------------------------------------------------------
+// App artifact — definition + files (bounded app builder)
+// ---------------------------------------------------------------------------
+
+/**
+ * The app definition is a permissive record so future fields can be added
+ * without a schema migration. The UI surfaces `name` and `entrypoint`; both
+ * are optional strings (an empty `{}` is well-formed and accepted).
+ */
+const appDefinitionSchema = z.object({
+  name: z.string().optional(),
+  entrypoint: z.string().optional(),
+}).catchall(z.unknown());
+
+const appFileSchema = z.object({
+  path: z.string().min(1),
+  content: z.string(),
+});
+
+export const AppContentSchema = z
+  .object({
+    definition: appDefinitionSchema,
+    files: z.array(appFileSchema),
+  })
+  .superRefine((app, ctx) => {
+    // Duplicate file path detection — paths must be unique within the app.
+    const paths = new Set<string>();
+    app.files.forEach((file, index) => {
+      if (paths.has(file.path)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['files', index, 'path'],
+          message: `Duplicate file path "${file.path}"`,
+        });
+      } else {
+        paths.add(file.path);
+      }
+    });
+  });
+
+export type AppContent = z.infer<typeof AppContentSchema>;
+export type AppFile = z.infer<typeof appFileSchema>;
 const CodeContentSchema = z.object({
   language: z.string(), entrypoint: z.string().optional(),
   files: z.array(z.object({ path: z.string(), content: z.string() })),

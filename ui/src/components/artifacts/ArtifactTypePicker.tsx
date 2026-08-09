@@ -67,7 +67,7 @@ const TYPE_OPTIONS: TypeOption[] = [
     label: "App",
     description: "App builder with files",
     icon: <AppWindow className="h-5 w-5" />,
-    enabled: false,
+    enabled: true,
   },
   {
     type: "code",
