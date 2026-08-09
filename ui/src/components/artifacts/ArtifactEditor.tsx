@@ -33,7 +33,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import type { ArtifactType, Artifact } from "@/lib/api";
 import { setDirtyEditorGuard } from "@/lib/dirty-editor";
-import { applyOp } from "@eidolon/shared";
+import { applyOp, isCoEditableType } from "@eidolon/shared";
 import type { CoEditOp } from "@eidolon/shared";
 
 /** Header labels for the artifact types that have a dedicated editor. */
@@ -108,11 +108,19 @@ export function ArtifactEditor({
   // which would conflict with the editor's draft-sync logic). The cache is
   // also updated for other components (artifact list, etc.).
   const applyRemoteOpRef = useRef<((op: CoEditOp) => void) | null>(null);
+  // Only enable op-based co-editing for types that have granular op handlers
+  // (document, sheet, board). M5 types (gallery, dashboard, app) and other
+  // non-listed types do not support co-editing — their saves go through the
+  // standard LWW REST PATCH path. Creating a co-edit session for them would
+  // cause mergeExternalUpdate to produce empty ops and silently discard
+  // content changes while the version increments.
+  const coeditEnabled = artifact ? isCoEditableType(artifact.type) : false;
   const coedit = useCoEditSession({
     companyId,
     artifactId,
     userId: selfUserId ?? "dev-user-000",
     name: "You",
+    enabled: coeditEnabled,
     onRemoteOp: useCallback((op: CoEditOp, _userId: string) => {
       // Apply to editor's local state via the ref callback
       applyRemoteOpRef.current?.(op);

@@ -15,7 +15,7 @@
 
 import type { WebSocket } from 'ws';
 import { getArtifact, saveArtifactContent } from '../services/artifact-service.js';
-import { validateArtifactContent, applyOp, applyOps, diffContent } from '@eidolon/shared';
+import { validateArtifactContent, applyOp, applyOps, diffContent, isCoEditableType } from '@eidolon/shared';
 import type {
   CoEditOp,
   DocOp,
@@ -72,6 +72,33 @@ export function __resetCoEditSessions(): void {
   sessions.clear();
 }
 
+/**
+ * Test helper: inject a session for an artifact, bypassing the
+ * `isCoEditableType` guard in `joinSession`. Used to test the
+ * `mergeExternalUpdate` last-write-wins fallback for non-co-editable types
+ * (gallery/dashboard/app) when a session somehow exists.
+ */
+export function __injectSessionForTest(
+  artifactId: string,
+  companyId: string,
+  artifactType: string,
+  content: Record<string, unknown>,
+  version: number,
+): void {
+  sessions.set(artifactId, {
+    artifactId,
+    companyId,
+    content: JSON.parse(JSON.stringify(content)),
+    artifactType,
+    version,
+    lastSavedContent: JSON.parse(JSON.stringify(content)),
+    participants: new Map([
+      ['test-user', { ws: { readyState: 1, OPEN: 1, send: () => {}, close: () => {}, on: () => {}, off: () => {} } as unknown as WebSocket, userId: 'test-user', name: 'Tester', color: '#fff' }],
+    ]),
+    dirty: false,
+  });
+}
+
 /** Check if an active co-edit session exists for an artifact. */
 export function hasSession(artifactId: string): boolean {
   return sessions.has(artifactId) && sessions.get(artifactId)!.participants.size > 0;
@@ -117,6 +144,24 @@ export function mergeExternalUpdate(
   const base = session.lastSavedContent;
   const current = session.content;
   const incoming = incomingContent;
+
+  // Guard: if the artifact type does not support op-based co-editing
+  // (gallery, dashboard, app, slide_deck, timeline, code), diffContent
+  // would produce empty ops and the content change would be silently
+  // discarded while the version increments. Fall back to last-write-wins:
+  // take the incoming content directly as the merged result.
+  if (!isCoEditableType(session.artifactType)) {
+    const validation = validateArtifactContent(
+      session.artifactType as any,
+      incoming,
+    );
+    if (!validation.success) {
+      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Merged content is invalid');
+    }
+    session.content = JSON.parse(JSON.stringify(incoming));
+    session.dirty = true;
+    return { merged: session.content, ops: [] };
+  }
 
   // Compute ops: diff(base, incoming) → agent's changes
   const agentOps = diffContent(session.artifactType, base, incoming);
@@ -244,6 +289,19 @@ export async function joinSession(
   if (!session) {
     // Load artifact from DB to initialize the session
     const artifact = await getArtifact(_db, companyId, artifactId);
+    // Guard: refuse to create a co-edit session for non-co-editable types.
+    // M5 types (gallery, dashboard, app) and other non-listed types do not
+    // have granular op handlers; a session would cause content changes to
+    // be silently discarded by mergeExternalUpdate's empty-op diff. They
+    // save via the standard LWW REST PATCH path instead.
+    if (!isCoEditableType(artifact.type)) {
+      sendTo(ws, {
+        type: 'coedit.error',
+        artifactId,
+        message: `Artifact type "${artifact.type}" does not support co-editing`,
+      });
+      return;
+    }
     session = {
       artifactId,
       companyId,

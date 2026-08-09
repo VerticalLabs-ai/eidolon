@@ -35,6 +35,14 @@ interface UseCoEditSessionOptions {
   artifactId: string | undefined;
   userId: string;
   name: string;
+  /**
+   * When false (default true), the hook does not join a co-edit session,
+   * send ops/cursors, or process co-edit server messages. Used to disable
+   * co-editing for artifact types that do not support op-based co-editing
+   * (gallery, dashboard, app, slide_deck, timeline, code) so their saves
+   * go through the standard LWW REST PATCH path.
+   */
+  enabled?: boolean;
   /** Called when a remote operation arrives — the editor applies it. */
   onRemoteOp?: (op: CoEditOp, userId: string) => void;
   /** Called when the session state is received (join/reconnect). */
@@ -50,6 +58,7 @@ export function useCoEditSession({
   artifactId,
   userId,
   name,
+  enabled = true,
   onRemoteOp,
   onStateSync,
   onSaved,
@@ -85,13 +94,14 @@ export function useCoEditSession({
 
   // Join when WS is connected and artifact changes
   useEffect(() => {
+    if (!enabled) return;
     if (wsStatus !== "connected" || !artifactId || !companyId) return;
     doJoin();
-  }, [wsStatus, artifactId, companyId, doJoin]);
+  }, [wsStatus, artifactId, companyId, doJoin, enabled]);
 
   // ── Listen for co-edit server messages ───────────────────────────────
   useEffect(() => {
-    if (!artifactId) return;
+    if (!enabled || !artifactId) return;
 
     const unsubJoined = wsClient.subscribe("coedit.joined", (event) => {
       const msg = event as unknown as CoEditServerMsg;
@@ -134,7 +144,7 @@ export function useCoEditSession({
       unsubSaved();
       unsubUserLeft();
     };
-  }, [artifactId]);
+  }, [artifactId, enabled]);
 
   // ── Leave on unmount ─────────────────────────────────────────────────
   useEffect(() => {
@@ -154,6 +164,11 @@ export function useCoEditSession({
 
   // ── Re-join on reconnect ─────────────────────────────────────────────
   useEffect(() => {
+    if (!enabled) {
+      joinedRef.current = false;
+      setJoined(false);
+      return;
+    }
     if (wsStatus === "connected" && artifactId && companyId && userId && !joinedRef.current) {
       doJoin();
     }
@@ -161,12 +176,12 @@ export function useCoEditSession({
       joinedRef.current = false;
       setJoined(false);
     }
-  }, [wsStatus, artifactId, companyId, userId, doJoin]);
+  }, [wsStatus, artifactId, companyId, userId, doJoin, enabled]);
 
   // ── Actions ──────────────────────────────────────────────────────────
   const sendOp = useCallback(
     (op: CoEditOp) => {
-      if (!artifactId || !companyId) return;
+      if (!enabled || !artifactId || !companyId) return;
       wsClient.send({
         type: "coedit.op",
         artifactId,
@@ -175,12 +190,12 @@ export function useCoEditSession({
         op,
       });
     },
-    [artifactId, companyId, userId],
+    [enabled, artifactId, companyId, userId],
   );
 
   const sendCursor = useCallback(
     (position: RemoteCursor["position"]) => {
-      if (!artifactId || !companyId) return;
+      if (!enabled || !artifactId || !companyId) return;
       wsClient.send({
         type: "coedit.cursor",
         artifactId,
@@ -190,12 +205,12 @@ export function useCoEditSession({
         position,
       });
     },
-    [artifactId, companyId, userId, name],
+    [enabled, artifactId, companyId, userId, name],
   );
 
   const sendSelection = useCallback(
     (range: { start: number; end: number } | null) => {
-      if (!artifactId || !companyId) return;
+      if (!enabled || !artifactId || !companyId) return;
       wsClient.send({
         type: "coedit.selection",
         artifactId,
@@ -205,12 +220,12 @@ export function useCoEditSession({
         range,
       });
     },
-    [artifactId, companyId, userId, name],
+    [enabled, artifactId, companyId, userId, name],
   );
 
   const save = useCallback(
     (title?: string) => {
-      if (!artifactId || !companyId) return;
+      if (!enabled || !artifactId || !companyId) return;
       wsClient.send({
         type: "coedit.save",
         artifactId,
@@ -219,7 +234,7 @@ export function useCoEditSession({
         ...(title !== undefined ? { title } : {}),
       });
     },
-    [artifactId, companyId, userId],
+    [enabled, artifactId, companyId, userId],
   );
 
   return {

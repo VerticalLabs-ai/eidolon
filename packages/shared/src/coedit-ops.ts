@@ -9,6 +9,28 @@
 import type { CoEditOp, DocOp, SheetOp, BoardOp } from './types/coedit.js';
 
 // ---------------------------------------------------------------------------
+// Co-editable artifact types
+// ---------------------------------------------------------------------------
+
+/**
+ * Artifact types that support server-authoritative, operation-based
+ * co-editing (they have granular `applyOp`/`diffContent` handlers).
+ *
+ * M5 types (gallery, dashboard, app) and other non-listed types
+ * (slide_deck, timeline, code) do NOT support op-based co-editing. They
+ * save via the standard last-write-wins REST PATCH path. Creating a co-edit
+ * session for them would cause `mergeExternalUpdate` to produce empty ops
+ * (diffContent has no handler) and silently discard content changes while
+ * the version still increments.
+ */
+export const COEDITABLE_TYPES = ['document', 'sheet', 'board'] as const;
+
+/** Returns true if the artifact type supports op-based co-editing. */
+export function isCoEditableType(artifactType: string): boolean {
+  return (COEDITABLE_TYPES as readonly string[]).includes(artifactType);
+}
+
+// ---------------------------------------------------------------------------
 // Apply a single operation
 // ---------------------------------------------------------------------------
 

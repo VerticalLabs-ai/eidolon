@@ -3,7 +3,7 @@ import request from 'supertest';
 import { WebSocket } from 'ws';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { setupWebSocketServer } from '../realtime/ws-server.js';
-import { __resetCoEditSessions } from '../realtime/coedit-session.js';
+import { __resetCoEditSessions, __injectSessionForTest } from '../realtime/coedit-session.js';
 import type { DbInstance } from '../types.js';
 import type { CoEditOp } from '@eidolon/shared';
 
@@ -1080,5 +1080,244 @@ describe('Co-editing WebSocket — real WS clients', () => {
     // Verify the content was not modified
     const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
     expect(getRes.body.data.content.body).toBe('# Hello');
+  });
+
+  // =========================================================================
+  // X. Non-co-editable types (gallery/dashboard/app) — joinSession refuses
+  //    to create a session, so PATCH goes through the standard LWW path.
+  // =========================================================================
+
+  async function createGallery(): Promise<{ id: string; version: number; content: Record<string, unknown> }> {
+    const content = {
+      items: [
+        { id: 'g1', type: 'image', url: 'https://example.com/a.png', caption: 'First' },
+        { id: 'g2', type: 'image', url: 'https://example.com/b.png', caption: 'Second' },
+      ],
+    };
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/artifacts`)
+      .send({ type: 'gallery', title: '__mtest__ CoEdit Gallery', content, projectId })
+      .expect(201);
+    return res.body.data;
+  }
+
+  async function createDashboard(): Promise<{ id: string; version: number; content: Record<string, unknown> }> {
+    const content = {
+      dataSources: [{ id: 'ds1', type: 'manual_json', config: { data: [1, 2, 3] } }],
+      widgets: [{ id: 'w1', type: 'chart', dataSourceId: 'ds1', config: { chartType: 'bar' } }],
+    };
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/artifacts`)
+      .send({ type: 'dashboard', title: '__mtest__ CoEdit Dashboard', content, projectId })
+      .expect(201);
+    return res.body.data;
+  }
+
+  async function createApp(): Promise<{ id: string; version: number; content: Record<string, unknown> }> {
+    const content = {
+      definition: { name: 'demo', entrypoint: 'index.html' },
+      files: [{ path: 'index.html', content: '<h1>Hello</h1>' }],
+    };
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/artifacts`)
+      .send({ type: 'app', title: '__mtest__ CoEdit App', content, projectId })
+      .expect(201);
+    return res.body.data;
+  }
+
+  it('joinSession refuses non-co-editable gallery type (sends coedit.error, no session)', async () => {
+    const gallery = await createGallery();
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+
+    sendWs(wsA, { type: 'coedit.join', artifactId: gallery.id, companyId, userId: 'user-a', name: 'Alice' });
+    const errorMsg = await waitForCoEdit(wsA, 'coedit.error');
+    expect(errorMsg.artifactId).toBe(gallery.id);
+    expect(errorMsg.message).toContain('does not support co-editing');
+
+    // No coedit.joined message should arrive
+    const msgs = await collectFor(wsA, 400);
+    expect(msgs.find(m => m.type === 'coedit.joined')).toBeUndefined();
+  });
+
+  it('gallery PATCH (reorder) persists via standard LWW path — no session created', async () => {
+    const gallery = await createGallery();
+    // No WS join — no session. PATCH goes through the standard version-check path.
+    const reordered = {
+      items: [
+        { id: 'g2', type: 'image', url: 'https://example.com/b.png', caption: 'Second' },
+        { id: 'g1', type: 'image', url: 'https://example.com/a.png', caption: 'First' },
+      ],
+    };
+    const patchRes = await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${gallery.id}`)
+      .send({ content: reordered, version: gallery.version })
+      .expect(200);
+    expect(patchRes.body.data.version).toBe(2);
+    expect(patchRes.body.data.content.items[0].id).toBe('g2');
+    expect(patchRes.body.data.content.items[1].id).toBe('g1');
+  });
+
+  it('gallery PATCH (delete item) persists via standard LWW path', async () => {
+    const gallery = await createGallery();
+    const reduced = {
+      items: [
+        { id: 'g1', type: 'image', url: 'https://example.com/a.png', caption: 'First' },
+      ],
+    };
+    await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${gallery.id}`)
+      .send({ content: reduced, version: gallery.version })
+      .expect(200);
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${gallery.id}`);
+    expect(getRes.body.data.content.items).toHaveLength(1);
+    expect(getRes.body.data.content.items[0].id).toBe('g1');
+    expect(getRes.body.data.version).toBe(2);
+  });
+
+  it('dashboard PATCH (widget config edit) persists via standard LWW path', async () => {
+    const dashboard = await createDashboard();
+    const updated = {
+      dataSources: [{ id: 'ds1', type: 'manual_json', config: { data: [1, 2, 3] } }],
+      widgets: [{ id: 'w1', type: 'chart', dataSourceId: 'ds1', config: { chartType: 'line' } }],
+    };
+    await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${dashboard.id}`)
+      .send({ content: updated, version: dashboard.version })
+      .expect(200);
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${dashboard.id}`);
+    expect(getRes.body.data.content.widgets[0].config.chartType).toBe('line');
+    expect(getRes.body.data.version).toBe(2);
+  });
+
+  it('app PATCH (definition + file edit) persists via standard LWW path', async () => {
+    const appArtifact = await createApp();
+    const updated = {
+      definition: { name: 'demo2', entrypoint: 'index.html' },
+      files: [
+        { path: 'index.html', content: '<h1>Updated</h1>' },
+        { path: 'style.css', content: 'body { margin: 0; }' },
+      ],
+    };
+    await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${appArtifact.id}`)
+      .send({ content: updated, version: appArtifact.version })
+      .expect(200);
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${appArtifact.id}`);
+    expect(getRes.body.data.content.definition.name).toBe('demo2');
+    expect(getRes.body.data.content.files).toHaveLength(2);
+    expect(getRes.body.data.content.files[0].content).toBe('<h1>Updated</h1>');
+    expect(getRes.body.data.version).toBe(2);
+  });
+
+  // =========================================================================
+  // Y. mergeExternalUpdate LWW fallback guard — if a co-edit session
+  //    somehow exists for a non-co-editable type, the incoming content is
+  //    used directly (last-write-wins) instead of being discarded by empty
+  //    diff ops.
+  // =========================================================================
+
+  it('gallery PATCH through an injected session persists content (LWW fallback)', async () => {
+    const gallery = await createGallery();
+    // Inject a session directly to simulate the edge case where a session
+    // exists for a non-co-editable type (bypassing the joinSession guard).
+    __injectSessionForTest(
+      gallery.id,
+      companyId,
+      'gallery',
+      gallery.content,
+      gallery.version,
+    );
+
+    const reordered = {
+      items: [
+        { id: 'g2', type: 'image', url: 'https://example.com/b.png', caption: 'Second' },
+        { id: 'g1', type: 'image', url: 'https://example.com/a.png', caption: 'First' },
+      ],
+    };
+    const patchRes = await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${gallery.id}`)
+      .send({ content: reordered, version: gallery.version })
+      .expect(200);
+
+    // The reordered content must be persisted (NOT discarded).
+    expect(patchRes.body.data.content.items[0].id).toBe('g2');
+    expect(patchRes.body.data.content.items[1].id).toBe('g1');
+    expect(patchRes.body.data.version).toBe(2);
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${gallery.id}`);
+    expect(getRes.body.data.content.items[0].id).toBe('g2');
+    expect(getRes.body.data.content.items[1].id).toBe('g1');
+  });
+
+  it('dashboard PATCH through an injected session persists content (LWW fallback)', async () => {
+    const dashboard = await createDashboard();
+    __injectSessionForTest(
+      dashboard.id,
+      companyId,
+      'dashboard',
+      dashboard.content,
+      dashboard.version,
+    );
+
+    const updated = {
+      dataSources: [{ id: 'ds1', type: 'manual_json', config: { data: [1, 2, 3] } }],
+      widgets: [{ id: 'w1', type: 'chart', dataSourceId: 'ds1', config: { chartType: 'line' } }],
+    };
+    await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${dashboard.id}`)
+      .send({ content: updated, version: dashboard.version })
+      .expect(200);
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${dashboard.id}`);
+    expect(getRes.body.data.content.widgets[0].config.chartType).toBe('line');
+  });
+
+  it('app PATCH through an injected session persists content (LWW fallback)', async () => {
+    const appArtifact = await createApp();
+    __injectSessionForTest(
+      appArtifact.id,
+      companyId,
+      'app',
+      appArtifact.content,
+      appArtifact.version,
+    );
+
+    const updated = {
+      definition: { name: 'demo2', entrypoint: 'index.html' },
+      files: [
+        { path: 'index.html', content: '<h1>Updated</h1>' },
+        { path: 'style.css', content: 'body { margin: 0; }' },
+      ],
+    };
+    await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${appArtifact.id}`)
+      .send({ content: updated, version: appArtifact.version })
+      .expect(200);
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${appArtifact.id}`);
+    expect(getRes.body.data.content.definition.name).toBe('demo2');
+    expect(getRes.body.data.content.files).toHaveLength(2);
+  });
+
+  it('Doc/Sheet/Board co-editing still works (no regression) — doc merge', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    const opA: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: ' World', opId: genOpId() };
+    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: opA });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
+    await waitForCoEdit(wsA, 'coedit.saved');
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+    expect(getRes.body.data.content.body).toBe('# Hello World');
+    expect(getRes.body.data.version).toBe(2);
   });
 });
