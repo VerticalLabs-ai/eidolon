@@ -276,10 +276,110 @@ export const GalleryContentSchema = z
   });
 
 export type GalleryContent = z.infer<typeof GalleryContentSchema>;
-const DashboardContentSchema = z.object({
-  dataSources: z.array(z.object({ id: z.string(), type: z.string(), config: z.record(z.string(), z.unknown()) })),
-  widgets: z.array(z.object({ id: z.string(), type: z.string(), dataSourceId: z.string(), config: z.record(z.string(), z.unknown()) })),
+
+// ---------------------------------------------------------------------------
+// Dashboard artifact — data sources + widgets bound to data sources
+// ---------------------------------------------------------------------------
+
+/** Supported data-source provider types (pluggable provider registry). */
+export const DashboardDataSourceTypeSchema = z.enum([
+  'analytics_endpoint',
+  'integration',
+  'manual_json',
+]);
+export type DashboardDataSourceType = z.infer<typeof DashboardDataSourceTypeSchema>;
+
+/** Supported widget types that render live data from a bound data source. */
+export const DashboardWidgetTypeSchema = z.enum(['chart', 'table', 'metric']);
+export type DashboardWidgetType = z.infer<typeof DashboardWidgetTypeSchema>;
+
+const dashboardDataSourceConfigSchema = z.record(z.string(), z.unknown());
+
+const dashboardDataSourceSchema = z.object({
+  id: z.string().min(1),
+  type: DashboardDataSourceTypeSchema,
+  config: dashboardDataSourceConfigSchema,
 });
+
+const dashboardWidgetConfigSchema = z.record(z.string(), z.unknown());
+
+const dashboardWidgetSchema = z.object({
+  id: z.string().min(1),
+  type: DashboardWidgetTypeSchema,
+  dataSourceId: z.string().min(1),
+  config: dashboardWidgetConfigSchema,
+});
+
+export const DashboardContentSchema = z
+  .object({
+    dataSources: z.array(dashboardDataSourceSchema),
+    widgets: z.array(dashboardWidgetSchema),
+  })
+  .superRefine((dashboard, ctx) => {
+    // Duplicate data-source id detection
+    const dsIds = new Set<string>();
+    dashboard.dataSources.forEach((ds, index) => {
+      if (dsIds.has(ds.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['dataSources', index, 'id'],
+          message: `Duplicate data source id "${ds.id}"`,
+        });
+      } else {
+        dsIds.add(ds.id);
+      }
+      // Per-type config validation
+      const cfg = ds.config ?? {};
+      if (ds.type === 'analytics_endpoint') {
+        if (typeof cfg.endpoint !== 'string' || cfg.endpoint.trim() === '') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['dataSources', index, 'config', 'endpoint'],
+            message: 'analytics_endpoint data source requires a non-empty "endpoint" config field',
+          });
+        }
+      } else if (ds.type === 'integration') {
+        if (typeof cfg.integrationId !== 'string' || cfg.integrationId.trim() === '') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['dataSources', index, 'config', 'integrationId'],
+            message: 'integration data source requires a non-empty "integrationId" config field',
+          });
+        }
+      } else if (ds.type === 'manual_json') {
+        if (cfg.data === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['dataSources', index, 'config', 'data'],
+            message: 'manual_json data source requires a "data" config field',
+          });
+        }
+      }
+    });
+
+    // Duplicate widget id detection + binding validation
+    const widgetIds = new Set<string>();
+    dashboard.widgets.forEach((widget, index) => {
+      if (widgetIds.has(widget.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['widgets', index, 'id'],
+          message: `Duplicate widget id "${widget.id}"`,
+        });
+      } else {
+        widgetIds.add(widget.id);
+      }
+      if (!dsIds.has(widget.dataSourceId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['widgets', index, 'dataSourceId'],
+          message: `Widget references unknown data source id "${widget.dataSourceId}"`,
+        });
+      }
+    });
+  });
+
+export type DashboardContent = z.infer<typeof DashboardContentSchema>;
 const AppContentSchema = z.object({ definition: z.record(z.string(), z.unknown()), files: z.array(z.object({ path: z.string(), content: z.string() })) });
 const CodeContentSchema = z.object({
   language: z.string(), entrypoint: z.string().optional(),

@@ -2822,6 +2822,30 @@ export const restoreRevision = (
     { method: "POST" },
   );
 
+// ── Dashboard data-source resolution (M5) ────────────────────────────────
+
+export interface ResolvedDataSource {
+  dataSourceId: string;
+  type: string;
+  data: unknown;
+  resolvedAt: string;
+  error?: string;
+}
+
+export const resolveDashboardSource = (
+  companyId: string,
+  artifactId: string,
+  dataSourceId: string,
+) =>
+  request<ApiResponse<ResolvedDataSource>>(
+    `/companies/${companyId}/artifacts/${artifactId}/dashboard/sources/${dataSourceId}/resolve`,
+  );
+
+export const resolveDashboardAll = (companyId: string, artifactId: string) =>
+  request<ApiResponse<{ sources: ResolvedDataSource[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/dashboard/resolve`,
+  );
+
 // ── Artifact Folders (M4) ────────────────────────────────────────────────
 
 export interface ArtifactFolder {

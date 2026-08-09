@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, AlertCircle, RotateCcw, Copy, Shield, Lock } from "lucide-react";
+import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AlertCircle, RotateCcw, Copy, Shield, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -9,6 +9,7 @@ import { BoardEditor } from "./BoardEditor";
 import { SlideEditor } from "./SlideEditor";
 import { TimelineEditor } from "./TimelineEditor";
 import { GalleryEditor } from "./GalleryEditor";
+import { DashboardEditor } from "./DashboardEditor";
 import { RevisionHistory } from "./RevisionHistory";
 import { PresenceIndicator } from "./PresenceIndicator";
 import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
@@ -42,6 +43,7 @@ const EDITOR_TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
   slide_deck: "Slides",
   timeline: "Timeline",
   gallery: "Gallery",
+  dashboard: "Dashboard",
 };
 
 interface ArtifactEditorProps {
@@ -392,6 +394,8 @@ export function ArtifactEditor({
             <GanttChartSquare className="h-3.5 w-3.5" />
           ) : artifact.type === "gallery" ? (
             <Images className="h-3.5 w-3.5" />
+          ) : artifact.type === "dashboard" ? (
+            <BarChart3 className="h-3.5 w-3.5" />
           ) : (
             <Grid3x3 className="h-3.5 w-3.5" />
           )}
@@ -552,6 +556,16 @@ export function ArtifactEditor({
             />
           ) : artifact.type === "gallery" ? (
             <GalleryEditor
+              artifact={artifact}
+              version={artifact.version}
+              onSave={handleSave}
+              saving={updateMutation.isPending}
+              conflictState={conflictState}
+              wsConnected={wsStatus === "connected"}
+              onStateChange={handleEditorState}
+            />
+          ) : artifact.type === "dashboard" ? (
+            <DashboardEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}

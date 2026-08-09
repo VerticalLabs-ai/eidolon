@@ -60,7 +60,7 @@ const TYPE_OPTIONS: TypeOption[] = [
     label: "Dashboard",
     description: "Data dashboard with widgets",
     icon: <BarChart3 className="h-5 w-5" />,
-    enabled: false,
+    enabled: true,
   },
   {
     type: "app",

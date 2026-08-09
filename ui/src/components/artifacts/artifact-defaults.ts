@@ -8,6 +8,7 @@ const TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
   slide_deck: "Slides",
   timeline: "Timeline",
   gallery: "Gallery",
+  dashboard: "Dashboard",
 };
 
 export function artifactTypeLabel(type: ArtifactType): string {
@@ -58,6 +59,8 @@ export function defaultArtifactContent(type: ArtifactType): Record<string, unkno
       };
     case "gallery":
       return { items: [] };
+    case "dashboard":
+      return { dataSources: [], widgets: [] };
     case "document":
     default:
       return { format: "markdown", body: "" };

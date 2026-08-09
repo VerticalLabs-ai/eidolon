@@ -5,9 +5,10 @@ import { routeParams } from '../utils/route-params.js';
 import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision } from '../services/artifact-service.js';
 import { moveArtifactToFolder } from '../services/folder-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
-import { ArtifactTypeSchema } from '@eidolon/shared';
+import { ArtifactTypeSchema, DashboardContentSchema } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel } from '../services/permission-service.js';
+import { resolveDataSource, type DashboardDataSource } from '../services/dashboard-data-source.js';
 import type { DbInstance } from '../types.js';
 
 const CreateBody = z.object({
@@ -177,5 +178,60 @@ export function artifactsRouter(db: DbInstance): Router {
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     res.json({ data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)) });
   });
+
+  // -------------------------------------------------------------------------
+  // Dashboard data-source resolution (VAL-DASHBOARD-005/008)
+  // -------------------------------------------------------------------------
+  // Resolves a single data source configured on a dashboard artifact into
+  // live data for widget rendering. The artifact must be a dashboard owned
+  // by the path company; the data source id must be declared in the
+  // dashboard's content. Resolution is server-side under company scoping.
+  router.get('/artifacts/:id/dashboard/sources/:dataSourceId/resolve', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
+    const artifact = await getArtifact(db, companyId, id);
+    if (artifact.type !== 'dashboard') {
+      throw new AppError(400, 'NOT_A_DASHBOARD', 'Artifact is not a dashboard');
+    }
+    const parsed = DashboardContentSchema.safeParse(artifact.content);
+    if (!parsed.success) {
+      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Dashboard content is invalid', parsed.error.flatten());
+    }
+    const dataSourceId = req.params.dataSourceId;
+    const source = parsed.data.dataSources.find((ds) => ds.id === dataSourceId);
+    if (!source) {
+      throw new AppError(404, 'DATA_SOURCE_NOT_FOUND', `Data source ${dataSourceId} not found on dashboard ${id}`);
+    }
+    const resolved = await resolveDataSource(db, companyId, source as DashboardDataSource);
+    res.json({ data: resolved });
+  });
+
+  // Resolve all data sources on a dashboard in one call (used by the editor
+  // for initial load + refresh — VAL-DASHBOARD-005/008).
+  router.get('/artifacts/:id/dashboard/resolve', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
+    const artifact = await getArtifact(db, companyId, id);
+    if (artifact.type !== 'dashboard') {
+      throw new AppError(400, 'NOT_A_DASHBOARD', 'Artifact is not a dashboard');
+    }
+    const parsed = DashboardContentSchema.safeParse(artifact.content);
+    if (!parsed.success) {
+      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Dashboard content is invalid', parsed.error.flatten());
+    }
+    const results = await Promise.all(
+      parsed.data.dataSources.map((ds) =>
+        resolveDataSource(db, companyId, ds as DashboardDataSource).catch((err) => ({
+          dataSourceId: ds.id,
+          type: ds.type,
+          error: err instanceof AppError ? err.message : String(err),
+        })),
+      ),
+    );
+    res.json({ data: { sources: results } });
+  });
+
   return router;
 }

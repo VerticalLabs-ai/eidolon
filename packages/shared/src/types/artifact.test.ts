@@ -6,6 +6,7 @@ import {
   SlideDeckContentSchema,
   TimelineContentSchema,
   GalleryContentSchema,
+  DashboardContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
 } from './artifact.js';
@@ -1008,5 +1009,120 @@ describe('validateArtifactContent', () => {
       items: [{ id: 'i9', type: 'bogus', url: 'https://example.test/x' }],
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DashboardContentSchema
+// ---------------------------------------------------------------------------
+
+describe('DashboardContentSchema', () => {
+  it('accepts empty data sources and widgets', () => {
+    const result = DashboardContentSchema.safeParse({ dataSources: [], widgets: [] });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a data source of each supported type with valid config', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [
+        { id: 'ds1', type: 'analytics_endpoint', config: { endpoint: '/analytics/overview' } },
+        { id: 'ds2', type: 'integration', config: { integrationId: 'abc' } },
+        { id: 'ds3', type: 'manual_json', config: { data: { rows: [] } } },
+      ],
+      widgets: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts widgets bound to declared data sources', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [{ id: 'ds1', type: 'manual_json', config: { data: {} } }],
+      widgets: [
+        { id: 'w1', type: 'chart', dataSourceId: 'ds1', config: { chartType: 'bar' } },
+        { id: 'w2', type: 'table', dataSourceId: 'ds1', config: { columns: ['a'] } },
+        { id: 'w3', type: 'metric', dataSourceId: 'ds1', config: { field: 'a', aggregate: 'sum' } },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a widget referencing an undeclared data source', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [],
+      widgets: [{ id: 'w1', type: 'chart', dataSourceId: 'dsMissing', config: {} }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an analytics_endpoint with no endpoint config', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [{ id: 'ds1', type: 'analytics_endpoint', config: {} }],
+      widgets: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown data source type', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [{ id: 'ds1', type: 'bogus', config: {} }],
+      widgets: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an integration source missing integrationId', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [{ id: 'ds1', type: 'integration', config: {} }],
+      widgets: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a manual_json source missing data', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [{ id: 'ds1', type: 'manual_json', config: {} }],
+      widgets: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown widget type', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [{ id: 'ds1', type: 'manual_json', config: { data: {} } }],
+      widgets: [{ id: 'w1', type: 'bogus', dataSourceId: 'ds1', config: {} }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate data source ids', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [
+        { id: 'dup', type: 'manual_json', config: { data: {} } },
+        { id: 'dup', type: 'manual_json', config: { data: {} } },
+      ],
+      widgets: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate widget ids', () => {
+    const result = DashboardContentSchema.safeParse({
+      dataSources: [{ id: 'ds1', type: 'manual_json', config: { data: {} } }],
+      widgets: [
+        { id: 'dup', type: 'chart', dataSourceId: 'ds1', config: {} },
+        { id: 'dup', type: 'table', dataSourceId: 'ds1', config: {} },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('validates dashboard content via validateArtifactContent', () => {
+    const ok = validateArtifactContent('dashboard', { dataSources: [], widgets: [] });
+    expect(ok.success).toBe(true);
+    const bad = validateArtifactContent('dashboard', {
+      dataSources: [],
+      widgets: [{ id: 'w1', type: 'chart', dataSourceId: 'dsMissing', config: {} }],
+    });
+    expect(bad.success).toBe(false);
   });
 });

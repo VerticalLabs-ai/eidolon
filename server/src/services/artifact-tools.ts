@@ -50,7 +50,13 @@ export const ARTIFACT_TOOL_DEFINITIONS = [
       'order is a number ordering the cards within their column, or ' +
       'slide_deck={slides:[{id,layout,blocks:[{type,content}]}]} where slide ids must be ' +
       'unique, layout is a non-empty string, and each block has a non-empty type and a ' +
-      'content object (e.g. {type:"text",content:{text:"hello"}}).',
+      'content object (e.g. {type:"text",content:{text:"hello"}}), or ' +
+      'gallery={items:[{id,type:"image"|"video",url,caption?}]} with unique item ids, or ' +
+      'dashboard={dataSources:[{id,type:"analytics_endpoint"|"integration"|"manual_json",config}],' +
+      'widgets:[{id,type:"chart"|"table"|"metric",dataSourceId,config}]} where every widget ' +
+      'dataSourceId must equal one of the data source ids, data source and widget ids must ' +
+      'be unique, analytics_endpoint config requires {endpoint}, integration config requires ' +
+      '{integrationId}, and manual_json config requires {data}.',
     inputSchema: {
       type: 'object',
       properties: {
