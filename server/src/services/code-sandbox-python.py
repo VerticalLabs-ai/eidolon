@@ -44,20 +44,26 @@ _BLOCKED_MODULES = frozenset(
     {"subprocess", "ctypes", "multiprocessing", "pty", "fcntl", "_posixsubprocess"}
 )
 
-# os functions that take a path as the first positional argument — wrap to
-# restrict to the sandbox root.
-_OS_PATH_FNS = (
-    # ``os.open(path, flags, mode)`` opens a host file by raw fd — without
-    # wrapping it, ``os.open('/etc/passwd', os.O_RDONLY)`` + ``os.read(fd, n)``
-    # would read host file contents via a plain builtin, the same escape class
-    # as an unpatched ``builtins.open``. The wrapper below rewrites args[0]
-    # (the path) through ``_within_sandbox`` so out-of-root targets raise.
-    "open",
-    "remove", "unlink", "rename", "replace", "mkdir", "makedirs", "rmdir",
-    "chmod", "lchmod", "chown", "lchown", "utime", "link", "symlink",
-    "listdir", "scandir", "stat", "lstat", "access", "readlink", "pathconf",
-    "truncate", "mknod", "mkfifo",
-)
+# os functions that take paths — wrap every path operand to restrict access to
+# the sandbox root. Each entry contains positional indexes and keyword names.
+_OS_PATH_FNS = {
+    # ``os.open(path, flags, mode)`` opens a host file by raw fd.
+    "open": ((0,), ("path",)),
+    "remove": ((0,), ("path",)), "unlink": ((0,), ("path",)),
+    "rename": ((0, 1), ("src", "dst")),
+    "replace": ((0, 1), ("src", "dst")),
+    "mkdir": ((0,), ("path",)), "makedirs": ((0,), ("name",)),
+    "rmdir": ((0,), ("path",)), "chmod": ((0,), ("path",)),
+    "lchmod": ((0,), ("path",)), "chown": ((0,), ("path",)),
+    "lchown": ((0,), ("path",)), "utime": ((0,), ("path",)),
+    "link": ((0, 1), ("src", "dst")),
+    "symlink": ((0, 1), ("src", "dst")),
+    "listdir": ((0,), ("path",)), "scandir": ((0,), ("path",)),
+    "stat": ((0,), ("path",)), "lstat": ((0,), ("path",)),
+    "access": ((0,), ("path",)), "readlink": ((0,), ("path",)),
+    "pathconf": ((0,), ("path",)), "truncate": ((0,), ("path",)),
+    "mknod": ((0,), ("path",)), "mkfifo": ((0,), ("path",)),
+}
 
 # os functions that spawn processes or alter the process environment in a way
 # that escapes the sandbox — blocked entirely.
@@ -95,11 +101,15 @@ def _sandboxed_open(file, mode="r", buffering=-1, encoding=None, errors=None,
     return _original_open(file, mode, buffering, encoding, errors, newline, closefd, opener)
 
 
-def _wrap_path_fn(fn, name):
+def _wrap_path_fn(fn, name, path_args, path_kwargs):
     def wrapper(*args, **kwargs):
-        if len(args) > 0 and isinstance(args[0], (str, bytes, _os.PathLike)):
-            args = list(args)
-            args[0] = _within_sandbox(args[0])
+        args = list(args)
+        for index in path_args:
+            if index < len(args) and isinstance(args[index], (str, bytes, _os.PathLike)):
+                args[index] = _within_sandbox(args[index])
+        for keyword in path_kwargs:
+            if keyword in kwargs and isinstance(kwargs[keyword], (str, bytes, _os.PathLike)):
+                kwargs[keyword] = _within_sandbox(kwargs[keyword])
         return fn(*args, **kwargs)
     wrapper.__name__ = "sandboxed_" + name
     return wrapper
@@ -139,9 +149,13 @@ def install():
     _builtins.open = _sandboxed_open
     _io.open = _sandboxed_open
     _builtins.__import__ = _sandboxed_import
-    for _name in _OS_PATH_FNS:
+    for _name, (_path_args, _path_kwargs) in _OS_PATH_FNS.items():
         if hasattr(_os, _name):
-            setattr(_os, _name, _wrap_path_fn(getattr(_os, _name), _name))
+            setattr(
+                _os,
+                _name,
+                _wrap_path_fn(getattr(_os, _name), _name, _path_args, _path_kwargs),
+            )
     for _name in _OS_BLOCKED_FNS:
         if hasattr(_os, _name):
             setattr(_os, _name, _blocked_fn(_name))
