@@ -937,4 +937,148 @@ describe('Co-editing WebSocket — real WS clients', () => {
     const doc2Cursors = msgs.filter(m => m.type === 'coedit.cursor.broadcast' && m.artifactId === doc2.id);
     expect(doc2Cursors).toHaveLength(0);
   });
+
+  // =========================================================================
+  // T. Sheet edit preservation: local sheet edits survive coeditSave via
+  //    REST PATCH merge path (option b — SheetEditor uses onSave, not
+  //    coeditSave, so edits go through updateArtifact → mergeExternalUpdate).
+  // =========================================================================
+
+  it('sheet edit via REST PATCH survives when co-edit session is active', async () => {
+    const sheet = await createSheet();
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, sheet.id, 'user-a', 'Alice');
+
+    // Another participant sends an op to the session (changes cell name → "SessionEdit")
+    const opSession: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'name', value: 'SessionEdit', opId: genOpId() };
+    sendWs(wsA, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-a', op: opSession });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+
+    // The SheetEditor (option b) saves via REST PATCH with its FULL local
+    // content (which includes the user's local cell change). The session is
+    // active so updateArtifact routes through mergeExternalUpdate.
+    const localContent = {
+      columns: [{ id: 'c1', key: 'name' }, { id: 'c2', key: 'role' }],
+      rows: [{ id: 'r1', cells: { name: { value: 'LocalEdit' }, role: { value: 'Engineer' } } }],
+    };
+    const patchRes = await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${sheet.id}`)
+      .send({ content: localContent, version: sheet.version, title: '__mtest__ CoEdit Sheet' })
+      .expect(200);
+
+    // The merged content should preserve the local edit (REST PATCH content
+    // is the incoming change merged onto the session state). The diff(base,
+    // incoming) produces a setCell op for the changed cell, which is applied
+    // on top of the current session state — so the local edit wins.
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${sheet.id}`);
+    expect(getRes.body.data.version).toBe(patchRes.body.data.version);
+    const cellValue = getRes.body.data.content.rows[0].cells.name.value;
+    expect(cellValue).toBe('LocalEdit');
+    expect(cellValue).not.toBe('Alice');
+  });
+
+  // =========================================================================
+  // U. Board edit preservation: local board edits survive coeditSave via
+  //    REST PATCH merge path (option b — BoardEditor uses onSave).
+  // =========================================================================
+
+  it('board edit via REST PATCH survives when co-edit session is active', async () => {
+    const board = await createBoard();
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, board.id, 'user-a', 'Alice');
+
+    // Another participant sends an op (moves card_a to In Progress)
+    const opSession: CoEditOp = { kind: 'board.moveCard', cardId: 'card_a', columnId: 'col_progress', order: 0, opId: genOpId() };
+    sendWs(wsA, { type: 'coedit.op', artifactId: board.id, companyId, userId: 'user-a', op: opSession });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+
+    // The BoardEditor (option b) saves via REST PATCH with its FULL local
+    // content (card_a title changed locally). The session is active so
+    // updateArtifact routes through mergeExternalUpdate.
+    const localContent = {
+      columns: [
+        { id: 'col_todo', title: 'Todo' },
+        { id: 'col_progress', title: 'In Progress' },
+        { id: 'col_done', title: 'Done' },
+      ],
+      cards: [
+        { id: 'card_a', columnId: 'col_todo', title: 'Card A (local edit)', order: 0 },
+        { id: 'card_b', columnId: 'col_todo', title: 'Card B', order: 1 },
+      ],
+    };
+    await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${board.id}`)
+      .send({ content: localContent, version: board.version, title: '__mtest__ CoEdit Board' })
+      .expect(200);
+
+    // Verify the local edit (title change) survived the save.
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${board.id}`);
+    const cards = getRes.body.data.content.cards;
+    const cardA = cards.find((c: any) => c.id === 'card_a');
+    // The title should be preserved (mergeExternalUpdate diffs and applies)
+    expect(cardA.title).toBe('Card A (local edit)');
+  });
+
+  // =========================================================================
+  // V. Title persistence: title change during co-edit is persisted via
+  //    coedit.save with title field.
+  // =========================================================================
+
+  it('title change via coedit.save is persisted', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    // Apply a content op so the session is dirty
+    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 7, text: ' World', opId: genOpId() } as CoEditOp });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+
+    // Save with a new title via the coedit.save WS message (with title field)
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a', title: 'Updated Doc Title' });
+    const savedMsg = await waitForCoEdit(wsA, 'coedit.saved');
+    expect(savedMsg.title).toBe('Updated Doc Title');
+
+    // Verify the title was persisted in the DB
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+    expect(getRes.body.data.title).toBe('Updated Doc Title');
+    expect(getRes.body.data.content.body).toBe('# Hello World');
+    expect(getRes.body.data.version).toBe(2);
+  });
+
+  // =========================================================================
+  // W. Non-participant rejection: a WS client that has NOT joined the session
+  //    cannot inject ops.
+  // =========================================================================
+
+  it('non-participant op is rejected with error', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    wsB = await openWs(port);
+    await subscribe(wsA, companyId);
+    await subscribe(wsB, companyId);
+
+    // A joins the session
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    // B has NOT joined the session but tries to send an op
+    const opB: CoEditOp = { kind: 'doc.insert', position: 0, text: 'INJECTED', opId: genOpId() };
+    sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: opB });
+
+    // B should receive a coedit.error, not an ack
+    const errorMsg = await waitForCoEdit(wsB, 'coedit.error');
+    expect(errorMsg.artifactId).toBe(doc.id);
+    expect(errorMsg.message).toContain('Not a participant');
+
+    // A should NOT receive the injected op as a broadcast
+    const msgs = await collectFor(wsA, 400);
+    const broadcasts = msgs.filter(m => m.type === 'coedit.op.broadcast');
+    expect(broadcasts).toHaveLength(0);
+
+    // Verify the content was not modified
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+    expect(getRes.body.data.content.body).toBe('# Hello');
+  });
 });

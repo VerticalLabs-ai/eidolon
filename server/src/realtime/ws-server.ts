@@ -224,7 +224,7 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
       break;
     }
     case 'coedit.save': {
-      void flushSession(msg.artifactId, { userId: msg.userId, editSource: 'user' })
+      void flushSession(msg.artifactId, { userId: msg.userId, editSource: 'user' }, msg.title)
         .catch((err) => {
           client.ws.send(JSON.stringify({
             type: 'coedit.error',

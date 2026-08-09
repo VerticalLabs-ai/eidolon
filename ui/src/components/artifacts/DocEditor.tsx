@@ -24,7 +24,7 @@ interface DocEditorProps {
   /** Co-editing: send cursor position via WS. */
   coeditSendCursor?: (position: number | { rowId: string; colKey: string } | { cardId: string } | null) => void;
   /** Co-editing: trigger a co-edit save flush (replaces REST PATCH when active). */
-  coeditSave?: () => void;
+  coeditSave?: (title?: string) => void;
   /** Co-editing: ref for the editor to register a remote op handler. */
   applyRemoteOpRef?: React.MutableRefObject<((op: CoEditOp) => void) | null>;
 }
@@ -146,8 +146,9 @@ export function DocEditor({
     setSaveError(null);
     try {
       if (coeditSave) {
-        // Co-editing mode: flush the session to DB (ops already sent via WS)
-        coeditSave();
+        // Co-editing mode: flush the session to DB (ops already sent via WS).
+        // Pass the title so it is persisted alongside the content.
+        coeditSave(title);
       } else {
         await onSave({
           title,

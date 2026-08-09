@@ -94,25 +94,26 @@ export function ArtifactEditor({
     onRemoteOp: useCallback((op: CoEditOp, _userId: string) => {
       // Apply to editor's local state via the ref callback
       applyRemoteOpRef.current?.(op);
-      // Also update the query cache for other components (list, etc.)
-      if (artifact) {
-        const newContent = applyOp(artifact.type, artifact.content, op);
-        qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
-          if (!old) return old;
-          return { ...old, content: newContent };
-        });
-      }
-    }, [artifact, companyId, artifactId, qc]),
+      // Also update the query cache for other components (list, etc.).
+      // Compute newContent INSIDE the updater using `old.content` (not the
+      // closure `artifact.content`) so rapid successive remote ops don't
+      // stack on a stale snapshot.
+      qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
+        if (!old) return old;
+        const newContent = applyOp(old.type, old.content, op);
+        return { ...old, content: newContent };
+      });
+    }, [companyId, artifactId, qc]),
     onStateSync: useCallback((content: Record<string, unknown>, version: number) => {
       qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
         if (!old) return old;
         return { ...old, content, version };
       });
     }, [companyId, artifactId, qc]),
-    onSaved: useCallback((version: number, content: Record<string, unknown>) => {
+    onSaved: useCallback((version: number, content: Record<string, unknown>, title?: string) => {
       qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
         if (!old) return old;
-        return { ...old, content, version };
+        return { ...old, content, version, ...(title !== undefined ? { title } : {}) };
       });
       qc.invalidateQueries({ queryKey: ["artifacts", companyId, artifactId, "revisions"] });
     }, [companyId, artifactId, qc]),
@@ -432,10 +433,6 @@ export function ArtifactEditor({
               conflictState={conflictState}
               wsConnected={wsStatus === "connected"}
               onStateChange={handleEditorState}
-              coeditSendOp={coedit.joined ? coedit.sendOp : undefined}
-              coeditSendCursor={coedit.joined ? coedit.sendCursor : undefined}
-              coeditSave={coedit.joined ? coedit.save : undefined}
-              applyRemoteOpRef={coedit.joined ? applyRemoteOpRef : undefined}
             />
           ) : artifact.type === "board" ? (
             <BoardEditor
@@ -446,10 +443,6 @@ export function ArtifactEditor({
               conflictState={conflictState}
               wsConnected={wsStatus === "connected"}
               onStateChange={handleEditorState}
-              coeditSendOp={coedit.joined ? coedit.sendOp : undefined}
-              coeditSendCursor={coedit.joined ? coedit.sendCursor : undefined}
-              coeditSave={coedit.joined ? coedit.save : undefined}
-              applyRemoteOpRef={coedit.joined ? applyRemoteOpRef : undefined}
             />
           ) : artifact.type === "slide_deck" ? (
             <SlideEditor

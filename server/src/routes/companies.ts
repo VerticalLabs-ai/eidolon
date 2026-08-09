@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
+import { clearCompanyPresence } from '../realtime/presence-store.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
@@ -234,6 +235,10 @@ export function companiesRouter(db: DbInstance): Router {
         payload: { company: existing },
         timestamp: new Date().toISOString(),
       });
+
+      // Clear in-memory presence entries for the deleted company so stale
+      // viewing/typing indicators don't linger until the TTL sweep.
+      clearCompanyPresence(companyId);
 
       res.status(204).end();
     } else {

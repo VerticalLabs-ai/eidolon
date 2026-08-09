@@ -210,6 +210,8 @@ export interface CoEditSaveMsg {
   artifactId: string;
   companyId: string;
   userId: string;
+  /** Optional title to persist alongside the content flush. */
+  title?: string;
 }
 
 export interface CoEditLeaveMsg {
@@ -277,6 +279,8 @@ export interface CoEditSavedMsg {
   artifactId: string;
   version: number;
   content: Record<string, unknown>;
+  /** Persisted title (present when the save included a title change). */
+  title?: string;
 }
 
 export interface CoEditUserLeftMsg {

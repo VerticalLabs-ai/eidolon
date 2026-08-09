@@ -155,17 +155,19 @@ export function mergeExternalUpdate(
 export async function flushSession(
   artifactId: string,
   editor: { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' },
+  title?: string,
 ): Promise<{ version: number; content: Record<string, unknown> } | null> {
   if (!_db) throw new Error('CoEdit manager not initialized');
   const session = sessions.get(artifactId);
   if (!session) return null;
 
-  if (!session.dirty) {
+  if (!session.dirty && title === undefined) {
     return { version: session.version, content: session.content };
   }
 
   // Use saveArtifactContent (direct DB save) to bypass the co-edit session
-  // check in updateArtifact (avoids recursion).
+  // check in updateArtifact (avoids recursion). Pass the title so it is
+  // persisted in the same transaction as the content.
   const updated = await saveArtifactContent(
     _db,
     session.companyId,
@@ -173,18 +175,22 @@ export async function flushSession(
     session.content,
     session.version,
     editor,
+    undefined,
+    title,
   );
 
   session.version = updated.version;
   session.lastSavedContent = JSON.parse(JSON.stringify(session.content));
   session.dirty = false;
 
-  // Broadcast saved to all participants
+  // Broadcast saved to all participants (include the persisted title so
+  // clients can update their cache without a refetch).
   broadcast(session, {
     type: 'coedit.saved',
     artifactId,
     version: updated.version,
     content: session.content,
+    title: updated.title,
   });
 
   return { version: updated.version, content: session.content };
@@ -200,6 +206,7 @@ export function updateSessionAfterFlush(
   artifactId: string,
   newVersion: number,
   content: Record<string, unknown>,
+  title?: string,
 ): void {
   const session = sessions.get(artifactId);
   if (!session) return;
@@ -212,6 +219,7 @@ export function updateSessionAfterFlush(
     artifactId,
     version: newVersion,
     content,
+    title,
   });
 }
 
@@ -332,6 +340,13 @@ export function applyOperation(
   const session = sessions.get(artifactId);
   if (!session) {
     throw new Error('No active co-edit session for artifact ' + artifactId);
+  }
+
+  // Authorization: only session participants may apply operations. Without
+  // this check, any WS client that knows the artifactId could inject ops
+  // into an active session.
+  if (!session.participants.has(userId)) {
+    throw new Error('Not a participant in this co-edit session');
   }
 
   // Apply the op to the canonical state

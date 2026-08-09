@@ -33,12 +33,14 @@ export async function saveArtifactContent(
   expectedVersion: number,
   editor: Editor,
   message?: string,
+  title?: string,
 ) {
   const current = await getArtifact(db, companyId, id);
   assertContent(current.type, content);
   const updated = await db.drizzle.transaction(async (tx) => {
     const [row] = await tx.update(db.schema.artifacts).set({
       content: content as Record<string, unknown>,
+      ...(title !== undefined ? { title } : {}),
       version: current.version + 1,
       updatedAt: new Date(),
       lastEditedByUserId: editor.userId ?? null,
@@ -152,7 +154,7 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
       const sessionContent = result.merged;
       const updated = await saveArtifactContent(db, companyId, id, sessionContent, current.version, editor, input.message);
       // Update the session's version + lastSavedContent to reflect the flush
-      updateSessionAfterFlush(id, updated.version, sessionContent);
+      updateSessionAfterFlush(id, updated.version, sessionContent, input.title ?? updated.title);
       if (input.title !== undefined && updated.title !== input.title) {
         const [titleUpdated] = await db.drizzle.update(db.schema.artifacts).set({
           title: input.title, updatedAt: new Date(),

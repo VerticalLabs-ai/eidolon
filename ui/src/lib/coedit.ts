@@ -40,7 +40,7 @@ interface UseCoEditSessionOptions {
   /** Called when the session state is received (join/reconnect). */
   onStateSync?: (content: Record<string, unknown>, version: number) => void;
   /** Called when a save completes. */
-  onSaved?: (version: number, content: Record<string, unknown>) => void;
+  onSaved?: (version: number, content: Record<string, unknown>, title?: string) => void;
   /** Called when a user leaves (for cursor clearing). */
   onUserLeft?: (userId: string) => void;
 }
@@ -117,7 +117,7 @@ export function useCoEditSession({
       const msg = event as unknown as CoEditServerMsg;
       if (msg.type === "coedit.saved" && msg.artifactId === artifactId) {
         setSessionVersion(msg.version);
-        onSavedRef.current?.(msg.version, msg.content);
+        onSavedRef.current?.(msg.version, msg.content, msg.title);
       }
     });
 
@@ -208,15 +208,19 @@ export function useCoEditSession({
     [artifactId, companyId, userId, name],
   );
 
-  const save = useCallback(() => {
-    if (!artifactId || !companyId) return;
-    wsClient.send({
-      type: "coedit.save",
-      artifactId,
-      companyId,
-      userId,
-    });
-  }, [artifactId, companyId, userId]);
+  const save = useCallback(
+    (title?: string) => {
+      if (!artifactId || !companyId) return;
+      wsClient.send({
+        type: "coedit.save",
+        artifactId,
+        companyId,
+        userId,
+        ...(title !== undefined ? { title } : {}),
+      });
+    },
+    [artifactId, companyId, userId],
+  );
 
   return {
     joined,

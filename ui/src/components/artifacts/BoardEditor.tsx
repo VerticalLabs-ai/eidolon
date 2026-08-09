@@ -3,7 +3,6 @@ import { Save, Plus, AlertTriangle, CloudOff } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import type { Artifact } from "@/lib/api";
-import type { CoEditOp } from "@eidolon/shared";
 import { BoardColumn } from "./BoardColumn";
 import {
   cardsInColumn,
@@ -35,10 +34,6 @@ interface BoardEditorProps {
     save: () => Promise<boolean>;
     discard: () => void;
   }) => void;
-  coeditSendOp?: (op: CoEditOp) => void;
-  coeditSendCursor?: (position: number | { rowId: string; colKey: string } | { cardId: string } | null) => void;
-  coeditSave?: () => void;
-  applyRemoteOpRef?: React.MutableRefObject<((op: CoEditOp) => void) | null>;
 }
 
 export interface ConflictState {
@@ -61,10 +56,6 @@ export function BoardEditor({
   wsConnected,
   onRemoteUpdate,
   onStateChange,
-  coeditSendOp: _coeditSendOp,
-  coeditSendCursor: _coeditSendCursor,
-  coeditSave,
-  applyRemoteOpRef: _applyRemoteOpRef,
 }: BoardEditorProps) {
   const parsed = parseBoard(artifact.content);
   const [title, setTitle] = useState(artifact.title);
@@ -140,11 +131,7 @@ export function BoardEditor({
     setSaveError(null);
     const content = buildContent();
     try {
-      if (coeditSave) {
-        coeditSave();
-      } else {
-        await onSave({ title, content });
-      }
+      await onSave({ title, content });
       // The saved state is the new agreed-on baseline, so the refetch that
       // follows this save is not mistaken for a competing remote edit.
       baseline.current = {
@@ -159,7 +146,7 @@ export function BoardEditor({
       setSaveError(msg);
       return false;
     }
-  }, [isDirty, saving, title, buildContent, onSave, artifact.id, coeditSave]);
+  }, [isDirty, saving, title, buildContent, onSave, artifact.id]);
 
   useEffect(() => {
     onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });
