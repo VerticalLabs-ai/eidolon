@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { AppError } from './error-handler.js';
 import logger from '../utils/logger.js';
@@ -32,6 +32,26 @@ declare global {
 
 export function hashServiceToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return '';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+}
+
+export function signServiceRequest(
+  tokenHash: string,
+  method: string,
+  path: string,
+  timestamp: number,
+  body?: unknown,
+): string {
+  const bodyHash = createHash('sha256').update(canonicalJson(body), 'utf8').digest('hex');
+  const message = `${method.toUpperCase()}\n${path}\n${timestamp}\n${bodyHash}`;
+  return createHmac('sha256', Buffer.from(tokenHash, 'hex')).update(message, 'utf8').digest('hex');
 }
 
 function readCookie(req: Request, name: string): string | undefined {
@@ -97,7 +117,23 @@ export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
     const bearerToken = req.get('authorization')?.replace(/^Bearer\s+/i, '');
     const cookieToken = readCookie(req, 'eidolon_service_token');
     const suppliedToken = machineToken ?? bearerToken ?? cookieToken;
-    if (!suppliedToken || tokens.length === 0) return null;
+    if (!suppliedToken || tokens.length === 0) {
+      const name = typeof req.query.service === 'string' ? req.query.service : '';
+      const timestamp = typeof req.query.ts === 'string' ? Number(req.query.ts) : NaN;
+      const signature = typeof req.query.sig === 'string' ? req.query.sig : '';
+      const token = tokens.find((candidate) => candidate.name === name);
+      if (!token || !Number.isInteger(timestamp) || Math.abs(Date.now() / 1000 - timestamp) > 60 || !/^[a-f0-9]{64}$/.test(signature)) {
+        return null;
+      }
+      const expected = signServiceRequest(
+        token.tokenHash,
+        req.method,
+        req.originalUrl.split('?', 1)[0]!,
+        timestamp,
+        req.body,
+      );
+      return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex')) ? token : null;
+    }
     const suppliedHash = hashServiceToken(suppliedToken);
     const supplied = Buffer.from(suppliedHash, 'hex');
     const matched = tokens.find((token) => {
