@@ -34,6 +34,20 @@ export function hashServiceToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
+function readCookie(req: Request, name: string): string | undefined {
+  for (const part of req.get('cookie')?.split(';') ?? []) {
+    const [key, ...value] = part.trim().split('=');
+    if (key === name) {
+      try {
+        return decodeURIComponent(value.join('='));
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function parseServiceTokens(raw = process.env.EIDOLON_SERVICE_TOKENS_JSON): ScopedServiceToken[] {
   if (!raw) return [];
   let parsed: unknown;
@@ -81,7 +95,8 @@ export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
   function matchToken(req: Request): ScopedServiceToken | null {
     const machineToken = req.get('x-eidolon-service-token');
     const bearerToken = req.get('authorization')?.replace(/^Bearer\s+/i, '');
-    const suppliedToken = machineToken ?? bearerToken;
+    const cookieToken = readCookie(req, 'eidolon_service_token');
+    const suppliedToken = machineToken ?? bearerToken ?? cookieToken;
     if (!suppliedToken || tokens.length === 0) return null;
     const suppliedHash = hashServiceToken(suppliedToken);
     const supplied = Buffer.from(suppliedHash, 'hex');
@@ -93,6 +108,7 @@ export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
       logger.warn({
         machineHeaderPresent: Boolean(machineToken),
         bearerHeaderPresent: Boolean(bearerToken),
+        serviceCookiePresent: Boolean(cookieToken),
         suppliedFingerprint: suppliedHash.slice(0, 12),
         configuredFingerprints: tokens.map((token) => token.tokenHash.slice(0, 12)),
       }, 'Scoped service token did not match');
