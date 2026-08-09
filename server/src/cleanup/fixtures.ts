@@ -99,6 +99,13 @@ const INDIRECT_TABLES: ReadonlyArray<{
  * avoids the cascade and lets us count the rows explicitly.
  */
 const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
+  // meeting_tasks + meetings must be deleted before agents: meetings has
+  // NO ACTION FKs to agents (created_by_agent_id, summary_generated_by_agent_id).
+  // meeting_tasks has a company_id column and CASCADE FKs to meetings + tasks;
+  // deleting it explicitly gives accurate per-table counts (vs relying on the
+  // cascade from meetings/tasks).
+  'meeting_tasks',
+  'meetings',
   'knowledge_chunks',
   'task_thread_items',
   'task_checkouts',

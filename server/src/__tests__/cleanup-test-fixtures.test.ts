@@ -597,4 +597,43 @@ describe('Cleanup script logic', () => {
     );
     expect(parseInt(revStillExists[0]?.count ?? '0', 10)).toBe(0);
   });
+
+  // M7: Cleanup removes meetings + meeting_tasks despite the meetings→agents
+  // NO ACTION FK (created_by_agent_id / summary_generated_by_agent_id). Meetings
+  // must be deleted before agents; meeting_tasks before meetings/tasks.
+  it('removes meetings and meeting_tasks despite agent FK constraints', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ meetings-cleanup');
+    const agentId = await insertAgent(runner, fixtureId, 'Meeting Agent');
+    const taskId = await insertTask(runner, fixtureId, 'Meeting Action Item');
+    const meetingId = randomUUID();
+    const meetingTaskId = randomUUID();
+    const ts = new Date().toISOString();
+    await runner.query(
+      `INSERT INTO meetings (id, company_id, title, transcript, summary, summary_generated_by_agent_id, created_by_agent_id, status, created_at, updated_at) VALUES ('${meetingId}', '${fixtureId}', '__mtest__ meeting', 'Alice: ship it', 'Summary text', '${agentId}', '${agentId}', 'active', '${ts}', '${ts}')`,
+    );
+    await runner.query(
+      `INSERT INTO meeting_tasks (id, meeting_id, task_id, company_id, created_at) VALUES ('${meetingTaskId}', '${meetingId}', '${taskId}', '${fixtureId}', '${ts}')`,
+    );
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    // meetings + meeting_tasks removed, agents removed (no FK violation)
+    expect(await countForCompany(runner, 'meetings', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'meeting_tasks', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'agents', fixtureId)).toBe(0);
+
+    // The specific meeting + join rows are gone
+    const meetingStillExists = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM meetings WHERE id = '${meetingId}'`,
+    );
+    expect(parseInt(meetingStillExists[0]?.count ?? '0', 10)).toBe(0);
+
+    const meetingTaskStillExists = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM meeting_tasks WHERE id = '${meetingTaskId}'`,
+    );
+    expect(parseInt(meetingTaskStillExists[0]?.count ?? '0', 10)).toBe(0);
+  });
 });
