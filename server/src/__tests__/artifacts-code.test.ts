@@ -57,12 +57,18 @@ const PY_READ_HOST = {
         "    print('PY_LEAK:' + open('/etc/passwd').read()[:20])\n" +
         "except Exception as e:\n" +
         "    print('PY_BLOCKED_OPEN:' + str(e).split(':')[0])\n" +
+        "import os\n" +
+        "try:\n" +
+        "    fd = os.open('/etc/passwd', os.O_RDONLY)\n" +
+        "    print('PY_OSOPEN_LEAK:' + os.read(fd, 20).decode('utf-8', 'replace'))\n" +
+        "    os.close(fd)\n" +
+        "except Exception as e:\n" +
+        "    print('PY_BLOCKED_OSOPEN:' + str(e).split(':')[0])\n" +
         "try:\n" +
         "    import subprocess\n" +
         "    print('PY_SUBPROCESS_LEAK')\n" +
         "except ImportError as e:\n" +
         "    print('PY_BLOCKED_SUBPROCESS:' + str(e))\n" +
-        "import os\n" +
         "try:\n" +
         "    os.system('echo leaked')\n" +
         "    print('PY_OS_SYSTEM_LEAK')\n" +
@@ -582,9 +588,13 @@ describe('Code artifact API — real-Postgres integration', () => {
         .post(`/api/companies/${companyId}/artifacts/${created.body.data.id}/run`)
         .expect(200);
       const out = res.body.data.stdout + res.body.data.stderr;
-      // No host file leak.
+      // No host file leak via builtins.open.
       expect(out).not.toContain('PY_LEAK:');
       expect(out).toContain('PY_BLOCKED_OPEN:');
+      // No host file leak via os.open + os.read (same escape class as
+      // builtins.open — the Python preload sandbox wraps os.open's path arg).
+      expect(out).not.toContain('PY_OSOPEN_LEAK');
+      expect(out).toContain('PY_BLOCKED_OSOPEN:');
       // No subprocess.
       expect(out).not.toContain('PY_SUBPROCESS_LEAK');
       expect(out).toContain('PY_BLOCKED_SUBPROCESS:');

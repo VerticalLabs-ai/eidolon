@@ -47,6 +47,12 @@ _BLOCKED_MODULES = frozenset(
 # os functions that take a path as the first positional argument — wrap to
 # restrict to the sandbox root.
 _OS_PATH_FNS = (
+    # ``os.open(path, flags, mode)`` opens a host file by raw fd — without
+    # wrapping it, ``os.open('/etc/passwd', os.O_RDONLY)`` + ``os.read(fd, n)``
+    # would read host file contents via a plain builtin, the same escape class
+    # as an unpatched ``builtins.open``. The wrapper below rewrites args[0]
+    # (the path) through ``_within_sandbox`` so out-of-root targets raise.
+    "open",
     "remove", "unlink", "rename", "replace", "mkdir", "makedirs", "rmdir",
     "chmod", "lchmod", "chown", "lchown", "utime", "link", "symlink",
     "listdir", "scandir", "stat", "lstat", "access", "readlink", "pathconf",
