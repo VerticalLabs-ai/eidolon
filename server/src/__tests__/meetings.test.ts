@@ -335,6 +335,92 @@ describe('Meetings pipeline', () => {
     expect(Array.isArray(tasks.body.data)).toBe(true);
   });
 
+  // -- VAL-MEETING-006/007: reverse task→meeting backlink -------------------
+
+  it('GET /tasks/:taskId/meetings returns meetings linked to a task (reverse backlink)', async () => {
+    const meeting = await createMeeting();
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/meetings/${meeting.id}/action-items`)
+      .expect(200);
+    const extracted = res.body.data.tasks as Array<{ id: string }>;
+    // No LLM in tests may yield zero tasks; seed a task + link manually so the
+    // backlink is exercised regardless of LLM availability.
+    let taskId: string;
+    if (extracted.length > 0) {
+      taskId = extracted[0].id;
+    } else {
+      const taskRes = await request(app)
+        .post(`/api/companies/${companyId}/tasks`)
+        .send({ projectId, title: '__mtest__ manual linked task', type: 'feature' })
+        .expect(201);
+      taskId = taskRes.body.data.id;
+      await db.drizzle.insert(db.schema.meetingTasks).values({
+        meetingId: meeting.id,
+        taskId,
+        companyId,
+      });
+    }
+
+    const backlink = await request(app)
+      .get(`/api/companies/${companyId}/tasks/${taskId}/meetings`)
+      .expect(200);
+    expect(Array.isArray(backlink.body.data)).toBe(true);
+    expect(backlink.body.data.length).toBeGreaterThanOrEqual(1);
+    const ids = (backlink.body.data as Array<{ id: string }>).map((m) => m.id);
+    expect(ids).toContain(meeting.id);
+    // Each returned meeting has the expected shape.
+    for (const m of backlink.body.data as Array<Record<string, unknown>>) {
+      expect(m.id).toBeTruthy();
+      expect(typeof m.title).toBe('string');
+      expect(m.companyId).toBe(companyId);
+    }
+  });
+
+  it('GET /tasks/:taskId/meetings rejects cross-company scope (404) and excludes deleted meetings', async () => {
+    const meeting = await createMeeting();
+    // Seed a linked task manually.
+    const taskRes = await request(app)
+      .post(`/api/companies/${companyId}/tasks`)
+      .send({ projectId, title: '__mtest__ backlink scope task', type: 'feature' })
+      .expect(201);
+    const taskId = taskRes.body.data.id;
+    await db.drizzle.insert(db.schema.meetingTasks).values({
+      meetingId: meeting.id,
+      taskId,
+      companyId,
+    });
+
+    // Cross-company fetch of the task's meetings → 404 (task not found in other company).
+    await request(app)
+      .get(`/api/companies/${otherCompanyId}/tasks/${taskId}/meetings`)
+      .expect(404);
+
+    // A non-existent task → 404.
+    await request(app)
+      .get(`/api/companies/${companyId}/tasks/00000000-0000-0000-0000-000000000000/meetings`)
+      .expect(404);
+
+    // Soft-deleting the meeting excludes it from the backlink.
+    await request(app).delete(`/api/companies/${companyId}/meetings/${meeting.id}`).expect(200);
+    const afterDelete = await request(app)
+      .get(`/api/companies/${companyId}/tasks/${taskId}/meetings`)
+      .expect(200);
+    const ids = (afterDelete.body.data as Array<{ id: string }>).map((m) => m.id);
+    expect(ids).not.toContain(meeting.id);
+  });
+
+  it('GET /tasks/:taskId/meetings returns empty array for a task with no meeting linkage', async () => {
+    const taskRes = await request(app)
+      .post(`/api/companies/${companyId}/tasks`)
+      .send({ projectId, title: '__mtest__ unlinked task', type: 'feature' })
+      .expect(201);
+    const taskId = taskRes.body.data.id;
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/tasks/${taskId}/meetings`)
+      .expect(200);
+    expect(res.body.data).toEqual([]);
+  });
+
   // -- VAL-MEETING-013: realtime events on summary/action-item creation ----
 
   it('emits meeting.* realtime events on create/summary/action-items', async () => {

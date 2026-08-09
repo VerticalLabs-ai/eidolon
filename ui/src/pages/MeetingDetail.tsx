@@ -90,7 +90,12 @@ export function MeetingDetail() {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: meetingKey });
       if (res.data.skipped) {
-        toast.message("Summary skipped — no meaningful transcript");
+        // Distinguish empty transcript (VAL-MEETING-011) from other skip reasons.
+        if (res.data.reason === "empty_transcript") {
+          toast.message("Summary skipped — transcript is empty");
+        } else {
+          toast.message("Summary skipped — no meaningful content to summarize");
+        }
       } else {
         toast.success("Summary generated");
       }
@@ -105,7 +110,13 @@ export function MeetingDetail() {
       qc.invalidateQueries({ queryKey: ["tasks", companyId] });
       const count = res.data.tasks.length;
       if (res.data.skipped) {
-        toast.message("No action items — transcript is empty");
+        // Distinguish empty transcript from a meaningful transcript with no
+        // items found (VAL-MEETING-011).
+        if (res.data.reason === "empty_transcript") {
+          toast.message("No action items — transcript is empty");
+        } else {
+          toast.message("No action items found in the transcript");
+        }
       } else {
         toast.success(`Extracted ${count} action item${count === 1 ? "" : "s"}`);
       }

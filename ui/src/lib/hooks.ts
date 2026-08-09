@@ -630,6 +630,18 @@ export function useTaskThread(companyId: string | undefined, taskId: string | un
   });
 }
 
+/**
+ * Reverse task→meeting backlink (VAL-MEETING-006/007): meetings that
+ * originated a task via the meeting_tasks join table.
+ */
+export function useTaskMeetings(companyId: string | undefined, taskId: string | undefined) {
+  return useQuery({
+    queryKey: ["tasks", companyId, taskId, "meetings"],
+    queryFn: async () => unwrap<api.Meeting[]>(await api.getTaskMeetings(companyId!, taskId!)),
+    enabled: !!companyId && !!taskId,
+  });
+}
+
 export function useCreateTask(companyId: string) {
   const qc = useQueryClient();
   return useMutation({

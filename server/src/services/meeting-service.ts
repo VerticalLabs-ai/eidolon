@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // Distinct from agent execution transcripts. Project-scoped, company-isolated.
 // Pipeline: create meeting → attach transcript → summarize (grounded, LLM) →
-// extract action items as REAL tasks linked to the project (tasks.meetingId).
+// extract action items as REAL tasks linked to the project (meeting_tasks join).
 // Empty/garbage transcripts are handled gracefully (no 500).
 // ---------------------------------------------------------------------------
 
@@ -458,4 +458,43 @@ export async function getMeetingTasks(db: DbInstance, companyId: string, id: str
     .where(and(eq(meetingTasks.meetingId, id), eq(meetingTasks.companyId, companyId)))
     .orderBy(asc(meetingTasks.createdAt));
   return rows.map((r) => r.task);
+}
+
+// ---------------------------------------------------------------------------
+// Reverse linkage — meetings linked to a task (VAL-MEETING-006/007 backlink)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the meetings linked to a task via the `meeting_tasks` join table
+ * (the reverse direction of `getMeetingTasks`). Scoped by companyId so a
+ * task in one company cannot surface meetings from another. Ordered by the
+ * meeting's updatedAt desc for a stable, recent-first ordering. Only
+ * non-deleted meetings are returned (archived meetings are included so the
+ * backlink survives archiving; deleted meetings are excluded).
+ */
+export async function getTaskMeetings(db: DbInstance, companyId: string, taskId: string) {
+  const { meetings, meetingTasks, tasks } = db.schema;
+  // Verify the task exists + belongs to the company (404 otherwise).
+  const [task] = await db.drizzle
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
+    .limit(1);
+  if (!task) throw new AppError(404, 'TASK_NOT_FOUND', `Task ${taskId} not found`);
+
+  const rows = await db.drizzle
+    .select({ meeting: meetings })
+    .from(meetingTasks)
+    .innerJoin(meetings, eq(meetingTasks.meetingId, meetings.id))
+    .where(
+      and(
+        eq(meetingTasks.taskId, taskId),
+        eq(meetingTasks.companyId, companyId),
+        eq(meetings.companyId, companyId),
+        // Exclude deleted meetings (archived kept so the backlink survives).
+        sql`${meetings.status} <> 'deleted'`,
+      ),
+    )
+    .orderBy(desc(meetings.updatedAt), desc(meetings.id));
+  return rows.map((r) => r.meeting);
 }

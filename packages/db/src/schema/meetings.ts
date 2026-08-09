@@ -22,7 +22,8 @@ import { tasks } from './tasks.js';
  * (task_thread_items execution log payloads). It is project-scoped and
  * company-isolated, carries a pasted (or transcribed) transcript, a
  * transcript-grounded summary, and a set of action items that become REAL
- * tasks in the existing task system (linked back via `tasks.meetingId`).
+ * tasks in the existing task system (linked back via the `meeting_tasks` join
+ * table — bidirectional: meeting→tasks and task→meeting).
  */
 export const meetingStatusEnum = pgEnum('meeting_status', [
   'active',

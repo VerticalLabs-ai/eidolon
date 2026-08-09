@@ -3206,6 +3206,13 @@ export const getMeetingTasks = (companyId: string, meetingId: string) =>
     `/companies/${companyId}/meetings/${meetingId}/tasks`,
   );
 
+// Reverse task→meeting backlink (VAL-MEETING-006/007): meetings that
+// originated a task (via the meeting_tasks join table).
+export const getTaskMeetings = (companyId: string, taskId: string) =>
+  request<{ data: Meeting[] }>(
+    `/companies/${companyId}/tasks/${taskId}/meetings`,
+  );
+
 export const deleteMeeting = (companyId: string, meetingId: string) =>
   request<{ data: Meeting }>(
     `/companies/${companyId}/meetings/${meetingId}`,
