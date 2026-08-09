@@ -59,6 +59,9 @@ import {
   artifacts,
   artifactRevisions,
   artifactFolders,
+  projectTemplates,
+  artifactTemplates,
+  projectTemplateClones,
   testUsers,
 } from '@eidolon/db';
 
@@ -117,6 +120,9 @@ const SCHEMA_BUNDLE = {
   artifacts,
   artifactRevisions,
   artifactFolders,
+  projectTemplates,
+  artifactTemplates,
+  projectTemplateClones,
   testUsers,
 } as const;
 

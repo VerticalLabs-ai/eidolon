@@ -29,6 +29,7 @@ import {
   useUpdateTemplateFromCompany,
 } from "@/lib/hooks";
 import type { CompanyTemplate } from "@/lib/api";
+import { ProjectTemplateGallery } from "@/components/templates/ProjectTemplateGallery";
 
 const CATEGORIES = [
   { id: "all", label: "All Templates", icon: Layers },
@@ -394,6 +395,11 @@ export function Templates() {
             })}
           </div>
         )}
+      </div>
+
+      {/* Project Templates gallery (M4) — VAL-TEMPLATE-003/011 */}
+      <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 border-t border-border">
+        <ProjectTemplateGallery />
       </div>
 
       {/* Import modal */}

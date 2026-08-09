@@ -11,6 +11,7 @@ import { useServerEvents } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
 import { ArtifactTypePicker } from "@/components/artifacts/ArtifactTypePicker";
+import { ArtifactTemplatePicker } from "@/components/artifacts/ArtifactTemplatePicker";
 import { ArtifactEditor } from "@/components/artifacts/ArtifactEditor";
 import { ProjectPresenceBadge } from "@/components/artifacts/PresenceIndicator";
 import { FolderTree, FolderBreadcrumbs } from "@/components/artifacts/FolderTree";
@@ -18,6 +19,7 @@ import {
   artifactTypeLabel,
   defaultArtifactContent,
 } from "@/components/artifacts/artifact-defaults";
+import { useCreateArtifactFromTemplate } from "@/lib/hooks";
 import type { Artifact, ArtifactType } from "@/lib/api";
 
 interface ProjectArtifactsProps {
@@ -40,6 +42,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
   });
   const [offset, setOffset] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
@@ -106,6 +109,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
     queryParams,
   );
   const createMutation = useCreateArtifact(companyId);
+  const createFromTemplateMutation = useCreateArtifactFromTemplate(companyId);
 
   // Project-aggregated presence (VAL-CROSS-014): users viewing any artifact
   // in this project, live-updated via WS presence.* events.
@@ -188,6 +192,26 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
     [createMutation, projectId, companyId, qc],
   );
 
+  const handleCreateFromTemplate = useCallback(
+    async (templateId: string, templateName: string) => {
+      setTemplatePickerOpen(false);
+      try {
+        const result = await createFromTemplateMutation.mutateAsync({
+          templateId,
+          data: { projectId, title: `${templateName} copy` },
+        });
+        const created = (result as unknown as { data: Artifact }).data;
+        toast.success(`Artifact created from template`);
+        setSelectedId(created.id);
+        qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Create from template failed";
+        toast.error(msg);
+      }
+    },
+    [createFromTemplateMutation, projectId, companyId, qc],
+  );
+
   if (selectedId) {
     return (
       <ArtifactEditor
@@ -255,6 +279,16 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         onSelect={handleCreate}
+        onSelectFromTemplate={() => {
+          setPickerOpen(false);
+          setTemplatePickerOpen(true);
+        }}
+      />
+      <ArtifactTemplatePicker
+        open={templatePickerOpen}
+        onClose={() => setTemplatePickerOpen(false)}
+        companyId={companyId}
+        onSelect={handleCreateFromTemplate}
       />
     </div>
   );

@@ -17,6 +17,7 @@ export * from './types/events.js';
 export * from './types/artifact.js';
 export * from './types/mention.js';
 export * from './types/coedit.js';
+export * from './types/workspace-template.js';
 export * from './coedit-ops.js';
 
 // Validators (re-exports schemas + common helpers) -----------------------

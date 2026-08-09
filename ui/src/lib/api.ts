@@ -2388,6 +2388,111 @@ export const updateTemplateFromCompany = (
     { method: "PATCH", body: JSON.stringify(data ?? {}) },
   );
 
+// ── Project Templates (M4) ──────────────────────────────────────────────
+
+export interface ProjectTemplate {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  projectId: string | null;
+  snapshot: {
+    settings: {
+      name: string;
+      description: string | null;
+      status?: string;
+      repoUrl?: string | null;
+    };
+    folders: Array<{ originalId: string; parentId: string | null; name: string }>;
+    artifacts: Array<{
+      type: ArtifactType;
+      title: string;
+      content: Record<string, unknown>;
+      contentSchemaVersion: number;
+      originalFolderId: string | null;
+    }>;
+  };
+  artifactCount: number;
+  folderCount: number;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const saveProjectTemplate = (
+  companyId: string,
+  data: { projectId: string; name: string; description?: string | null },
+) =>
+  request<ProjectTemplate>(`/companies/${companyId}/project-templates`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const listProjectTemplates = (companyId: string) =>
+  request<ProjectTemplate[]>(`/companies/${companyId}/project-templates`);
+
+export const getProjectTemplate = (companyId: string, id: string) =>
+  request<ProjectTemplate>(`/companies/${companyId}/project-templates/${id}`);
+
+export const deleteProjectTemplate = (companyId: string, id: string) =>
+  request<void>(`/companies/${companyId}/project-templates/${id}`, { method: "DELETE" });
+
+export const createProjectFromTemplate = (
+  companyId: string,
+  templateId: string,
+  data: { name?: string; description?: string | null; idempotencyKey?: string },
+) =>
+  request<{ project: Project; artifacts: Artifact[]; folders: unknown[] }>(
+    `/companies/${companyId}/project-templates/${templateId}/create-project`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+// ── Artifact Templates (M4) ─────────────────────────────────────────────
+
+export interface ArtifactTemplate {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  type: ArtifactType;
+  content: Record<string, unknown>;
+  contentSchemaVersion: number;
+  artifactId: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const saveArtifactTemplate = (
+  companyId: string,
+  data: { artifactId: string; name: string; description?: string | null },
+) =>
+  request<ArtifactTemplate>(`/companies/${companyId}/artifact-templates`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const listArtifactTemplates = (companyId: string, type?: ArtifactType) => {
+  const qs = type ? `?type=${type}` : "";
+  return request<ArtifactTemplate[]>(`/companies/${companyId}/artifact-templates${qs}`);
+};
+
+export const getArtifactTemplate = (companyId: string, id: string) =>
+  request<ArtifactTemplate>(`/companies/${companyId}/artifact-templates/${id}`);
+
+export const deleteArtifactTemplate = (companyId: string, id: string) =>
+  request<void>(`/companies/${companyId}/artifact-templates/${id}`, { method: "DELETE" });
+
+export const createArtifactFromTemplate = (
+  companyId: string,
+  templateId: string,
+  data: { projectId?: string | null; folderId?: string | null; title?: string },
+) =>
+  request<Artifact>(
+    `/companies/${companyId}/artifact-templates/${templateId}/create-artifact`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
 // ── Inbox (unified feed) ────────────────────────────────────────────────
 
 export type InboxItemKind = "approval" | "collaboration" | "activity" | "task_thread";

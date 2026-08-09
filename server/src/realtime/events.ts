@@ -64,6 +64,14 @@ export interface FolderEvent extends ServerEvent {
     | 'folder.deleted';
 }
 
+export interface WorkspaceTemplateEvent extends ServerEvent {
+  type:
+    | 'project_template.created'
+    | 'project_template.deleted'
+    | 'artifact_template.created'
+    | 'artifact_template.deleted';
+}
+
 export interface RoutineEvent extends ServerEvent {
   type:
     | 'routine.triggered'
@@ -175,6 +183,7 @@ export type EidolonEvent =
   | RuntimeEvent
   | ArtifactEvent
   | FolderEvent
+  | WorkspaceTemplateEvent
   | PresenceEvent
   | RoutineEvent;
 

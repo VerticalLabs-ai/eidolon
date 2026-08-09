@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, AlertCircle, RotateCcw } from "lucide-react";
+import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, AlertCircle, RotateCcw, Copy } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { DocEditor, type ConflictState as DocConflictState } from "./DocEditor";
@@ -10,6 +11,7 @@ import { TimelineEditor } from "./TimelineEditor";
 import { RevisionHistory } from "./RevisionHistory";
 import { PresenceIndicator } from "./PresenceIndicator";
 import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
+import { SaveArtifactTemplateModal } from "./SaveArtifactTemplateModal";
 import {
   useArtifact,
   useUpdateArtifact,
@@ -17,6 +19,7 @@ import {
   useRestoreRevision,
   useArtifactPresence,
   usePresenceActions,
+  useSaveArtifactTemplate,
 } from "@/lib/hooks";
 import { useServerEvents } from "@/lib/ws";
 import { useWebSocket } from "@/lib/ws";
@@ -56,6 +59,8 @@ export function ArtifactEditor({
   const { data: revisions } = useArtifactRevisions(companyId, artifactId);
   const updateMutation = useUpdateArtifact(companyId);
   const restoreMutation = useRestoreRevision(companyId);
+  const saveArtifactTemplateMutation = useSaveArtifactTemplate(companyId);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const { status: wsStatus } = useWebSocket(companyId);
   const qc = useQueryClient();
 
@@ -399,6 +404,41 @@ export function ArtifactEditor({
           >
             Discard & Reload
           </Button>
+        )}
+        {/* Save as Template (M4) — captures this artifact's type + content as
+            a reusable artifact template (VAL-TEMPLATE-005). */}
+        <button
+          type="button"
+          onClick={() => setSaveTemplateOpen(true)}
+          disabled={saveArtifactTemplateMutation.isPending}
+          title="Save as artifact template"
+          aria-label="Save as template"
+          className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs font-medium text-text-secondary hover:text-accent hover:border-accent/30 transition-colors disabled:opacity-50 cursor-pointer"
+        >
+          <Copy className="h-3 w-3" />
+          Save as Template
+        </button>
+        {saveTemplateOpen && (
+          <SaveArtifactTemplateModal
+            artifactTitle={artifact.title}
+            typeLabel={EDITOR_TYPE_LABELS[artifact.type] ?? artifact.type}
+            pending={saveArtifactTemplateMutation.isPending}
+            onCancel={() => setSaveTemplateOpen(false)}
+            onSubmit={async (name, description) => {
+              try {
+                await saveArtifactTemplateMutation.mutateAsync({
+                  artifactId: artifact.id,
+                  name,
+                  description: description || null,
+                });
+                toast.success("Artifact template saved");
+                setSaveTemplateOpen(false);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : "Save failed";
+                toast.error(msg);
+              }
+            }}
+          />
         )}
       </div>
 

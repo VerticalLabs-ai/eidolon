@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AppWindow, Code2 } from "lucide-react";
+import { FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AppWindow, Code2, Copy } from "lucide-react";
 import { clsx } from "clsx";
 import { Modal } from "@/components/ui/Modal";
 import type { ArtifactType } from "@/lib/api";
@@ -82,12 +82,16 @@ interface ArtifactTypePickerProps {
   open: boolean;
   onClose: () => void;
   onSelect: (type: ArtifactType) => void;
+  /** Optional callback to open the "From Template" flow (artifact templates).
+   *  When provided, the picker shows a "From Template" option (VAL-TEMPLATE-014). */
+  onSelectFromTemplate?: () => void;
 }
 
 export function ArtifactTypePicker({
   open,
   onClose,
   onSelect,
+  onSelectFromTemplate,
 }: ArtifactTypePickerProps) {
   const firstEnabledRef = useRef<HTMLButtonElement | null>(null);
 
@@ -106,6 +110,25 @@ export function ArtifactTypePicker({
       <p className="mb-4 text-sm text-text-secondary">
         Choose the type of artifact to create.
       </p>
+      {onSelectFromTemplate && (
+        <button
+          onClick={() => onSelectFromTemplate()}
+          className="mb-3 flex w-full items-center gap-3 rounded-lg border border-accent/20 bg-accent/[0.04] p-3 text-left transition-all duration-200 outline-none hover:border-accent/40 hover:bg-accent/[0.08] cursor-pointer focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+          aria-label="Create from template — reuse a saved artifact template"
+        >
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+            <Copy className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold font-display text-text-primary">
+              From Template
+            </p>
+            <p className="text-xs text-text-secondary mt-0.5">
+              Create from a saved artifact template
+            </p>
+          </div>
+        </button>
+      )}
       <div
         className="grid grid-cols-1 gap-2 sm:grid-cols-2"
         role="listbox"

@@ -1809,6 +1809,110 @@ export function useUpdateTemplateFromCompany(companyId: string) {
   });
 }
 
+// ── Project Templates (M4) ──────────────────────────────────────────────
+
+export function useProjectTemplates(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-templates", companyId],
+    queryFn: async () =>
+      unwrap<api.ProjectTemplate[]>(
+        await api.listProjectTemplates(companyId!),
+      ),
+    enabled: !!companyId,
+  });
+}
+
+export function useSaveProjectTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { projectId: string; name: string; description?: string | null }) =>
+      api.saveProjectTemplate(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+    },
+  });
+}
+
+export function useDeleteProjectTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteProjectTemplate(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+    },
+  });
+}
+
+export function useCreateProjectFromTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      templateId,
+      data,
+    }: {
+      templateId: string;
+      data: { name?: string; description?: string | null; idempotencyKey?: string };
+    }) => api.createProjectFromTemplate(companyId, templateId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects", companyId] });
+      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+    },
+  });
+}
+
+// ── Artifact Templates (M4) ─────────────────────────────────────────────
+
+export function useArtifactTemplates(
+  companyId: string | undefined,
+  type?: api.ArtifactType,
+) {
+  return useQuery({
+    queryKey: ["artifact-templates", companyId, type],
+    queryFn: async () =>
+      unwrap<api.ArtifactTemplate[]>(
+        await api.listArtifactTemplates(companyId!, type),
+      ),
+    enabled: !!companyId,
+  });
+}
+
+export function useSaveArtifactTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { artifactId: string; name: string; description?: string | null }) =>
+      api.saveArtifactTemplate(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifact-templates", companyId] });
+    },
+  });
+}
+
+export function useDeleteArtifactTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteArtifactTemplate(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifact-templates", companyId] });
+    },
+  });
+}
+
+export function useCreateArtifactFromTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      templateId,
+      data,
+    }: {
+      templateId: string;
+      data: { projectId?: string | null; folderId?: string | null; title?: string };
+    }) => api.createArtifactFromTemplate(companyId, templateId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
 // ── Inbox ───────────────────────────────────────────────────────────────
 
 export function useInbox(companyId: string | undefined) {

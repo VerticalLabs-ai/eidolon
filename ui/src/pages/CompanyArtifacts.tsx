@@ -11,12 +11,14 @@ import { useServerEvents } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
 import { ArtifactTypePicker } from "@/components/artifacts/ArtifactTypePicker";
+import { ArtifactTemplatePicker } from "@/components/artifacts/ArtifactTemplatePicker";
 import { ArtifactEditor } from "@/components/artifacts/ArtifactEditor";
 import { FolderTree, FolderBreadcrumbs } from "@/components/artifacts/FolderTree";
 import {
   artifactTypeLabel,
   defaultArtifactContent,
 } from "@/components/artifacts/artifact-defaults";
+import { useCreateArtifactFromTemplate } from "@/lib/hooks";
 import type { Artifact, ArtifactType } from "@/lib/api";
 
 const PAGE_SIZE = 20;
@@ -35,6 +37,7 @@ export function CompanyArtifacts() {
   });
   const [offset, setOffset] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
@@ -117,6 +120,7 @@ export function CompanyArtifacts() {
     return data?.meta.total ?? 0;
   }, [data?.meta.total]);
   const createMutation = useCreateArtifact(companyId!);
+  const createFromTemplateMutation = useCreateArtifactFromTemplate(companyId!);
 
   useServerEvents(companyId, "artifact.created", () => {
     qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
@@ -195,6 +199,27 @@ export function CompanyArtifacts() {
     [createMutation, filters.projectId, companyId, qc],
   );
 
+  const handleCreateFromTemplate = useCallback(
+    async (templateId: string, templateName: string) => {
+      setTemplatePickerOpen(false);
+      try {
+        const projectId = filters.projectId || null;
+        const result = await createFromTemplateMutation.mutateAsync({
+          templateId,
+          data: { projectId, title: `${templateName} copy` },
+        });
+        const created = (result as unknown as { data: Artifact }).data;
+        toast.success(`Artifact created from template`);
+        setSelectedId(created.id);
+        qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Create from template failed";
+        toast.error(msg);
+      }
+    },
+    [createFromTemplateMutation, filters.projectId, companyId, qc],
+  );
+
   if (selectedId) {
     return (
       <ArtifactEditor
@@ -263,6 +288,16 @@ export function CompanyArtifacts() {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         onSelect={handleCreate}
+        onSelectFromTemplate={() => {
+          setPickerOpen(false);
+          setTemplatePickerOpen(true);
+        }}
+      />
+      <ArtifactTemplatePicker
+        open={templatePickerOpen}
+        onClose={() => setTemplatePickerOpen(false)}
+        companyId={companyId!}
+        onSelect={handleCreateFromTemplate}
       />
     </div>
   );

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil, FileEdit } from "lucide-react";
+import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil, FileEdit, Copy } from "lucide-react";
 import { toast } from "sonner";
-import { useArchiveProject, useProject, useProjectWork } from "@/lib/hooks";
+import { useArchiveProject, useProject, useProjectWork, useSaveProjectTemplate } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Tabs } from "@/components/ui/Tabs";
@@ -104,9 +104,13 @@ export function ProjectDetail() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, isLoading, isError, refetch } = useProject(companyId, projectId);
   const archiveMutation = useArchiveProject(companyId ?? "");
+  const saveProjectTemplateMutation = useSaveProjectTemplate(companyId ?? "");
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+  const [templateDescription, setTemplateDescription] = useState("");
 
   const rawTab = searchParams.get("tab");
   const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
@@ -215,6 +219,18 @@ export function ProjectDetail() {
                 onClick={() => setEditOpen(true)}
               >
                 Edit Project
+              </Button>
+              <Button
+                variant="secondary"
+                className="flex-1 sm:flex-none"
+                icon={<Copy className="h-3.5 w-3.5" />}
+                onClick={() => {
+                  setTemplateName(`${project.name} Template`);
+                  setTemplateDescription("");
+                  setSaveTemplateOpen(true);
+                }}
+              >
+                Save as Template
               </Button>
               <Button
                 variant="danger"
@@ -335,6 +351,77 @@ export function ProjectDetail() {
               }}
             >
               Confirm Archive
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Save as Template modal (M4) — VAL-TEMPLATE-001 */}
+      <Modal
+        open={saveTemplateOpen}
+        onClose={() => setSaveTemplateOpen(false)}
+        title="Save Project as Template"
+        dismissible={!saveProjectTemplateMutation.isPending}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-secondary">
+            Capture this project's artifacts, folders, and settings as a reusable
+            template. The template is a snapshot — editing the original project
+            afterwards does not change it.
+          </p>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary mb-1 block">
+              Template Name
+            </span>
+            <input
+              type="text"
+              value={templateName}
+              onChange={(e) => setTemplateName(e.target.value)}
+              className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent/50"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary mb-1 block">
+              Description (optional)
+            </span>
+            <textarea
+              value={templateDescription}
+              onChange={(e) => setTemplateDescription(e.target.value)}
+              rows={2}
+              className="w-full rounded-md bg-white/[0.04] border border-white/10 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent/50"
+            />
+          </label>
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              variant="ghost"
+              disabled={saveProjectTemplateMutation.isPending}
+              onClick={() => setSaveTemplateOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              loading={saveProjectTemplateMutation.isPending}
+              onClick={() => {
+                saveProjectTemplateMutation.mutate(
+                  {
+                    projectId: project.id,
+                    name: templateName.trim(),
+                    description: templateDescription.trim() || null,
+                  },
+                  {
+                    onSuccess: () => {
+                      toast.success("Project template saved");
+                      setSaveTemplateOpen(false);
+                    },
+                    onError: (err) => {
+                      const msg = err instanceof Error ? err.message : "Save failed";
+                      toast.error(msg);
+                    },
+                  },
+                );
+              }}
+            >
+              Save Template
             </Button>
           </div>
         </div>

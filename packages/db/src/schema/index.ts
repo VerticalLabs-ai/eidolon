@@ -45,4 +45,9 @@ export {
   artifactRevisions,
 } from './artifacts.js';
 export { artifactFolders } from './artifact_folders.js';
+export {
+  projectTemplates,
+  artifactTemplates,
+  projectTemplateClones,
+} from './workspace_templates.js';
 export { testUsers } from './test_users.js';

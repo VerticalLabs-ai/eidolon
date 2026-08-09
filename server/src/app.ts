@@ -47,6 +47,7 @@ import { routinesRouter } from './routes/routines.js';
 import { automationsRouter } from './routes/automations.js';
 import { artifactsRouter } from './routes/artifacts.js';
 import { foldersRouter } from './routes/folders.js';
+import { workspaceTemplatesRouter } from './routes/workspace-templates.js';
 import { presenceRouter } from './routes/presence.js';
 import { mentionsRouter } from './routes/mentions.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
@@ -218,6 +219,8 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), artifactsRouter(db));
   // Artifact folders (M4): nested folder tree for organizing artifacts.
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), foldersRouter(db));
+  // Project + artifact templates (M4): save/reuse project and artifact snapshots.
+  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), workspaceTemplatesRouter(db));
   // Per-artifact presence (M3): join/leave/typing REST + WS events.
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), presenceRouter(db));
 
