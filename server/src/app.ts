@@ -139,6 +139,13 @@ export function createApp(db: DbInstance): express.Express {
   // Authenticated routes
   // ---------------------------------------------------------------------------
 
+  // Prompt service auth must run before the broad company-session gate.
+  app.use(
+    '/api/companies/:companyId/prompts',
+    requireServiceOrOrgMember('prompts:read'),
+    companyPromptsRouter(db, requireServiceScope('prompts:write')),
+  );
+
   app.use('/api/companies', requireAuth, companiesRouter(db));
 
   // Company-scoped routes (require auth + org membership)
@@ -172,12 +179,6 @@ export function createApp(db: DbInstance): express.Express {
   // Agent memories
   app.use('/api/companies/:companyId/agents/:agentId/memories', requireAuth, requireOrgMember(), memoriesRouter(db));
 
-  // Prompt Studio (company-scoped)
-  app.use(
-    '/api/companies/:companyId/prompts',
-    requireServiceOrOrgMember('prompts:read'),
-    companyPromptsRouter(db, requireServiceScope('prompts:write')),
-  );
 
   // Agent evaluations & performance
   app.use('/api/companies/:companyId/evaluations', requireAuth, requireOrgMember(), evaluationsRouter(db));
