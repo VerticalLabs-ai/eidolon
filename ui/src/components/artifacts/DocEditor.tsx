@@ -3,6 +3,7 @@ import { Save, AlertTriangle, CloudOff } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import type { Artifact } from "@/lib/api";
+import { useArtifactDraftSync } from "./useArtifactDraftSync";
 import { diffDocText } from "@eidolon/shared";
 import type { CoEditOp } from "@eidolon/shared";
 
@@ -69,7 +70,6 @@ export function DocEditor({
   const [title, setTitle] = useState(artifact.title);
   const [body, setBody] = useState(parsed.body);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const prevBodyRef = useRef(parsed.body);
   const opCounterRef = useRef(0);
@@ -78,9 +78,37 @@ export function DocEditor({
   coeditSendOpRef.current = coeditSendOp;
   coeditSendCursorRef.current = coeditSendCursor;
 
-  // Sync local state when artifact changes (e.g. from realtime or revision restore)
-  const isDirty =
-    title !== artifact.title || body !== parseDocContent(artifact.content).body;
+  const coediting = !!coeditSendOp;
+
+  const serializeArtifactContent = useCallback(
+    (content: Record<string, unknown>) => parseDocContent(content).body,
+    [],
+  );
+
+  const onAdoptRemote = useCallback(
+    (content: Record<string, unknown>, title: string) => {
+      const next = parseDocContent(content);
+      setTitle(title);
+      setBody(next.body);
+      prevBodyRef.current = next.body;
+      setSaveError(null);
+    },
+    [],
+  );
+
+  const {
+    isDirty,
+    remoteUpdate,
+    resetBaselineToArtifact,
+    markSaved,
+  } = useArtifactDraftSync({
+    artifact,
+    localTitle: title,
+    serializedLocalContent: body,
+    serializeArtifactContent,
+    onAdoptRemote,
+    coediting,
+  });
 
   // Co-editing mode: register a handler that applies remote ops to local state.
   // This avoids the prop-sync conflict where remote ops would be mistaken for
@@ -108,38 +136,19 @@ export function DocEditor({
     return () => { applyRemoteOpRef.current = null; };
   }, [applyRemoteOpRef]);
 
-  // Never overwrite a draft when a realtime refetch supplies a newer artifact.
-  // In co-editing mode, skip prop sync — remote ops are applied via the ref
-  // callback, and saves update the prop to match the local state.
-  useEffect(() => {
-    if (coeditSendOp) {
-      // Co-editing mode: only sync on initial load or version change from save
-      // (detected by the joined state sync). Don't sync on every prop change
-      // because remote ops are handled by the ref callback.
-      return;
-    }
+  // Prop-based sync is now handled by useArtifactDraftSync. In co-editing
+  // mode the hook skips prop sync entirely; remote ops are applied via the
+  // ref callback above, and markSaved advances the baseline after a flush.
+
+  const discardDraft = useCallback(() => {
     const next = parseDocContent(artifact.content);
-    const incomingChanged =
-      artifact.title !== title || next.body !== body;
-    if (incomingChanged && isDirty) {
-      setRemoteUpdate(true);
-      return;
-    }
+    resetBaselineToArtifact();
     setTitle(artifact.title);
     setBody(next.body);
     prevBodyRef.current = next.body;
     setSaveError(null);
-    setRemoteUpdate(false);
-  }, [artifact.id, artifact.version, artifact.title, artifact.content]);
-
-  const discardDraft = useCallback(() => {
-    const next = parseDocContent(artifact.content);
-    setTitle(artifact.title);
-    setBody(next.body);
-    setSaveError(null);
-    setRemoteUpdate(false);
     onRemoteUpdate?.(artifact.content, artifact.title);
-  }, [artifact]);
+  }, [artifact, onRemoteUpdate, resetBaselineToArtifact]);
 
   const handleSave = useCallback(async (): Promise<boolean> => {
     if (!isDirty || saving) return false;
@@ -149,11 +158,11 @@ export function DocEditor({
         // Co-editing mode: flush the session to DB (ops already sent via WS).
         // Pass the title so it is persisted alongside the content.
         coeditSave(title);
+        markSaved(title, { format: "markdown", body });
       } else {
-        await onSave({
-          title,
-          content: { format: "markdown", body },
-        });
+        const content = { format: "markdown" as const, body };
+        await onSave({ title, content });
+        markSaved(title, content);
       }
       return true;
     } catch (err) {
@@ -161,7 +170,7 @@ export function DocEditor({
       setSaveError(msg);
       return false;
     }
-  }, [isDirty, saving, title, body, onSave, coeditSave]);
+  }, [isDirty, saving, title, body, onSave, coeditSave, markSaved]);
 
   useEffect(() => {
     onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });

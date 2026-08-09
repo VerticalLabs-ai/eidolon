@@ -3,6 +3,7 @@ import { Save, Plus, Trash2, AlertTriangle, CloudOff } from "lucide-react";
 import { clsx } from "clsx";
 import { Button } from "@/components/ui/Button";
 import type { Artifact } from "@/lib/api";
+import { useArtifactDraftSync } from "./useArtifactDraftSync";
 
 interface SheetEditorProps {
   artifact: Artifact;
@@ -115,43 +116,52 @@ export function SheetEditor({
   const [columns, setColumns] = useState<SheetColumn[]>(parsed.columns);
   const [rows, setRows] = useState<SheetRow[]>(parsed.rows);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const [focusedCell, setFocusedCell] = useState<{ row: number; col: number } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
-  const currentParsed = parseSheet(artifact.content);
-  const isDirty =
-    title !== artifact.title ||
-    JSON.stringify(columns) !== JSON.stringify(currentParsed.columns) ||
-    JSON.stringify(rows) !== JSON.stringify(currentParsed.rows);
+  const serializeArtifactContent = useCallback(
+    (content: Record<string, unknown>) => {
+      const parsed = parseSheet(content);
+      return `${JSON.stringify(parsed.columns)}\n${JSON.stringify(parsed.rows)}`;
+    },
+    [],
+  );
 
-  // Realtime updates must not replace an in-progress local draft.
-  useEffect(() => {
-    const next = parseSheet(artifact.content);
-    const incomingChanged =
-      artifact.title !== title ||
-      JSON.stringify(next.columns) !== JSON.stringify(columns) ||
-      JSON.stringify(next.rows) !== JSON.stringify(rows);
-    if (incomingChanged && isDirty) {
-      setRemoteUpdate(true);
-      return;
-    }
-    setTitle(artifact.title);
-    setColumns(next.columns);
-    setRows(next.rows);
-    setSaveError(null);
-    setRemoteUpdate(false);
-  }, [artifact.id, artifact.version, artifact.title, artifact.content]);
+  const onAdoptRemote = useCallback(
+    (content: Record<string, unknown>, title: string) => {
+      const next = parseSheet(content);
+      setTitle(title);
+      setColumns(next.columns);
+      setRows(next.rows);
+      setSaveError(null);
+    },
+    [],
+  );
+
+  const serializedLocalContent = `${JSON.stringify(columns)}\n${JSON.stringify(rows)}`;
+
+  const {
+    isDirty,
+    remoteUpdate,
+    resetBaselineToArtifact,
+    markSaved,
+  } = useArtifactDraftSync({
+    artifact,
+    localTitle: title,
+    serializedLocalContent,
+    serializeArtifactContent,
+    onAdoptRemote,
+  });
 
   const discardDraft = useCallback(() => {
     const next = parseSheet(artifact.content);
+    resetBaselineToArtifact();
     setTitle(artifact.title);
     setColumns(next.columns);
     setRows(next.rows);
     setSaveError(null);
-    setRemoteUpdate(false);
     onRemoteUpdate?.(artifact.content, artifact.title);
-  }, [artifact, onRemoteUpdate]);
+  }, [artifact, onRemoteUpdate, resetBaselineToArtifact]);
 
   const buildContent = useCallback((): Record<string, unknown> => {
     return {
@@ -170,15 +180,17 @@ export function SheetEditor({
   const handleSave = useCallback(async (): Promise<boolean> => {
     if (!isDirty || saving) return false;
     setSaveError(null);
+    const content = buildContent();
     try {
-      await onSave({ title, content: buildContent() });
+      await onSave({ title, content });
+      markSaved(title, content);
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       setSaveError(msg);
       return false;
     }
-  }, [isDirty, saving, title, buildContent, onSave]);
+  }, [isDirty, saving, title, buildContent, onSave, markSaved]);
 
   useEffect(() => {
     onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });

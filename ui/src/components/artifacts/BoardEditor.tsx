@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import type { Artifact } from "@/lib/api";
 import { BoardColumn } from "./BoardColumn";
+import { useArtifactDraftSync } from "./useArtifactDraftSync";
 import {
   cardsInColumn,
   genBoardId,
@@ -62,63 +63,49 @@ export function BoardEditor({
   const [columns, setColumns] = useState<BoardColumnModel[]>(parsed.columns);
   const [cards, setCards] = useState<BoardCard[]>(parsed.cards);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const [pendingColumnDelete, setPendingColumnDelete] = useState<string | null>(null);
   const drag = useRef<DragState>(null);
 
-  // Dirtiness is measured against the last state this editor and the server
-  // agreed on, NOT against the live artifact. Comparing to the live artifact
-  // would make any incoming realtime update look like a local draft and block
-  // the editor from adopting it.
-  const baseline = useRef({
-    id: artifact.id,
-    title: artifact.title,
-    content: serializeBoard(parsed),
-  });
+  const serializeArtifactContent = useCallback(
+    (content: Record<string, unknown>) => serializeBoard(parseBoard(content)),
+    [],
+  );
+
+  const onAdoptRemote = useCallback(
+    (content: Record<string, unknown>, title: string) => {
+      const next = parseBoard(content);
+      setTitle(title);
+      setColumns(next.columns);
+      setCards(next.cards);
+      setSaveError(null);
+    },
+    [],
+  );
 
   const localSnapshot = serializeBoard({ columns, cards });
-  const isDirty =
-    title !== baseline.current.title || localSnapshot !== baseline.current.content;
 
-  useEffect(() => {
-    const next = parseBoard(artifact.content);
-    const remoteSnapshot = serializeBoard(next);
-    const switchedArtifact = baseline.current.id !== artifact.id;
-    const remoteChanged =
-      artifact.title !== baseline.current.title ||
-      remoteSnapshot !== baseline.current.content;
-    if (!switchedArtifact && !remoteChanged) return;
-    // A realtime refetch must not clobber an in-progress local draft.
-    if (!switchedArtifact && isDirty) {
-      setRemoteUpdate(true);
-      return;
-    }
-    baseline.current = {
-      id: artifact.id,
-      title: artifact.title,
-      content: remoteSnapshot,
-    };
-    setTitle(artifact.title);
-    setColumns(next.columns);
-    setCards(next.cards);
-    setSaveError(null);
-    setRemoteUpdate(false);
-  }, [artifact.id, artifact.version, artifact.title, artifact.content, isDirty]);
+  const {
+    isDirty,
+    remoteUpdate,
+    resetBaselineToArtifact,
+    markSaved,
+  } = useArtifactDraftSync({
+    artifact,
+    localTitle: title,
+    serializedLocalContent: localSnapshot,
+    serializeArtifactContent,
+    onAdoptRemote,
+  });
 
   const discardDraft = useCallback(() => {
     const next = parseBoard(artifact.content);
-    baseline.current = {
-      id: artifact.id,
-      title: artifact.title,
-      content: serializeBoard(next),
-    };
+    resetBaselineToArtifact();
     setTitle(artifact.title);
     setColumns(next.columns);
     setCards(next.cards);
     setSaveError(null);
-    setRemoteUpdate(false);
     onRemoteUpdate?.(artifact.content, artifact.title);
-  }, [artifact, onRemoteUpdate]);
+  }, [artifact, onRemoteUpdate, resetBaselineToArtifact]);
 
   const buildContent = useCallback(
     (): Record<string, unknown> =>
@@ -134,19 +121,14 @@ export function BoardEditor({
       await onSave({ title, content });
       // The saved state is the new agreed-on baseline, so the refetch that
       // follows this save is not mistaken for a competing remote edit.
-      baseline.current = {
-        id: artifact.id,
-        title,
-        content: JSON.stringify(content),
-      };
-      setRemoteUpdate(false);
+      markSaved(title, content);
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       setSaveError(msg);
       return false;
     }
-  }, [isDirty, saving, title, buildContent, onSave, artifact.id]);
+  }, [isDirty, saving, title, buildContent, onSave, markSaved]);
 
   useEffect(() => {
     onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });
