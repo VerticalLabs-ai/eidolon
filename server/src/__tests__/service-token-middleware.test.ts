@@ -48,7 +48,7 @@ describe('scoped service tokens', () => {
   it('allows a company-scoped read token and attaches a redacted principal', async () => {
     const response = await request(testApp())
       .get(`/companies/${COMPANY_ID}/prompts`)
-      .set('authorization', `Bearer ${READ_TOKEN}`)
+      .set('x-eidolon-service-token', READ_TOKEN)
       .expect(200);
 
     expect(response.body.principal).toEqual({

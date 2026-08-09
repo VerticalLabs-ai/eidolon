@@ -79,9 +79,10 @@ export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
   const requireOrgMember = deps.requireOrgMember();
 
   function matchToken(req: Request): ScopedServiceToken | null {
-    const bearer = req.get('authorization')?.replace(/^Bearer\s+/i, '');
-    if (!bearer || tokens.length === 0) return null;
-    const supplied = Buffer.from(hashServiceToken(bearer), 'hex');
+    const suppliedToken = req.get('x-eidolon-service-token')
+      ?? req.get('authorization')?.replace(/^Bearer\s+/i, '');
+    if (!suppliedToken || tokens.length === 0) return null;
+    const supplied = Buffer.from(hashServiceToken(suppliedToken), 'hex');
     return tokens.find((token) => {
       const expected = Buffer.from(token.tokenHash, 'hex');
       return expected.length === supplied.length && timingSafeEqual(expected, supplied);
