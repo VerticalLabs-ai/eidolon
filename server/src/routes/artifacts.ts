@@ -7,6 +7,7 @@ import { moveArtifactToFolder } from '../services/folder-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import { ArtifactTypeSchema } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
+import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel } from '../services/permission-service.js';
 import type { DbInstance } from '../types.js';
 
 const CreateBody = z.object({
@@ -49,14 +50,44 @@ async function editor(db: DbInstance, companyId: string, req: any) {
 
 export function artifactsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
+
+  // Helper: get the acting user's id + org role from the request.
+  function actor(req: any): { userId: string; orgRole: string } {
+    return {
+      userId: req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000',
+      orgRole: req.organizationMembership?.role ?? 'owner',
+    };
+  }
+
   router.get('/projects/:projectId/artifacts', async (req, res) => {
     const { companyId, projectId } = routeParams(req);
     const result = await listArtifacts(db, companyId, { projectId, limit: 50, offset: 0 });
-    res.json({ data: result.rows, meta: { total: result.total, limit: 50, offset: 0 } });
+    // Filter by view access (hide no-access artifacts — VAL-TEAM-006/017).
+    const { userId, orgRole } = actor(req);
+    const accessibleIds = await filterAccessibleArtifacts(db, companyId, userId, orgRole, result.rows.map((r: any) => r.id), 'view');
+    const filteredRows = result.rows.filter((r: any) => accessibleIds.includes(r.id));
+    res.json({ data: filteredRows, meta: { total: result.total, limit: 50, offset: 0 } });
   });
   router.post('/artifacts', validate(CreateBody), async (req, res) => {
     const { companyId } = routeParams(req);
-    const row = await createArtifact(db, companyId, (req as any).validated.body, await editor(db, companyId, req));
+    // If a projectId is specified, require edit access on the project
+    // (or it must be unrestricted). Company-level (no projectId) creation
+    // requires member+ role (enforced by requireOrgMember on mount).
+    const body = (req as any).validated.body;
+    const { userId, orgRole } = actor(req);
+    if (body.projectId) {
+      try {
+        await requireAccess(db, companyId, userId, orgRole, 'project', body.projectId, 'edit');
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'FORBIDDEN') {
+          // If the project is unrestricted, member/viewer can create.
+          // requireAccess throws only when access is denied — rethrow.
+          throw err;
+        }
+        throw err;
+      }
+    }
+    const row = await createArtifact(db, companyId, body, await editor(db, companyId, req));
     res.status(201).json({ data: row });
   });
   router.get('/artifacts', validate(ListQuery, 'query'), async (req, res) => {
@@ -77,24 +108,36 @@ export function artifactsRouter(db: DbInstance): Router {
       filters.folderId = query.folderId;
     }
     const result = await listArtifacts(db, companyId, filters);
-    res.json({ data: result.rows, meta: { total: result.total, limit: query.limit, offset: query.offset } });
+    // Filter by view access (hide no-access artifacts — VAL-TEAM-006/017).
+    const { userId, orgRole } = actor(req);
+    const accessibleIds = await filterAccessibleArtifacts(db, companyId, userId, orgRole, result.rows.map((r: any) => r.id), 'view');
+    const filteredRows = result.rows.filter((r: any) => accessibleIds.includes(r.id));
+    res.json({ data: filteredRows, meta: { total: result.total, limit: query.limit, offset: query.offset } });
   });
   router.get('/artifacts/:id/revisions/:version', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await getRevision(db, companyId, id, Number(req.params.version)) });
   });
   router.post('/artifacts/:id/revisions/:version/restore', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     const revision = await getRevision(db, companyId, id, Number(req.params.version));
     const row = await updateArtifact(db, companyId, id, { version: (await getArtifact(db, companyId, id)).version, content: revision.content, message: 'restore revision' }, await editor(db, companyId, req));
     res.json({ data: row });
   });
   router.get('/artifacts/:id/revisions', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await listRevisions(db, companyId, id) });
   });
   router.get('/artifacts/:id', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await getArtifact(db, companyId, id) });
   });
   router.patch('/artifacts/:id', validate(UpdateBody), async (req, res) => {
@@ -102,25 +145,36 @@ export function artifactsRouter(db: DbInstance): Router {
     const body = (req as any).validated.body;
     // Metadata-only folder move: when the PATCH supplies `folderId` and no
     // content/title, treat it as a move (no version bump, no revision).
-    // VAL-FOLDER-004/005/006: PATCH with { folderId } moves the artifact.
     if (body.folderId !== undefined && body.content === undefined && body.title === undefined) {
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'edit');
       await moveArtifactToFolder(db, companyId, id, body.folderId);
       const row = await getArtifact(db, companyId, id);
       res.json({ data: row });
       return;
     }
+    // Content/title edit requires edit access.
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'edit');
     res.json({ data: await updateArtifact(db, companyId, id, body, await editor(db, companyId, req)) });
   });
   router.delete('/artifacts/:id', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    // Delete requires manage access.
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     res.json({ data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)) });
   });
   router.post('/artifacts/:id/archive', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     res.json({ data: await setArtifactStatus(db, companyId, id, 'archived', await editor(db, companyId, req)) });
   });
   router.post('/artifacts/:id/restore', async (req, res) => {
     const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     res.json({ data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)) });
   });
   return router;

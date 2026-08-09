@@ -126,11 +126,33 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
       const companyId = String(req.params.companyId ?? '');
 
       if (isLocalTrusted) {
+        // Support test impersonation of different org roles + user ids via
+        // headers. This lets integration tests and validators exercise RBAC
+        // (viewer/member/admin/owner) and per-user permissions without a
+        // real Clerk session. Only honored in local_trusted mode.
+        const testRole = req.get('X-Eidolon-Test-Org-Role');
+        const testUserId = req.get('X-Eidolon-Test-User-Id');
+        const validRoles = ['owner', 'admin', 'member', 'viewer'];
+        const role = testRole && validRoles.includes(testRole) ? testRole : 'owner';
+        const userId = testUserId ?? DEV_USER.id;
+        if (testUserId) {
+          req.user = { ...DEV_USER, id: userId };
+        }
+        // Enforce minimum role for local_trusted with impersonation.
+        if (minimumRole) {
+          const userLevel = ROLE_HIERARCHY[role] ?? 0;
+          const requiredLevel = ROLE_HIERARCHY[minimumRole] ?? 0;
+          if (userLevel < requiredLevel) {
+            return next(
+              new AppError(403, 'INSUFFICIENT_ROLE', `This action requires at least '${minimumRole}' role`),
+            );
+          }
+        }
         req.organizationMembership = {
           id: 'dev-member-000',
-          role: 'owner',
+          role,
           organizationId: companyId,
-          userId: DEV_USER.id,
+          userId,
         };
         return next();
       }

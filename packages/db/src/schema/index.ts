@@ -51,3 +51,5 @@ export {
   projectTemplateClones,
 } from './workspace_templates.js';
 export { testUsers } from './test_users.js';
+export { teams, teamMembers } from './teams.js';
+export { artifactPermissions } from './artifact_permissions.js';

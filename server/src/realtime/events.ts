@@ -72,6 +72,21 @@ export interface WorkspaceTemplateEvent extends ServerEvent {
     | 'artifact_template.deleted';
 }
 
+export interface TeamEvent extends ServerEvent {
+  type:
+    | 'team.created'
+    | 'team.updated'
+    | 'team.deleted'
+    | 'team.member.added'
+    | 'team.member.removed';
+}
+
+export interface PermissionEvent extends ServerEvent {
+  type:
+    | 'permission.granted'
+    | 'permission.revoked';
+}
+
 export interface RoutineEvent extends ServerEvent {
   type:
     | 'routine.triggered'
@@ -184,6 +199,8 @@ export type EidolonEvent =
   | ArtifactEvent
   | FolderEvent
   | WorkspaceTemplateEvent
+  | TeamEvent
+  | PermissionEvent
   | PresenceEvent
   | RoutineEvent;
 

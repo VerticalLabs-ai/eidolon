@@ -2439,3 +2439,117 @@ export function usePresenceActions(
 
   return { join, leave, notifyTyping, selfUserId };
 }
+
+// ── Teams + Permissions (M4 RBAC) ───────────────────────────────────────
+
+export function useTeams(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["teams", companyId],
+    queryFn: async () => unwrap<api.Team[]>(await api.getTeams(companyId!)),
+    enabled: !!companyId,
+  });
+}
+
+export function useCreateTeam(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) => unwrap<api.Team>(await api.createTeam(companyId, name)),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["teams", companyId] }),
+  });
+}
+
+export function useDeleteTeam(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (teamId: string) => api.deleteTeam(companyId, teamId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["teams", companyId] }),
+  });
+}
+
+export function useTeamMembers(companyId: string | undefined, teamId: string | undefined) {
+  return useQuery({
+    queryKey: ["teams", companyId, teamId, "members"],
+    queryFn: async () => unwrap<api.TeamMember[]>(await api.getTeamMembers(companyId!, teamId!)),
+    enabled: !!companyId && !!teamId,
+  });
+}
+
+export function useAddTeamMember(companyId: string, teamId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (userId: string) => unwrap<api.TeamMember>(await api.addTeamMember(companyId, teamId, userId)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["teams", companyId, teamId, "members"] });
+      qc.invalidateQueries({ queryKey: ["teams", companyId] });
+    },
+  });
+}
+
+export function useRemoveTeamMember(companyId: string, teamId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (userId: string) => api.removeTeamMember(companyId, teamId, userId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["teams", companyId, teamId, "members"] });
+      qc.invalidateQueries({ queryKey: ["teams", companyId] });
+    },
+  });
+}
+
+export function usePermissions(
+  companyId: string | undefined,
+  resourceType: api.PermissionResourceType | undefined,
+  resourceId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["permissions", companyId, resourceType, resourceId],
+    queryFn: async () => unwrap<api.PermissionRecord[]>(await api.getPermissions(companyId!, resourceType!, resourceId!)),
+    enabled: !!companyId && !!resourceType && !!resourceId,
+  });
+}
+
+export function useGrantPermission(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      resourceType: api.PermissionResourceType;
+      resourceId: string;
+      granteeType: api.GranteeType;
+      granteeId: string;
+      accessLevel: api.AccessLevel;
+    }) => unwrap<api.PermissionRecord>(await api.grantPermission(companyId, data)),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ["permissions", companyId, variables.resourceType, variables.resourceId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useRevokePermission(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      resourceType: api.PermissionResourceType;
+      resourceId: string;
+      granteeType: api.GranteeType;
+      granteeId: string;
+      accessLevel: api.AccessLevel;
+    }) => api.revokePermission(companyId, data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ["permissions", companyId, variables.resourceType, variables.resourceId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useResolvePermission(
+  companyId: string | undefined,
+  resourceType: api.PermissionResourceType | undefined,
+  resourceId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["permissions", companyId, "resolve", resourceType, resourceId],
+    queryFn: async () => unwrap<{ accessLevel: api.AccessLevel | null }>(await api.resolvePermission(companyId!, resourceType!, resourceId!)),
+    enabled: !!companyId && !!resourceType && !!resourceId,
+  });
+}

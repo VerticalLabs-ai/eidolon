@@ -15,6 +15,7 @@ import {
   listArtifacts,
   updateArtifact,
 } from './artifact-service.js';
+import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel, type ResourceKind } from './permission-service.js';
 import { AppError } from '../middleware/error-handler.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import type { DbInstance } from '../types.js';
@@ -211,6 +212,26 @@ export class ArtifactToolService {
     const content = args.content ?? {};
     const projectId = (args.projectId as string | undefined) ?? context.projectId ?? null;
 
+    // RBAC (VAL-TEAM-023): agents honor per-resource permissions. An agent
+    // is treated as a member-level actor. If the target project is restricted
+    // (has permission grants), the agent needs edit access. Unrestricted
+    // projects allow member-level creation.
+    if (projectId) {
+      try {
+        await requireAccess(
+          this.db, context.companyId, context.agentId, 'member',
+          'project', projectId, 'edit',
+        );
+      } catch (err) {
+        const status = err instanceof AppError ? err.status : 500;
+        const message = err instanceof AppError ? err.message : String(err);
+        return {
+          content: [{ type: 'text', text: `Error (${status}): ${message}` }],
+          isError: true,
+        };
+      }
+    }
+
     const artifact = await createArtifact(
       this.db,
       context.companyId,
@@ -272,6 +293,22 @@ export class ArtifactToolService {
     if (args.title !== undefined) updateInput.title = args.title;
     if (args.message !== undefined) updateInput.message = args.message;
 
+    // RBAC (VAL-TEAM-023): agents honor per-resource permissions. Require
+    // edit access on the artifact (agent treated as member-level).
+    try {
+      await requireAccess(
+        this.db, context.companyId, context.agentId, 'member',
+        'artifact', artifactId, 'edit',
+      );
+    } catch (err) {
+      const status = err instanceof AppError ? err.status : 500;
+      const message = err instanceof AppError ? err.message : String(err);
+      return {
+        content: [{ type: 'text', text: `Error (${status}): ${message}` }],
+        isError: true,
+      };
+    }
+
     const updated = await updateArtifact(
       this.db,
       context.companyId,
@@ -316,6 +353,22 @@ export class ArtifactToolService {
     if (!artifactId) {
       return {
         content: [{ type: 'text', text: 'Error (400): artifactId is required' }],
+        isError: true,
+      };
+    }
+
+    // RBAC (VAL-TEAM-023): agents honor per-resource permissions. Require
+    // view access on the artifact (agent treated as member-level).
+    try {
+      await requireAccess(
+        this.db, context.companyId, context.agentId, 'member',
+        'artifact', artifactId, 'view',
+      );
+    } catch (err) {
+      const status = err instanceof AppError ? err.status : 500;
+      const message = err instanceof AppError ? err.message : String(err);
+      return {
+        content: [{ type: 'text', text: `Error (${status}): ${message}` }],
         isError: true,
       };
     }

@@ -2935,3 +2935,117 @@ export const getProjectPresence = (
   request<ApiResponse<{ projectId: string; presence: ProjectPresenceEntry[] }>>(
     `/companies/${companyId}/presence?projectId=${projectId}`,
   );
+
+// ---------------------------------------------------------------------------
+// Teams + Permissions (M4 RBAC)
+// ---------------------------------------------------------------------------
+
+export interface Team {
+  id: string;
+  companyId: string;
+  name: string;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  memberCount?: number;
+}
+
+export interface TeamMember {
+  id: string;
+  teamId: string;
+  userId: string;
+  createdAt: string;
+}
+
+export type AccessLevel = "view" | "edit" | "manage";
+export type PermissionResourceType = "project" | "folder" | "artifact";
+export type GranteeType = "user" | "team";
+
+export interface PermissionRecord {
+  id: string;
+  companyId: string;
+  resourceType: PermissionResourceType;
+  resourceId: string;
+  granteeType: GranteeType;
+  granteeId: string;
+  accessLevel: AccessLevel;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const getTeams = (companyId: string) =>
+  request<ApiResponse<Team[]>>(`/companies/${companyId}/teams`);
+
+export const createTeam = (companyId: string, name: string) =>
+  request<ApiResponse<Team>>(`/companies/${companyId}/teams`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+
+export const deleteTeam = (companyId: string, teamId: string) =>
+  request<ApiResponse<void>>(`/companies/${companyId}/teams/${teamId}`, {
+    method: "DELETE",
+  });
+
+export const getTeamMembers = (companyId: string, teamId: string) =>
+  request<ApiResponse<TeamMember[]>>(`/companies/${companyId}/teams/${teamId}/members`);
+
+export const addTeamMember = (companyId: string, teamId: string, userId: string) =>
+  request<ApiResponse<TeamMember>>(`/companies/${companyId}/teams/${teamId}/members`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+
+export const removeTeamMember = (companyId: string, teamId: string, userId: string) =>
+  request<ApiResponse<void>>(`/companies/${companyId}/teams/${teamId}/members/${userId}`, {
+    method: "DELETE",
+  });
+
+export const getPermissions = (
+  companyId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+) =>
+  request<ApiResponse<PermissionRecord[]>>(
+    `/companies/${companyId}/permissions?resourceType=${resourceType}&resourceId=${resourceId}`,
+  );
+
+export const grantPermission = (
+  companyId: string,
+  data: {
+    resourceType: PermissionResourceType;
+    resourceId: string;
+    granteeType: GranteeType;
+    granteeId: string;
+    accessLevel: AccessLevel;
+  },
+) =>
+  request<ApiResponse<PermissionRecord>>(`/companies/${companyId}/permissions`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const revokePermission = (
+  companyId: string,
+  data: {
+    resourceType: PermissionResourceType;
+    resourceId: string;
+    granteeType: GranteeType;
+    granteeId: string;
+    accessLevel: AccessLevel;
+  },
+) =>
+  request<ApiResponse<void>>(`/companies/${companyId}/permissions`, {
+    method: "DELETE",
+    body: JSON.stringify(data),
+  });
+
+export const resolvePermission = (
+  companyId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+) =>
+  request<ApiResponse<{ accessLevel: AccessLevel | null }>>(
+    `/companies/${companyId}/permissions/resolve?resourceType=${resourceType}&resourceId=${resourceId}`,
+  );

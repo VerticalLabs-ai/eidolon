@@ -63,6 +63,9 @@ import {
   artifactTemplates,
   projectTemplateClones,
   testUsers,
+  teams,
+  teamMembers,
+  artifactPermissions,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -124,6 +127,9 @@ const SCHEMA_BUNDLE = {
   artifactTemplates,
   projectTemplateClones,
   testUsers,
+  teams,
+  teamMembers,
+  artifactPermissions,
 } as const;
 
 export interface BootstrapOptions {

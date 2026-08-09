@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, AlertCircle, RotateCcw, Copy } from "lucide-react";
+import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, AlertCircle, RotateCcw, Copy, Shield, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -12,6 +12,7 @@ import { RevisionHistory } from "./RevisionHistory";
 import { PresenceIndicator } from "./PresenceIndicator";
 import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
 import { SaveArtifactTemplateModal } from "./SaveArtifactTemplateModal";
+import { PermissionManager } from "./PermissionManager";
 import {
   useArtifact,
   useUpdateArtifact,
@@ -20,6 +21,7 @@ import {
   useArtifactPresence,
   usePresenceActions,
   useSaveArtifactTemplate,
+  useResolvePermission,
 } from "@/lib/hooks";
 import { useServerEvents } from "@/lib/ws";
 import { useWebSocket } from "@/lib/ws";
@@ -61,8 +63,17 @@ export function ArtifactEditor({
   const restoreMutation = useRestoreRevision(companyId);
   const saveArtifactTemplateMutation = useSaveArtifactTemplate(companyId);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [permManagerOpen, setPermManagerOpen] = useState(false);
   const { status: wsStatus } = useWebSocket(companyId);
   const qc = useQueryClient();
+
+  // ── RBAC (M4): resolve the acting user's access level on this artifact ─
+  // view → read-only editor; edit → can edit; manage → can edit + manage
+  // permissions + delete. null → hidden (shouldn't reach the editor; the
+  // list filters hidden artifacts, and the API returns 403 on direct GET).
+  const { data: permData } = useResolvePermission(companyId, "artifact", artifactId);
+  const accessLevel = permData?.accessLevel ?? null;
+  const canManage = accessLevel === "manage";
 
   // ── Presence (M3) ──────────────────────────────────────────────────────
   // Join on open, leave on unmount. The presence list is live-patched by WS
@@ -418,6 +429,35 @@ export function ArtifactEditor({
           <Copy className="h-3 w-3" />
           Save as Template
         </button>
+        {/* Permission manager (M4 RBAC) — manage-capable users can grant/revoke. */}
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setPermManagerOpen(true)}
+            title="Manage permissions"
+            aria-label="Manage permissions"
+            className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs font-medium text-text-secondary hover:text-accent hover:border-accent/30 transition-colors cursor-pointer"
+          >
+            <Shield className="h-3 w-3" />
+            Permissions
+          </button>
+        )}
+        {permManagerOpen && (
+          <PermissionManager
+            companyId={companyId}
+            resourceType="artifact"
+            resourceId={artifactId}
+            resourceLabel={artifact.title}
+            onClose={() => setPermManagerOpen(false)}
+          />
+        )}
+        {/* Read-only indicator (M4 RBAC) — view-only users see a badge. */}
+        {accessLevel === "view" && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-400">
+            <Lock className="h-3 w-3" />
+            Read-only
+          </span>
+        )}
         {saveTemplateOpen && (
           <SaveArtifactTemplateModal
             artifactTitle={artifact.title}
@@ -448,6 +488,8 @@ export function ArtifactEditor({
           className="relative flex-1 overflow-hidden"
           onInput={handlePresenceInput}
           onKeyDown={handlePresenceInput}
+          style={accessLevel === "view" ? { pointerEvents: "none" } : undefined}
+          aria-readonly={accessLevel === "view"}
         >
           <CoEditCursorOverlay cursors={remoteCursors} selfUserId={selfUserId} />
           {artifact.type === "document" ? (
@@ -522,6 +564,7 @@ export function ArtifactEditor({
             currentVersion={artifact.version}
             onRestore={handleRestore}
             restoring={restoreMutation.isPending}
+            readOnly={!canManage}
           />
         )}
       </div>

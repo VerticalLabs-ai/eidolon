@@ -23,6 +23,7 @@ import {
   Settings,
   ShieldCheck,
   Target,
+  Users,
   X,
   Zap,
 } from "lucide-react";
@@ -90,6 +91,7 @@ const navSections: NavSection[] = [
       { to: "/analytics", icon: BarChart3, label: "Analytics" },
       { to: "/approvals", icon: ShieldCheck, label: "Approvals" },
       { to: "/integrations", icon: Plug, label: "Integrations" },
+      { to: "/teams", icon: Users, label: "Teams" },
       { to: "/settings", icon: Settings, label: "Settings" },
     ],
   },

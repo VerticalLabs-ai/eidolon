@@ -8,6 +8,7 @@ interface RevisionHistoryProps {
   currentVersion: number;
   onRestore: (version: number) => void;
   restoring?: boolean;
+  readOnly?: boolean;
 }
 
 export function RevisionHistory({
@@ -15,6 +16,7 @@ export function RevisionHistory({
   currentVersion,
   onRestore,
   restoring,
+  readOnly,
 }: RevisionHistoryProps) {
   // Show newest first
   const sorted = [...revisions].sort((a, b) => b.version - a.version);
@@ -39,7 +41,7 @@ export function RevisionHistory({
           <ul role="list" className="divide-y divide-white/[0.04]">
             {sorted.map((rev) => {
               const isCurrent = rev.version === currentVersion;
-              const canRestore = !isCurrent && !restoring;
+              const canRestore = !isCurrent && !restoring && !readOnly;
               return (
                 <li
                   key={rev.id}
