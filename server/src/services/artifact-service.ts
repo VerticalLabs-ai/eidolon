@@ -168,18 +168,9 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
       // The session merged the content. Flush to DB directly via
       // saveArtifactContent (bypasses the co-edit check to avoid recursion).
       const sessionContent = result.merged;
-      const updated = await saveArtifactContent(db, companyId, id, sessionContent, current.version, editor, input.message);
+      const updated = await saveArtifactContent(db, companyId, id, sessionContent, current.version, editor, input.message, input.title);
       // Update the session's version + lastSavedContent to reflect the flush
-      updateSessionAfterFlush(id, updated.version, sessionContent, input.title ?? updated.title);
-      if (input.title !== undefined && updated.title !== input.title) {
-        const [titleUpdated] = await db.drizzle.update(db.schema.artifacts).set({
-          title: input.title, updatedAt: new Date(),
-        }).where(and(eq(db.schema.artifacts.id, id), eq(db.schema.artifacts.companyId, companyId))).returning();
-        if (titleUpdated) {
-          emit('artifact.updated', companyId, titleUpdated);
-          return titleUpdated;
-        }
-      }
+      updateSessionAfterFlush(id, updated.version, sessionContent, updated.title);
       return updated;
     }
   }
