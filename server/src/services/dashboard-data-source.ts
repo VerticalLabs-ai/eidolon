@@ -17,7 +17,7 @@
 // before invoking a provider.
 // ---------------------------------------------------------------------------
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, gte, sql } from 'drizzle-orm';
 import { AppError } from '../middleware/error-handler.js';
 import type { DbInstance } from '../types.js';
 
@@ -174,24 +174,33 @@ async function fetchAnalyticsInternal(
       .from(companies)
       .where(eq(companies.id, companyId))
       .limit(1);
-    const agentRows = await db.drizzle.select().from(agents).where(eq(agents.companyId, companyId));
-    const taskRows = await db.drizzle.select().from(tasks).where(eq(tasks.companyId, companyId));
+    const [agentSummary, taskSummary] = await Promise.all([
+      db.drizzle
+        .select({ status: agents.status, count: sql<number>`count(*)` })
+        .from(agents)
+        .where(eq(agents.companyId, companyId))
+        .groupBy(agents.status),
+      db.drizzle
+        .select({ status: tasks.status, count: sql<number>`count(*)` })
+        .from(tasks)
+        .where(eq(tasks.companyId, companyId))
+        .groupBy(tasks.status),
+    ]);
     const agentsByStatus: Record<string, number> = {};
-    for (const a of agentRows) {
-      agentsByStatus[a.status] = (agentsByStatus[a.status] ?? 0) + 1;
-    }
+    for (const row of agentSummary) agentsByStatus[row.status] = Number(row.count);
     const tasksByStatus: Record<string, number> = {};
-    for (const t of taskRows) {
-      tasksByStatus[t.status] = (tasksByStatus[t.status] ?? 0) + 1;
-    }
+    for (const row of taskSummary) tasksByStatus[row.status] = Number(row.count);
     return {
       company: company ?? null,
-      agents: { total: agentRows.length, byStatus: agentsByStatus },
-      tasks: { total: taskRows.length, byStatus: tasksByStatus },
+      agents: { total: Object.values(agentsByStatus).reduce((sum, count) => sum + count, 0), byStatus: agentsByStatus },
+      tasks: { total: Object.values(tasksByStatus).reduce((sum, count) => sum + count, 0), byStatus: tasksByStatus },
     };
   }
   if (suffix === '/analytics/agents') {
-    const agentRows = await db.drizzle.select().from(agents).where(eq(agents.companyId, companyId));
+    const agentRows = await db.drizzle
+      .select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
     return agentRows.map((a) => ({
       agentId: a.id,
       name: a.name,
@@ -200,20 +209,32 @@ async function fetchAnalyticsInternal(
     }));
   }
   if (suffix === '/analytics/tasks') {
-    const taskRows = await db.drizzle.select().from(tasks).where(eq(tasks.companyId, companyId));
+    const taskSummary = await db.drizzle
+      .select({ status: tasks.status, count: sql<number>`count(*)` })
+      .from(tasks)
+      .where(eq(tasks.companyId, companyId))
+      .groupBy(tasks.status);
     const byStatus: Record<string, number> = {};
-    for (const t of taskRows) {
-      byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
-    }
-    return { total: taskRows.length, byStatus };
+    for (const row of taskSummary) byStatus[row.status] = Number(row.count);
+    return {
+      total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
+      byStatus,
+    };
   }
   if (suffix === '/analytics/costs') {
-    const costRows = await db.drizzle
-      .select()
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const [costSummary] = await db.drizzle
+      .select({
+        totalCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)`,
+        eventCount: sql<number>`count(*)`,
+      })
       .from(costEvents)
-      .where(eq(costEvents.companyId, companyId));
-    const totalCents = costRows.reduce((sum, c) => sum + Number(c.costCents ?? 0), 0);
-    return { totalCents, eventCount: costRows.length };
+      .where(and(eq(costEvents.companyId, companyId), gte(costEvents.createdAt, thirtyDaysAgo)));
+    return {
+      totalCents: Number(costSummary?.totalCents ?? 0),
+      eventCount: Number(costSummary?.eventCount ?? 0),
+    };
   }
   // Unreachable: allowlist check in the caller rejects unknown suffixes.
   throw new AppError(400, 'INVALID_DATA_SOURCE_CONFIG', `Unknown analytics path "${suffix}"`);
