@@ -109,7 +109,10 @@ function hasScope(token: Pick<ScopedServiceToken, 'scopes'>, required: ServiceSc
 
 export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
   const tokens = deps.tokens ?? parseServiceTokens();
-  logger.info({ configuredServiceTokens: tokens.length }, 'Scoped service tokens configured');
+  logger.info({
+    configuredServiceTokens: tokens.length,
+    configuredFingerprints: tokens.map((token) => token.tokenHash.slice(0, 12)),
+  }, 'Scoped service tokens configured');
   const requireOrgMember = deps.requireOrgMember();
 
   function matchToken(req: Request): ScopedServiceToken | null {
@@ -132,7 +135,13 @@ export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
         timestamp,
         req.body,
       );
-      return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex')) ? token : null;
+      if (timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'))) return token;
+      logger.warn({
+        signedService: name,
+        expectedFingerprint: expected.slice(0, 12),
+        suppliedFingerprint: signature.slice(0, 12),
+      }, 'Signed service request did not match');
+      return null;
     }
     const suppliedHash = hashServiceToken(suppliedToken);
     const supplied = Buffer.from(suppliedHash, 'hex');
