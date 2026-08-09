@@ -72,9 +72,12 @@ export function artifactsRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     // If a projectId is specified, require edit access on the project
     // (or it must be unrestricted). Company-level (no projectId) creation
-    // requires member+ role (enforced by requireOrgMember on mount).
+    // requires member+ role.
     const body = (req as any).validated.body;
     const { userId, orgRole } = actor(req);
+    if (!body.projectId && orgRole === 'viewer') {
+      throw new AppError(403, 'INSUFFICIENT_ROLE', 'Company-level artifact creation requires at least member role');
+    }
     if (body.projectId) {
       try {
         await requireAccess(db, companyId, userId, orgRole, 'project', body.projectId, 'edit');
