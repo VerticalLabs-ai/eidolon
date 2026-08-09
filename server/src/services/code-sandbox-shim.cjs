@@ -104,6 +104,13 @@ const BLOCKED_FS_METHODS = new Set([
   'renameSync',
   'readlinkSync',
   'createReadStream',
+  'createWriteStream',
+  'cpSync',
+  'cp',
+  'rmSync',
+  'rm',
+  'opendirSync',
+  'opendir',
 ]);
 
 for (const name of BLOCKED_FS_METHODS) {
@@ -137,6 +144,9 @@ if (fs.promises) {
     'chown',
     'rename',
     'readlink',
+    'cp',
+    'rm',
+    'opendir',
   ]);
   for (const name of BLOCKED_PROMISES) {
     const original = fs.promises[name];
@@ -161,6 +171,25 @@ try {
   }
 } catch {
   // child_process unavailable — nothing to block.
+}
+
+// ── 3b. Disable worker_threads ────────────────────────────────────────────
+// A worker thread runs in a separate event loop that does NOT inherit this
+// preload shim, so it could bypass the fs/env/network boundaries. Block
+// worker_threads entirely so user code cannot escape the sandbox by spawning
+// a Worker.
+try {
+  const wt = require('worker_threads');
+  const blocked = () => {
+    throw new Error('Sandbox blocked worker_threads access — spawning worker threads is not allowed.');
+  };
+  for (const name of ['Worker', 'MessageChannel', 'MessagePort']) {
+    if (typeof wt[name] === 'function') wt[name] = blocked;
+  }
+  // Also block the portHandle/connect helpers if present.
+  if (typeof wt.receiveMessageOnPort === 'function') wt.receiveMessageOnPort = blocked;
+} catch {
+  // worker_threads unavailable — nothing to block.
 }
 
 // ── 4. Block unapproved network egress ────────────────────────────────────

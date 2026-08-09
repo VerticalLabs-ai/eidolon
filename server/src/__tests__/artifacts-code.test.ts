@@ -44,6 +44,100 @@ const PY_HELLO = {
   files: [{ path: 'main.py', content: "print('hello from python')\n" }],
 };
 
+// Python: attempt to read a host file, spawn a subprocess, and open a
+// non-loopback network connection. The sandbox must block all three while
+// still allowing stdout and sandbox-local file reads.
+const PY_READ_HOST = {
+  language: 'python',
+  files: [
+    {
+      path: 'main.py',
+      content:
+        "try:\n" +
+        "    print('PY_LEAK:' + open('/etc/passwd').read()[:20])\n" +
+        "except Exception as e:\n" +
+        "    print('PY_BLOCKED_OPEN:' + str(e).split(':')[0])\n" +
+        "try:\n" +
+        "    import subprocess\n" +
+        "    print('PY_SUBPROCESS_LEAK')\n" +
+        "except ImportError as e:\n" +
+        "    print('PY_BLOCKED_SUBPROCESS:' + str(e))\n" +
+        "import os\n" +
+        "try:\n" +
+        "    os.system('echo leaked')\n" +
+        "    print('PY_OS_SYSTEM_LEAK')\n" +
+        "except Exception as e:\n" +
+        "    print('PY_BLOCKED_OS_SYSTEM:' + str(e).split(':')[0])\n" +
+        "import socket\n" +
+        "try:\n" +
+        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n" +
+        "    s.settimeout(2)\n" +
+        "    s.connect(('1.1.1.1', 80))\n" +
+        "    print('PY_NET_LEAK')\n" +
+        "except Exception as e:\n" +
+        "    print('PY_BLOCKED_NET:' + str(e).split(':')[0])\n" +
+        "print('PY_STDOUT_OK:hello')\n" +
+        "with open('main.py') as f:\n" +
+        "    print('PY_SANDBOX_READ_OK:' + str(len(f.read()) > 0))\n",
+    },
+  ],
+};
+
+// JavaScript: exercise the newly-blocked fs methods (cpSync, createWriteStream,
+// rmSync, opendir) and worker_threads to confirm the shim blocklists cover
+// them. Each prints a BLOCKED/LEAK marker the test asserts on.
+const JS_CPSYNC_LEAK = {
+  language: 'javascript',
+  files: [
+    {
+      path: 'main.js',
+      content:
+        "const fs = require('fs');\n" +
+        "try { fs.cpSync('/etc', '/tmp/x-cp'); console.log('CPSYNC_LEAK'); } catch (e) { console.log('CPSYNC_BLOCKED:' + (e.message.includes('Sandbox') ? 'yes' : 'no')); }\n" +
+        "try { fs.rmSync('/tmp/doesnotexist-cp'); console.log('RMSYNC_LEAK'); } catch (e) { console.log('RMSYNC_BLOCKED:' + (e.message.includes('Sandbox') ? 'yes' : 'no')); }\n" +
+        "try { const s = fs.createWriteStream('/etc/passwd'); console.log('CREATEWRITESTREAM_LEAK'); s.destroy(); } catch (e) { console.log('CREATEWRITESTREAM_BLOCKED:' + (e.message.includes('Sandbox') ? 'yes' : 'no')); }\n" +
+        "try { fs.opendirSync('/etc'); console.log('OPENDIR_LEAK'); } catch (e) { console.log('OPENDIR_BLOCKED:' + (e.message.includes('Sandbox') ? 'yes' : 'no')); }\n" +
+        "try { const p = fs.promises.cp('/etc', '/tmp/x-pcp'); p.then(() => console.log('PROMISE_CP_LEAK')).catch(() => console.log('PROMISE_CP_BLOCKED')); } catch (e) { console.log('PROMISE_CP_BLOCKED:' + (e.message.includes('Sandbox') ? 'yes' : 'no')); }\n",
+    },
+  ],
+};
+
+// JavaScript: attempt to spawn a worker_thread. The shim must block it.
+const JS_WORKER_THREADS = {
+  language: 'javascript',
+  files: [
+    {
+      path: 'main.js',
+      content:
+        "try {\n" +
+        "  const wt = require('worker_threads');\n" +
+        "  new wt.Worker(__filename);\n" +
+        "  console.log('WORKER_LEAK');\n" +
+        "} catch (e) {\n" +
+        "  console.log('WORKER_BLOCKED:' + String(e.message).slice(0, 60));\n" +
+        "}\n",
+    },
+  ],
+};
+
+// JavaScript: produce more than 1 MB of stdout so the runner reports
+// truncated=true.
+const JS_BIG_OUTPUT = {
+  language: 'javascript',
+  files: [
+    {
+      path: 'main.js',
+      content: "process.stdout.write('x'.repeat(2 * 1024 * 1024));\n",
+    },
+  ],
+};
+
+// TypeScript: a minimal valid entrypoint used for the tsx-absent 422 test.
+const TS_HELLO = {
+  language: 'typescript',
+  files: [{ path: 'main.ts', content: "const v: string = 'hi'; console.log(v);\n" }],
+};
+
 const CODE_NO_LANGUAGE = { files: [{ path: 'main.js', content: 'console.log(1)' }] };
 const CODE_EMPTY_FILES = { language: 'javascript', files: [] };
 const CODE_FILE_NO_PATH = { language: 'javascript', files: [{ content: 'x' }] };
@@ -476,5 +570,148 @@ describe('Code artifact API — real-Postgres integration', () => {
         .post(`/api/companies/${otherCompanyId}/artifacts/${created.body.data.id}/run`)
         .expect(404);
     });
+  });
+
+  // =========================================================================
+  // M6 scrutiny round 1: Python sandbox boundary (VAL-CODE-007 for Python)
+  // =========================================================================
+  describe('Python sandbox boundary', () => {
+    it('blocks host file read, subprocess, non-loopback network; stdout + sandbox read still work', async () => {
+      const created = await createCode({ content: PY_READ_HOST }).expect(201);
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/artifacts/${created.body.data.id}/run`)
+        .expect(200);
+      const out = res.body.data.stdout + res.body.data.stderr;
+      // No host file leak.
+      expect(out).not.toContain('PY_LEAK:');
+      expect(out).toContain('PY_BLOCKED_OPEN:');
+      // No subprocess.
+      expect(out).not.toContain('PY_SUBPROCESS_LEAK');
+      expect(out).toContain('PY_BLOCKED_SUBPROCESS:');
+      // No os.system.
+      expect(out).not.toContain('PY_OS_SYSTEM_LEAK');
+      expect(out).toContain('PY_BLOCKED_OS_SYSTEM:');
+      // No non-loopback network egress.
+      expect(out).not.toContain('PY_NET_LEAK');
+      expect(out).toContain('PY_BLOCKED_NET:');
+      // stdout capture still works.
+      expect(out).toContain('PY_STDOUT_OK:hello');
+      expect(res.body.data.exitCode).toBe(0);
+      // Reading a file inside the sandbox root is allowed.
+      expect(out).toContain('PY_SANDBOX_READ_OK:True');
+    }, 30_000);
+
+    it('Python stdout/stderr/exit-code capture still works for sandboxed code', async () => {
+      const pyStderr = {
+        language: 'python',
+        files: [{ path: 'main.py', content: "import sys\nprint('out line')\nsys.stderr.write('err line\\n')\nsys.exit(3)\n" }],
+      };
+      const created = await createCode({ content: pyStderr }).expect(201);
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/artifacts/${created.body.data.id}/run`)
+        .expect(200);
+      expect(res.body.data.stdout).toContain('out line');
+      expect(res.body.data.stderr).toContain('err line');
+      expect(res.body.data.exitCode).toBe(3);
+      expect(res.body.data.timedOut).toBe(false);
+    }, 30_000);
+  });
+
+  // =========================================================================
+  // M6 scrutiny round 1: JS shim blocklist coverage (cpSync/createWriteStream/
+  // rmSync/opendir + fs.promises.cp) — VAL-CODE-007 hardening
+  // =========================================================================
+  describe('JS shim blocklist coverage', () => {
+    it('blocks cpSync, rmSync, createWriteStream, opendir, and promises.cp', async () => {
+      const created = await createCode({ content: JS_CPSYNC_LEAK }).expect(201);
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/artifacts/${created.body.data.id}/run`)
+        .expect(200);
+      const out = res.body.data.stdout + res.body.data.stderr;
+      expect(out).not.toContain('CPSYNC_LEAK');
+      expect(out).toContain('CPSYNC_BLOCKED:yes');
+      expect(out).not.toContain('RMSYNC_LEAK');
+      expect(out).toContain('RMSYNC_BLOCKED:yes');
+      expect(out).not.toContain('CREATEWRITESTREAM_LEAK');
+      expect(out).toContain('CREATEWRITESTREAM_BLOCKED:yes');
+      expect(out).not.toContain('OPENDIR_LEAK');
+      expect(out).toContain('OPENDIR_BLOCKED:yes');
+      // fs.promises.cp is wrapped and rejects with a Sandbox error.
+      expect(out).not.toContain('PROMISE_CP_LEAK');
+      expect(out).toContain('PROMISE_CP_BLOCKED');
+    }, 30_000);
+  });
+
+  // =========================================================================
+  // M6 scrutiny round 1: worker_threads blocked in the Node sandbox
+  // =========================================================================
+  describe('worker_threads blocked', () => {
+    it('blocks spawning a worker_thread', async () => {
+      const created = await createCode({ content: JS_WORKER_THREADS }).expect(201);
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/artifacts/${created.body.data.id}/run`)
+        .expect(200);
+      const out = res.body.data.stdout + res.body.data.stderr;
+      expect(out).not.toContain('WORKER_LEAK');
+      expect(out).toContain('WORKER_BLOCKED:');
+    }, 30_000);
+  });
+
+  // =========================================================================
+  // M6 scrutiny round 1: output truncation is reported (truncated=true)
+  // =========================================================================
+  describe('output truncation', () => {
+    it('reports truncated=true when stdout exceeds the byte cap', async () => {
+      const created = await createCode({ content: JS_BIG_OUTPUT }).expect(201);
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/artifacts/${created.body.data.id}/run`)
+        .expect(200);
+      expect(res.body.data.truncated).toBe(true);
+      // The captured stdout is bounded (<= 1 MB) — not the full 2 MB.
+      expect(Buffer.byteLength(res.body.data.stdout, 'utf8')).toBeLessThanOrEqual(
+        1024 * 1024,
+      );
+    }, 30_000);
+
+    it('agent code.run result includes the truncated field', async () => {
+      const service = new ArtifactToolService(db);
+      const create = await service.executeTool(
+        'artifact.create',
+        { type: 'code', title: '__mtest__ agent trunc', content: JS_BIG_OUTPUT, projectId },
+        { companyId, agentId, projectId },
+      );
+      const artifactId = (create.data as { artifactId: string }).artifactId;
+      const run = await service.executeTool('code.run', { artifactId }, { companyId, agentId, projectId });
+      expect(run.isError).toBeFalsy();
+      const out = JSON.parse(run.content[0].text);
+      expect(out).toHaveProperty('truncated');
+      expect(out.truncated).toBe(true);
+      expect(run.data).toHaveProperty('truncated');
+      expect(run.data?.truncated).toBe(true);
+    }, 30_000);
+  });
+
+  // =========================================================================
+  // M6 scrutiny round 1: TS without tsx returns 422 RUNTIME_UNAVAILABLE
+  // (not a corrupting regex fallback)
+  // =========================================================================
+  describe('TS without tsx returns 422', () => {
+    it('returns 422 RUNTIME_UNAVAILABLE when tsx is not installed', async () => {
+      const created = await createCode({ content: TS_HELLO }).expect(201);
+      // Point the runner at a non-existent tsx binary so the availability
+      // check fails without uninstalling the real dependency.
+      const prev = process.env.EIDOLON_TSX_BIN_PATH;
+      process.env.EIDOLON_TSX_BIN_PATH = '/nonexistent/path/tsx';
+      try {
+        const res = await request(app)
+          .post(`/api/companies/${companyId}/artifacts/${created.body.data.id}/run`)
+          .expect(422);
+        expect(res.body.code).toBe('RUNTIME_UNAVAILABLE');
+        expect(res.body.message).toMatch(/tsx/i);
+      } finally {
+        if (prev === undefined) delete process.env.EIDOLON_TSX_BIN_PATH;
+        else process.env.EIDOLON_TSX_BIN_PATH = prev;
+      }
+    }, 30_000);
   });
 });

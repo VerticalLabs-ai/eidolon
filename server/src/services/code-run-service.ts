@@ -34,12 +34,23 @@ import type { DbInstance } from '../types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SANDBOX_SHIM_PATH = path.resolve(__dirname, 'code-sandbox-shim.cjs');
+const SANDBOX_PYTHON_PATH = path.resolve(__dirname, 'code-sandbox-python.py');
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_TIMEOUT_SEC = 15;
 const MAX_TIMEOUT_SEC = 60;
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1 MB
 const GRACE_SEC = 2;
+// Memory bound for the spawned Node/tsx runtime — enforces the "bounded
+// runtime/memory" spec (VAL-CODE-008 companion). 256 MB is generous for an
+// in-app code artifact run while preventing unbounded heap growth from
+// OOM-ing the host. Overridable via EIDOLON_CODE_RUN_MAX_MEMORY_MB.
+const DEFAULT_MAX_OLD_SPACE_MB = 256;
+const MAX_OLD_SPACE_MB = Math.max(
+  32,
+  Number(process.env.EIDOLON_CODE_RUN_MAX_MEMORY_MB ?? DEFAULT_MAX_OLD_SPACE_MB),
+);
+const NODE_MAX_OLD_SPACE_FLAG = `--max-old-space-size=${MAX_OLD_SPACE_MB}`;
 
 // Sanitized env keys passed to the child runtime. NO secrets, NO API keys.
 const SAFE_CHILD_ENV_KEYS = new Set([
@@ -179,8 +190,10 @@ function runChild(
 
 async function runJavaScript(sandboxRoot: string, entryPath: string, timeoutSec: number): Promise<CodeRunResult> {
   const env = buildSanitizedEnv(sandboxRoot);
-  // Load the sandbox shim before the user code so fs/env/spawn are locked down.
-  const args = ['--require', SANDBOX_SHIM_PATH, entryPath];
+  // Load the sandbox shim before the user code so fs/env/spawn are locked
+  // down. Enforce a heap cap so a runaway allocation cannot OOM the host
+  // (bounded runtime/memory).
+  const args = [NODE_MAX_OLD_SPACE_FLAG, '--require', SANDBOX_SHIM_PATH, entryPath];
   const started = Date.now();
   const result = await runChild(process.execPath, args, sandboxRoot, env, timeoutSec);
   return {
@@ -196,40 +209,42 @@ async function runJavaScript(sandboxRoot: string, entryPath: string, timeoutSec:
 }
 
 async function runTypeScript(sandboxRoot: string, entryPath: string, timeoutSec: number): Promise<CodeRunResult> {
-  // Run TypeScript through tsx (esbuild-based loader) if available; otherwise
-  // strip types with a simple regex and run as javascript. tsx is the dev
-  // server's transpiler — check node_modules/.bin/tsx.
-  const tsxBin = path.resolve(__dirname, '../../../node_modules/.bin/tsx');
+  // Run TypeScript through tsx (esbuild-based loader) if available. tsx is the
+  // dev server's transpiler — check node_modules/.bin/tsx (or the
+  // EIDOLON_TSX_BIN_PATH override). When tsx is absent we do NOT fall back to a
+  // corrupting regex type-strip (that mangles valid TypeScript and silently
+  // changes behavior); instead we return 422 RUNTIME_UNAVAILABLE so the
+  // caller/agent can report it honestly.
+  const tsxBin = process.env.EIDOLON_TSX_BIN_PATH
+    ? path.resolve(process.env.EIDOLON_TSX_BIN_PATH)
+    : path.resolve(__dirname, '../../../node_modules/.bin/tsx');
   let tsxExists = false;
   try { await fs.access(tsxBin); tsxExists = true; } catch { tsxExists = false; }
 
-  if (tsxExists) {
-    const env = buildSanitizedEnv(sandboxRoot);
-    // tsx wraps node; load the shim via NODE_OPTIONS --require.
-    env.NODE_OPTIONS = `--require ${JSON.stringify(SANDBOX_SHIM_PATH)}`;
-    const started = Date.now();
-    const result = await runChild(tsxBin, [entryPath], sandboxRoot, env, timeoutSec);
-    return {
-      artifactId: '',
-      language: 'typescript',
-      stdout: result.stdout,
-      stderr: result.timedOut && !result.stderr ? `Execution timed out after ${timeoutSec}s and was terminated.` : result.stderr,
-      exitCode: result.timedOut ? 124 : result.exitCode,
-      timedOut: result.timedOut,
-      durationMs: Date.now() - started,
-      truncated: result.truncated,
-    };
+  if (!tsxExists) {
+    throw new AppError(
+      422,
+      'RUNTIME_UNAVAILABLE',
+      'TypeScript runtime (tsx) is not available on the server. Install tsx or run the artifact as JavaScript.',
+    );
   }
 
-  // Fallback: crude type-stripping (erase lines starting with import/export
-  // type annotations are out of scope; just strip `: <type>` and `interface`).
-  const fullEntry = await fs.readFile(path.join(sandboxRoot, entryPath), 'utf8');
-  const stripped = fullEntry
-    .replace(/^\s*(?:export\s+)?(?:interface|type)\s+\w+.*$/gm, '')
-    .replace(/:\s*[A-Za-z_$][\w$<>[\]|&.\s,]*(?==)/g, '');
-  const jsPath = entryPath.replace(/\.tsx?$/, '.mjs');
-  await fs.writeFile(path.join(sandboxRoot, jsPath), stripped);
-  return runJavaScript(sandboxRoot, jsPath, timeoutSec);
+  const env = buildSanitizedEnv(sandboxRoot);
+  // tsx wraps node; load the shim via NODE_OPTIONS --require and enforce the
+  // same heap cap as the JavaScript runner.
+  env.NODE_OPTIONS = `${NODE_MAX_OLD_SPACE_FLAG} --require ${JSON.stringify(SANDBOX_SHIM_PATH)}`;
+  const started = Date.now();
+  const result = await runChild(tsxBin, [entryPath], sandboxRoot, env, timeoutSec);
+  return {
+    artifactId: '',
+    language: 'typescript',
+    stdout: result.stdout,
+    stderr: result.timedOut && !result.stderr ? `Execution timed out after ${timeoutSec}s and was terminated.` : result.stderr,
+    exitCode: result.timedOut ? 124 : result.exitCode,
+    timedOut: result.timedOut,
+    durationMs: Date.now() - started,
+    truncated: result.truncated,
+  };
 }
 
 async function runPython(sandboxRoot: string, entryPath: string, timeoutSec: number): Promise<CodeRunResult> {
@@ -239,12 +254,30 @@ async function runPython(sandboxRoot: string, entryPath: string, timeoutSec: num
   }
   const env = buildSanitizedEnv(sandboxRoot);
   // Python: isolate HOME (already set), and pass -S to skip site-packages
-  // user customization that could read host files. PYTHONPATH is NOT set.
+  // user customization that could read host files. PYTHONPATH is NOT set to
+  // any host directory (the preload is copied into the sandbox root, so the
+  // child's cwd on sys.path is sufficient).
   delete (env as any).PYTHONPATH;
   delete (env as any).PYTHONHOME;
   env.PYTHONNOUSERSITE = '1';
+
+  // Copy the Python sandbox preload into the sandbox root as
+  // `_eidolon_sandbox.py` so `import _eidolon_sandbox` resolves against the
+  // child's cwd (sys.path[0] for `python -c`). The preload wraps
+  // builtins.open / io.open / os.* / subprocess / socket to the same
+  // root-only / no-subprocess / loopback-only boundary as the JS shim
+  // (VAL-CODE-007 for Python).
+  const preloadDest = path.join(sandboxRoot, '_eidolon_sandbox.py');
+  await fs.copyFile(SANDBOX_PYTHON_PATH, preloadDest);
+
+  // Install the sandbox, then run the user entry under runpy with
+  // run_name='__main__' so __name__/__file__ behave as a normal script.
+  // The entry path is resolved against the sandbox root so the sandboxed
+  // open() in runpy passes the root-only check.
+  const entryAbs = path.resolve(sandboxRoot, entryPath);
+  const bootstrap = `import _eidolon_sandbox; import runpy; runpy.run_path(${JSON.stringify(entryAbs)}, run_name='__main__')`;
   const started = Date.now();
-  const result = await runChild(pythonBin, ['-S', entryPath], sandboxRoot, env, timeoutSec);
+  const result = await runChild(pythonBin, ['-S', '-c', bootstrap], sandboxRoot, env, timeoutSec);
   return {
     artifactId: '',
     language: 'python',

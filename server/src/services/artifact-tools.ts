@@ -513,6 +513,7 @@ export class ArtifactToolService {
             exitCode: result.exitCode,
             timedOut: result.timedOut,
             durationMs: result.durationMs,
+            truncated: result.truncated,
           }),
         }],
         data: {
@@ -523,6 +524,7 @@ export class ArtifactToolService {
           exitCode: result.exitCode,
           timedOut: result.timedOut,
           durationMs: result.durationMs,
+          truncated: result.truncated,
         },
       };
     } catch (err) {
