@@ -5,6 +5,7 @@ import {
   BoardContentSchema,
   SlideDeckContentSchema,
   TimelineContentSchema,
+  GalleryContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
 } from './artifact.js';
@@ -740,8 +741,135 @@ describe('TimelineContentSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ArtifactTypeSchema
+// GalleryContentSchema
 // ---------------------------------------------------------------------------
+
+describe('GalleryContentSchema', () => {
+  it('accepts an empty items array', () => {
+    const result = GalleryContentSchema.safeParse({ items: [] });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a single image item with a url', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: 'i1', type: 'image', url: 'https://example.test/a.png' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an image item with an optional caption', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: 'i1', type: 'image', url: 'https://example.test/a.png', caption: 'Alpha' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a video item', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: 'i1', type: 'video', url: 'https://example.test/v.mp4' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts multiple items with mixed types and captions', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [
+        { id: 'i1', type: 'image', url: 'https://example.test/a.png', caption: 'Alpha' },
+        { id: 'i2', type: 'video', url: 'https://example.test/b.mp4' },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an item missing url', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: 'i9', type: 'image' }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((i) => i.path.join('.'));
+      expect(paths).toContain('items.0.url');
+    }
+  });
+
+  it('rejects an item with an empty url', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: 'i9', type: 'image', url: '' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an item with an invalid type', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: 'i9', type: 'bogus', url: 'https://example.test/x' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an item missing id', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ type: 'image', url: 'https://example.test/x' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an item with an empty id', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: '', type: 'image', url: 'https://example.test/x' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an item missing type', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [{ id: 'i1', url: 'https://example.test/x' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate item ids', () => {
+    const result = GalleryContentSchema.safeParse({
+      items: [
+        { id: 'dup', type: 'image', url: 'https://example.test/a.png' },
+        { id: 'dup', type: 'image', url: 'https://example.test/b.png' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects missing items field', () => {
+    const result = GalleryContentSchema.safeParse({ notItems: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects items that are not an array', () => {
+    const result = GalleryContentSchema.safeParse({ items: {} });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects document content under the gallery type', () => {
+    const result = GalleryContentSchema.safeParse({ format: 'markdown', body: '# nope' });
+    expect(result.success).toBe(false);
+  });
+
+  it('preserves every item on a successful parse (caption optional, absent stays absent)', () => {
+    const content = {
+      items: [
+        { id: 'i1', type: 'image', url: 'https://example.test/a.png', caption: 'Alpha' },
+        { id: 'i2', type: 'image', url: 'https://example.test/b.png' },
+      ],
+    };
+    const result = GalleryContentSchema.safeParse(content);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items).toHaveLength(2);
+      expect(result.data.items[0].caption).toBe('Alpha');
+      expect(result.data.items[1].caption).toBeUndefined();
+    }
+  });
+});
+
+
 
 describe('ArtifactTypeSchema', () => {
   it('accepts all 9 artifact types', () => {
@@ -858,6 +986,27 @@ describe('validateArtifactContent', () => {
 
   it('rejects content for an unknown type', () => {
     const result = validateArtifactContent('bogus' as never, { foo: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('validates gallery content against the gallery schema', () => {
+    const result = validateArtifactContent('gallery', {
+      items: [{ id: 'i1', type: 'image', url: 'https://example.test/a.png', caption: 'Alpha' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects gallery content with an item missing url', () => {
+    const result = validateArtifactContent('gallery', {
+      items: [{ id: 'i9', type: 'image' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects gallery content with an invalid item type', () => {
+    const result = validateArtifactContent('gallery', {
+      items: [{ id: 'i9', type: 'bogus', url: 'https://example.test/x' }],
+    });
     expect(result.success).toBe(false);
   });
 });

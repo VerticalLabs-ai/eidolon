@@ -248,9 +248,34 @@ export const TimelineContentSchema = z
   });
 
 export type TimelineContent = z.infer<typeof TimelineContentSchema>;
-const GalleryContentSchema = z.object({
-  items: z.array(z.object({ id: z.string().min(1), type: z.string(), url: z.string(), caption: z.string().optional() })),
+
+const galleryItemSchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(['image', 'video']),
+  url: z.string().min(1),
+  caption: z.string().optional(),
 });
+
+export const GalleryContentSchema = z
+  .object({
+    items: z.array(galleryItemSchema),
+  })
+  .superRefine((gallery, ctx) => {
+    const ids = new Set<string>();
+    gallery.items.forEach((item, index) => {
+      if (ids.has(item.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index, 'id'],
+          message: `Duplicate gallery item id "${item.id}"`,
+        });
+      } else {
+        ids.add(item.id);
+      }
+    });
+  });
+
+export type GalleryContent = z.infer<typeof GalleryContentSchema>;
 const DashboardContentSchema = z.object({
   dataSources: z.array(z.object({ id: z.string(), type: z.string(), config: z.record(z.string(), z.unknown()) })),
   widgets: z.array(z.object({ id: z.string(), type: z.string(), dataSourceId: z.string(), config: z.record(z.string(), z.unknown()) })),

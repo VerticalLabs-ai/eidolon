@@ -53,7 +53,7 @@ const TYPE_OPTIONS: TypeOption[] = [
     label: "Gallery",
     description: "Media gallery with captions",
     icon: <Images className="h-5 w-5" />,
-    enabled: false,
+    enabled: true,
   },
   {
     type: "dashboard",
