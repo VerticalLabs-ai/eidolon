@@ -6,6 +6,7 @@ import {
   createServiceTokenMiddleware,
   hashServiceToken,
   parseServiceTokens,
+  signServiceRequest,
   type ScopedServiceToken,
 } from '../middleware/service-tokens.js';
 
@@ -20,6 +21,7 @@ const tokens: ScopedServiceToken[] = [
 
 function testApp() {
   const app = express();
+  app.use(express.json());
   const requireAuth = (_req: Request, _res: Response, next: NextFunction) =>
     next(new AppError(401, 'UNAUTHORIZED', 'Authentication required'));
   const requireOrgMember = () => (_req: Request, _res: Response, next: NextFunction) => next();
@@ -100,5 +102,25 @@ describe('scoped service tokens', () => {
       .get(`/companies/${COMPANY_ID}/prompts`)
       .set('cookie', `eidolon_service_token=${READ_TOKEN}`)
       .expect(200);
+  });
+
+  it('accepts a short-lived signed request when deployment proxies strip credentials', async () => {
+    const path = `/companies/${COMPANY_ID}/prompts`;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = signServiceRequest(tokens[0]!.tokenHash, 'GET', path, timestamp);
+    await request(testApp())
+      .get(`${path}?service=reader&ts=${timestamp}&sig=${signature}`)
+      .expect(200);
+  });
+
+  it('rejects expired and path-mismatched signatures', async () => {
+    const path = `/companies/${COMPANY_ID}/prompts`;
+    const expired = Math.floor(Date.now() / 1000) - 61;
+    const oldSignature = signServiceRequest(tokens[0]!.tokenHash, 'GET', path, expired);
+    await request(testApp()).get(`${path}?service=reader&ts=${expired}&sig=${oldSignature}`).expect(401);
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const wrongPath = signServiceRequest(tokens[0]!.tokenHash, 'GET', '/different', timestamp);
+    await request(testApp()).get(`${path}?service=reader&ts=${timestamp}&sig=${wrongPath}`).expect(401);
   });
 });
