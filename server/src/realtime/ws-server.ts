@@ -5,6 +5,8 @@ import logger from '../utils/logger.js';
 import { eventBus, type EidolonEvent } from './events.js';
 import type { DbInstance } from '../types.js';
 import type { CoEditClientMsg } from '@eidolon/shared';
+import { authenticateRequest } from '../auth.js';
+import { requireAccess } from '../services/permission-service.js';
 import {
   initCoEditManager,
   joinSession,
@@ -22,6 +24,10 @@ import {
 
 interface TrackedClient {
   ws: WebSocket;
+  /** Identity established during the HTTP upgrade; never client supplied. */
+  userId: string;
+  orgRole: string;
+  allowedCompanyIds: Set<string>;
   subscribedCompanies: Set<string>;
   isAlive: boolean;
   connectedAt: Date;
@@ -42,10 +48,12 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const clients = new Map<WebSocket, TrackedClient>();
 
 let wss: WebSocketServer;
+let wsDb: DbInstance | undefined;
 
 export function setupWebSocketServer(server: HttpServer, options?: { db?: DbInstance }): WebSocketServer {
   // Initialize the co-edit session manager with the DB instance so WS
   // co-edit messages can load/save artifact content.
+  wsDb = options?.db;
   if (options?.db) {
     initCoEditManager(options.db);
   }
@@ -55,18 +63,32 @@ export function setupWebSocketServer(server: HttpServer, options?: { db?: DbInst
   // Upgrade only for /ws path
   server.on('upgrade', (request: IncomingMessage, socket, head) => {
     const pathname = new URL(request.url ?? '/', `http://${request.headers.host}`).pathname;
-    if (pathname === '/ws') {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
-      });
-    } else {
+    if (pathname !== '/ws') {
       socket.destroy();
+      return;
     }
+    // Authenticate before completing the upgrade.  The identity is then bound
+    // to the connection rather than accepted from co-edit messages.
+    void authenticateRequest(request as unknown as Request).then((session) => {
+      const localTrusted = process.env.AUTH_MODE === 'local_trusted';
+      if (!session && !localTrusted) {
+        socket.write('HTTP/1.1 401 Unauthorized\\r\\n\\r\\n');
+        socket.destroy();
+        return;
+      }
+      const userId = session?.user.id ?? 'dev-user-000';
+      const orgRole = session?.session.activeOrganizationRole ?? 'owner';
+      const companyId = session?.session.activeOrganizationId;
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, { userId, orgRole, allowedCompanyIds: companyId ? new Set([companyId]) : new Set<string>() });
+      });
+    }).catch(() => socket.destroy());
   });
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, identity: { userId: string; orgRole: string; allowedCompanyIds: Set<string> }) => {
     const tracked: TrackedClient = {
       ws,
+      ...identity,
       subscribedCompanies: new Set(),
       isAlive: true,
       connectedAt: new Date(),
@@ -177,11 +199,22 @@ function handleClientMessage(client: TrackedClient, msg: InboundMessage): void {
 // Co-edit message handler
 // ---------------------------------------------------------------------------
 
+async function authorizeCoEdit(client: TrackedClient, companyId: string, artifactId: string, level: 'view' | 'edit'): Promise<void> {
+  if (process.env.AUTH_MODE !== 'local_trusted' && !client.allowedCompanyIds.has(companyId)) {
+    throw new Error('Company access denied');
+  }
+  if (wsDb && process.env.AUTH_MODE !== 'local_trusted') {
+    await requireAccess(wsDb, companyId, client.userId, client.orgRole, 'artifact', artifactId, level);
+  }
+}
+
 function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void {
   switch (msg.type) {
     case 'coedit.join': {
-      client.coeditArtifacts.add(msg.artifactId);
-      void joinSession(msg.artifactId, msg.companyId, msg.userId, msg.name, client.ws)
+      void authorizeCoEdit(client, msg.companyId, msg.artifactId, 'edit').then(() => {
+        client.coeditArtifacts.add(msg.artifactId);
+        return joinSession(msg.artifactId, msg.companyId, client.userId, msg.name, client.ws);
+      })
         .catch((err) => {
           client.ws.send(JSON.stringify({
             type: 'coedit.error',
@@ -193,7 +226,8 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
     }
     case 'coedit.op': {
       try {
-        applyOperation(msg.artifactId, msg.op, msg.userId);
+        if (!client.coeditArtifacts.has(msg.artifactId)) throw new Error('Not a co-edit participant');
+        applyOperation(msg.artifactId, msg.op, client.userId);
       } catch (err) {
         client.ws.send(JSON.stringify({
           type: 'coedit.error',
@@ -206,7 +240,7 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
     case 'coedit.cursor': {
       broadcastCursor(
         msg.artifactId,
-        msg.userId,
+        client.userId,
         msg.name,
         msg.color ?? '',
         msg.position,
@@ -216,7 +250,7 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
     case 'coedit.selection': {
       broadcastSelection(
         msg.artifactId,
-        msg.userId,
+        client.userId,
         msg.name,
         msg.color ?? '',
         msg.range,
@@ -224,7 +258,9 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
       break;
     }
     case 'coedit.save': {
-      void flushSession(msg.artifactId, { userId: msg.userId, editSource: 'user' }, msg.title)
+      void (client.coeditArtifacts.has(msg.artifactId)
+        ? flushSession(msg.artifactId, { userId: client.userId, editSource: 'user' }, msg.title)
+        : Promise.reject(new Error('Not a co-edit participant')))
         .catch((err) => {
           client.ws.send(JSON.stringify({
             type: 'coedit.error',
@@ -236,7 +272,7 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
     }
     case 'coedit.leave': {
       client.coeditArtifacts.delete(msg.artifactId);
-      void leaveSession(msg.artifactId, msg.userId);
+      void leaveSession(msg.artifactId, client.userId);
       break;
     }
     default:
