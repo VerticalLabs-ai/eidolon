@@ -310,7 +310,7 @@ export function FolderTree({
         <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary font-display">Folders</h3>
         <button
           onClick={() => startCreate(null)}
-          className="rounded p-1 text-text-secondary hover:text-neon-cyan hover:bg-white/[0.05] transition-colors"
+          className="rounded p-1 text-text-secondary hover:text-neon-cyan hover:bg-white/[0.05] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-label="New top-level folder"
           title="New folder"
         >
@@ -323,7 +323,7 @@ export function FolderTree({
             <button
               onClick={onSelectAll}
               className={clsx(
-                "flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
+                "flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
                 allSelected ? "bg-accent/10 text-text-primary" : "hover:bg-white/[0.03] text-text-secondary",
               )}
             >
@@ -335,7 +335,7 @@ export function FolderTree({
             <button
               onClick={onSelectUnfiled}
               className={clsx(
-                "flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
+                "flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
                 unfiledSelected ? "bg-accent/10 text-text-primary" : "hover:bg-white/[0.03] text-text-secondary",
               )}
             >
@@ -507,7 +507,7 @@ export function MoveArtifactMenu({
       <button
         ref={buttonRef}
         onClick={() => setOpen((o) => !o)}
-        className="rounded-md px-2 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.05] transition-colors"
+        className="rounded-md px-2 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-white/[0.05] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         aria-label={`Move artifact (currently ${label})`}
         title={`Move to folder (currently ${label})`}
       >
@@ -521,7 +521,7 @@ export function MoveArtifactMenu({
             <button
               onClick={() => void handleMove(null)}
               className={clsx(
-                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.05]",
+                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
                 currentFolderId === null ? "text-accent" : "text-text-secondary",
               )}
             >
@@ -538,7 +538,7 @@ export function MoveArtifactMenu({
                 key={f.id}
                 onClick={() => void handleMove(f.id)}
                 className={clsx(
-                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.05]",
+                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
                   currentFolderId === f.id ? "text-accent" : "text-text-secondary",
                 )}
               >
