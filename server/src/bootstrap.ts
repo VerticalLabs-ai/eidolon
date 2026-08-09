@@ -66,6 +66,8 @@ import {
   teams,
   teamMembers,
   artifactPermissions,
+  meetings,
+  meetingTasks,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,8 @@ const SCHEMA_BUNDLE = {
   teams,
   teamMembers,
   artifactPermissions,
+  meetings,
+  meetingTasks,
 } as const;
 
 export interface BootstrapOptions {

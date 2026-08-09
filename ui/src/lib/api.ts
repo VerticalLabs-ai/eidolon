@@ -3092,3 +3092,134 @@ export const resolvePermission = (
   request<ApiResponse<{ accessLevel: AccessLevel | null }>>(
     `/companies/${companyId}/permissions/resolve?resourceType=${resourceType}&resourceId=${resourceId}`,
   );
+
+// ── Meetings (M7) ─────────────────────────────────────────────────────────
+// A meeting is a first-class entity distinct from agent execution transcripts.
+// Pipeline: create → attach transcript → summarize → extract action items
+// (which become real tasks linked to the project).
+
+export type MeetingStatus = "active" | "archived" | "deleted";
+
+export interface Meeting {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  title: string;
+  transcript: string | null;
+  summary: string | null;
+  summaryGeneratedAt: string | null;
+  summaryGeneratedByAgentId: string | null;
+  occurredAt: string | null;
+  status: MeetingStatus;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface MeetingListResponse {
+  data: Meeting[];
+  meta: { total: number; limit: number; offset: number };
+}
+
+export interface MeetingSummarizeResult {
+  summary: string | null;
+  skipped: boolean;
+  reason?: string;
+}
+
+export interface MeetingActionItemsResult {
+  tasks: Array<{
+    id: string;
+    title: string;
+    identifier: string | null;
+    status: string;
+    projectId: string | null;
+  }>;
+  skipped: boolean;
+  reason?: string;
+}
+
+export const listProjectMeetings = (
+  companyId: string,
+  projectId: string,
+  params?: { status?: MeetingStatus; limit?: number; offset?: number },
+) => {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  qs.set("limit", String(params?.limit ?? 50));
+  qs.set("offset", String(params?.offset ?? 0));
+  return request<MeetingListResponse>(
+    `/companies/${companyId}/projects/${projectId}/meetings?${qs.toString()}`,
+  );
+};
+
+export const createMeeting = (
+  companyId: string,
+  projectId: string,
+  data: { title: string; transcript?: string; occurredAt?: string | null },
+) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/projects/${projectId}/meetings`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const getMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}`);
+
+export const patchMeeting = (
+  companyId: string,
+  meetingId: string,
+  data: { title?: string; transcript?: string | null; status?: MeetingStatus },
+) =>
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const attachTranscript = (
+  companyId: string,
+  meetingId: string,
+  transcript: string,
+) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}/transcript`,
+    { method: "POST", body: JSON.stringify({ transcript }) },
+  );
+
+export const summarizeMeetingApi = (companyId: string, meetingId: string) =>
+  request<{ data: MeetingSummarizeResult }>(
+    `/companies/${companyId}/meetings/${meetingId}/summarize`,
+    { method: "POST" },
+  );
+
+export const extractActionItemsApi = (companyId: string, meetingId: string) =>
+  request<{ data: MeetingActionItemsResult }>(
+    `/companies/${companyId}/meetings/${meetingId}/action-items`,
+    { method: "POST" },
+  );
+
+export const getMeetingTasks = (companyId: string, meetingId: string) =>
+  request<{ data: Array<{ id: string; title: string; identifier: string | null; status: string; projectId: string | null }> }>(
+    `/companies/${companyId}/meetings/${meetingId}/tasks`,
+  );
+
+export const deleteMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}`,
+    { method: "DELETE" },
+  );
+
+export const archiveMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}/archive`,
+    { method: "POST" },
+  );
+
+export const restoreMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}/restore`,
+    { method: "POST" },
+  );

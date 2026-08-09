@@ -15,6 +15,7 @@ import { TaskBoard } from "@/pages/TaskBoard";
 import { ProjectHome } from "@/pages/ProjectHome";
 import { ProjectDrive } from "@/pages/ProjectDrive";
 import { ProjectArtifacts } from "@/pages/ProjectArtifacts";
+import { ProjectMeetings } from "@/components/projects/ProjectMeetings";
 import { ProjectThreadComposer } from "@/components/projects/ProjectThreadComposer";
 import { ProjectPlansPanel } from "@/components/projects/ProjectPlansPanel";
 import { ProjectDecisionsPanel } from "@/components/projects/ProjectDecisionsPanel";
@@ -23,7 +24,7 @@ import { AutomationRunsPanel } from "@/components/projects/AutomationRunsPanel";
 import type { Tab } from "@/components/ui/Tabs";
 import { formatDistanceToNow } from "date-fns";
 
-const VALID_TABS = ["home", "work", "drive", "artifacts", "activity"] as const;
+const VALID_TABS = ["home", "work", "drive", "artifacts", "meetings", "activity"] as const;
 type ValidTab = (typeof VALID_TABS)[number];
 
 const tabs: Tab[] = [
@@ -31,6 +32,7 @@ const tabs: Tab[] = [
   { id: "work", label: "Work" },
   { id: "drive", label: "Drive" },
   { id: "artifacts", label: "Artifacts" },
+  { id: "meetings", label: "Meetings" },
   { id: "activity", label: "Activity" },
 ];
 
@@ -284,6 +286,9 @@ export function ProjectDetail() {
         )}
         {activeTab === "artifacts" && (
           <ProjectArtifacts companyId={companyId ?? ""} projectId={project.id} />
+        )}
+        {activeTab === "meetings" && (
+          <ProjectMeetings companyId={companyId ?? ""} projectId={project.id} />
         )}
         {activeTab === "activity" && (
           <ProjectActivity key={project.id} companyId={companyId ?? ""} projectId={project.id} />

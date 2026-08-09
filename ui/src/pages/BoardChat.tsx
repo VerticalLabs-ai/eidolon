@@ -24,6 +24,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { MentionPicker, MentionChip } from "@/components/projects/MentionPicker";
 import { ThreadArtifactCard } from "@/components/projects/ThreadArtifactCard";
+import { ThreadMeetingCard } from "@/components/projects/ThreadMeetingCard";
 import type { Agent, MentionableEntity } from "@/lib/api";
 
 const BOARD_SENDER_ID = "__board__"; // Legacy sentinel; board messages now use null fromAgentId
@@ -470,6 +471,13 @@ export function BoardChat() {
                 const taskId =
                   (msgMeta?.mentionDispatch as { taskId?: string } | undefined)?.taskId ??
                   (typeof msgMeta?.taskId === "string" ? msgMeta.taskId : undefined);
+                // VAL-MEETING-015: meeting outcome card from metadata
+                const meetingId: string | undefined =
+                  typeof msgMeta?.meetingId === "string"
+                    ? msgMeta.meetingId
+                    : Array.isArray(msgMeta?.meetings)
+                      ? (msgMeta.meetings as Array<{ meetingId: string }>)[0]?.meetingId
+                      : undefined;
 
                 return (
                   <div
@@ -561,6 +569,16 @@ export function BoardChat() {
                           />
                         </div>
                       ))}
+                      {/* VAL-MEETING-015: meeting outcome card from agent response */}
+                      {meetingId != null && (
+                        <div key={`meeting-${meetingId}`} className="mt-1.5 max-w-full">
+                          <ThreadMeetingCard
+                            meetingId={meetingId}
+                            companyId={companyId!}
+                            projectId={null}
+                          />
+                        </div>
+                      )}
                       {/* Task outcome link from agent response (VAL-CROSS-026) */}
                       {taskId != null && (
                         <Link

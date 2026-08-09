@@ -46,6 +46,7 @@ import { skillsRouter } from './routes/skills.js';
 import { routinesRouter } from './routes/routines.js';
 import { automationsRouter } from './routes/automations.js';
 import { artifactsRouter } from './routes/artifacts.js';
+import { meetingsRouter, meetingItemRouter } from './routes/meetings.js';
 import { foldersRouter } from './routes/folders.js';
 import { workspaceTemplatesRouter } from './routes/workspace-templates.js';
 import { teamsRouter } from './routes/teams.js';
@@ -154,6 +155,7 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/org-chart', requireAuth, requireOrgMember(), orgChartRouter(db));
   app.use('/api/companies/:companyId/projects', requireAuth, requireOrgMember(), projectsRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/threads', requireAuth, requireOrgMember(), projectThreadsRouter(db));
+  app.use('/api/companies/:companyId/projects/:projectId/meetings', requireAuth, requireOrgMember(), meetingsRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/plans', requireAuth, requireOrgMember(), projectPlansRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/decisions', requireAuth, requireOrgMember(), projectDecisionsRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/outcomes', requireAuth, requireOrgMember(), projectOutcomesRouter(db));
@@ -219,6 +221,10 @@ export function createApp(db: DbInstance): express.Express {
   // Unified automations surface (aggregates routines, workflows, webhooks)
   app.use('/api/companies/:companyId/automations', requireAuth, requireOrgMember(), automationsRouter(db));
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), artifactsRouter(db));
+  // Meetings (M7): single-meeting operations (get/patch/transcript/summarize/
+  // action-items/tasks/delete/archive). Mounted at the company level so a
+  // meeting can be addressed by id regardless of whether it is project-scoped.
+  app.use('/api/companies/:companyId/meetings', requireAuth, requireOrgMember(), meetingItemRouter(db));
   // Artifact folders (M4): nested folder tree for organizing artifacts.
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), foldersRouter(db));
   // Project + artifact templates (M4): save/reuse project and artifact snapshots.

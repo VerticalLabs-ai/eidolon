@@ -16,6 +16,11 @@ import {
   updateArtifact,
 } from './artifact-service.js';
 import { runCodeArtifact } from './code-run-service.js';
+import {
+  createMeeting,
+  summarizeMeeting,
+  extractActionItems,
+} from './meeting-service.js';
 import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel, type ResourceKind } from './permission-service.js';
 import { AppError } from '../middleware/error-handler.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
@@ -29,6 +34,13 @@ export interface ProducedArtifact {
   artifactType: string;
   action: 'created' | 'updated';
   version: number;
+}
+
+export interface ProducedMeeting {
+  meetingId: string;
+  action: 'summarized' | 'action_items' | 'created';
+  summary?: string | null;
+  taskCount?: number;
 }
 
 export interface ArtifactToolResult {
@@ -136,10 +148,53 @@ export const ARTIFACT_TOOL_DEFINITIONS = [
       required: ['artifactId'],
     },
   },
+  {
+    name: 'meeting.create',
+    description:
+      'Create a new meeting record (project-scoped). A meeting holds a transcript and is distinct from agent execution transcripts. ' +
+      'Provide a transcript (pasted text) so summarize/action-items can run afterwards.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Meeting title (1-500 chars)' },
+        transcript: { type: 'string', description: 'Meeting transcript text (pasted)' },
+        projectId: { type: 'string', description: 'Project ID to scope the meeting to (optional; defaults to the current task project)' },
+      },
+      required: ['title', 'transcript'],
+    },
+  },
+  {
+    name: 'meeting.summarize',
+    description:
+      'Generate a transcript-grounded summary for a meeting. The summary is derived strictly from the transcript (no hallucinated facts). ' +
+      'Returns the summary text. Empty transcripts are handled gracefully (empty summary, no error).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        meetingId: { type: 'string', description: 'The meeting ID to summarize' },
+      },
+      required: ['meetingId'],
+    },
+  },
+  {
+    name: 'meeting.action_items',
+    description:
+      'Extract action items from a meeting transcript as REAL tasks linked to the project. ' +
+      'Each extracted action item becomes a row in the task system (status/assignee/board mechanics) and links back to the meeting. ' +
+      'Returns the created tasks. Empty transcripts yield zero action items (no error).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        meetingId: { type: 'string', description: 'The meeting ID to extract action items from' },
+      },
+      required: ['meetingId'],
+    },
+  },
 ];
 
 export class ArtifactToolService {
   private producedArtifacts: ProducedArtifact[] = [];
+  private producedMeetings: ProducedMeeting[] = [];
 
   constructor(private db: DbInstance) {}
 
@@ -147,16 +202,25 @@ export class ArtifactToolService {
     return [...this.producedArtifacts];
   }
 
+  getProducedMeetings(): ProducedMeeting[] {
+    return [...this.producedMeetings];
+  }
+
   resetTracking(): void {
     this.producedArtifacts = [];
+    this.producedMeetings = [];
   }
 
   // -------------------------------------------------------------------------
-  // Check if a tool name is a built-in artifact tool
+  // Check if a tool name is a built-in tool (artifact + meeting surface)
   // -------------------------------------------------------------------------
 
   static isArtifactTool(toolName: string): boolean {
-    return toolName.startsWith('artifact.') || toolName === 'code.run';
+    return (
+      toolName.startsWith('artifact.') ||
+      toolName === 'code.run' ||
+      toolName.startsWith('meeting.')
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -204,6 +268,12 @@ export class ArtifactToolService {
           return await this.handleList(args, context);
         case 'code.run':
           return await this.handleCodeRun(args, context, editor);
+        case 'meeting.create':
+          return await this.handleMeetingCreate(args, context, editor);
+        case 'meeting.summarize':
+          return await this.handleMeetingSummarize(args, context, editor);
+        case 'meeting.action_items':
+          return await this.handleMeetingActionItems(args, context, editor);
         default:
           return {
             content: [{ type: 'text', text: `Error: Unknown artifact tool "${toolName}"` }],
@@ -538,5 +608,101 @@ export class ArtifactToolService {
         isError,
       };
     }
+  }
+
+  // -- meeting.create -------------------------------------------------------
+
+  private async handleMeetingCreate(
+    args: Record<string, unknown>,
+    context: { companyId: string; agentId: string; projectId?: string | null },
+    editor: { agentId: string; editSource: 'agent' },
+  ): Promise<ArtifactToolResult> {
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    if (!title) {
+      return { content: [{ type: 'text', text: 'Error (400): title is required' }], isError: true };
+    }
+    const transcript = typeof args.transcript === 'string' ? args.transcript : '';
+    const projectId = (args.projectId as string | undefined) ?? context.projectId ?? null;
+
+    const meeting = await createMeeting(
+      this.db,
+      context.companyId,
+      { title, transcript, projectId },
+      editor,
+    );
+
+    this.producedMeetings.push({
+      meetingId: meeting.id,
+      action: 'created',
+    });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          meetingId: meeting.id,
+          title: meeting.title,
+          projectId: meeting.projectId,
+          hasTranscript: Boolean(meeting.transcript),
+        }),
+      }],
+      data: { meetingId: meeting.id, title: meeting.title, projectId: meeting.projectId },
+    };
+  }
+
+  // -- meeting.summarize ----------------------------------------------------
+
+  private async handleMeetingSummarize(
+    args: Record<string, unknown>,
+    context: { companyId: string; agentId: string; projectId?: string | null },
+    editor: { agentId: string; editSource: 'agent' },
+  ): Promise<ArtifactToolResult> {
+    const meetingId = args.meetingId as string;
+    if (!meetingId) {
+      return { content: [{ type: 'text', text: 'Error (400): meetingId is required' }], isError: true };
+    }
+    const result = await summarizeMeeting(this.db, context.companyId, meetingId, editor);
+    this.producedMeetings.push({
+      meetingId,
+      action: 'summarized',
+      summary: result.summary,
+    });
+    const text = result.skipped
+      ? `Summary skipped (${result.reason ?? 'empty_transcript'}): no meaningful transcript.`
+      : `Summary generated: ${result.summary ?? ''}`;
+    return {
+      content: [{ type: 'text', text }],
+      data: { meetingId, summary: result.summary, skipped: result.skipped },
+    };
+  }
+
+  // -- meeting.action_items ------------------------------------------------
+
+  private async handleMeetingActionItems(
+    args: Record<string, unknown>,
+    context: { companyId: string; agentId: string; projectId?: string | null },
+    editor: { agentId: string; editSource: 'agent' },
+  ): Promise<ArtifactToolResult> {
+    const meetingId = args.meetingId as string;
+    if (!meetingId) {
+      return { content: [{ type: 'text', text: 'Error (400): meetingId is required' }], isError: true };
+    }
+    const result = await extractActionItems(this.db, context.companyId, meetingId, editor);
+    this.producedMeetings.push({
+      meetingId,
+      action: 'action_items',
+      taskCount: result.tasks.length,
+    });
+    const summary = result.skipped
+      ? `Action items skipped (${result.reason ?? 'empty_transcript'}): no meaningful transcript.`
+      : `Extracted ${result.tasks.length} action item task(s).`;
+    return {
+      content: [{ type: 'text', text: summary }],
+      data: {
+        meetingId,
+        tasks: result.tasks.map((t) => ({ id: t.id, title: t.title, identifier: t.identifier })),
+        skipped: result.skipped,
+      },
+    };
   }
 }

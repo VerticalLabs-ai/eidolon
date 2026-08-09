@@ -53,3 +53,4 @@ export {
 export { testUsers } from './test_users.js';
 export { teams, teamMembers } from './teams.js';
 export { artifactPermissions } from './artifact_permissions.js';
+export { meetings, meetingTasks } from './meetings.js';

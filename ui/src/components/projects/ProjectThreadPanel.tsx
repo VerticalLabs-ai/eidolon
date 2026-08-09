@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { MentionPicker, MentionChip } from "./MentionPicker";
 import { ThreadArtifactCard } from "./ThreadArtifactCard";
+import { ThreadMeetingCard } from "./ThreadMeetingCard";
 import type { ProjectThreadItem, MentionableEntity } from "@/lib/api";
 
 function author(item: ProjectThreadItem) {
@@ -313,6 +314,25 @@ export function ProjectThreadPanel({
                           </div>
                           <Link2 className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />
                         </Link>
+                      );
+                    })()}
+                    {/* VAL-MEETING-015: render meeting card when the agent
+                        response references a meeting outcome (summarize /
+                        action-items / create). */}
+                    {(() => {
+                      const p = item.payload as Record<string, unknown>;
+                      const meetingId =
+                        typeof p?.meetingId === "string"
+                          ? p.meetingId
+                          : Array.isArray(p?.meetings) && (p.meetings as Array<{ meetingId: string }>)[0]?.meetingId;
+                      if (!meetingId) return null;
+                      return (
+                        <ThreadMeetingCard
+                          key={`meeting-${meetingId}`}
+                          meetingId={meetingId}
+                          companyId={companyId}
+                          projectId={item.projectId ?? projectId}
+                        />
                       );
                     })()}
                     <InteractionActions

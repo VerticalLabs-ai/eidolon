@@ -334,12 +334,19 @@ export class MentionService {
     // 4. Post the agent's response as a thread item
     const responseContent = result.finalOutput || '(Agent completed with no output)';
     const producedArtifacts = loop.getProducedArtifacts();
+    const producedMeetings = loop.getProducedMeetings();
 
     const payload: Record<string, unknown> = {};
     if (producedArtifacts.length > 0) {
       payload.artifactId = producedArtifacts[0].artifactId;
       payload.artifactType = producedArtifacts[0].artifactType;
       payload.artifacts = producedArtifacts;
+    }
+    if (producedMeetings.length > 0) {
+      // Link the first meeting outcome so the thread can render a meeting card
+      // (VAL-MEETING-015). The full list is carried for multi-meeting runs.
+      payload.meetingId = producedMeetings[0].meetingId;
+      payload.meetings = producedMeetings;
     }
     payload.mentionDispatch = {
       agentId,

@@ -156,6 +156,14 @@ export class AgenticLoop {
   getProducedArtifacts(): ProducedArtifact[] {
     return this.artifactToolService.getProducedArtifacts();
   }
+  /**
+   * Return meetings produced/summarized by the agent during the last run
+   * (M7 meeting tools). Used by the mention dispatcher to link meeting
+   * outcomes into the thread item payload.
+   */
+  getProducedMeetings(): import('./artifact-tools.js').ProducedMeeting[] {
+    return this.artifactToolService.getProducedMeetings();
+  }
 
   /**
    * Run the full agentic loop for a given agent and task.
@@ -757,7 +765,7 @@ Do NOT include <task_complete> until you are confident the task is done.`);
         return `## ${t.name} (built-in)\n${t.description}\nInput schema:\n\`\`\`json\n${schema}\n\`\`\``;
       })
       .join('\n\n');
-    sections.push(`# Built-in Artifact Tools\nYou have built-in tools to create and manage artifacts (typed, versioned work products like Docs and Sheets). Use these to produce outcomes from your tasks. To call a built-in tool, use the same <tool_call> format but omit the serverId.\n\n${artifactToolDescriptions}`);
+    sections.push(`# Built-in Artifact Tools\nYou have built-in tools to create and manage artifacts (typed, versioned work products like Docs and Sheets) and meetings (transcript → summary → action items). Use these to produce outcomes from your tasks. To call a built-in tool, use the same <tool_call> format but omit the serverId.\n\n${artifactToolDescriptions}`);
 
     // Capabilities
     if (agent.capabilities && agent.capabilities.length > 0) {

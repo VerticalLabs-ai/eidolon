@@ -30,6 +30,7 @@ import { CompanySettings } from "@/pages/CompanySettings";
 import { Templates } from "@/pages/Templates";
 import { Approvals } from "@/pages/Approvals";
 import { CompanyArtifacts } from "@/pages/CompanyArtifacts";
+import { MeetingDetail } from "@/pages/MeetingDetail";
 import { TeamsPage } from "@/pages/TeamsPage";
 
 class ErrorBoundary extends Component<
@@ -112,6 +113,7 @@ const router = createBrowserRouter(
         <Route path="projects/:projectId" element={<ProjectDetail />} />
         <Route path="issues" element={<TaskBoard title="Issues" />} />
         <Route path="tasks/:taskId" element={<TaskDetail />} />
+        <Route path="meetings/:meetingId" element={<MeetingDetail />} />
         <Route path="goals" element={<GoalTree />} />
         <Route path="agents" element={<AgentList />} />
         <Route path="agents/:agentId" element={<AgentDetail />} />

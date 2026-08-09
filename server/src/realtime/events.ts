@@ -101,6 +101,16 @@ export interface PresenceEvent extends ServerEvent {
     | 'presence.typing';
 }
 
+export interface MeetingEvent extends ServerEvent {
+  type:
+    | 'meeting.created'
+    | 'meeting.updated'
+    | 'meeting.summary.created'
+    | 'meeting.action_items.created'
+    | 'meeting.deleted'
+    | 'meeting.archived';
+}
+
 export interface EnvironmentEvent extends ServerEvent {
   type:
     | 'environment.created'
@@ -203,6 +213,7 @@ export type EidolonEvent =
   | TeamEvent
   | PermissionEvent
   | PresenceEvent
+  | MeetingEvent
   | RoutineEvent;
 
 // ---------------------------------------------------------------------------

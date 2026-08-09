@@ -169,6 +169,13 @@
       "when": 1786260999456,
       "tag": "0023_sleepy_sabra",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786288097656,
+      "tag": "0024_moaning_wendell_rand",
+      "breakpoints": true
     }
   ]
 }
