@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import request from 'supertest';
 import { AppError, errorHandler } from '../middleware/error-handler.js';
@@ -47,6 +48,12 @@ function testApp() {
 }
 
 describe('scoped service tokens', () => {
+  it('mounts prompt service auth before the broad company session gate', () => {
+    const source = readFileSync(new URL('../app.ts', import.meta.url), 'utf8');
+    expect(source.indexOf("'/api/companies/:companyId/prompts'"))
+      .toBeLessThan(source.indexOf("app.use('/api/companies', requireAuth"));
+  });
+
   it('allows a company-scoped read token and attaches a redacted principal', async () => {
     const response = await request(testApp())
       .get(`/companies/${COMPANY_ID}/prompts`)
