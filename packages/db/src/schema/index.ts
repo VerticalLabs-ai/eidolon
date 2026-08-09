@@ -54,3 +54,6 @@ export { testUsers } from './test_users.js';
 export { teams, teamMembers } from './teams.js';
 export { artifactPermissions } from './artifact_permissions.js';
 export { meetings, meetingTasks } from './meetings.js';
+export { userMfaFactors } from './user_mfa_factors.js';
+export { stepUpSessions } from './step_up_sessions.js';
+export { localTrustedSessions } from './local_trusted_sessions.js';

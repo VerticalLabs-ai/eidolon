@@ -248,7 +248,8 @@ function normalizeAgentProvider(
 
 function isEncryptedValue(value: string): boolean {
   const parts = value.split(":");
-  return parts.length === 3 && parts.every((part) => part.length > 0);
+  // 4-part = keyId:iv:authTag:ciphertext (current); 3-part = legacy.
+  return (parts.length === 3 || parts.length === 4) && parts.every((part) => part.length > 0);
 }
 
 function normalizeApiKeyForStorage(

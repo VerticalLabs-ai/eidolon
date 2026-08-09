@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
-import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision } from '../services/artifact-service.js';
+import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision, permanentlyDeleteArtifact, transferArtifactOwnership } from '../services/artifact-service.js';
 import { moveArtifactToFolder } from '../services/folder-service.js';
 import { runCodeArtifact } from '../services/code-run-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import { ArtifactTypeSchema, DashboardContentSchema } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel } from '../services/permission-service.js';
+import { requireStepUp, type StepUpScope } from '../services/stepup-service.js';
 import { resolveDataSource, type DashboardDataSource } from '../services/dashboard-data-source.js';
 import type { DbInstance } from '../types.js';
 
@@ -165,7 +166,75 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     // Delete requires manage access.
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
+    // VAL-SEC-008: `?permanent=true` performs a HARD delete (removes the row
+    // + revisions) and requires step-up re-authentication
+    // (`artifact_permanent_delete` scope). Without step-up the request is
+    // rejected with 403 MFA_STEP_UP_REQUIRED and no mutation occurs. The
+    // default (soft-delete) path is unchanged.
+    const permanent = req.query.permanent === 'true';
+    if (permanent) {
+      const stepUpToken =
+        (req.query.stepUpToken as string | undefined) ??
+        req.get('X-Eidolon-Step-Up-Token') ??
+        null;
+      await requireStepUp(db, userId, 'artifact_permanent_delete' as StepUpScope, stepUpToken);
+      await db.drizzle.insert(db.schema.activityLog).values({
+        companyId,
+        actorType: 'user',
+        actorId: userId,
+        action: 'artifact.delete_permanent',
+        entityType: 'artifact',
+        entityId: id,
+        description: 'Permanently deleted artifact',
+        metadata: { permanent: true },
+        createdAt: new Date(),
+      });
+      res.json({ data: await permanentlyDeleteArtifact(db, companyId, id) });
+      return;
+    }
     res.json({ data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)) });
+    // VAL-SEC-007: direct audit insert for artifact soft-delete with the
+    // acting user (the event-based logger skips artifact.deleted).
+    await db.drizzle.insert(db.schema.activityLog).values({
+      companyId,
+      actorType: 'user',
+      actorId: userId,
+      action: 'artifact.deleted',
+      entityType: 'artifact',
+      entityId: id,
+      description: 'Soft-deleted artifact',
+      metadata: { permanent: false },
+      createdAt: new Date(),
+    });
+  });
+  // POST /artifacts/:id/transfer — transfer artifact ownership to another
+  // project (or company-level via projectId=null). VAL-SEC-008: requires
+  // step-up re-authentication (`artifact_transfer` scope).
+  router.post('/artifacts/:id/transfer', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
+    const stepUpToken =
+      (req.query.stepUpToken as string | undefined) ??
+      req.get('X-Eidolon-Step-Up-Token') ??
+      null;
+    await requireStepUp(db, userId, 'artifact_transfer' as StepUpScope, stepUpToken);
+    const projectId =
+      req.body?.projectId === null || req.body?.projectId === undefined
+        ? null
+        : String(req.body.projectId);
+    await db.drizzle.insert(db.schema.activityLog).values({
+      companyId,
+      actorType: 'user',
+      actorId: userId,
+      action: 'artifact.ownership_transfer',
+      entityType: 'artifact',
+      entityId: id,
+      description: `Transferred artifact ownership → projectId=${projectId ?? 'null'}`,
+      metadata: { targetProjectId: projectId },
+      createdAt: new Date(),
+    });
+    res.json({ data: await transferArtifactOwnership(db, companyId, id, { projectId }, await editor(db, companyId, req)) });
   });
   router.post('/artifacts/:id/archive', async (req, res) => {
     const { companyId, id } = routeParams(req);

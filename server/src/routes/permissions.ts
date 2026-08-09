@@ -43,6 +43,19 @@ export function permissionsRouter(db: DbInstance): Router {
       body.accessLevel as AccessLevel,
       userId,
     );
+    // VAL-SEC-007: direct audit insert with the acting user (the event-based
+    // logger skips permission.granted to avoid a duplicate).
+    await db.drizzle.insert(db.schema.activityLog).values({
+      companyId,
+      actorType: 'user',
+      actorId: userId,
+      action: 'permission.granted',
+      entityType: 'permission',
+      entityId: body.resourceId,
+      description: `Granted ${body.accessLevel} on ${body.resourceType} ${body.resourceId} to ${body.granteeType} ${body.granteeId}`,
+      metadata: { resourceType: body.resourceType, resourceId: body.resourceId, granteeType: body.granteeType, granteeId: body.granteeId, accessLevel: body.accessLevel },
+      createdAt: new Date(),
+    });
     res.status(201).json({ data: perm });
   });
 
@@ -59,7 +72,20 @@ export function permissionsRouter(db: DbInstance): Router {
       db, companyId,
       body.resourceType as ResourceKind, body.resourceId,
       body.granteeType as GranteeKind, body.granteeId,
+      userId,
     );
+    // VAL-SEC-007: direct audit insert with the acting user.
+    await db.drizzle.insert(db.schema.activityLog).values({
+      companyId,
+      actorType: 'user',
+      actorId: userId,
+      action: 'permission.revoked',
+      entityType: 'permission',
+      entityId: body.resourceId,
+      description: `Revoked permission on ${body.resourceType} ${body.resourceId} from ${body.granteeType} ${body.granteeId}`,
+      metadata: { resourceType: body.resourceType, resourceId: body.resourceId, granteeType: body.granteeType, granteeId: body.granteeId },
+      createdAt: new Date(),
+    });
     res.status(204).end();
   });
 

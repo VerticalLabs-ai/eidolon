@@ -35,9 +35,7 @@ type PermissionRow = {
 
 function emitPermission(type: 'permission.granted' | 'permission.revoked', companyId: string, payload: Record<string, unknown>) {
   eventBus.emitEvent({ type, companyId, payload, timestamp: new Date().toISOString() });
-}
-
-// ---------------------------------------------------------------------------
+}// ---------------------------------------------------------------------------
 // Resource chain construction (artifact → folder → project)
 // ---------------------------------------------------------------------------
 
@@ -341,7 +339,12 @@ export async function grantPermission(
     set: { accessLevel, updatedAt: new Date() },
   }).returning();
   const perm = row as PermissionRow;
-  emitPermission('permission.granted', companyId, { permission: perm });
+  // VAL-SEC-007: include the acting user as the audit actor so the activity
+  // log records who granted the permission (not 'system').
+  emitPermission('permission.granted', companyId, {
+    permission: perm,
+    actor: { type: 'user', id: userId ?? 'system' },
+  });
   return perm;
 }
 
@@ -356,6 +359,7 @@ export async function revokePermission(
   resourceId: string,
   granteeType: GranteeKind,
   granteeId: string,
+  actorUserId?: string | null,
 ): Promise<void> {
   await db.drizzle.delete(db.schema.artifactPermissions).where(and(
     eq(db.schema.artifactPermissions.companyId, companyId),
@@ -364,7 +368,11 @@ export async function revokePermission(
     eq(db.schema.artifactPermissions.granteeType, granteeType),
     eq(db.schema.artifactPermissions.granteeId, granteeId),
   ));
-  emitPermission('permission.revoked', companyId, { resourceType, resourceId, granteeType, granteeId });
+  // VAL-SEC-007: include the acting user as the audit actor.
+  emitPermission('permission.revoked', companyId, {
+    resourceType, resourceId, granteeType, granteeId,
+    actor: { type: 'user', id: actorUserId ?? 'system' },
+  });
 }
 
 /**

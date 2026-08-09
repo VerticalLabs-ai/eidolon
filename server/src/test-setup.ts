@@ -31,6 +31,11 @@ delete process.env.AUTH_MODE;
 delete process.env.CLERK_SECRET_KEY;
 delete process.env.VITE_AUTH_MODE;
 
+// VAL-SEC-009: the auth-sensitive rate limiter is always-on outside tests so
+// the 429 posture is demonstrable in dev/validation. The deterministic
+// real-Postgres suite must never self-throttle, so bypass it for every test.
+process.env.EIDOLON_RATE_LIMIT_TEST_BYPASS = '1';
+
 /**
  * Per-file cleanup hook loaded via Vitest `setupFiles`.
  *

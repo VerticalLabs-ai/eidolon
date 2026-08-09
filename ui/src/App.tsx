@@ -32,6 +32,7 @@ import { Approvals } from "@/pages/Approvals";
 import { CompanyArtifacts } from "@/pages/CompanyArtifacts";
 import { MeetingDetail } from "@/pages/MeetingDetail";
 import { TeamsPage } from "@/pages/TeamsPage";
+import { SecuritySettings } from "@/pages/SecuritySettings";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -127,6 +128,7 @@ const router = createBrowserRouter(
         <Route path="approvals" element={<Approvals />} />
         <Route path="artifacts" element={<CompanyArtifacts />} />
         <Route path="teams" element={<TeamsPage />} />
+        <Route path="security" element={<SecuritySettings />} />
         <Route path="settings" element={<CompanySettings />} />
       </Route>
     </>,

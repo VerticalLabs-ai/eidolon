@@ -76,8 +76,11 @@ describe('Secrets API', () => {
       expect(row.valueEncrypted).toBeDefined();
       // The stored value should NOT be the plaintext
       expect(row.valueEncrypted).not.toBe('plaintext-value');
-      // AES-256-GCM format: iv:authTag:ciphertext (all base64)
-      expect(row.valueEncrypted.split(':')).toHaveLength(3);
+      // AES-256-GCM format: keyId:iv:authTag:ciphertext (4 parts, current) or
+      // iv:authTag:ciphertext (3 parts, legacy). All base64-encoded.
+      const parts = row.valueEncrypted.split(':');
+      expect(parts.length === 3 || parts.length === 4).toBe(true);
+      expect(parts.every((p: string) => p.length > 0)).toBe(true);
     });
 
     it('should reject missing name', async () => {

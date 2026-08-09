@@ -1,4 +1,6 @@
 // Eidolon API Client
+import { toast } from "sonner";
+
 const API_BASE = "/api";
 
 export class ApiError extends Error {
@@ -30,6 +32,17 @@ async function request<T>(
   if (res.status === 401 && !path.startsWith("/auth/")) {
     window.location.href = "/login";
     throw new ApiError(401, "Session expired");
+  }
+
+  // VAL-SEC-006: surface a graceful forbidden state on RBAC denials (403)
+  // rather than letting the UI crash or silently swallow the error. The
+  // structured error body from the server carries the code + message.
+  if (res.status === 403) {
+    const body = await res.json().catch(() => null);
+    const message =
+      body?.message ?? "You do not have permission to perform this action.";
+    toast.error(`Forbidden: ${message}`);
+    throw new ApiError(403, message, body);
   }
 
   if (!res.ok) {
@@ -246,8 +259,16 @@ export const updateCompany = (
   data: Partial<Pick<Company, "name" | "description" | "mission" | "status" | "budgetMonthlyCents">>,
 ) => request<Company>(`/companies/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 
-export const deleteCompany = (id: string, hard = false) =>
-  request<void>(`/companies/${id}${hard ? "?hard=true" : ""}`, { method: "DELETE" });
+export const deleteCompany = (id: string, hard = false, stepUpToken?: string) => {
+  const qs = new URLSearchParams();
+  if (hard) qs.set("hard", "true");
+  if (stepUpToken) qs.set("stepUpToken", stepUpToken);
+  const query = qs.toString();
+  return request<void>(
+    `/companies/${id}${query ? `?${query}` : ""}`,
+    { method: "DELETE" },
+  );
+};
 
 // ── Projects ────────────────────────────────────────────────────────────
 
@@ -3229,4 +3250,98 @@ export const restoreMeeting = (companyId: string, meetingId: string) =>
   request<{ data: Meeting }>(
     `/companies/${companyId}/meetings/${meetingId}/restore`,
     { method: "POST" },
+  );
+
+// ── M8: MFA + step-up authentication ────────────────────────────────────
+
+export interface MfaFactor {
+  id: string;
+  userId: string;
+  type: "totp";
+  label: string | null;
+  status: "active" | "disabled";
+  createdAt: string;
+}
+
+export interface MfaEnrollment {
+  factor: MfaFactor;
+  otpauthUri: string;
+  secret: string;
+}
+
+export interface StepUpSession {
+  stepUpToken: string;
+  scope: "company_delete" | "artifact_permanent_delete" | "artifact_transfer" | "sensitive_action";
+  grantedAt: string;
+  expiresAt: string;
+}
+
+export const enrollMfaFactor = (label?: string) =>
+  request<{ data: MfaEnrollment }>(`/auth/mfa/enroll`, {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  });
+
+export const listMfaFactors = () =>
+  request<{ data: MfaFactor[] }>(`/auth/mfa/factors`);
+
+export const verifyMfaCode = (code: string) =>
+  request<{ data: { verified: boolean; factorId: string } }>(`/auth/mfa/verify`, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+
+export const disableMfaFactor = (factorId: string) =>
+  request<{ data: { disabled: boolean; factorId: string } }>(
+    `/auth/mfa/factors/${factorId}`,
+    { method: "DELETE" },
+  );
+
+/** Local-trusted only: returns a valid TOTP code for the user's first factor. */
+export const generateValidMfaCode = () =>
+  request<{ data: { code: string } }>(`/auth/mfa/generate-valid-code`, {
+    method: "POST",
+  });
+
+export const requestStepUp = (
+  code: string,
+  scope: StepUpSession["scope"],
+  companyId?: string,
+) =>
+  request<{ data: StepUpSession }>(`/auth/step-up`, {
+    method: "POST",
+    body: JSON.stringify({ code, scope, companyId }),
+  });
+
+export const getStepUpStatus = (scope: StepUpSession["scope"]) =>
+  request<{ data: { hasStepUp: boolean; scope: string } }>(
+    `/auth/step-up/status?scope=${scope}`,
+  );
+
+// Sensitive artifact operations (step-up gated) — M8 VAL-SEC-008.
+
+export const permanentlyDeleteArtifact = (
+  companyId: string,
+  artifactId: string,
+  stepUpToken: string,
+) => {
+  const qs = new URLSearchParams({ permanent: "true", stepUpToken });
+  return request<{ data: { id: string; permanent: true } }>(
+    `/companies/${companyId}/artifacts/${artifactId}?${qs.toString()}`,
+    { method: "DELETE" },
+  );
+};
+
+export const transferArtifactOwnership = (
+  companyId: string,
+  artifactId: string,
+  projectId: string | null,
+  stepUpToken: string,
+) =>
+  request<{ data: Artifact }>(
+    `/companies/${companyId}/artifacts/${artifactId}/transfer?stepUpToken=${encodeURIComponent(stepUpToken)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ projectId }),
+    },
   );

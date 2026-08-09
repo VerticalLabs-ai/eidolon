@@ -10,6 +10,7 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import { getArtifact } from './artifact-service.js';
+import { encryptContent, decryptContent } from './content-encryption.js';
 import type { DbInstance } from '../types.js';
 
 type ArtifactType = z.infer<typeof ArtifactTypeSchema>;
@@ -74,7 +75,7 @@ export async function saveProjectTemplate(
     artifacts: artifactRows.map((a) => ({
       type: a.type as ArtifactType,
       title: a.title,
-      content: a.content as Record<string, unknown>,
+      content: decryptContent(a.content as Record<string, unknown>),
       contentSchemaVersion: a.contentSchemaVersion,
       originalFolderId: a.folderId,
     })),
@@ -172,7 +173,11 @@ export async function createProjectFromTemplate(
         .where(and(eq(db.schema.artifacts.companyId, companyId), eq(db.schema.artifacts.projectId, existing.projectId), eq(db.schema.artifacts.status, 'active')));
       const folderRows = await db.drizzle.select().from(db.schema.artifactFolders)
         .where(and(eq(db.schema.artifactFolders.companyId, companyId), eq(db.schema.artifactFolders.projectId, existing.projectId)));
-      return { project, artifacts: artifactRows, folders: folderRows };
+      return {
+        project,
+        artifacts: artifactRows.map((r) => ({ ...r, content: decryptContent(r.content as Record<string, unknown>) })),
+        folders: folderRows,
+      };
     }
   }
 
@@ -255,13 +260,14 @@ export async function createProjectFromTemplate(
         throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Template artifact content failed validation for type ${artifact.type}`, validation.error.flatten());
       }
       const newFolderId = artifact.originalFolderId === null ? null : folderIdMap.get(artifact.originalFolderId) ?? null;
+      const clonedContent = encryptContent(artifact.content as Record<string, unknown>);
       const [created] = await tx.insert(artifacts).values({
         companyId,
         projectId,
         folderId: newFolderId,
         type: artifact.type,
         title: artifact.title,
-        content: artifact.content as Record<string, unknown>,
+        content: clonedContent,
         contentSchemaVersion: artifact.contentSchemaVersion,
         createdByUserId: userId,
         lastEditedByUserId: userId,
@@ -269,7 +275,7 @@ export async function createProjectFromTemplate(
       await tx.insert(artifactRevisions).values({
         artifactId: created.id,
         version: 1,
-        content: artifact.content as Record<string, unknown>,
+        content: clonedContent,
         editedByUserId: userId,
         editSource: 'user',
       });
@@ -291,8 +297,8 @@ export async function createProjectFromTemplate(
 
   // Emit artifact.created events for each cloned artifact so subscribed
   // clients refresh. (Emitted after the transaction commits.)
-  for (const artifact of result.artifacts as Array<{ id: string }>) {
-    eventBus.emitEvent({ type: 'artifact.created', companyId, payload: { artifact }, timestamp: new Date().toISOString() });
+  for (const artifact of result.artifacts as Array<{ id: string; content: Record<string, unknown> }>) {
+    eventBus.emitEvent({ type: 'artifact.created', companyId, payload: { artifact: { ...artifact, content: decryptContent(artifact.content) } }, timestamp: new Date().toISOString() });
     eventBus.emitEvent({ type: 'artifact.revision.created', companyId, payload: { artifactId: artifact.id, version: 1, editSource: 'user' }, timestamp: new Date().toISOString() });
   }
 
@@ -300,7 +306,11 @@ export async function createProjectFromTemplate(
   const folderRows = await db.drizzle.select().from(artifactFolders)
     .where(and(eq(artifactFolders.companyId, companyId), eq(artifactFolders.projectId, projectId)));
 
-  return { project: result.project, artifacts: result.artifacts, folders: folderRows };
+  return {
+    project: result.project,
+    artifacts: (result.artifacts as Array<{ id: string; content: Record<string, unknown> }>).map((r) => ({ ...r, content: decryptContent(r.content) })),
+    folders: folderRows,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -412,13 +422,14 @@ export async function createArtifactFromTemplate(
   }
 
   const created = await db.drizzle.transaction(async (tx) => {
+    const templatedContent = encryptContent(template.content);
     const [artifact] = await tx.insert(artifacts).values({
       companyId,
       projectId: input.projectId ?? null,
       folderId: resolvedFolderId,
       type: template.type,
       title: input.title ?? `Untitled ${template.type}`,
-      content: template.content,
+      content: templatedContent,
       contentSchemaVersion: template.contentSchemaVersion,
       createdByUserId: userId,
       lastEditedByUserId: userId,
@@ -426,14 +437,16 @@ export async function createArtifactFromTemplate(
     await tx.insert(artifactRevisions).values({
       artifactId: artifact.id,
       version: 1,
-      content: template.content,
+      content: templatedContent,
       editedByUserId: userId,
       editSource: 'user',
     });
     return artifact;
   });
 
-  eventBus.emitEvent({ type: 'artifact.created', companyId, payload: { artifact: created }, timestamp: now.toISOString() });
-  eventBus.emitEvent({ type: 'artifact.revision.created', companyId, payload: { artifactId: (created as { id: string }).id, version: 1, editSource: 'user' }, timestamp: now.toISOString() });
-  return created;
+  const c = created as { id: string; content: Record<string, unknown> };
+  const decrypted = { ...c, content: decryptContent(c.content) };
+  eventBus.emitEvent({ type: 'artifact.created', companyId, payload: { artifact: decrypted }, timestamp: now.toISOString() });
+  eventBus.emitEvent({ type: 'artifact.revision.created', companyId, payload: { artifactId: c.id, version: 1, editSource: 'user' }, timestamp: now.toISOString() });
+  return decrypted;
 }

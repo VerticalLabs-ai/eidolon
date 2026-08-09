@@ -24,6 +24,17 @@ const CreateTestUserBody = z.object({
   companyId: z.string().min(1).max(255),
 });
 
+// Body for creating a local-trusted session with a mutable org role
+// (VAL-SEC-011). The session token is presented back via the
+// `X-Eidolon-Test-Session-Id` header; the auth middleware resolves the
+// role from the session row so a server-side downgrade takes effect on the
+// next request with the same token.
+const CreateSessionBody = z.object({
+  companyId: z.string().min(1).max(255),
+  userId: z.string().trim().min(1).max(255),
+  role: z.enum(['owner', 'admin', 'member', 'viewer']).default('member'),
+});
+
 export function localTrustedAuthRouter(db: DbInstance): Router {
   // Capture auth mode at router creation time (during createApp() when
   // AUTH_MODE is set). In tests, createTestApp() sets AUTH_MODE only
@@ -78,6 +89,66 @@ export function localTrustedAuthRouter(db: DbInstance): Router {
         companyId: body.companyId,
         name: body.name,
         email: body.email,
+      })
+      .returning();
+
+    res.status(201).json({ data: row });
+  });
+
+  // POST /api/auth/local-trusted/create-session
+  // Creates a local-trusted session with a starting org role. Returns a
+  // sessionId that validators pass via `X-Eidolon-Test-Session-Id`. The auth
+  // middleware reads the role from the session row so a later downgrade
+  // (POST /api/companies/:companyId/members/:userId/role) takes effect on the
+  // next request with the same session token — modeling live session
+  // invalidation on privilege loss (VAL-SEC-011).
+  router.post('/create-session', validate(CreateSessionBody), async (req, res) => {
+    if (!isLocalTrusted) {
+      throw new AppError(404, 'NOT_FOUND', 'Endpoint not available');
+    }
+    const body = req.body as z.infer<typeof CreateSessionBody>;
+    const { companies, localTrustedSessions } = db.schema;
+
+    // Verify the company exists
+    const [company] = await db.drizzle
+      .select({ id: companies.id })
+      .from(companies)
+      .where(eq(companies.id, body.companyId))
+      .limit(1);
+    if (!company) {
+      throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${body.companyId} not found`);
+    }
+
+    // Create (or reactivate) a session row for this user+company. If a row
+    // already exists, update its role + mark active so the same logical
+    // session can be re-issued deterministically.
+    const [existing] = await db.drizzle
+      .select()
+      .from(localTrustedSessions)
+      .where(
+        and(
+          eq(localTrustedSessions.companyId, body.companyId),
+          eq(localTrustedSessions.userId, body.userId),
+        ),
+      )
+      .limit(1);
+
+    if (existing) {
+      const [updated] = await db.drizzle
+        .update(localTrustedSessions)
+        .set({ role: body.role, active: true, updatedAt: new Date() })
+        .where(eq(localTrustedSessions.id, existing.id))
+        .returning();
+      return res.status(200).json({ data: updated });
+    }
+
+    const [row] = await db.drizzle
+      .insert(localTrustedSessions)
+      .values({
+        userId: body.userId,
+        companyId: body.companyId,
+        role: body.role,
+        active: true,
       })
       .returning();
 

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
-import { apiRateLimit } from './middleware/rate-limit.js';
+import { apiRateLimit, authSensitiveRateLimit } from './middleware/rate-limit.js';
 import { originCsrf } from './middleware/csrf.js';
 import healthRouter from './routes/health.js';
 import { companiesRouter } from './routes/companies.js';
@@ -54,13 +54,16 @@ import { permissionsRouter } from './routes/permissions.js';
 import { presenceRouter } from './routes/presence.js';
 import { mentionsRouter } from './routes/mentions.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
+import { mfaRouter, stepUpRouter } from './routes/mfa.js';
+import { securityMembersRouter } from './routes/security-members.js';
+import { securityAdminRouter } from './routes/security-admin.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp(db: DbInstance): express.Express {
   const app = express();
-  const { requireAuth, requireOrgMember } = createAuthMiddleware();
+  const { requireAuth, requireOrgMember } = createAuthMiddleware({ db });
 
   // Vercel overwrites forwarded IP headers before invoking the function.
   // Trust only that single proxy hop; direct/self-hosted deployments stay untrusted.
@@ -129,7 +132,24 @@ export function createApp(db: DbInstance): express.Express {
   // Local-trusted test user creation (guarded to AUTH_MODE=local_trusted
   // inside the route handler; returns 404 otherwise). Available without
   // auth so validators can create test users programmatically.
+  // VAL-SEC-009: the session-creation endpoint (login-like) is rate-limited.
+  app.use('/api/auth/local-trusted/create-session', authSensitiveRateLimit);
   app.use('/api/auth/local-trusted', localTrustedAuthRouter(db));
+
+  // MFA + step-up authentication (M8). User-scoped (requireAuth only, not
+  // company-scoped) — MFA protects the user identity across companies.
+  // VAL-SEC-009: MFA verify + step-up re-auth are brute-force surfaces and
+  // carry a strict always-on rate limiter (bypassed in tests via
+  // EIDOLON_RATE_LIMIT_TEST_BYPASS).
+  app.use('/api/auth/mfa/verify', authSensitiveRateLimit);
+  app.use('/api/auth/step-up', authSensitiveRateLimit);
+  app.use('/api/auth/mfa', requireAuth, mfaRouter(db));
+  app.use('/api/auth/step-up', requireAuth, stepUpRouter(db));
+
+  // Security admin (M8): encryption key rotation + posture. Platform-admin
+  // gated (VAL-SEC-010). requireAuth ensures a user is present; the handler
+  // enforces the admin role.
+  app.use('/api/admin', requireAuth, securityAdminRouter(db));
 
   // Adapter registry introspection (public read; no secrets leaked)
   app.use('/api/adapters', adaptersRouter());
@@ -237,6 +257,10 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), permissionsRouter(db));
   // Per-artifact presence (M3): join/leave/typing REST + WS events.
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), presenceRouter(db));
+  // Company member role management (M8 security): downgrade role / remove
+  // member. Admin/owner only (enforced inside the handler). Models session
+  // invalidation on privilege loss (VAL-SEC-011).
+  app.use('/api/companies/:companyId', requireAuth, requireOrgMember('admin'), securityMembersRouter(db));
 
   // Local execution environments
   app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));

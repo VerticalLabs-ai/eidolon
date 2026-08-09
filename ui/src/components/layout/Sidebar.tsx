@@ -92,6 +92,7 @@ const navSections: NavSection[] = [
       { to: "/approvals", icon: ShieldCheck, label: "Approvals" },
       { to: "/integrations", icon: Plug, label: "Integrations" },
       { to: "/teams", icon: Users, label: "Teams" },
+      { to: "/security", icon: ShieldCheck, label: "Security" },
       { to: "/settings", icon: Settings, label: "Settings" },
     ],
   },

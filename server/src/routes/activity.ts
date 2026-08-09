@@ -62,6 +62,18 @@ export function activityRecordFromEvent(event: EidolonEvent) {
   let entityType = 'unknown';
   let entityId = event.companyId;
 
+  // VAL-SEC-007: security-relevant events (permission.granted/revoked,
+  // artifact.deleted/archived, etc.) carry an explicit `actor` descriptor so
+  // the audit log records who performed the action rather than defaulting to
+  // 'system'. Fall back to the event-type-derived actor below when absent.
+  if (payload?.actor && typeof payload.actor === 'object') {
+    const a = payload.actor as { type?: string; id?: string };
+    if (a.type === 'user' || a.type === 'agent' || a.type === 'system') {
+      actorType = a.type;
+      actorId = a.id ?? a.type;
+    }
+  }
+
   if (event.type.startsWith('agent.')) {
     entityType = 'agent';
     entityId = payload.agentId ?? payload.agent?.id ?? event.companyId;
@@ -88,6 +100,15 @@ export function activityRecordFromEvent(event: EidolonEvent) {
   } else if (event.type.startsWith('cost.') || event.type.startsWith('budget.')) {
     entityType = 'budget';
     entityId = payload.costEvent?.id ?? payload.alert?.id ?? event.companyId;
+  } else if (event.type.startsWith('permission.')) {
+    entityType = 'permission';
+    entityId = payload.permission?.resourceId ?? payload.resourceId ?? event.companyId;
+  } else if (event.type.startsWith('artifact.')) {
+    entityType = 'artifact';
+    entityId = payload.artifact?.id ?? payload.artifactId ?? event.companyId;
+  } else if (event.type.startsWith('mfa.')) {
+    entityType = 'user_mfa_factor';
+    entityId = payload.factorId ?? payload.factor?.id ?? event.companyId;
   }
 
   const entityName = payload.project?.name ?? payload.task?.title ?? payload.goal?.title;
@@ -101,6 +122,11 @@ export function activityRecordFromEvent(event: EidolonEvent) {
     'goal.created': 'Goal created',
     'goal.updated': 'Goal updated',
     'goal.deleted': 'Goal deleted',
+    'permission.granted': 'Permission granted',
+    'permission.revoked': 'Permission revoked',
+    'artifact.deleted': 'Artifact deleted',
+    'artifact.archived': 'Artifact archived',
+    'mfa.enroll': 'MFA factor enrolled',
   };
   const description = descriptions[event.type] ?? `${event.type.replaceAll('.', ' ')} event`;
 
@@ -137,8 +163,22 @@ export function activityRecordFromEvent(event: EidolonEvent) {
 export function setupActivityLogger(db: DbInstance): void {
   const { activityLog } = db.schema;
 
+  // Security-relevant actions that are recorded via a DIRECT audit insert in
+  // the route handler (with the correct acting user). The event-based logger
+  // skips them so the activity log doesn't get a duplicate 'system'-attributed
+  // row alongside the direct actor-attributed row (VAL-SEC-007).
+  const directlyAudited = new Set([
+    'permission.granted',
+    'permission.revoked',
+    'artifact.deleted',
+    'artifact.archived',
+  ]);
+
   const handler = async (event: EidolonEvent) => {
     if (event.type === 'company.deleted') {
+      return;
+    }
+    if (directlyAudited.has(event.type)) {
       return;
     }
 

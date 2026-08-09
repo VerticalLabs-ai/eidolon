@@ -68,6 +68,9 @@ import {
   artifactPermissions,
   meetings,
   meetingTasks,
+  userMfaFactors,
+  stepUpSessions,
+  localTrustedSessions,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -134,6 +137,9 @@ const SCHEMA_BUNDLE = {
   artifactPermissions,
   meetings,
   meetingTasks,
+  userMfaFactors,
+  stepUpSessions,
+  localTrustedSessions,
 } as const;
 
 export interface BootstrapOptions {
