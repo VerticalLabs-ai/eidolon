@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, and, desc } from 'drizzle-orm';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { eventBus } from '../realtime/events.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 import type { EidolonEvent } from '../realtime/events.js';
 
@@ -21,8 +22,8 @@ async function captureEvents<T extends EidolonEvent = EidolonEvent>(
   eventBus.onEvent(handler);
   try {
     await fn();
-    // Give fire-and-forget dispatch a tick to complete
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Drain the tracked fire-and-forget dispatch so events have landed
+    await backgroundWork.drain();
   } finally {
     eventBus.off('event', handler);
   }

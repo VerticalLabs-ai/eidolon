@@ -19,7 +19,7 @@ import { routeParams } from "../utils/route-params.js";
 import { validateProjectOwnership } from "../utils/project-validation.js";
 import { resolveTaskProjectId } from "../utils/task-project-resolver.js";
 import { MentionService } from "../services/mention-service.js";
-import logger from "../utils/logger.js";
+import { backgroundWork } from "../services/background-work.js";
 
 const LIVENESS_STATUS_HEALTHY = "healthy";
 const LAST_USEFUL_ACTION_MANUAL_EXECUTION = "manual_execution_created";
@@ -620,22 +620,19 @@ export function agentsRouter(db: DbInstance): Router {
       });
 
       // Process queued mentions when the agent resumes from paused/offline
-      // to an active status (idle/working/error). Fire-and-forget so the
-      // PATCH response isn't blocked by the agentic loop.
+      // to an active status (idle/working/error). Tracked fire-and-forget
+      // so the PATCH response isn't blocked by the agentic loop, and tests
+      // can drain deterministically.
       const PAUSED_STATES = new Set(["paused", "offline"]);
       if (
         PAUSED_STATES.has(existing.status) &&
         !PAUSED_STATES.has(body.status!)
       ) {
         const mentionService = new MentionService(db);
-        mentionService
-          .processQueuedMentions(id)
-          .catch((err) => {
-            logger.error(
-              { err, agentId: id },
-              "Failed to process queued mentions on agent resume",
-            );
-          });
+        backgroundWork.fire(
+          mentionService.processQueuedMentions(id),
+          'process-queued-mentions (agent resume)',
+        );
       }
     }
 

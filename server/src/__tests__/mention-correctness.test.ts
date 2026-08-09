@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { MentionService } from '../services/mention-service.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -319,8 +320,8 @@ describe('Mention correctness fixes — real-Postgres integration', () => {
 
       expect(mentionRes.body.data.mentions).toHaveLength(1);
 
-      // Wait for the async queue to process
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Wait for the tracked background dispatch to complete
+      await backgroundWork.drain();
 
       // Verify the queued item exists
       const threadRes1 = await request(app)
@@ -341,9 +342,9 @@ describe('Mention correctness fixes — real-Postgres integration', () => {
         .send({ status: 'idle' })
         .expect(200);
 
-      // Wait for the async processing to complete (agentic loop will fail
-      // without API keys, but the queue item should be marked processed)
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      // Wait for the tracked background processing to complete (agentic loop
+      // will fail without API keys, but the queue item should be marked processed)
+      await backgroundWork.drain();
 
       // 4. Verify the queued mention was processed
       const threadRes2 = await request(app)
@@ -395,7 +396,7 @@ describe('Mention correctness fixes — real-Postgres integration', () => {
         })
         .expect(201);
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await backgroundWork.drain();
 
       // Resume the agent — triggers processing
       await request(app)
@@ -403,8 +404,8 @@ describe('Mention correctness fixes — real-Postgres integration', () => {
         .send({ status: 'idle' })
         .expect(200);
 
-      // Wait for processing
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Wait for tracked background processing
+      await backgroundWork.drain();
 
       // Verify both queued items are marked processed
       const threadRes = await request(app)
@@ -443,7 +444,7 @@ describe('Mention correctness fixes — real-Postgres integration', () => {
         })
         .expect(201);
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await backgroundWork.drain();
 
       // Resume the agent first (so processQueuedMentions doesn't guard against paused)
       await request(app)
@@ -451,8 +452,8 @@ describe('Mention correctness fixes — real-Postgres integration', () => {
         .send({ status: 'idle' })
         .expect(200);
 
-      // Wait for the route-triggered processing to complete
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Wait for the tracked route-triggered processing to complete
+      await backgroundWork.drain();
 
       // The route already processed the queued mention. Calling again
       // directly should find 0 unprocessed items.

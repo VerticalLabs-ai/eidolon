@@ -3,10 +3,10 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import eventBus from '../realtime/events.js';
-import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import type { EidolonEvent } from '../realtime/events.js';
+import { backgroundWork } from '../services/background-work.js';
 
 const ActivityQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -190,7 +190,7 @@ export function setupActivityLogger(db: DbInstance): void {
   // sole inserter of thread.mention activity_log rows.
   const directlyLoggedEvents = new Set(['thread.mention']);
 
-  const handler = async (event: EidolonEvent) => {
+  const handler = (event: EidolonEvent) => {
     if (event.type === 'company.deleted') {
       return;
     }
@@ -201,12 +201,12 @@ export function setupActivityLogger(db: DbInstance): void {
       return;
     }
 
-    try {
-      await db.drizzle.insert(activityLog).values(activityRecordFromEvent(event));
-    } catch (err) {
-      // Activity logging should never break the application
-      logger.debug({ err }, 'Failed to log activity event');
-    }
+    // Track the insert so tests can drain deterministically. Errors are
+    // logged with context, not silently swallowed.
+    backgroundWork.fire(
+      db.drizzle.insert(activityLog).values(activityRecordFromEvent(event)),
+      `activity-log (${event.type})`,
+    );
   };
 
   eventBus.onEvent(handler);

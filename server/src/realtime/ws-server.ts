@@ -13,8 +13,9 @@ import {
   applyOperation,
   broadcastCursor,
   broadcastSelection,
-  flushSession,
+  flushSessionSerialized,
 } from './coedit-session.js';
+import { backgroundWork } from '../services/background-work.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -224,14 +225,19 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
       break;
     }
     case 'coedit.save': {
-      void flushSession(msg.artifactId, { userId: msg.userId, editSource: 'user' }, msg.title)
-        .catch((err) => {
-          client.ws.send(JSON.stringify({
-            type: 'coedit.error',
-            artifactId: msg.artifactId,
-            message: err instanceof Error ? err.message : 'Save failed',
-          }));
-        });
+      // Serialize saves per session (prevents spurious 409 from two rapid
+      // saves racing on session.version) and track the flush so tests can
+      // drain deterministically.
+      backgroundWork.track(
+        flushSessionSerialized(msg.artifactId, { userId: msg.userId, editSource: 'user' }, msg.title),
+        `coedit.save (${msg.artifactId})`,
+      ).catch((err) => {
+        client.ws.send(JSON.stringify({
+          type: 'coedit.error',
+          artifactId: msg.artifactId,
+          message: err instanceof Error ? err.message : 'Save failed',
+        }));
+      });
       break;
     }
     case 'coedit.leave': {

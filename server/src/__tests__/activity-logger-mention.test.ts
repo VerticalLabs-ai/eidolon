@@ -3,6 +3,7 @@ import request from 'supertest';
 import { eq, and, desc } from 'drizzle-orm';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { setupActivityLogger } from '../routes/activity.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -81,8 +82,9 @@ describe('setupActivityLogger + thread.mention — no duplicate inbox row', () =
       })
       .expect(201);
 
-    // Allow the fire-and-forget dispatch + event-driven logger to land
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // Drain the tracked fire-and-forget dispatch + event-driven logger so
+    // the activity_log rows have landed before we query.
+    await backgroundWork.drain();
 
     const { activityLog } = db.schema;
     const mentionRows = await db.drizzle
@@ -124,32 +126,10 @@ describe('setupActivityLogger + thread.mention — no duplicate inbox row', () =
       })
       .expect(201);
 
-    // Poll the activity_log until the thread.mention row count is stable
-    // (no new rows for two consecutive reads ~80ms apart). This ensures
+    // Drain the tracked fire-and-forget dispatch + event-driven logger so
     // both the direct MentionService insert AND any event-driven logger
-    // insert have landed before we query the inbox, so the inbox assertion
-    // reliably observes whether a duplicate was produced.
-    const { activityLog } = db.schema;
-    let lastCount = -1;
-    let stable = false;
-    for (let i = 0; i < 20 && !stable; i++) {
-      const rows = await db.drizzle
-        .select()
-        .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.companyId, companyId),
-            eq(activityLog.action, 'thread.mention'),
-          ),
-        );
-      if (rows.length === lastCount && rows.length > 0) {
-        stable = true;
-      } else {
-        lastCount = rows.length;
-        await new Promise((resolve) => setTimeout(resolve, 80));
-      }
-    }
-    expect(stable).toBe(true);
+    // insert have landed before we query the inbox.
+    await backgroundWork.drain();
 
     const inboxRes = await request(app)
       .get(`/api/companies/${companyId}/inbox?userId=${testUserId}`)
@@ -191,7 +171,7 @@ describe('setupActivityLogger + thread.mention — no duplicate inbox row', () =
       })
       .expect(201);
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await backgroundWork.drain();
 
     const { activityLog } = db.schema;
     const mentionRows = await db.drizzle

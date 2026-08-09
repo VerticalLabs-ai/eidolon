@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { createTestServer, createTestDb } from '../test-utils.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 
 const DOC_CONTENT = { format: 'markdown', body: '# Original' };
@@ -342,8 +343,8 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
       expect(item.body.data.mentions).toHaveLength(1);
       expect(item.body.data.mentions[0].entityId).toBe(agentId);
 
-      // Allow background mention dispatch to settle before editing
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Drain tracked background mention dispatch before editing
+      await backgroundWork.drain();
 
       // Edit: replace mention A with mention B
       const edited = await request(app)
@@ -390,8 +391,8 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
         })
         .expect(201);
 
-      // Allow background mention dispatch to settle before editing
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Drain tracked background mention dispatch before editing
+      await backgroundWork.drain();
 
       // Edit: keep only agent A, drop the user mention
       const edited = await request(app)
@@ -421,8 +422,8 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
         })
         .expect(201);
 
-      // Allow background mention dispatch to settle before editing
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Drain tracked background mention dispatch before editing
+      await backgroundWork.drain();
 
       // Edit only content, no mentions field
       const edited = await request(app)

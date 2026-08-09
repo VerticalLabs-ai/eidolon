@@ -8,6 +8,7 @@ import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import { MentionService } from '../services/mention-service.js';
 import { AgenticLoop } from '../services/agentic-loop.js';
+import { backgroundWork } from '../services/background-work.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -227,10 +228,11 @@ export function chatRouter(db: DbInstance): Router {
       const agentMentions = resolvedMentions.filter((m) => m.entityType === 'agent');
       const userMentions = resolvedMentions.filter((m) => m.entityType === 'user');
 
-      // Dispatch user mentions (notifications) in company scope — fire and forget
+      // Dispatch user mentions (notifications) in company scope — tracked
+      // fire-and-forget so tests can drain deterministically.
       if (userMentions.length > 0) {
-        mentionService
-          .dispatchMentions({
+        backgroundWork.fire(
+          mentionService.dispatchMentions({
             companyId,
             projectId: null,
             threadId: threadId,
@@ -238,8 +240,9 @@ export function chatRouter(db: DbInstance): Router {
             content: body.content,
             mentions: userMentions,
             authorUserId: req.user?.id ?? null,
-          })
-          .catch((err) => logger.error({ err }, '[boardchat-mention] user dispatch error'));
+          }),
+          'boardchat user-mention dispatch',
+        );
       }
 
       // For agent mentions, fetch the agent rows (already company-validated
@@ -263,81 +266,86 @@ export function chatRouter(db: DbInstance): Router {
             dispatchedAgents: validAgentMentions.map((a) => ({ agentId: a.id, agentName: a.name })),
           };
 
-          // Fire-and-forget: create task, run agent loop, post response as message
-          (async () => {
-            for (const { id: aId, name: aName, status: aStatus, mention } of validAgentMentions) {
-              if (aStatus === 'paused' || aStatus === 'offline') continue;
-              try {
-                const agentTaskNow = new Date();
-                const [task] = await db.drizzle
-                  .insert(tasks)
-                  .values({
-                    companyId,
-                    projectId: null,
-                    title: `@${mention.label}: ${body.content.slice(0, 100)}`,
-                    description: body.content,
-                    type: 'feature',
-                    priority: 'medium',
-                    status: 'todo',
-                    assigneeAgentId: aId,
-                    createdAt: agentTaskNow,
-                    updatedAt: agentTaskNow,
-                  })
-                  .returning();
+          // Tracked fire-and-forget: create task, run agent loop, post
+          // response as message. Errors are logged with context in the
+          // background work tracker.
+          backgroundWork.fire(
+            (async () => {
+              for (const { id: aId, name: aName, status: aStatus, mention } of validAgentMentions) {
+                if (aStatus === 'paused' || aStatus === 'offline') continue;
+                try {
+                  const agentTaskNow = new Date();
+                  const [task] = await db.drizzle
+                    .insert(tasks)
+                    .values({
+                      companyId,
+                      projectId: null,
+                      title: `@${mention.label}: ${body.content.slice(0, 100)}`,
+                      description: body.content,
+                      type: 'feature',
+                      priority: 'medium',
+                      status: 'todo',
+                      assigneeAgentId: aId,
+                      createdAt: agentTaskNow,
+                      updatedAt: agentTaskNow,
+                    })
+                    .returning();
 
-                await db.drizzle
-                  .update(agentsTable)
-                  .set({ status: 'working', updatedAt: agentTaskNow })
-                  .where(eq(agentsTable.id, aId));
+                  await db.drizzle
+                    .update(agentsTable)
+                    .set({ status: 'working', updatedAt: agentTaskNow })
+                    .where(eq(agentsTable.id, aId));
 
-                const loop = new AgenticLoop(db, { maxIterations: 8 });
-                const result = await loop.run(aId, task.id, companyId);
-                const producedArtifacts = loop.getProducedArtifacts();
+                  const loop = new AgenticLoop(db, { maxIterations: 8 });
+                  const result = await loop.run(aId, task.id, companyId);
+                  const producedArtifacts = loop.getProducedArtifacts();
 
-                const responseContent = result.finalOutput || '(Agent completed with no output)';
-                const responseMetadata: Record<string, unknown> = {
-                  agentResponse: true,
-                  agentId: aId,
-                  agentName: aName,
-                };
-                if (producedArtifacts.length > 0) {
-                  responseMetadata.artifactId = producedArtifacts[0].artifactId;
-                  responseMetadata.artifactType = producedArtifacts[0].artifactType;
-                  responseMetadata.artifacts = producedArtifacts;
-                }
-
-                const responseMsgId = randomUUID();
-                const responseNow = Date.now();
-                await db.drizzle.insert(messages).values({
-                  id: responseMsgId,
-                  companyId,
-                  fromAgentId: aId,
-                  toAgentId: null,
-                  threadId,
-                  content: responseContent.slice(0, 10_000),
-                  type: 'response',
-                  metadata: responseMetadata,
-                  createdAt: new Date(responseNow),
-                });
-
-                eventBus.emitEvent({
-                  type: 'message.sent',
-                  companyId,
-                  payload: {
-                    messageId: responseMsgId,
-                    threadId,
-                    fromBoard: false,
+                  const responseContent = result.finalOutput || '(Agent completed with no output)';
+                  const responseMetadata: Record<string, unknown> = {
+                    agentResponse: true,
                     agentId: aId,
                     agentName: aName,
-                    artifacts: producedArtifacts,
-                  },
-                  timestamp: new Date(responseNow).toISOString(),
-                });
-              } catch (err) {
-                logger.error({ err, agentId: aId }, '[boardchat-mention] agent dispatch error');
+                  };
+                  if (producedArtifacts.length > 0) {
+                    responseMetadata.artifactId = producedArtifacts[0].artifactId;
+                    responseMetadata.artifactType = producedArtifacts[0].artifactType;
+                    responseMetadata.artifacts = producedArtifacts;
+                  }
+
+                  const responseMsgId = randomUUID();
+                  const responseNow = Date.now();
+                  await db.drizzle.insert(messages).values({
+                    id: responseMsgId,
+                    companyId,
+                    fromAgentId: aId,
+                    toAgentId: null,
+                    threadId,
+                    content: responseContent.slice(0, 10_000),
+                    type: 'response',
+                    metadata: responseMetadata,
+                    createdAt: new Date(responseNow),
+                  });
+
+                  eventBus.emitEvent({
+                    type: 'message.sent',
+                    companyId,
+                    payload: {
+                      messageId: responseMsgId,
+                      threadId,
+                      fromBoard: false,
+                      agentId: aId,
+                      agentName: aName,
+                      artifacts: producedArtifacts,
+                    },
+                    timestamp: new Date(responseNow).toISOString(),
+                  });
+                } catch (err) {
+                  logger.error({ err, agentId: aId }, '[boardchat-mention] agent dispatch error');
+                }
               }
-            }
-          })().catch((err) => logger.error({ err }, '[boardchat-mention] async dispatch error'));
+            })(),
+            'boardchat agent-mention dispatch',
+          );
         }
       }
     }

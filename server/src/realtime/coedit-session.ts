@@ -26,6 +26,7 @@ import type {
 import { colorForUser } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 import { AppError } from '../middleware/error-handler.js';
+import { backgroundWork } from '../services/background-work.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -239,6 +240,50 @@ export async function flushSession(
   });
 
   return { version: updated.version, content: session.content };
+}
+
+// ---------------------------------------------------------------------------
+// Per-session save serialization
+//
+// Two rapid coedit.save messages could race on session.version: both read
+// the same version, the first save bumps it, and the second save's
+// optimistic version check fails with a spurious 409. Serialize saves per
+// session so each flush waits for the previous one to complete (and update
+// session.version) before reading the session state and calling
+// saveArtifactContent. The queue is per-artifact so independent artifacts
+// save in parallel.
+// ---------------------------------------------------------------------------
+
+const flushQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialize a flush behind any in-flight flush for the same artifact.
+ * Returns a promise that resolves once this flush completes. Errors do not
+ * break the chain — a failed flush still allows the next save to proceed
+ * (it will re-read session.version and retry).
+ */
+export function flushSessionSerialized(
+  artifactId: string,
+  editor: { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' },
+  title?: string,
+): Promise<{ version: number; content: Record<string, unknown> } | null> {
+  const prev = flushQueues.get(artifactId) ?? Promise.resolve();
+  const next = prev.then(
+    () => flushSession(artifactId, editor, title),
+    // If the previous flush failed, proceed anyway — the next flush will
+    // re-read session.version and retry with the current state.
+    () => flushSession(artifactId, editor, title),
+  );
+  // Keep the queue chain clean: don't let errors break subsequent saves.
+  const settled = next.then(undefined, () => null);
+  flushQueues.set(artifactId, settled);
+  // Clean up the queue entry once settled to avoid unbounded growth.
+  void settled.finally(() => {
+    if (flushQueues.get(artifactId) === settled) {
+      flushQueues.delete(artifactId);
+    }
+  });
+  return next;
 }
 
 /**

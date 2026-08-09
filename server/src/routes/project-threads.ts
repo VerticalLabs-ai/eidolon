@@ -9,6 +9,7 @@ import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import { MentionService } from '../services/mention-service.js';
+import { backgroundWork } from '../services/background-work.js';
 
 const THREAD_TYPES = ['conversation', 'plan_review', 'decision_review', 'standup'] as const;
 const THREAD_STATUSES = ['active', 'archived'] as const;
@@ -285,11 +286,13 @@ export function projectThreadsRouter(db: DbInstance): Router {
       timestamp: now.toISOString(),
     });
 
-    // Dispatch mentions (agent wake / user notification) — fire and forget
-    // but catch errors so the POST response isn't blocked by dispatch failures.
+    // Dispatch mentions (agent wake / user notification) — tracked
+    // fire-and-forget so tests can drain deterministically and errors are
+    // logged with context. The POST response isn't blocked by dispatch
+    // failures (the thread item is already persisted).
     if (resolvedMentions.length > 0) {
-      mentionService
-        .dispatchMentions({
+      backgroundWork.fire(
+        mentionService.dispatchMentions({
           companyId,
           projectId,
           threadId,
@@ -297,11 +300,9 @@ export function projectThreadsRouter(db: DbInstance): Router {
           content: body.content ?? '',
           mentions: resolvedMentions,
           authorUserId: req.user?.id ?? null,
-        })
-        .catch((err) => {
-          // Log but don't fail the request — the thread item is already persisted.
-          console.error('[mention-dispatch] Error:', err);
-        });
+        }),
+        'mention-dispatch (POST thread item)',
+      );
     }
 
     res.status(201).json({ data: row });
@@ -418,13 +419,14 @@ export function projectThreadsRouter(db: DbInstance): Router {
         timestamp: now.toISOString(),
       });
 
-      // Dispatch any newly added mentions (agent wake / user notification)
+      // Dispatch any newly added mentions (agent wake / user notification) —
+      // tracked fire-and-forget so tests can drain deterministically.
       if (body.mentions !== undefined) {
         const oldIds = new Set((item.mentions as any[] ?? []).map((m) => `${m.entityType}:${m.entityId}`));
         const newMentions = reconciledMentions.filter((m) => !oldIds.has(`${m.entityType}:${m.entityId}`));
         if (newMentions.length > 0) {
-          mentionService
-            .dispatchMentions({
+          backgroundWork.fire(
+            mentionService.dispatchMentions({
               companyId,
               projectId,
               threadId,
@@ -432,10 +434,9 @@ export function projectThreadsRouter(db: DbInstance): Router {
               content: body.content ?? item.content ?? '',
               mentions: newMentions,
               authorUserId: req.user?.id ?? null,
-            })
-            .catch((err) => {
-              console.error('[mention-dispatch] Error on edit:', err);
-            });
+            }),
+            'mention-dispatch (PATCH thread item content)',
+          );
         }
 
         // VAL-MENTION-011: cancel any pending queued agent dispatch for
@@ -447,11 +448,10 @@ export function projectThreadsRouter(db: DbInstance): Router {
         );
         if (removedAgentMentions.length > 0) {
           const removedAgentIds = removedAgentMentions.map((m) => m.entityId);
-          mentionService
-            .cancelQueuedMentions(companyId, threadId, removedAgentIds)
-            .catch((err) => {
-              console.error('[mention-cancel] Error on edit:', err);
-            });
+          backgroundWork.fire(
+            mentionService.cancelQueuedMentions(companyId, threadId, removedAgentIds),
+            'cancel-queued-mentions (PATCH thread item content)',
+          );
         }
       }
 

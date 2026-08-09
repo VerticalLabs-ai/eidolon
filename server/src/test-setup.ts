@@ -1,6 +1,7 @@
 import { afterAll, afterEach } from 'vitest';
 import { closeTestDb, closeTestServers } from './test-utils.js';
 import { eventBus } from './realtime/events.js';
+import { backgroundWork } from './services/background-work.js';
 
 /**
  * Hermetic test environment — neutralize auth-relevant env vars that may
@@ -63,6 +64,13 @@ afterAll(async () => {
  * across `it()` blocks (each test sets up its own state as needed).
  */
 afterEach(async () => {
+  // Drain all in-flight background work BEFORE removing listeners and
+  // closing servers. This ensures fire-and-forget follow-up writes (mention
+  // dispatch, activity logging, co-edit flush) complete before the next
+  // test's resetTestDb() TRUNCATEs all tables — preventing the Postgres
+  // deadlock (40P01/55P03) that occurred when TRUNCATE's ACCESS EXCLUSIVE
+  // lock collided with in-flight background writes.
+  await backgroundWork.drain();
   eventBus.removeAllListeners();
   // Close all persistent listening servers created via createTestServer so
   // no server leaks across tests. This eliminates the per-request

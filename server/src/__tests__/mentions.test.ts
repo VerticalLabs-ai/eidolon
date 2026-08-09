@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, and, desc } from 'drizzle-orm';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { eventBus } from '../realtime/events.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 import type { EidolonEvent } from '../realtime/events.js';
 
@@ -334,8 +335,8 @@ describe('Mention search and persistence — real-Postgres integration', () => {
     // The mention is persisted
     expect(res.body.data.mentions).toHaveLength(1);
 
-    // Wait a moment for async dispatch to process
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Drain the tracked background dispatch
+    await backgroundWork.drain();
 
     // Check that a queued item was posted to the thread
     const threadRes = await request(app)

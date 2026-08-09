@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { eventBus } from '../realtime/events.js';
 import { MentionService } from '../services/mention-service.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 import type { EidolonEvent } from '../realtime/events.js';
 
@@ -444,8 +445,8 @@ describe('User-testing fixes — integration tests', () => {
       const itemId = createRes.body.data.id;
       expect(createRes.body.data.mentions).toHaveLength(1);
 
-      // Wait for async queue to process
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Wait for the tracked background dispatch to complete
+      await backgroundWork.drain();
 
       // Verify the queued item exists and is unprocessed
       const threadRes1 = await request(app)
@@ -472,8 +473,8 @@ describe('User-testing fixes — integration tests', () => {
         })
         .expect(200);
 
-      // Wait for async cancel to process
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Wait for the tracked background cancel to complete
+      await backgroundWork.drain();
 
       // 4. Verify the queued dispatch was cancelled
       const threadRes2 = await request(app)
@@ -515,7 +516,7 @@ describe('User-testing fixes — integration tests', () => {
 
       const itemId = createRes.body.data.id;
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await backgroundWork.drain();
 
       // 3. Remove the mention via edit
       await request(app)
@@ -528,7 +529,7 @@ describe('User-testing fixes — integration tests', () => {
         })
         .expect(200);
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await backgroundWork.drain();
 
       // 4. Resume the agent — the cancelled queued mention should NOT be processed
       await request(app)
@@ -536,7 +537,7 @@ describe('User-testing fixes — integration tests', () => {
         .send({ status: 'idle' })
         .expect(200);
 
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      await backgroundWork.drain();
 
       // 5. Verify the queued item is cancelled but NOT processed (dispatch skipped)
       const threadRes = await request(app)
@@ -578,7 +579,7 @@ describe('User-testing fixes — integration tests', () => {
 
       const itemId = createRes.body.data.id;
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await backgroundWork.drain();
 
       // 3. Edit content but KEEP the mention
       await request(app)
@@ -593,7 +594,7 @@ describe('User-testing fixes — integration tests', () => {
         })
         .expect(200);
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await backgroundWork.drain();
 
       // 4. Verify the queued mention was NOT cancelled (still pending)
       const threadRes = await request(app)
@@ -630,7 +631,7 @@ describe('User-testing fixes — integration tests', () => {
         })
         .expect(201);
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await backgroundWork.drain();
 
       // 3. Cancel via MentionService directly
       const mentionService = new MentionService(db);

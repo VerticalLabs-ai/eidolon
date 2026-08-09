@@ -4,6 +4,7 @@ import { WebSocket } from 'ws';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { setupWebSocketServer } from '../realtime/ws-server.js';
 import { __resetCoEditSessions, __injectSessionForTest } from '../realtime/coedit-session.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 import type { CoEditOp } from '@eidolon/shared';
 
@@ -1319,5 +1320,77 @@ describe('Co-editing WebSocket — real WS clients', () => {
     const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
     expect(getRes.body.data.content.body).toBe('# Hello World');
     expect(getRes.body.data.version).toBe(2);
+  });
+
+  // =========================================================================
+  // N. Rapid saves are serialized per session (no spurious 409)
+  // =========================================================================
+
+  it('two rapid coedit.save messages do not race on session.version (no spurious 409)', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    // Apply an op so the session is dirty
+    const opA: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: ' Save1', opId: genOpId() };
+    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: opA });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+
+    // Fire two rapid saves without waiting for the first to complete.
+    // Without serialization, both would read the same session.version and
+    // the second saveArtifactContent call would hit a 409. With serialization,
+    // the second save waits for the first to bump session.version.
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, 'userId': 'user-a' });
+
+    // Wait for both saves to complete (two coedit.saved messages)
+    const savedMsg1 = await waitForCoEdit(wsA, 'coedit.saved');
+    // After the first save, the session is no longer dirty, so the second
+    // save is a no-op (returns the current version without writing). We
+    // should NOT receive a coedit.error.
+    // Drain the tracked background work to ensure both flushes complete.
+    await backgroundWork.drain();
+
+    // Verify no error was sent
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+    expect(getRes.body.data.content.body).toBe('# Hello Save1');
+    // Version should be 2 (one actual save; the second was a no-op since
+    // the session was no longer dirty after the first save)
+    expect(getRes.body.data.version).toBe(2);
+
+    // Verify the saved message has the correct version
+    expect(savedMsg1.version).toBe(2);
+  });
+
+  it('rapid saves with intervening ops do not 409 (serialized flush)', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    // First op + save
+    const op1: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: ' A', opId: genOpId() };
+    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: op1 });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
+
+    // Immediately apply a second op and save (before the first save completes)
+    const op2: CoEditOp = { kind: 'doc.insert', position: '# Hello A'.length, text: ' B', opId: genOpId() };
+    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: op2 });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
+
+    // Wait for saves to complete and drain
+    await waitForCoEdit(wsA, 'coedit.saved');
+    await backgroundWork.drain();
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+    expect(getRes.body.data.content.body).toBe('# Hello A B');
+    // Version is at least 2 (create=1 + at least one save). The exact version
+    // depends on timing: if both ops land before the first flush, one save
+    // captures both (version=2); if the first flush completes before op2,
+    // two saves occur (version=3). Either way, no 409.
+    expect(getRes.body.data.version).toBeGreaterThanOrEqual(2);
   });
 });
