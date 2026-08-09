@@ -2846,6 +2846,25 @@ export const resolveDashboardAll = (companyId: string, artifactId: string) =>
     `/companies/${companyId}/artifacts/${artifactId}/dashboard/resolve`,
   );
 
+// ── Code artifact run (M6) ───────────────────────────────────────────────
+
+export interface CodeRunResult {
+  artifactId: string;
+  language: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  truncated: boolean;
+}
+
+export const runCodeArtifact = (companyId: string, artifactId: string) =>
+  request<ApiResponse<CodeRunResult>>(
+    `/companies/${companyId}/artifacts/${artifactId}/run`,
+    { method: "POST" },
+  );
+
 // ── Artifact Folders (M4) ────────────────────────────────────────────────
 
 export interface ArtifactFolder {

@@ -382,6 +382,13 @@ export class EidolonClient {
       { query },
     );
   }
+
+  runCodeArtifact(companyId: string, artifactId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/companies/${companyId}/artifacts/${artifactId}/run`,
+      { method: "POST" },
+    );
+  }
 }
 
 function safeJsonParse(text: string): unknown {

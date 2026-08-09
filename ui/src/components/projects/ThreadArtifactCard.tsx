@@ -1,10 +1,16 @@
-import { FileText, Table, LayoutGrid, Link2 } from "lucide-react";
+import { FileText, Table, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AppWindow, Code2, Link2 } from "lucide-react";
 import { Link } from "react-router-dom";
 
 const typeIcons: Record<string, typeof FileText> = {
   document: FileText,
   sheet: Table,
   board: LayoutGrid,
+  slide_deck: Presentation,
+  timeline: GanttChartSquare,
+  gallery: Images,
+  dashboard: BarChart3,
+  app: AppWindow,
+  code: Code2,
 };
 
 const typeLabels: Record<string, string> = {
@@ -13,6 +19,10 @@ const typeLabels: Record<string, string> = {
   board: "Board",
   slide_deck: "Slides",
   timeline: "Timeline",
+  gallery: "Gallery",
+  dashboard: "Dashboard",
+  app: "App",
+  code: "Code",
 };
 
 /**

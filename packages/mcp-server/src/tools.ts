@@ -673,6 +673,27 @@ export function registerEidolonTools(
       ),
   );
 
+  server.registerTool(
+    "eidolon_run_code_artifact",
+    {
+      title: "Run code artifact",
+      description:
+        "Run a code artifact in the bounded sandbox runtime and return stdout, stderr, and exit code. " +
+        "Execution is sandboxed identically for agent- and user-authored runs (no host file/secret access, bounded runtime).",
+      inputSchema: {
+        companyId: companyIdArg,
+        artifactId: z.string().uuid(),
+      },
+    },
+    async ({ companyId, artifactId }) =>
+      asJsonContent(
+        await client.runCodeArtifact(
+          requireCompanyId(config, companyId),
+          artifactId,
+        ),
+      ),
+  );
+
   // -----------------------------------------------------------------------
   // ESCAPE HATCH — arbitrary API call
   // -----------------------------------------------------------------------

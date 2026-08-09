@@ -4,6 +4,7 @@ import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
 import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision } from '../services/artifact-service.js';
 import { moveArtifactToFolder } from '../services/folder-service.js';
+import { runCodeArtifact } from '../services/code-run-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import { ArtifactTypeSchema, DashboardContentSchema } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
@@ -177,6 +178,20 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     res.json({ data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)) });
+  });
+
+  // -------------------------------------------------------------------------
+  // Code artifact run (M6) — bounded sandboxed execution
+  // -------------------------------------------------------------------------
+  // Runs the code artifact's entrypoint in the dev-local sandbox runtime
+  // (VAL-CODE-005..008, 014, 015). View access is sufficient to run — the
+  // sandbox isolates execution identically for user- and agent-authored runs.
+  router.post('/artifacts/:id/run', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
+    const result = await runCodeArtifact(db, companyId, id, await editor(db, companyId, req));
+    res.json({ data: result });
   });
 
   // -------------------------------------------------------------------------

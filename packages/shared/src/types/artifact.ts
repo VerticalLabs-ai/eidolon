@@ -423,10 +423,54 @@ export const AppContentSchema = z
 
 export type AppContent = z.infer<typeof AppContentSchema>;
 export type AppFile = z.infer<typeof appFileSchema>;
-const CodeContentSchema = z.object({
-  language: z.string(), entrypoint: z.string().optional(),
-  files: z.array(z.object({ path: z.string(), content: z.string() })),
+
+// ---------------------------------------------------------------------------
+// Code artifact — language + files (in-app run/debug)
+// ---------------------------------------------------------------------------
+
+/** Supported languages for the in-app sandboxed runtime. */
+export const CodeLanguageSchema = z.enum(['javascript', 'typescript', 'python']);
+export type CodeLanguage = z.infer<typeof CodeLanguageSchema>;
+
+const codeFileSchema = z.object({
+  path: z.string().min(1),
+  content: z.string(),
 });
+
+export const CodeContentSchema = z
+  .object({
+    language: z.string().min(1),
+    entrypoint: z.string().optional(),
+    files: z.array(codeFileSchema).min(1, { message: 'code artifact must have at least one file' }),
+  })
+  .superRefine((code, ctx) => {
+    // Duplicate file path detection — paths must be unique within the code artifact.
+    const paths = new Set<string>();
+    code.files.forEach((file, index) => {
+      if (paths.has(file.path)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['files', index, 'path'],
+          message: `Duplicate file path "${file.path}"`,
+        });
+      } else {
+        paths.add(file.path);
+      }
+    });
+    // Entrypoint, when set, must reference an existing file path.
+    const entrypoint = code.entrypoint?.trim();
+    if (entrypoint && !paths.has(entrypoint)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['entrypoint'],
+        message: `Entrypoint "${entrypoint}" does not match any file path`,
+      });
+    }
+  });
+
+export type CodeContent = z.infer<typeof CodeContentSchema>;
+export type CodeFile = z.infer<typeof codeFileSchema>;
+export const SUPPORTED_CODE_LANGUAGES: readonly CodeLanguage[] = ['javascript', 'typescript', 'python'];
 
 export const ArtifactTypeSchema = z.enum([
   'document', 'sheet', 'board', 'slide_deck', 'timeline', 'gallery', 'dashboard', 'app', 'code',

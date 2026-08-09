@@ -2209,6 +2209,15 @@ export function useRestoreRevision(companyId: string) {
   });
 }
 
+// Code artifact run (M6) — bounded sandboxed execution. The mutation returns
+// the run result (stdout/stderr/exit code); callers render it in the output
+// panel. No query cache invalidation: running does not mutate the artifact.
+export function useRunCode(companyId: string) {
+  return useMutation({
+    mutationFn: (artifactId: string) => api.runCodeArtifact(companyId, artifactId),
+  });
+}
+
 // ── Artifact Folders (M4) ───────────────────────────────────────────────
 
 export function useFolders(

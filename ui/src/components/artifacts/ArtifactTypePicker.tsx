@@ -74,7 +74,7 @@ const TYPE_OPTIONS: TypeOption[] = [
     label: "Code",
     description: "Code editor with run support",
     icon: <Code2 className="h-5 w-5" />,
-    enabled: false,
+    enabled: true,
   },
 ];
 

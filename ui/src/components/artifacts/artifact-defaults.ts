@@ -10,6 +10,7 @@ const TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
   gallery: "Gallery",
   dashboard: "Dashboard",
   app: "App",
+  code: "Code",
 };
 
 export function artifactTypeLabel(type: ArtifactType): string {
@@ -66,6 +67,11 @@ export function defaultArtifactContent(type: ArtifactType): Record<string, unkno
       return {
         definition: { name: "", entrypoint: "index.html" },
         files: [{ path: "index.html", content: "" }],
+      };
+    case "code":
+      return {
+        language: "javascript",
+        files: [{ path: "main.js", content: "console.log('hello');\n" }],
       };
     case "document":
     default:

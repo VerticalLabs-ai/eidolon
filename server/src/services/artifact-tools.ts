@@ -15,6 +15,7 @@ import {
   listArtifacts,
   updateArtifact,
 } from './artifact-service.js';
+import { runCodeArtifact } from './code-run-service.js';
 import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel, type ResourceKind } from './permission-service.js';
 import { AppError } from '../middleware/error-handler.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
@@ -56,7 +57,10 @@ export const ARTIFACT_TOOL_DEFINITIONS = [
       'widgets:[{id,type:"chart"|"table"|"metric",dataSourceId,config}]} where every widget ' +
       'dataSourceId must equal one of the data source ids, data source and widget ids must ' +
       'be unique, analytics_endpoint config requires {endpoint}, integration config requires ' +
-      '{integrationId}, and manual_json config requires {data}.',
+      '{integrationId}, and manual_json config requires {data}, or ' +
+      'code={language:"javascript"|"typescript"|"python",entrypoint?,files:[{path,content}]} ' +
+      'where file paths must be unique and non-empty, there must be at least one file, and ' +
+      'entrypoint (when set) must match a file path.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -118,6 +122,20 @@ export const ARTIFACT_TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: 'code.run',
+    description:
+      'Run a code artifact in the bounded sandbox runtime and return stdout, stderr, and exit code. ' +
+      'The sandbox blocks host file/secret access and bounds runtime — execution is sandboxed ' +
+      'identically for agent-authored and user-authored runs. Supported languages: javascript, typescript, python.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        artifactId: { type: 'string', description: 'The code artifact ID to run' },
+      },
+      required: ['artifactId'],
+    },
+  },
 ];
 
 export class ArtifactToolService {
@@ -138,7 +156,7 @@ export class ArtifactToolService {
   // -------------------------------------------------------------------------
 
   static isArtifactTool(toolName: string): boolean {
-    return toolName.startsWith('artifact.');
+    return toolName.startsWith('artifact.') || toolName === 'code.run';
   }
 
   // -------------------------------------------------------------------------
@@ -184,6 +202,8 @@ export class ArtifactToolService {
           return await this.handleGet(args, context);
         case 'artifact.list':
           return await this.handleList(args, context);
+        case 'code.run':
+          return await this.handleCodeRun(args, context, editor);
         default:
           return {
             content: [{ type: 'text', text: `Error: Unknown artifact tool "${toolName}"` }],
@@ -444,5 +464,77 @@ export class ArtifactToolService {
       }],
       data: { artifacts: summary, total: summary.length },
     };
+  }
+
+  // -- code.run -----------------------------------------------------------
+
+  // Runs a code artifact in the bounded sandbox runtime. The sandbox is
+  // identical for agent- and user-authored runs (VAL-CODE-014): the agent
+  // does not gain elevated execution privileges by authoring the artifact.
+  private async handleCodeRun(
+    args: Record<string, unknown>,
+    context: { companyId: string; agentId: string; projectId?: string | null },
+    editor: { agentId: string; editSource: 'agent' },
+  ): Promise<ArtifactToolResult> {
+    const artifactId = args.artifactId as string;
+    if (!artifactId) {
+      return {
+        content: [{ type: 'text', text: 'Error (400): artifactId is required' }],
+        isError: true,
+      };
+    }
+
+    // RBAC: require view access (running is a view-tier action; the sandbox
+    // isolates execution).
+    try {
+      await requireAccess(
+        this.db, context.companyId, context.agentId, 'member',
+        'artifact', artifactId, 'view',
+      );
+    } catch (err) {
+      const status = err instanceof AppError ? err.status : 500;
+      const message = err instanceof AppError ? err.message : String(err);
+      return {
+        content: [{ type: 'text', text: `Error (${status}): ${message}` }],
+        isError: true,
+      };
+    }
+
+    try {
+      const result = await runCodeArtifact(this.db, context.companyId, artifactId, editor);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            artifactId: result.artifactId,
+            language: result.language,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+            durationMs: result.durationMs,
+          }),
+        }],
+        data: {
+          artifactId: result.artifactId,
+          language: result.language,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          durationMs: result.durationMs,
+        },
+      };
+    } catch (err) {
+      const status = err instanceof AppError ? err.status : 500;
+      const message = err instanceof Error ? err.message : String(err);
+      const isError = !(err instanceof AppError && err.status === 422);
+      // Unsupported-language (422) is an expected graceful result, not a tool
+      // error — surface it as a normal result so the agent can report it.
+      return {
+        content: [{ type: 'text', text: `Run result (${status}): ${message}` }],
+        isError,
+      };
+    }
   }
 }

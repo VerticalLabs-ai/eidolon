@@ -54,7 +54,8 @@ export interface ArtifactEvent extends ServerEvent {
     | 'artifact.updated'
     | 'artifact.revision.created'
     | 'artifact.deleted'
-    | 'artifact.archived';
+    | 'artifact.archived'
+    | 'artifact.code.ran';
 }
 
 export interface FolderEvent extends ServerEvent {

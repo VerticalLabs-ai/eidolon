@@ -8,6 +8,7 @@ import {
   GalleryContentSchema,
   DashboardContentSchema,
   AppContentSchema,
+  CodeContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
 } from './artifact.js';
@@ -1225,6 +1226,84 @@ describe('AppContentSchema', () => {
       definition: {},
       files: [{ content: 'no path' }],
     });
+    expect(bad.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CodeContentSchema (M6)
+// ---------------------------------------------------------------------------
+
+describe('CodeContentSchema', () => {
+  it('accepts a language + one file', () => {
+    const result = CodeContentSchema.safeParse({
+      language: 'javascript',
+      files: [{ path: 'main.js', content: "console.log('hi');" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an optional entrypoint', () => {
+    const result = CodeContentSchema.safeParse({
+      language: 'python',
+      entrypoint: 'main.py',
+      files: [{ path: 'main.py', content: "print('hi')" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects missing language', () => {
+    const result = CodeContentSchema.safeParse({ files: [{ path: 'main.js', content: 'x' }] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects empty language string', () => {
+    const result = CodeContentSchema.safeParse({ language: '', files: [{ path: 'main.js', content: 'x' }] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty files array', () => {
+    const result = CodeContentSchema.safeParse({ language: 'javascript', files: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a file missing path', () => {
+    const result = CodeContentSchema.safeParse({ language: 'javascript', files: [{ content: 'x' }] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a file missing content', () => {
+    const result = CodeContentSchema.safeParse({ language: 'javascript', files: [{ path: 'a.js' }] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects duplicate file paths', () => {
+    const result = CodeContentSchema.safeParse({
+      language: 'javascript',
+      files: [
+        { path: 'main.js', content: 'a' },
+        { path: 'main.js', content: 'b' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an entrypoint that does not match a file path', () => {
+    const result = CodeContentSchema.safeParse({
+      language: 'javascript',
+      entrypoint: 'nope.js',
+      files: [{ path: 'main.js', content: 'a' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('validates code content via validateArtifactContent', () => {
+    const ok = validateArtifactContent('code', {
+      language: 'javascript',
+      files: [{ path: 'main.js', content: "console.log('hi');" }],
+    });
+    expect(ok.success).toBe(true);
+    const bad = validateArtifactContent('code', { files: [] });
     expect(bad.success).toBe(false);
   });
 });
