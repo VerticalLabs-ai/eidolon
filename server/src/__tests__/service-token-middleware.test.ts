@@ -94,4 +94,11 @@ describe('scoped service tokens', () => {
     expect(parseServiceTokens('{')).toEqual([]);
     error.mockRestore();
   });
+
+  it('accepts the server-only service cookie when deployment proxies strip custom headers', async () => {
+    await request(testApp())
+      .get(`/companies/${COMPANY_ID}/prompts`)
+      .set('cookie', `eidolon_service_token=${READ_TOKEN}`)
+      .expect(200);
+  });
 });
