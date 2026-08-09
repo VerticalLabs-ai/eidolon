@@ -12,6 +12,7 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import { getProvider } from '../providers/index.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
+import { requireAccess } from './permission-service.js';
 import type { DbInstance } from '../types.js';
 
 type MeetingStatus = 'active' | 'archived' | 'deleted';
@@ -43,7 +44,12 @@ export async function createMeeting(
   },
   editor: Editor,
 ) {
-  if (input.projectId) await validateProjectOwnership(db, companyId, input.projectId);
+  if (input.projectId) {
+    await validateProjectOwnership(db, companyId, input.projectId);
+    if (editor.agentId) {
+      await requireAccess(db, companyId, editor.agentId, 'member', 'project', input.projectId, 'edit');
+    }
+  }
   const { meetings } = db.schema;
   const [row] = await db.drizzle
     .insert(meetings)
@@ -355,6 +361,9 @@ export async function extractActionItems(
   editor: Editor,
 ): Promise<{ tasks: Array<Record<string, unknown>>; skipped: boolean; reason?: string }> {
   const meeting = await getMeeting(db, companyId, id);
+  if (meeting.projectId && editor.agentId) {
+    await requireAccess(db, companyId, editor.agentId, 'member', 'project', meeting.projectId, 'edit');
+  }
 
   // Graceful empty transcript (VAL-MEETING-011): zero action items, no 500.
   if (!isMeaningfulTranscript(meeting.transcript)) {

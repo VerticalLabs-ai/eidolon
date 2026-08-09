@@ -18,6 +18,7 @@ import {
 import { runCodeArtifact } from './code-run-service.js';
 import {
   createMeeting,
+  getMeeting,
   summarizeMeeting,
   extractActionItems,
 } from './meeting-service.js';
@@ -624,6 +625,22 @@ export class ArtifactToolService {
     const transcript = typeof args.transcript === 'string' ? args.transcript : '';
     const projectId = (args.projectId as string | undefined) ?? context.projectId ?? null;
 
+    if (projectId) {
+      try {
+        await requireAccess(
+          this.db, context.companyId, context.agentId, 'member',
+          'project', projectId, 'edit',
+        );
+      } catch (err) {
+        const status = err instanceof AppError ? err.status : 500;
+        const message = err instanceof AppError ? err.message : String(err);
+        return {
+          content: [{ type: 'text', text: `Error (${status}): ${message}` }],
+          isError: true,
+        };
+      }
+    }
+
     const meeting = await createMeeting(
       this.db,
       context.companyId,
@@ -686,6 +703,22 @@ export class ArtifactToolService {
     const meetingId = args.meetingId as string;
     if (!meetingId) {
       return { content: [{ type: 'text', text: 'Error (400): meetingId is required' }], isError: true };
+    }
+    const meeting = await getMeeting(this.db, context.companyId, meetingId);
+    if (meeting.projectId) {
+      try {
+        await requireAccess(
+          this.db, context.companyId, context.agentId, 'member',
+          'project', meeting.projectId, 'edit',
+        );
+      } catch (err) {
+        const status = err instanceof AppError ? err.status : 500;
+        const message = err instanceof AppError ? err.message : String(err);
+        return {
+          content: [{ type: 'text', text: `Error (${status}): ${message}` }],
+          isError: true,
+        };
+      }
     }
     const result = await extractActionItems(this.db, context.companyId, meetingId, editor);
     this.producedMeetings.push({
