@@ -174,11 +174,30 @@ export function setupActivityLogger(db: DbInstance): void {
     'artifact.archived',
   ]);
 
+  // Events that are logged DIRECTLY by their owning service with the correct
+  // actor attribution (user/agent) and recipient metadata, rather than via
+  // the generic event→activity record path. The event-based logger must skip
+  // them so the activity log (and the recipient's inbox) does not get a
+  // second, 'system'-attributed row alongside the direct insert.
+  //
+  // thread.mention: MentionService.dispatchUserMention inserts a
+  // user-attributed activity_log row (actorId = authorUserId) carrying
+  // metadata.mentionedUserId, then emits the thread.mention realtime event.
+  // Without this skip, setupActivityLogger would also insert a
+  // system-attributed thread.mention row with the same mentionedUserId, and
+  // both rows would surface in the recipient's inbox — a duplicate
+  // notification (VAL-MENTION-007 / VAL-MENTION-010). MentionService is the
+  // sole inserter of thread.mention activity_log rows.
+  const directlyLoggedEvents = new Set(['thread.mention']);
+
   const handler = async (event: EidolonEvent) => {
     if (event.type === 'company.deleted') {
       return;
     }
     if (directlyAudited.has(event.type)) {
+      return;
+    }
+    if (directlyLoggedEvents.has(event.type)) {
       return;
     }
 
