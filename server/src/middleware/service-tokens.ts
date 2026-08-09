@@ -79,14 +79,25 @@ export function createServiceTokenMiddleware(deps: ServiceTokenMiddlewareDeps) {
   const requireOrgMember = deps.requireOrgMember();
 
   function matchToken(req: Request): ScopedServiceToken | null {
-    const suppliedToken = req.get('x-eidolon-service-token')
-      ?? req.get('authorization')?.replace(/^Bearer\s+/i, '');
+    const machineToken = req.get('x-eidolon-service-token');
+    const bearerToken = req.get('authorization')?.replace(/^Bearer\s+/i, '');
+    const suppliedToken = machineToken ?? bearerToken;
     if (!suppliedToken || tokens.length === 0) return null;
-    const supplied = Buffer.from(hashServiceToken(suppliedToken), 'hex');
-    return tokens.find((token) => {
+    const suppliedHash = hashServiceToken(suppliedToken);
+    const supplied = Buffer.from(suppliedHash, 'hex');
+    const matched = tokens.find((token) => {
       const expected = Buffer.from(token.tokenHash, 'hex');
       return expected.length === supplied.length && timingSafeEqual(expected, supplied);
     }) ?? null;
+    if (!matched) {
+      logger.warn({
+        machineHeaderPresent: Boolean(machineToken),
+        bearerHeaderPresent: Boolean(bearerToken),
+        suppliedFingerprint: suppliedHash.slice(0, 12),
+        configuredFingerprints: tokens.map((token) => token.tokenHash.slice(0, 12)),
+      }, 'Scoped service token did not match');
+    }
+    return matched;
   }
 
   function requireServiceOrOrgMember(scope: ServiceScope): RequestHandler {
