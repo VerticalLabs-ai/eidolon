@@ -13,7 +13,7 @@
  * stale single-client writes (no active session).
  */
 
-import type { WebSocket } from 'ws';
+import { WebSocket } from 'ws';
 import { getArtifact, saveArtifactContent } from '../services/artifact-service.js';
 import { validateArtifactContent, applyOp, applyOps, diffContent } from '@eidolon/shared';
 import type {
@@ -434,7 +434,7 @@ export function broadcastSelection(
 // ---------------------------------------------------------------------------
 
 function sendTo(ws: WebSocket, msg: CoEditServerMsg): void {
-  if (ws.readyState === ws.OPEN) {
+  if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
   }
 }
