@@ -179,6 +179,84 @@ describe('Teams + Permissions RBAC — real-Postgres integration', () => {
         .expect(200);
       expect(members.body.data).toHaveLength(1);
     });
+
+    it('rejects member add by viewer/member with 403 (VAL-TEAM-002/024)', async () => {
+      // Viewer cannot add a member (privilege escalation prevention)
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .set(impersonate(testUserIdA, 'viewer'))
+        .send({ userId: testUserIdA })
+        .expect(403);
+      // Member cannot add a member
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .set(impersonate(testUserIdA, 'member'))
+        .send({ userId: testUserIdA })
+        .expect(403);
+      // Confirm no membership was created by the rejected attempts
+      const members = await request(app)
+        .get(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .expect(200);
+      expect(members.body.data).toHaveLength(0);
+    });
+
+    it('allows member add by admin and owner (VAL-TEAM-002/024)', async () => {
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .set(impersonate(testUserIdA, 'admin'))
+        .send({ userId: testUserIdB })
+        .expect(201);
+      // Owner (default local_trusted role) can add
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .send({ userId: testUserIdA })
+        .expect(201);
+    });
+
+    it('rejects member removal by viewer/member with 403 (VAL-TEAM-002/024)', async () => {
+      // First add a member as owner so there is someone to remove
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .send({ userId: testUserIdA })
+        .expect(201);
+
+      // Viewer cannot remove
+      await request(app)
+        .delete(`/api/companies/${companyId}/teams/${teamId}/members/${testUserIdA}`)
+        .set(impersonate(testUserIdB, 'viewer'))
+        .expect(403);
+      // Member cannot remove
+      await request(app)
+        .delete(`/api/companies/${companyId}/teams/${teamId}/members/${testUserIdA}`)
+        .set(impersonate(testUserIdB, 'member'))
+        .expect(403);
+      // Confirm the member was NOT removed by the rejected attempts
+      const members = await request(app)
+        .get(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .expect(200);
+      expect(members.body.data).toHaveLength(1);
+      expect(members.body.data[0].userId).toBe(testUserIdA);
+    });
+
+    it('allows member removal by admin and owner (VAL-TEAM-002/024)', async () => {
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .send({ userId: testUserIdA })
+        .expect(201);
+      // Admin can remove
+      await request(app)
+        .delete(`/api/companies/${companyId}/teams/${teamId}/members/${testUserIdA}`)
+        .set(impersonate(testUserIdB, 'admin'))
+        .expect(204);
+      // Owner can remove — re-add first then remove
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .send({ userId: testUserIdA })
+        .expect(201);
+      await request(app)
+        .delete(`/api/companies/${companyId}/teams/${teamId}/members/${testUserIdA}`)
+        .expect(204);
+    });
   });
 
   // =========================================================================
@@ -636,6 +714,29 @@ describe('Teams + Permissions RBAC — real-Postgres integration', () => {
         .post(`/api/companies/${otherCompanyId}/permissions`)
         .send({ resourceType: 'artifact', resourceId: artifactId, granteeType: 'user', granteeId: testUserIdA, accessLevel: 'view' })
         .expect(404); // artifact not found in otherCompany
+    });
+
+    it('rejects cross-company user grantee with 400', async () => {
+      // Create a user in the OTHER company and attempt to grant them
+      // permission on an artifact in companyId. The grantee belongs to a
+      // different company → 400.
+      const crossCompanyUser = await request(app)
+        .post('/api/auth/local-trusted/create-test-user')
+        .send({ email: 'cross@mtest.test', name: 'Cross', companyId: otherCompanyId })
+        .expect(201);
+
+      await request(app)
+        .post(`/api/companies/${companyId}/permissions`)
+        .send({ resourceType: 'artifact', resourceId: artifactId, granteeType: 'user', granteeId: crossCompanyUser.body.data.id, accessLevel: 'view' })
+        .expect(400);
+    });
+
+    it('allows same-company user grantee', async () => {
+      // testUserIdA was created in companyId → grant should succeed.
+      await request(app)
+        .post(`/api/companies/${companyId}/permissions`)
+        .send({ resourceType: 'artifact', resourceId: artifactId, granteeType: 'user', granteeId: testUserIdA, accessLevel: 'view' })
+        .expect(201);
     });
   });
 

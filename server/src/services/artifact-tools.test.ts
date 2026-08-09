@@ -83,4 +83,47 @@ describe('ArtifactToolService — agent company-scope enforcement', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('403');
   });
+
+  it('artifact.list filters out restricted artifacts the agent cannot view (VAL-TEAM-006)', async () => {
+    // Create two artifacts in the company (unrestricted by default).
+    const openArtifact = await request(app)
+      .post(`/api/companies/${companyId}/artifacts`)
+      .send({ type: 'document', title: '__mtest__ Open Doc', content: { format: 'markdown', body: 'open' } })
+      .expect(201);
+    const restrictedArtifact = await request(app)
+      .post(`/api/companies/${companyId}/artifacts`)
+      .send({ type: 'document', title: '__mtest__ Restricted Doc', content: { format: 'markdown', body: 'restricted' } })
+      .expect(201);
+
+    // Restrict the second artifact: grant view to a different test user so
+    // the artifact becomes restricted (only that user can view it). The
+    // agent (member-level, no grant) should NOT see it in the list.
+    const otherUser = await request(app)
+      .post('/api/auth/local-trusted/create-test-user')
+      .send({ email: 'other-user@mtest.test', name: 'Other', companyId })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/permissions`)
+      .send({
+        resourceType: 'artifact',
+        resourceId: restrictedArtifact.body.data.id,
+        granteeType: 'user',
+        granteeId: otherUser.body.data.id,
+        accessLevel: 'view',
+      })
+      .expect(201);
+
+    // Agent lists artifacts — only the open one should be returned.
+    const result = await service.executeTool(
+      'artifact.list',
+      {},
+      { companyId, agentId, projectId: null },
+    );
+
+    expect(result.isError).toBeFalsy();
+    const artifacts = result.data?.artifacts as Array<{ artifactId: string }>;
+    const ids = artifacts.map((a) => a.artifactId);
+    expect(ids).toContain(openArtifact.body.data.id);
+    expect(ids).not.toContain(restrictedArtifact.body.data.id);
+  });
 });

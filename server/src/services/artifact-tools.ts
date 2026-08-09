@@ -414,7 +414,17 @@ export class ArtifactToolService {
       offset: 0,
     });
 
-    const summary = rows.map((r) => ({
+    // RBAC (VAL-TEAM-006/017): filter out restricted artifacts the agent
+    // cannot view. Agents are treated as member-level actors, so restricted
+    // artifacts without a grant for this agent are hidden from the list.
+    const accessibleIds = await filterAccessibleArtifacts(
+      this.db, context.companyId, context.agentId, 'member',
+      rows.map((r) => r.id), 'view',
+    );
+    const accessibleSet = new Set(accessibleIds);
+    const visibleRows = rows.filter((r) => accessibleSet.has(r.id));
+
+    const summary = visibleRows.map((r) => ({
       artifactId: r.id,
       type: r.type,
       title: r.title,
@@ -424,9 +434,9 @@ export class ArtifactToolService {
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ artifacts: summary, total }),
+        text: JSON.stringify({ artifacts: summary, total: summary.length }),
       }],
-      data: { artifacts: summary, total },
+      data: { artifacts: summary, total: summary.length },
     };
   }
 }

@@ -316,10 +316,20 @@ export async function grantPermission(
       .from(db.schema.teams)
       .where(and(eq(db.schema.teams.id, granteeId), eq(db.schema.teams.companyId, companyId)));
     if (!team) throw new AppError(400, 'GRANTEE_INVALID', 'Team does not belong to this company');
+  } else if (granteeType === 'user') {
+    // Validate the grantee user belongs to the same company. We check the
+    // test_users table (the user-company membership record available in the
+    // DB). If a test_users row exists for this userId but belongs to a
+    // different company, reject the cross-company grant. If no row exists,
+    // the user may be a Clerk org member not tracked in our DB, so we allow
+    // it (the Clerk session layer enforces real org membership in prod).
+    const [granteeUser] = await db.drizzle.select({ companyId: db.schema.testUsers.companyId })
+      .from(db.schema.testUsers)
+      .where(eq(db.schema.testUsers.id, granteeId));
+    if (granteeUser && granteeUser.companyId !== companyId) {
+      throw new AppError(400, 'GRANTEE_INVALID', 'User does not belong to this company');
+    }
   }
-  // For user grants, we don't strictly validate company membership (the user
-  // may be a Clerk org member not tracked in our DB). Cross-company user ids
-  // simply won't resolve to anything useful.
 
   const p = db.schema.artifactPermissions;
   // Upsert: insert or update the access level.
