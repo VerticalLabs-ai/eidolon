@@ -1,8 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AppWindow, Code2, AlertCircle, RotateCcw, Copy, Shield, Lock } from "lucide-react";
+import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AppWindow, Code2, AlertCircle, RotateCcw, Copy, Shield, Lock, Trash2, ArrowRightLeft } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Modal } from "@/components/ui/Modal";
+import { Select } from "@/components/ui/Input";
 import { DocEditor, type ConflictState as DocConflictState } from "./DocEditor";
 import { SheetEditor } from "./SheetEditor";
 import { BoardEditor } from "./BoardEditor";
@@ -17,6 +19,7 @@ import { PresenceIndicator } from "./PresenceIndicator";
 import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
 import { SaveArtifactTemplateModal } from "./SaveArtifactTemplateModal";
 import { PermissionManager } from "./PermissionManager";
+import { MfaChallengeModal } from "@/components/security/MfaChallengeModal";
 import {
   useArtifact,
   useUpdateArtifact,
@@ -26,12 +29,14 @@ import {
   usePresenceActions,
   useSaveArtifactTemplate,
   useResolvePermission,
+  useProjects,
 } from "@/lib/hooks";
+import { useMfaStepUp, isMfaStepUpRequired } from "@/lib/useMfaStepUp";
 import { useServerEvents } from "@/lib/ws";
 import { useWebSocket } from "@/lib/ws";
 import { useCoEditSession, useCoEditCursors } from "@/lib/coedit";
 import { useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "@/lib/api";
+import { ApiError, permanentlyDeleteArtifact, transferArtifactOwnership } from "@/lib/api";
 import type { ArtifactType, Artifact } from "@/lib/api";
 import { setDirtyEditorGuard } from "@/lib/dirty-editor";
 import { applyOp, isCoEditableType } from "@eidolon/shared";
@@ -72,6 +77,11 @@ export function ArtifactEditor({
   const saveArtifactTemplateMutation = useSaveArtifactTemplate(companyId);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [permManagerOpen, setPermManagerOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<string>("");
+  const [transferBusy, setTransferBusy] = useState(false);
+  const mfa = useMfaStepUp();
+  const { data: projects } = useProjects(companyId);
   const { status: wsStatus } = useWebSocket(companyId);
   const qc = useQueryClient();
 
@@ -322,6 +332,89 @@ export function ArtifactEditor({
     refetch();
   };
 
+  // VAL-SEC-002/003/008: permanent artifact delete + ownership transfer are
+  // step-up gated. The first attempt is made without a step-up token; the
+  // server responds 403 MFA_STEP_UP_REQUIRED and we open the MfaChallengeModal.
+  // A valid TOTP code obtains a step-up token and retries the gated operation.
+  // Dismissing the modal abandons the action (no mutation — VAL-SEC-003).
+  const handlePermanentDelete = useCallback(async () => {
+    if (!artifact) return;
+    if (
+      !confirm(
+        `Permanently delete "${artifact.title}"? This removes all revisions and cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await permanentlyDeleteArtifact(companyId, artifactId, "");
+    } catch (err) {
+      if (isMfaStepUpRequired(err)) {
+        mfa.challenge({
+          actionLabel: `Permanently delete artifact "${artifact.title}"`,
+          scope: "artifact_permanent_delete",
+          companyId,
+          onStepUp: async (token) => {
+            await permanentlyDeleteArtifact(companyId, artifactId, token);
+            toast.success("Artifact permanently deleted");
+            qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+            onBack();
+          },
+        });
+      } else {
+        const msg = err instanceof Error ? err.message : "Delete failed";
+        toast.error(msg);
+      }
+    }
+  }, [artifact, companyId, artifactId, mfa, qc, onBack]);
+
+  const openTransfer = useCallback(() => {
+    if (!artifact) return;
+    setTransferTarget(artifact.projectId ?? "");
+    setTransferOpen(true);
+  }, [artifact]);
+
+  const handleTransferSubmit = useCallback(async () => {
+    if (!artifact) return;
+    const targetProjectId =
+      transferTarget === "" ? null : transferTarget;
+    setTransferBusy(true);
+    try {
+      // Attempt without a step-up token first → expect 403 MFA_STEP_UP_REQUIRED.
+      await transferArtifactOwnership(
+        companyId,
+        artifactId,
+        targetProjectId,
+        "",
+      );
+    } catch (err) {
+      if (isMfaStepUpRequired(err)) {
+        mfa.challenge({
+          actionLabel: `Transfer ownership of "${artifact.title}"`,
+          scope: "artifact_transfer",
+          companyId,
+          onStepUp: async (token) => {
+            const res = await transferArtifactOwnership(
+              companyId,
+              artifactId,
+              targetProjectId,
+              token,
+            );
+            qc.setQueryData(["artifacts", companyId, artifactId], res.data);
+            qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+            toast.success("Ownership transferred");
+            setTransferOpen(false);
+          },
+        });
+      } else {
+        const msg = err instanceof Error ? err.message : "Transfer failed";
+        toast.error(msg);
+      }
+    } finally {
+      setTransferBusy(false);
+    }
+  }, [artifact, companyId, artifactId, transferTarget, mfa, qc]);
+
   const handleEditorState = useCallback(
     (state: { dirty: boolean; save: () => Promise<boolean>; discard: () => void }) => {
       setDirtyEditorGuard({
@@ -466,6 +559,34 @@ export function ArtifactEditor({
             Permissions
           </button>
         )}
+        {/* Transfer ownership (M8 step-up gated) — move the artifact to another
+            project or company-level. Requires step-up re-authentication. */}
+        {canManage && (
+          <button
+            type="button"
+            onClick={openTransfer}
+            title="Transfer ownership"
+            aria-label="Transfer ownership"
+            className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs font-medium text-text-secondary hover:text-accent hover:border-accent/30 transition-colors cursor-pointer"
+          >
+            <ArrowRightLeft className="h-3 w-3" />
+            Transfer
+          </button>
+        )}
+        {/* Permanently delete (M8 step-up gated) — hard-deletes the artifact
+            and all revisions. Requires step-up re-authentication. */}
+        {canManage && (
+          <button
+            type="button"
+            onClick={handlePermanentDelete}
+            title="Permanently delete"
+            aria-label="Permanently delete"
+            className="inline-flex items-center gap-1 rounded-md border border-error/20 px-2 py-1 text-xs font-medium text-error/80 hover:text-error hover:border-error/40 hover:bg-error/10 transition-colors cursor-pointer"
+          >
+            <Trash2 className="h-3 w-3" />
+            Delete
+          </button>
+        )}
         {permManagerOpen && (
           <PermissionManager
             companyId={companyId}
@@ -504,6 +625,60 @@ export function ArtifactEditor({
             }}
           />
         )}
+        {/* Transfer ownership modal (M8 step-up gated). Picking a target
+            project (or company-level) and confirming triggers the step-up
+            challenge via handleTransferSubmit. */}
+        {transferOpen && (
+          <Modal
+            open={transferOpen}
+            onClose={() => setTransferOpen(false)}
+            title="Transfer ownership"
+            dismissible={!transferBusy}
+          >
+            <div className="space-y-4">
+              <p className="text-sm text-text-secondary">
+                Move <strong className="text-text-primary">{artifact.title}</strong>{" "}
+                to another project, or to company-level (no project). This
+                requires step-up re-authentication.
+              </p>
+              <Select
+                label="Destination"
+                value={transferTarget}
+                onChange={(e) => setTransferTarget(e.target.value)}
+                disabled={transferBusy}
+                options={[
+                  { value: "", label: "Company level (no project)" },
+                  ...((projects ?? []).map((p) => ({
+                    value: p.id,
+                    label: p.name,
+                  }))),
+                ]}
+              />
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setTransferOpen(false)}
+                  disabled={transferBusy}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleTransferSubmit}
+                  loading={transferBusy}
+                >
+                  Transfer
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        )}
+        {/* MFA challenge modal (M8 step-up) — opened when a sensitive action
+            (permanent delete / ownership transfer) receives 403
+            MFA_STEP_UP_REQUIRED. A valid TOTP code obtains a step-up token and
+            retries the gated operation; dismissing abandons the action. */}
+        <MfaChallengeModal {...mfa.modalProps} />
       </div>
 
       {/* Editor + revision history */}

@@ -37,11 +37,17 @@ async function request<T>(
   // VAL-SEC-006: surface a graceful forbidden state on RBAC denials (403)
   // rather than letting the UI crash or silently swallow the error. The
   // structured error body from the server carries the code + message.
+  // VAL-SEC-002/003/008: a 403 with code `MFA_STEP_UP_REQUIRED` is NOT an
+  // RBAC denial — it signals that a sensitive action needs step-up
+  // re-authentication. The caller opens the MfaChallengeModal instead of a
+  // toast, so we skip the toast here and let the caller handle the flow.
   if (res.status === 403) {
     const body = await res.json().catch(() => null);
     const message =
       body?.message ?? "You do not have permission to perform this action.";
-    toast.error(`Forbidden: ${message}`);
+    if (body?.code !== "MFA_STEP_UP_REQUIRED") {
+      toast.error(`Forbidden: ${message}`);
+    }
     throw new ApiError(403, message, body);
   }
 

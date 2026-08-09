@@ -13,10 +13,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { useDeleteCompany } from "@/lib/hooks";
+import { useMfaStepUp, isMfaStepUpRequired } from "@/lib/useMfaStepUp";
 import type { Company, DashboardData } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { CreateCompanyModal } from "@/components/companies/CreateCompanyModal";
+import { MfaChallengeModal } from "@/components/security/MfaChallengeModal";
 
 interface CompanyWithStats extends Company {
   agentCount?: number;
@@ -32,6 +34,7 @@ export function CompanyList() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const deleteCompany = useDeleteCompany();
+  const mfa = useMfaStepUp();
 
   useEffect(() => {
     async function fetchData() {
@@ -80,6 +83,41 @@ export function CompanyList() {
     (sum, c) => sum + (c.taskCount ?? 0),
     0,
   );
+
+  // VAL-SEC-002/003/008: permanent company delete requires step-up
+  // re-authentication. The first attempt is made without a step-up token; the
+  // server responds 403 MFA_STEP_UP_REQUIRED and we open the MfaChallengeModal.
+  // A valid TOTP code obtains a step-up token and retries the delete.
+  // Dismissing the modal abandons the action (no mutation — VAL-SEC-003).
+  async function handlePermanentDelete(company: CompanyWithStats) {
+    if (
+      !confirm(
+        `Permanently delete "${company.name}" and ALL its data? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteCompany.mutateAsync({ id: company.id, hard: true });
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      if (isMfaStepUpRequired(err)) {
+        mfa.challenge({
+          actionLabel: `Permanently delete company "${company.name}"`,
+          scope: "company_delete",
+          companyId: company.id,
+          onStepUp: async (token) => {
+            await deleteCompany.mutateAsync({
+              id: company.id,
+              hard: true,
+              stepUpToken: token,
+            });
+            setRefreshKey((k) => k + 1);
+          },
+        });
+      }
+    }
+  }
 
   return (
     <div className="min-h-dvh bg-surface">
@@ -262,11 +300,7 @@ export function CompanyList() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (confirm(`Permanently delete "${company.name}" and ALL its data? This cannot be undone.`)) {
-                            deleteCompany.mutate({ id: company.id, hard: true }, {
-                              onSuccess: () => setRefreshKey((k) => k + 1),
-                            });
-                          }
+                          handlePermanentDelete(company);
                         }}
                         title="Permanently delete company"
                         className="rounded-md p-1 text-text-secondary opacity-0 group-hover:opacity-100 hover:text-error hover:bg-error/10 transition-all duration-200 cursor-pointer"
@@ -322,6 +356,7 @@ export function CompanyList() {
         open={modalOpen}
         onClose={() => setModalOpen(false)}
       />
+      <MfaChallengeModal {...mfa.modalProps} />
     </div>
   );
 }

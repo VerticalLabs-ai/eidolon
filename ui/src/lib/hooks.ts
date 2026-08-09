@@ -76,8 +76,15 @@ export function useUpdateCompany() {
 export function useDeleteCompany() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, hard = false }: { id: string; hard?: boolean }) =>
-      api.deleteCompany(id, hard),
+    mutationFn: ({
+      id,
+      hard = false,
+      stepUpToken,
+    }: {
+      id: string;
+      hard?: boolean;
+      stepUpToken?: string;
+    }) => api.deleteCompany(id, hard, stepUpToken),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["companies"] });
     },
