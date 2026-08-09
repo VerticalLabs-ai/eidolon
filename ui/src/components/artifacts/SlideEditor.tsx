@@ -732,8 +732,15 @@ function SlideBlockEditor({
 
   return (
     <div className="group relative rounded-md border border-white/[0.04] p-2 transition-colors hover:border-white/[0.08]">
-      {/* Block controls (visible on hover) */}
-      <div className="absolute -top-2 right-1 flex items-center gap-0.5 opacity-60 hover:opacity-100 focus-within:opacity-100 transition-opacity bg-surface rounded px-1">
+      {/* Block controls (visible on hover/focus).
+          NOTE: do NOT add `transition-opacity` here. Chrome holds a
+          transitioned opacity at its pre-focus value when the change is driven
+          by `:focus-within` (an ancestor reacting to a descendant gaining
+          focus), so `focus-within:opacity-100` would never take effect and the
+          controls would stay dimmed while keyboard-focused. Verified via
+          computed-style probe — removing the transition lets focus-within
+          raise the opacity to full as authored. */}
+      <div className="absolute -top-2 right-1 flex items-center gap-0.5 opacity-60 hover:opacity-100 focus-within:opacity-100 bg-surface rounded px-1">
         <button
           onClick={onMoveUp}
           disabled={!canMoveUp}
