@@ -5,12 +5,14 @@ import {
   useArtifacts,
   useCreateArtifact,
   useProjects,
+  useFolders,
 } from "@/lib/hooks";
 import { useServerEvents } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
 import { ArtifactTypePicker } from "@/components/artifacts/ArtifactTypePicker";
 import { ArtifactEditor } from "@/components/artifacts/ArtifactEditor";
+import { FolderTree, FolderBreadcrumbs } from "@/components/artifacts/FolderTree";
 import {
   artifactTypeLabel,
   defaultArtifactContent,
@@ -37,6 +39,12 @@ export function CompanyArtifacts() {
   const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
   const headingRef = useRef<HTMLHeadingElement>(null);
+
+  // ── Folder selection (M4) ──────────────────────────────────────────────
+  // Company-level folders have projectId=null.
+  const [selectionMode, setSelectionMode] = useState<"all" | "folder" | "unfiled">("all");
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const { data: folders = [] } = useFolders(companyId, null);
 
   // Move focus into the Artifacts content area on mount so keyboard users
   // can Tab through the filters and artifact list (VAL-ART-064/VAL-CROSS-017).
@@ -87,6 +95,8 @@ export function CompanyArtifacts() {
   const queryParams = {
     ...(filters.projectId ? { projectId: filters.projectId } : { projectId: "null" as const }),
     ...(filters.type ? { type: filters.type as ArtifactType } : {}),
+    ...(selectionMode === "folder" && selectedFolderId ? { folderId: selectedFolderId } : {}),
+    ...(selectionMode === "unfiled" ? { folderId: "null" as const } : {}),
     status: filters.status,
     limit: PAGE_SIZE,
     offset,
@@ -120,10 +130,45 @@ export function CompanyArtifacts() {
   useServerEvents(companyId, "artifact.archived", () => {
     qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
   });
+  // Realtime: refresh folder tree on folder.* events (VAL-FOLDER-013)
+  useServerEvents(companyId, "folder.created", () => {
+    qc.invalidateQueries({ queryKey: ["folders", companyId] });
+  });
+  useServerEvents(companyId, "folder.updated", () => {
+    qc.invalidateQueries({ queryKey: ["folders", companyId] });
+  });
+  useServerEvents(companyId, "folder.deleted", () => {
+    qc.invalidateQueries({ queryKey: ["folders", companyId] });
+    qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+  });
 
   useEffect(() => {
     setOffset(0);
-  }, [filters.type, filters.status, filters.projectId, filters.sort, filters.order]);
+  }, [filters.type, filters.status, filters.projectId, filters.sort, filters.order, selectionMode, selectedFolderId]);
+
+  const handleSelectFolder = useCallback((folderId: string) => {
+    setSelectedFolderId(folderId);
+    setSelectionMode("folder");
+    setOffset(0);
+  }, []);
+  const handleSelectAll = useCallback(() => {
+    setSelectedFolderId(null);
+    setSelectionMode("all");
+    setOffset(0);
+  }, []);
+  const handleSelectUnfiled = useCallback(() => {
+    setSelectedFolderId(null);
+    setSelectionMode("unfiled");
+    setOffset(0);
+  }, []);
+  const handleBreadcrumbNavigate = useCallback(
+    (folderId: string | null, mode: "all" | "folder" | "unfiled") => {
+      setSelectedFolderId(folderId);
+      setSelectionMode(mode);
+      setOffset(0);
+    },
+    [],
+  );
 
   const handleCreate = useCallback(
     async (type: ArtifactType) => {
@@ -163,31 +208,56 @@ export function CompanyArtifacts() {
 
   return (
     <div className="p-5 sm:p-6">
-      <div className="mx-auto max-w-4xl space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold text-text-primary font-display focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface rounded">
-            Company Artifacts
-          </h2>
+      <div className="mx-auto flex max-w-6xl gap-4">
+        {/* Folder tree sidebar (M4) */}
+        <aside className="w-48 shrink-0">
+          <div className="rounded-xl border border-white/[0.06] bg-surface/60">
+            <FolderTree
+              companyId={companyId!}
+              projectId={null}
+              folders={folders}
+              selectedFolderId={selectedFolderId}
+              selectionMode={selectionMode}
+              onSelectAll={handleSelectAll}
+              onSelectFolder={handleSelectFolder}
+              onSelectUnfiled={handleSelectUnfiled}
+            />
+          </div>
+        </aside>
+        <div className="min-w-0 flex-1 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold text-text-primary font-display focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface rounded">
+              Company Artifacts
+            </h2>
+          </div>
+          <FolderBreadcrumbs
+            folders={folders}
+            selectedFolderId={selectedFolderId}
+            selectionMode={selectionMode}
+            onNavigate={handleBreadcrumbNavigate}
+          />
+          <p className="text-xs text-text-secondary">
+            Artifacts not tied to a specific project. Select a project filter to
+            view project-scoped artifacts.
+          </p>
+          <ArtifactList
+            artifacts={displayedArtifacts}
+            total={displayedTotal}
+            limit={PAGE_SIZE}
+            offset={offset}
+            filters={filters}
+            onFiltersChange={setFilters}
+            onPageChange={setOffset}
+            onSelect={(a) => setSelectedId(a.id)}
+            onCreate={() => setPickerOpen(true)}
+            isLoading={isLoading}
+            isError={isError}
+            onRetry={() => void refetch()}
+            projectOptions={projectOptions}
+            folders={folders}
+            companyId={companyId}
+          />
         </div>
-        <p className="text-xs text-text-secondary">
-          Artifacts not tied to a specific project. Select a project filter to
-          view project-scoped artifacts.
-        </p>
-        <ArtifactList
-          artifacts={displayedArtifacts}
-          total={displayedTotal}
-          limit={PAGE_SIZE}
-          offset={offset}
-          filters={filters}
-          onFiltersChange={setFilters}
-          onPageChange={setOffset}
-          onSelect={(a) => setSelectedId(a.id)}
-          onCreate={() => setPickerOpen(true)}
-          isLoading={isLoading}
-          isError={isError}
-          onRetry={() => void refetch()}
-          projectOptions={projectOptions}
-        />
       </div>
       <ArtifactTypePicker
         open={pickerOpen}

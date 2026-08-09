@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
 import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision } from '../services/artifact-service.js';
+import { moveArtifactToFolder } from '../services/folder-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
 import { ArtifactTypeSchema } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
@@ -15,12 +16,14 @@ const CreateBody = z.object({
 const UpdateBody = z.object({
   version: z.number().int().positive().optional(), title: z.string().trim().min(1).max(500).optional(),
   content: z.unknown().optional(), projectId: z.string().uuid().nullable().optional(), message: z.string().max(2000).optional(),
+  folderId: z.string().uuid().nullable().optional(),
 });
 const ListQuery = z.object({
   projectId: z.union([z.string().uuid(), z.literal('null')]).optional(),
   unscoped: z.coerce.boolean().optional(),
   type: ArtifactTypeSchema.optional(),
-  status: z.enum(['active', 'archived', 'deleted']).default('active'), folderId: z.string().uuid().optional(),
+  status: z.enum(['active', 'archived', 'deleted']).default('active'),
+  folderId: z.union([z.string().uuid(), z.literal('null')]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0),
   sort: z.enum(['updatedAt', 'title', 'type', 'createdAt']).optional(),
   order: z.enum(['asc', 'desc']).optional(),
@@ -60,12 +63,18 @@ export function artifactsRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     const query = (req as any).validated.query;
     // Normalize projectId: 'null' string or unscoped flag → null (unscoped filter)
-    const filters: any = { limit: query.limit, offset: query.offset, status: query.status, type: query.type, folderId: query.folderId, sort: query.sort, order: query.order };
+    const filters: any = { limit: query.limit, offset: query.offset, status: query.status, type: query.type, sort: query.sort, order: query.order };
     if (query.unscoped === true || query.projectId === 'null') {
       filters.projectId = null;
       filters.filterNullProject = true;
     } else if (query.projectId && query.projectId !== 'null') {
       filters.projectId = query.projectId;
+    }
+    // Normalize folderId: 'null' string → filter for unfiled artifacts (folderId IS NULL).
+    if (query.folderId === 'null') {
+      filters.filterNullFolder = true;
+    } else if (query.folderId && query.folderId !== 'null') {
+      filters.folderId = query.folderId;
     }
     const result = await listArtifacts(db, companyId, filters);
     res.json({ data: result.rows, meta: { total: result.total, limit: query.limit, offset: query.offset } });
@@ -90,7 +99,17 @@ export function artifactsRouter(db: DbInstance): Router {
   });
   router.patch('/artifacts/:id', validate(UpdateBody), async (req, res) => {
     const { companyId, id } = routeParams(req);
-    res.json({ data: await updateArtifact(db, companyId, id, (req as any).validated.body, await editor(db, companyId, req)) });
+    const body = (req as any).validated.body;
+    // Metadata-only folder move: when the PATCH supplies `folderId` and no
+    // content/title, treat it as a move (no version bump, no revision).
+    // VAL-FOLDER-004/005/006: PATCH with { folderId } moves the artifact.
+    if (body.folderId !== undefined && body.content === undefined && body.title === undefined) {
+      await moveArtifactToFolder(db, companyId, id, body.folderId);
+      const row = await getArtifact(db, companyId, id);
+      res.json({ data: row });
+      return;
+    }
+    res.json({ data: await updateArtifact(db, companyId, id, body, await editor(db, companyId, req)) });
   });
   router.delete('/artifacts/:id', async (req, res) => {
     const { companyId, id } = routeParams(req);

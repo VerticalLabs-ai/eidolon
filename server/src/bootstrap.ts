@@ -58,6 +58,7 @@ import {
   automationRuns,
   artifacts,
   artifactRevisions,
+  artifactFolders,
   testUsers,
 } from '@eidolon/db';
 
@@ -115,6 +116,7 @@ const SCHEMA_BUNDLE = {
   automationRuns,
   artifacts,
   artifactRevisions,
+  artifactFolders,
   testUsers,
 } as const;
 

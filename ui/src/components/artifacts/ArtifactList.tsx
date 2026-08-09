@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Select } from "@/components/ui/Input";
-import type { Artifact, ArtifactType, ArtifactStatus } from "@/lib/api";
+import { MoveArtifactMenu } from "./FolderTree";
+import type { Artifact, ArtifactType, ArtifactStatus, ArtifactFolder } from "@/lib/api";
 
 const TYPE_ICONS: Record<ArtifactType, React.ReactNode> = {
   document: <FileText className="h-4 w-4" />,
@@ -54,6 +55,10 @@ interface ArtifactListProps {
   onRetry?: () => void;
   /** Optional project filter options for company-level view */
   projectOptions?: { value: string; label: string }[];
+  /** Folders for the move-to-folder menu (M4). Omitted in contexts without folders. */
+  folders?: ArtifactFolder[];
+  /** Company id for the move-to-folder mutation. Required when folders is provided. */
+  companyId?: string;
 }
 
 export function ArtifactList({
@@ -70,6 +75,8 @@ export function ArtifactList({
   isError,
   onRetry,
   projectOptions,
+  folders,
+  companyId,
 }: ArtifactListProps) {
   const hasArtifacts = artifacts.length > 0;
   const currentPage = Math.floor(offset / limit) + 1;
@@ -262,6 +269,16 @@ export function ArtifactList({
                   )}
                   {artifact.status === "archived" && (
                     <Badge variant="default">Archived</Badge>
+                  )}
+                  {folders && companyId && (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <MoveArtifactMenu
+                        companyId={companyId}
+                        artifactId={artifact.id}
+                        currentFolderId={artifact.folderId}
+                        folders={folders}
+                      />
+                    </div>
                   )}
                 </button>
               </li>

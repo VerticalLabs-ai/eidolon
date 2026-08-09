@@ -46,6 +46,7 @@ import { skillsRouter } from './routes/skills.js';
 import { routinesRouter } from './routes/routines.js';
 import { automationsRouter } from './routes/automations.js';
 import { artifactsRouter } from './routes/artifacts.js';
+import { foldersRouter } from './routes/folders.js';
 import { presenceRouter } from './routes/presence.js';
 import { mentionsRouter } from './routes/mentions.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
@@ -215,6 +216,8 @@ export function createApp(db: DbInstance): express.Express {
   // Unified automations surface (aggregates routines, workflows, webhooks)
   app.use('/api/companies/:companyId/automations', requireAuth, requireOrgMember(), automationsRouter(db));
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), artifactsRouter(db));
+  // Artifact folders (M4): nested folder tree for organizing artifacts.
+  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), foldersRouter(db));
   // Per-artifact presence (M3): join/leave/typing REST + WS events.
   app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), presenceRouter(db));
 

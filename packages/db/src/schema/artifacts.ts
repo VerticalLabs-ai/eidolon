@@ -14,6 +14,7 @@ import { sql } from 'drizzle-orm';
 import { companies } from './companies.js';
 import { projects } from './projects.js';
 import { agents } from './agents.js';
+import { artifactFolders } from './artifact_folders.js';
 
 export const artifactTypeEnum = pgEnum('artifact_type', [
   'document',
@@ -38,7 +39,7 @@ export const artifacts = pgTable(
     projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     // Reserved for the M4 folder model. It is intentionally nullable and
     // unconstrained until artifact_folders exists.
-    folderId: text('folder_id'),
+    folderId: text('folder_id').references(() => artifactFolders.id, { onDelete: 'set null' }),
     type: artifactTypeEnum('type').notNull(),
     title: text('title').notNull(),
     content: jsonb('content').notNull().default({}).$type<Record<string, unknown>>(),
@@ -61,6 +62,7 @@ export const artifacts = pgTable(
     index('idx_artifacts_company_status_updated').on(table.companyId, table.status, table.updatedAt),
     index('idx_artifacts_company_project').on(table.companyId, table.projectId),
     index('idx_artifacts_company_type').on(table.companyId, table.type),
+    index('idx_artifacts_company_folder').on(table.companyId, table.folderId),
     check('chk_artifacts_version_positive', sql`${table.version} > 0`),
     check('chk_artifacts_schema_version_positive', sql`${table.contentSchemaVersion} > 0`),
   ],

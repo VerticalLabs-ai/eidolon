@@ -3,6 +3,7 @@ import { ArtifactTypeSchema, validateArtifactContent } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import { hasSession, mergeExternalUpdate, updateSessionAfterFlush } from '../realtime/coedit-session.js';
+import { validateFolderOwnership } from './folder-service.js';
 import type { DbInstance } from '../types.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import type { z } from 'zod';
@@ -75,6 +76,17 @@ export async function createArtifact(db: DbInstance, companyId: string, input: {
       .where(and(eq(db.schema.projects.id, project.id), eq(db.schema.projects.companyId, companyId)));
     if (projectRow?.status === 'archived') throw new AppError(409, 'PROJECT_ARCHIVED', 'Archived projects cannot receive new artifacts');
   }
+  // Validate folder ownership (folder must belong to companyId) and scope match.
+  if (input.folderId) {
+    const folder = await validateFolderOwnership(db, companyId, input.folderId);
+    if (folder) {
+      const folderProject = folder.projectId ?? null;
+      const artifactProject = input.projectId ?? null;
+      if (folderProject !== artifactProject) {
+        throw new AppError(400, 'FOLDER_SCOPE_MISMATCH', 'Artifact and folder must share the same project scope');
+      }
+    }
+  }
   const { artifacts, artifactRevisions } = db.schema;
   const created = await db.drizzle.transaction(async (tx) => {
     const [artifact] = await tx.insert(artifacts).values({
@@ -103,7 +115,7 @@ export async function getArtifact(db: DbInstance, companyId: string, id: string)
 }
 
 export async function listArtifacts(db: DbInstance, companyId: string, filters: {
-  projectId?: string | null; filterNullProject?: boolean; type?: ArtifactType; status?: 'active' | 'archived' | 'deleted'; folderId?: string;
+  projectId?: string | null; filterNullProject?: boolean; type?: ArtifactType; status?: 'active' | 'archived' | 'deleted'; folderId?: string; filterNullFolder?: boolean;
   limit: number; offset: number;
   sort?: 'updatedAt' | 'title' | 'type' | 'createdAt';
   order?: 'asc' | 'desc';
@@ -118,7 +130,11 @@ export async function listArtifacts(db: DbInstance, companyId: string, filters: 
   }
   if (filters.type) conditions.push(eq(a.type, filters.type));
   if (filters.status) conditions.push(eq(a.status, filters.status));
-  if (filters.folderId) conditions.push(eq(a.folderId, filters.folderId));
+  if (filters.filterNullFolder) {
+    conditions.push(isNull(a.folderId));
+  } else if (filters.folderId) {
+    conditions.push(eq(a.folderId, filters.folderId));
+  }
   const where = and(...conditions);
 
   // Build order clause from sort/order params.

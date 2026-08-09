@@ -2609,6 +2609,7 @@ export interface ArtifactListParams {
   projectId?: string;
   type?: ArtifactType;
   status?: ArtifactStatus;
+  folderId?: string | "null";
   limit?: number;
   offset?: number;
   sort?: "updatedAt" | "title" | "type" | "createdAt";
@@ -2620,6 +2621,7 @@ function artifactListQuery(params: ArtifactListParams): string {
   if (params.projectId) sp.set("projectId", params.projectId);
   if (params.type) sp.set("type", params.type);
   if (params.status) sp.set("status", params.status);
+  if (params.folderId) sp.set("folderId", params.folderId);
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.sort) sp.set("sort", params.sort);
@@ -2713,6 +2715,61 @@ export const restoreRevision = (
   request<ApiResponse<Artifact>>(
     `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
     { method: "POST" },
+  );
+
+// ── Artifact Folders (M4) ────────────────────────────────────────────────
+
+export interface ArtifactFolder {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const listFolders = (companyId: string, projectId?: string | null) => {
+  const sp = new URLSearchParams();
+  if (projectId === null) sp.set("projectId", "null");
+  else if (projectId) sp.set("projectId", projectId);
+  const qs = sp.toString();
+  return request<ApiResponse<ArtifactFolder[]>>(
+    `/companies/${companyId}/folders${qs ? `?${qs}` : ""}`,
+  );
+};
+
+export const createFolder = (
+  companyId: string,
+  data: { name: string; projectId?: string | null; parentId?: string | null },
+) =>
+  request<ApiResponse<ArtifactFolder>>(`/companies/${companyId}/folders`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateFolder = (
+  companyId: string,
+  id: string,
+  data: { name?: string; parentId?: string | null },
+) =>
+  request<ApiResponse<ArtifactFolder>>(
+    `/companies/${companyId}/folders/${id}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const deleteFolder = (companyId: string, id: string) =>
+  request<void>(`/companies/${companyId}/folders/${id}`, { method: "DELETE" });
+
+/** Move an artifact into/out of a folder (metadata-only; no version bump). */
+export const moveArtifactToFolder = (
+  companyId: string,
+  artifactId: string,
+  folderId: string | null,
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${artifactId}`,
+    { method: "PATCH", body: JSON.stringify({ folderId }) },
   );
 
 // ── Presence (M3) ───────────────────────────────────────────────────────

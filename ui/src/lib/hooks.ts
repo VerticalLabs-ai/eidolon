@@ -2105,6 +2105,70 @@ export function useRestoreRevision(companyId: string) {
   });
 }
 
+// ── Artifact Folders (M4) ───────────────────────────────────────────────
+
+export function useFolders(
+  companyId: string | undefined,
+  projectId?: string | null,
+) {
+  return useQuery({
+    queryKey: ["folders", companyId, projectId ?? undefined],
+    queryFn: async () => {
+      const res = await api.listFolders(companyId!, projectId);
+      const body = res as unknown as { data: api.ArtifactFolder[] };
+      return body.data;
+    },
+    enabled: !!companyId,
+  });
+}
+
+export function useCreateFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createFolder>[1]) =>
+      api.createFolder(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+    },
+  });
+}
+
+export function useUpdateFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      id: string;
+      name?: string;
+      parentId?: string | null;
+    }) => api.updateFolder(companyId, args.id, args),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+    },
+  });
+}
+
+export function useDeleteFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteFolder(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useMoveArtifactToFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { artifactId: string; folderId: string | null }) =>
+      api.moveArtifactToFolder(companyId, args.artifactId, args.folderId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
 // ── Presence (M3) ───────────────────────────────────────────────────────
 //
 // Presence is ephemeral realtime state. The hooks below provide:

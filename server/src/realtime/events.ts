@@ -57,6 +57,13 @@ export interface ArtifactEvent extends ServerEvent {
     | 'artifact.archived';
 }
 
+export interface FolderEvent extends ServerEvent {
+  type:
+    | 'folder.created'
+    | 'folder.updated'
+    | 'folder.deleted';
+}
+
 export interface RoutineEvent extends ServerEvent {
   type:
     | 'routine.triggered'
@@ -167,6 +174,7 @@ export type EidolonEvent =
   | ExecutionEvent
   | RuntimeEvent
   | ArtifactEvent
+  | FolderEvent
   | PresenceEvent
   | RoutineEvent;
 
