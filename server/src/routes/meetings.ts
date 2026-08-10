@@ -9,6 +9,7 @@ import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
 import { AppError } from '../middleware/error-handler.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
+import { requireAccess } from '../services/permission-service.js';
 import {
   createMeeting,
   getMeeting,
@@ -21,6 +22,25 @@ import {
   getMeetingTasks,
 } from '../services/meeting-service.js';
 import type { DbInstance } from '../types.js';
+
+function actor(req: any, agentId?: string): { userId: string; orgRole: string } {
+  return agentId
+    ? { userId: agentId, orgRole: 'member' }
+    : { userId: req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000', orgRole: req.organizationMembership?.role ?? 'owner' };
+}
+
+async function requireMeetingAccess(db: DbInstance, companyId: string, id: string, req: any, level: 'view' | 'edit') {
+  const meeting = await getMeeting(db, companyId, id);
+  if (meeting.projectId) {
+    const agentId = req.get('X-Eidolon-Agent-Id');
+    if (agentId && !(await agentBelongsToCompany(db, companyId, agentId))) {
+      throw new AppError(403, 'AGENT_NOT_IN_COMPANY', 'The specified agent does not belong to this company');
+    }
+    const principal = actor(req, agentId || undefined);
+    await requireAccess(db, companyId, principal.userId, principal.orgRole, 'project', meeting.projectId, level);
+  }
+  return meeting;
+}
 
 async function editor(db: DbInstance, companyId: string, req: any) {
   // Support agent-authored meeting actions via X-Eidolon-Agent-Id header
@@ -44,6 +64,10 @@ export function meetingsRouter(db: DbInstance): Router {
   router.post('/', validate(CreateMeetingBodySchema), async (req, res) => {
     const { companyId, projectId } = routeParams(req);
     const body = (req as any).validated.body;
+    const agentId = req.get('X-Eidolon-Agent-Id');
+    if (agentId && !(await agentBelongsToCompany(db, companyId, agentId))) throw new AppError(403, 'AGENT_NOT_IN_COMPANY', 'The specified agent does not belong to this company');
+    const principal = actor(req, agentId || undefined);
+    await requireAccess(db, companyId, principal.userId, principal.orgRole, 'project', projectId, 'edit');
     const row = await createMeeting(
       db,
       companyId,
@@ -57,6 +81,13 @@ export function meetingsRouter(db: DbInstance): Router {
   router.get('/', validate(MeetingListQuerySchema, 'query'), async (req, res) => {
     const { companyId, projectId } = routeParams(req);
     const query = (req as any).validated.query;
+    const requestedProjectId = query.projectId && query.projectId !== 'null' ? query.projectId : projectId;
+    if (requestedProjectId && !query.unscoped && query.projectId !== 'null') {
+      const agentId = req.get('X-Eidolon-Agent-Id');
+      if (agentId && !(await agentBelongsToCompany(db, companyId, agentId))) throw new AppError(403, 'AGENT_NOT_IN_COMPANY', 'The specified agent does not belong to this company');
+      const principal = actor(req, agentId || undefined);
+      await requireAccess(db, companyId, principal.userId, principal.orgRole, 'project', requestedProjectId, 'view');
+    }
     const filters: any = {
       limit: query.limit,
       offset: query.offset,
@@ -91,13 +122,14 @@ export function meetingItemRouter(db: DbInstance): Router {
   router.get('/:id', async (req, res) => {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
-    res.json({ data: await getMeeting(db, companyId, id) });
+    res.json({ data: await requireMeetingAccess(db, companyId, id, req, 'view') });
   });
 
   // GET .../meetings/:id/tasks — bidirectional linkage (tasks → meeting)
   router.get('/:id/tasks', async (req, res) => {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
+    await requireMeetingAccess(db, companyId, id, req, 'view');
     res.json({ data: await getMeetingTasks(db, companyId, id) });
   });
 
@@ -106,6 +138,7 @@ export function meetingItemRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
     const body = (req as any).validated.body;
+    await requireMeetingAccess(db, companyId, id, req, 'edit');
     res.json({ data: await updateMeeting(db, companyId, id, body, await editor(db, companyId, req)) });
   });
 
@@ -114,6 +147,7 @@ export function meetingItemRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
     const body = (req as any).validated.body;
+    await requireMeetingAccess(db, companyId, id, req, 'edit');
     res.json({ data: await attachTranscript(db, companyId, id, body.transcript, await editor(db, companyId, req)) });
   });
 
@@ -121,6 +155,7 @@ export function meetingItemRouter(db: DbInstance): Router {
   router.post('/:id/summarize', async (req, res) => {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
+    await requireMeetingAccess(db, companyId, id, req, 'edit');
     const result = await summarizeMeeting(db, companyId, id, await editor(db, companyId, req));
     res.json({ data: result });
   });
@@ -129,6 +164,7 @@ export function meetingItemRouter(db: DbInstance): Router {
   router.post('/:id/action-items', async (req, res) => {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
+    await requireMeetingAccess(db, companyId, id, req, 'edit');
     const result = await extractActionItems(db, companyId, id, await editor(db, companyId, req));
     res.json({ data: result });
   });
@@ -137,6 +173,7 @@ export function meetingItemRouter(db: DbInstance): Router {
   router.delete('/:id', async (req, res) => {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
+    await requireMeetingAccess(db, companyId, id, req, 'edit');
     res.json({ data: await setMeetingStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)) });
   });
 
@@ -144,6 +181,7 @@ export function meetingItemRouter(db: DbInstance): Router {
   router.post('/:id/archive', async (req, res) => {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
+    await requireMeetingAccess(db, companyId, id, req, 'edit');
     res.json({ data: await setMeetingStatus(db, companyId, id, 'archived', await editor(db, companyId, req)) });
   });
 
@@ -151,6 +189,7 @@ export function meetingItemRouter(db: DbInstance): Router {
   router.post('/:id/restore', async (req, res) => {
     const { companyId } = routeParams(req);
     const { id } = routeParams(req);
+    await requireMeetingAccess(db, companyId, id, req, 'edit');
     res.json({ data: await setMeetingStatus(db, companyId, id, 'active', await editor(db, companyId, req)) });
   });
 
