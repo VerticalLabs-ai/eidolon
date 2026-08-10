@@ -104,6 +104,7 @@ export async function saveArtifactContent(
   editor: Editor,
   message?: string,
   title?: string,
+  folderId?: string | null,
 ) {
   const current = await getArtifact(db, companyId, id);
   assertContent(current.type, content);
@@ -112,6 +113,7 @@ export async function saveArtifactContent(
     const [row] = await tx.update(db.schema.artifacts).set({
       content: encryptedContent,
       ...(title !== undefined ? { title } : {}),
+      ...(folderId !== undefined ? { folderId } : {}),
       version: current.version + 1,
       updatedAt: new Date(),
       lastEditedByUserId: editor.userId ?? null,
@@ -228,6 +230,14 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
 }, editor: Editor) {
   const current = await getArtifact(db, companyId, id);
 
+  // Validate folder moves before the co-edit fast path as well.
+  if (input.folderId !== undefined && input.folderId !== null) {
+    const folder = await validateFolderOwnership(db, companyId, input.folderId);
+    if (folder && (folder.projectId ?? null) !== (current.projectId ?? null)) {
+      throw new AppError(400, 'FOLDER_SCOPE_MISMATCH', 'Artifact and folder must share the same project scope');
+    }
+  }
+
   // ── Co-edit session integration (M3) ──────────────────────────────────
   // When an active co-edit session exists for this artifact, route content
   // updates through the session (merge, no 409). This supersedes the M1 LWW
@@ -244,7 +254,7 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
       // matches the DocEditor coeditSave path, which is already atomic via
       // flushSession → saveArtifactContent.
       const sessionContent = result.merged;
-      const updated = await saveArtifactContent(db, companyId, id, sessionContent, current.version, editor, input.message, input.title);
+      const updated = await saveArtifactContent(db, companyId, id, sessionContent, current.version, editor, input.message, input.title, input.folderId);
       // Update the session's version + lastSavedContent to reflect the flush.
       // `updated.title` reflects the persisted title (new or unchanged).
       updateSessionAfterFlush(id, updated.version, sessionContent, updated.title);
@@ -370,6 +380,7 @@ export async function transferArtifactOwnership(
       .update(db.schema.artifacts)
       .set({
         projectId: input.projectId,
+        folderId: null,
         version: current.version + 1,
         updatedAt: new Date(),
         lastEditedByUserId: editor.userId ?? null,
