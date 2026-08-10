@@ -33,7 +33,13 @@ CREATE TABLE "user_mfa_factors" (
 );
 --> statement-breakpoint
 ALTER TABLE "local_trusted_sessions" ADD CONSTRAINT "local_trusted_sessions_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "idx_local_trusted_sessions_company_user" ON "local_trusted_sessions" USING btree ("company_id","user_id");--> statement-breakpoint
+-- Keep one session per company and user before enforcing the invariant.
+DELETE FROM "local_trusted_sessions" a
+USING "local_trusted_sessions" b
+WHERE a."company_id" = b."company_id"
+  AND a."user_id" = b."user_id"
+  AND a.ctid > b.ctid;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_local_trusted_sessions_company_user" ON "local_trusted_sessions" USING btree ("company_id","user_id");--> statement-breakpoint
 CREATE INDEX "idx_local_trusted_sessions_user" ON "local_trusted_sessions" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "idx_step_up_sessions_user_scope" ON "step_up_sessions" USING btree ("user_id","scope","expires_at");--> statement-breakpoint
 CREATE INDEX "idx_step_up_sessions_company" ON "step_up_sessions" USING btree ("company_id");--> statement-breakpoint

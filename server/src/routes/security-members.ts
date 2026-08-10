@@ -68,7 +68,7 @@ export function securityMembersRouter(db: DbInstance): Router {
 
       if (isLocalTrusted) {
         const { localTrustedSessions } = db.schema;
-        const [existing] = await db.drizzle
+        const existing = await db.drizzle
           .select()
           .from(localTrustedSessions)
           .where(
@@ -76,10 +76,9 @@ export function securityMembersRouter(db: DbInstance): Router {
               eq(localTrustedSessions.companyId, companyId),
               eq(localTrustedSessions.userId, targetUserId),
             ),
-          )
-          .limit(1);
+          );
 
-        if (!existing) {
+        if (existing.length === 0) {
           throw new AppError(
             404,
             'MEMBER_NOT_FOUND',
@@ -88,12 +87,17 @@ export function securityMembersRouter(db: DbInstance): Router {
         }
 
         const isDowngrade =
-          ROLE_HIERARCHY[body.role] < ROLE_HIERARCHY[existing.role];
+          ROLE_HIERARCHY[body.role] < ROLE_HIERARCHY[existing[0].role];
 
         await db.drizzle
           .update(localTrustedSessions)
           .set({ role: body.role, updatedAt: new Date() })
-          .where(eq(localTrustedSessions.id, existing.id));
+          .where(
+            and(
+              eq(localTrustedSessions.companyId, companyId),
+              eq(localTrustedSessions.userId, targetUserId),
+            ),
+          );
 
         // A privilege downgrade revokes the member's step-up sessions so they
         // cannot reuse a prior re-auth for sensitive operations.

@@ -119,29 +119,7 @@ export function localTrustedAuthRouter(db: DbInstance): Router {
       throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${body.companyId} not found`);
     }
 
-    // Create (or reactivate) a session row for this user+company. If a row
-    // already exists, update its role + mark active so the same logical
-    // session can be re-issued deterministically.
-    const [existing] = await db.drizzle
-      .select()
-      .from(localTrustedSessions)
-      .where(
-        and(
-          eq(localTrustedSessions.companyId, body.companyId),
-          eq(localTrustedSessions.userId, body.userId),
-        ),
-      )
-      .limit(1);
-
-    if (existing) {
-      const [updated] = await db.drizzle
-        .update(localTrustedSessions)
-        .set({ role: body.role, active: true, updatedAt: new Date() })
-        .where(eq(localTrustedSessions.id, existing.id))
-        .returning();
-      return res.status(200).json({ data: updated });
-    }
-
+    // Atomically create or reactivate the one session row for this user+company.
     const [row] = await db.drizzle
       .insert(localTrustedSessions)
       .values({
@@ -149,6 +127,10 @@ export function localTrustedAuthRouter(db: DbInstance): Router {
         companyId: body.companyId,
         role: body.role,
         active: true,
+      })
+      .onConflictDoUpdate({
+        target: [localTrustedSessions.companyId, localTrustedSessions.userId],
+        set: { role: body.role, active: true, updatedAt: new Date() },
       })
       .returning();
 

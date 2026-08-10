@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 
@@ -49,7 +49,7 @@ export const localTrustedSessions = pgTable(
       .$defaultFn(() => new Date()),
   },
   (table) => [
-    index('idx_local_trusted_sessions_company_user').on(table.companyId, table.userId),
+    uniqueIndex('uq_local_trusted_sessions_company_user').on(table.companyId, table.userId),
     index('idx_local_trusted_sessions_user').on(table.userId),
   ],
 );
