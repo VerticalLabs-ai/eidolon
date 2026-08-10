@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Save,
   Plus,
@@ -26,6 +26,7 @@ import {
   daySpan,
   parseDate,
 } from "./timeline-content";
+import { useArtifactDraftSync } from "./useArtifactDraftSync";
 
 interface TimelineEditorProps {
   artifact: Artifact;
@@ -66,61 +67,49 @@ export function TimelineEditor({
   const [tasks, setTasks] = useState<TimelineTask[]>(parsed.tasks);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [depPickerFor, setDepPickerFor] = useState<string | null>(null);
 
-  // Dirtiness is measured against the last state this editor and the server
-  // agreed on, NOT against the live artifact (same pattern as Board/Slide
-  // editors — see library/artifacts.md).
-  const baseline = useRef({
-    id: artifact.id,
-    title: artifact.title,
-    content: serializeTimeline(parsed),
-  });
+  const serializeArtifactContent = useCallback(
+    (content: Record<string, unknown>) => serializeTimeline(parseTimeline(content)),
+    [],
+  );
+
+  const onAdoptRemote = useCallback(
+    (content: Record<string, unknown>, title: string) => {
+      const next = parseTimeline(content);
+      setTitle(title);
+      setTasks(next.tasks);
+      setSaveError(null);
+      setSelectedId(null);
+    },
+    [],
+  );
 
   const localSnapshot = serializeTimeline({ tasks });
-  const isDirty =
-    title !== baseline.current.title || localSnapshot !== baseline.current.content;
 
-  useEffect(() => {
-    const next = parseTimeline(artifact.content);
-    const remoteSnapshot = serializeTimeline(next);
-    const switchedArtifact = baseline.current.id !== artifact.id;
-    const remoteChanged =
-      artifact.title !== baseline.current.title ||
-      remoteSnapshot !== baseline.current.content;
-    if (!switchedArtifact && !remoteChanged) return;
-    if (!switchedArtifact && isDirty) {
-      setRemoteUpdate(true);
-      return;
-    }
-    baseline.current = {
-      id: artifact.id,
-      title: artifact.title,
-      content: remoteSnapshot,
-    };
-    setTitle(artifact.title);
-    setTasks(next.tasks);
-    setSaveError(null);
-    setRemoteUpdate(false);
-    setSelectedId(null);
-  }, [artifact.id, artifact.version, artifact.title, artifact.content, isDirty]);
+  const {
+    isDirty,
+    remoteUpdate,
+    resetBaselineToArtifact,
+    markSaved,
+  } = useArtifactDraftSync({
+    artifact,
+    localTitle: title,
+    serializedLocalContent: localSnapshot,
+    serializeArtifactContent,
+    onAdoptRemote,
+  });
 
   const discardDraft = useCallback(() => {
     const next = parseTimeline(artifact.content);
-    baseline.current = {
-      id: artifact.id,
-      title: artifact.title,
-      content: serializeTimeline(next),
-    };
+    resetBaselineToArtifact();
     setTitle(artifact.title);
     setTasks(next.tasks);
     setSaveError(null);
-    setRemoteUpdate(false);
     setSelectedId(null);
     onRemoteUpdate?.(artifact.content, artifact.title);
-  }, [artifact, onRemoteUpdate]);
+  }, [artifact, onRemoteUpdate, resetBaselineToArtifact]);
 
   const buildContent = useCallback(
     (): Record<string, unknown> => ({ tasks }) as unknown as Record<string, unknown>,
@@ -133,19 +122,14 @@ export function TimelineEditor({
     const content = buildContent();
     try {
       await onSave({ title, content });
-      baseline.current = {
-        id: artifact.id,
-        title,
-        content: JSON.stringify(content),
-      };
-      setRemoteUpdate(false);
+      markSaved(title, content);
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       setSaveError(msg);
       return false;
     }
-  }, [isDirty, saving, title, buildContent, onSave, artifact.id]);
+  }, [isDirty, saving, title, buildContent, onSave, markSaved]);
 
   useEffect(() => {
     onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });

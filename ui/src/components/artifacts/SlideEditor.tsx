@@ -28,6 +28,7 @@ import {
   createSlide,
   getBlockText,
 } from "./slide-content";
+import { useArtifactDraftSync } from "./useArtifactDraftSync";
 
 interface SlideEditorProps {
   artifact: Artifact;
@@ -70,63 +71,49 @@ export function SlideEditor({
   const [slides, setSlides] = useState<Slide[]>(parsed.slides);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<number | null>(null);
   const drag = useRef<DragState>(null);
 
-  // Dirtiness is measured against the last state this editor and the server
-  // agreed on, NOT against the live artifact. Comparing to the live artifact
-  // would make any incoming realtime update look like a local draft and block
-  // the editor from adopting it.
-  const baseline = useRef({
-    id: artifact.id,
-    title: artifact.title,
-    content: serializeDeck(parsed),
-  });
+  const serializeArtifactContent = useCallback(
+    (content: Record<string, unknown>) => serializeDeck(parseDeck(content)),
+    [],
+  );
+
+  const onAdoptRemote = useCallback(
+    (content: Record<string, unknown>, title: string) => {
+      const next = parseDeck(content);
+      setTitle(title);
+      setSlides(next.slides);
+      setSaveError(null);
+      setSelectedIdx((prev) => Math.min(prev, Math.max(0, next.slides.length - 1)));
+    },
+    [],
+  );
 
   const localSnapshot = serializeDeck({ slides });
-  const isDirty =
-    title !== baseline.current.title || localSnapshot !== baseline.current.content;
 
-  useEffect(() => {
-    const next = parseDeck(artifact.content);
-    const remoteSnapshot = serializeDeck(next);
-    const switchedArtifact = baseline.current.id !== artifact.id;
-    const remoteChanged =
-      artifact.title !== baseline.current.title ||
-      remoteSnapshot !== baseline.current.content;
-    if (!switchedArtifact && !remoteChanged) return;
-    // A realtime refetch must not clobber an in-progress local draft.
-    if (!switchedArtifact && isDirty) {
-      setRemoteUpdate(true);
-      return;
-    }
-    baseline.current = {
-      id: artifact.id,
-      title: artifact.title,
-      content: remoteSnapshot,
-    };
-    setTitle(artifact.title);
-    setSlides(next.slides);
-    setSaveError(null);
-    setRemoteUpdate(false);
-    setSelectedIdx((prev) => Math.min(prev, Math.max(0, next.slides.length - 1)));
-  }, [artifact.id, artifact.version, artifact.title, artifact.content, isDirty]);
+  const {
+    isDirty,
+    remoteUpdate,
+    resetBaselineToArtifact,
+    markSaved,
+  } = useArtifactDraftSync({
+    artifact,
+    localTitle: title,
+    serializedLocalContent: localSnapshot,
+    serializeArtifactContent,
+    onAdoptRemote,
+  });
 
   const discardDraft = useCallback(() => {
     const next = parseDeck(artifact.content);
-    baseline.current = {
-      id: artifact.id,
-      title: artifact.title,
-      content: serializeDeck(next),
-    };
+    resetBaselineToArtifact();
     setTitle(artifact.title);
     setSlides(next.slides);
     setSaveError(null);
-    setRemoteUpdate(false);
     setSelectedIdx(0);
     onRemoteUpdate?.(artifact.content, artifact.title);
-  }, [artifact, onRemoteUpdate]);
+  }, [artifact, onRemoteUpdate, resetBaselineToArtifact]);
 
   const buildContent = useCallback(
     (): Record<string, unknown> =>
@@ -140,19 +127,14 @@ export function SlideEditor({
     const content = buildContent();
     try {
       await onSave({ title, content });
-      baseline.current = {
-        id: artifact.id,
-        title,
-        content: JSON.stringify(content),
-      };
-      setRemoteUpdate(false);
+      markSaved(title, content);
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       setSaveError(msg);
       return false;
     }
-  }, [isDirty, saving, title, buildContent, onSave, artifact.id]);
+  }, [isDirty, saving, title, buildContent, onSave, markSaved]);
 
   useEffect(() => {
     onStateChange?.({ dirty: isDirty, save: handleSave, discard: discardDraft });
