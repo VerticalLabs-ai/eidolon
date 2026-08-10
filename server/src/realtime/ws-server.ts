@@ -194,7 +194,7 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
     }
     case 'coedit.op': {
       try {
-        applyOperation(msg.artifactId, msg.op, msg.userId);
+        applyOperation(msg.artifactId, msg.op, msg.userId, client.ws);
       } catch (err) {
         client.ws.send(JSON.stringify({
           type: 'coedit.error',
@@ -212,6 +212,7 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
           msg.name,
           msg.color ?? '',
           msg.position,
+          client.ws,
         );
       } catch (err) {
         client.ws.send(JSON.stringify({
@@ -230,6 +231,7 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
           msg.name,
           msg.color ?? '',
           msg.range,
+          client.ws,
         );
       } catch (err) {
         client.ws.send(JSON.stringify({

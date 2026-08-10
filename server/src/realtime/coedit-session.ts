@@ -331,6 +331,9 @@ export async function joinSession(
   if (!_db) throw new Error('CoEdit manager not initialized');
 
   let session = sessions.get(artifactId);
+  if (session && session.companyId !== companyId) {
+    throw new Error('Artifact does not belong to this company');
+  }
   if (!session) {
     // Load artifact from DB to initialize the session
     const artifact = await getArtifact(_db, companyId, artifactId);
@@ -439,6 +442,7 @@ export function applyOperation(
   artifactId: string,
   op: CoEditOp,
   userId: string,
+  ws: WebSocket,
 ): void {
   const session = sessions.get(artifactId);
   if (!session) {
@@ -448,7 +452,8 @@ export function applyOperation(
   // Authorization: only session participants may apply operations. Without
   // this check, any WS client that knows the artifactId could inject ops
   // into an active session.
-  if (!session.participants.has(userId)) {
+  const participant = session.participants.get(userId);
+  if (!participant || participant.ws !== ws) {
     throw new Error('Not a participant in this co-edit session');
   }
 
@@ -495,10 +500,12 @@ export function broadcastCursor(
   name: string,
   color: string,
   position: number | { rowId: string; colKey: string } | { cardId: string } | null,
+  ws: WebSocket,
 ): void {
   const session = sessions.get(artifactId);
   if (!session) return;
-  if (!session.participants.has(userId)) {
+  const sender = session.participants.get(userId);
+  if (!sender || sender.ws !== ws) {
     throw new Error('Not a participant in this co-edit session');
   }
   for (const [pid, participant] of session.participants) {
@@ -527,10 +534,12 @@ export function broadcastSelection(
   name: string,
   color: string,
   range: { start: number; end: number } | null,
+  ws: WebSocket,
 ): void {
   const session = sessions.get(artifactId);
   if (!session) return;
-  if (!session.participants.has(userId)) {
+  const sender = session.participants.get(userId);
+  if (!sender || sender.ws !== ws) {
     throw new Error('Not a participant in this co-edit session');
   }
   for (const [pid, participant] of session.participants) {
