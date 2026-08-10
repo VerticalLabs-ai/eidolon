@@ -31,6 +31,16 @@ import { backgroundWork } from './services/background-work.js';
 delete process.env.AUTH_MODE;
 delete process.env.CLERK_SECRET_KEY;
 delete process.env.VITE_AUTH_MODE;
+// Neutralize leaked LLM provider keys so meeting-service.ts `resolveLlm()`
+// returns null in every test. Without this, a developer's gitignored
+// `.env` ANTHROPIC_API_KEY/OPENAI_API_KEY/GOOGLE_API_KEY leaks into
+// `process.env` and `summarizeMeeting()`/`extractActionItems()` make real
+// network calls, blowing past the meetings test's 3000ms `collectUntil`
+// timeout. With the keys deleted, both fall back to the deterministic
+// extractive path (no network, immediate emit).
+delete process.env.ANTHROPIC_API_KEY;
+delete process.env.OPENAI_API_KEY;
+delete process.env.GOOGLE_API_KEY;
 
 // VAL-SEC-009: the auth-sensitive rate limiter is always-on outside tests so
 // the 429 posture is demonstrable in dev/validation. The deterministic
