@@ -247,13 +247,20 @@ describe('Artifact CRUD API — real-Postgres integration', () => {
     });
 
     it('VAL-ART-054: rejects sheet with cell referencing unknown column key', async () => {
-      await createDoc({
+      const res = await createDoc({
         type: 'sheet',
         content: {
           columns: [{ id: 'c1', key: 'name' }],
           rows: [{ id: 'r1', cells: { unknown: { value: 'x' } } }],
         },
       }).expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+      // Nested path fidelity: the error preserves the row index + cell key
+      // (rows.0.cells.unknown) instead of collapsing to a top-level "rows" key.
+      expect(Array.isArray(res.body.details)).toBe(true);
+      const paths = (res.body.details as Array<{ path: string }>).map((i) => i.path);
+      expect(paths).toContain('rows.0.cells.unknown');
+      expect(res.body.message).toContain('rows.0.cells.unknown');
     });
 
     // VAL-ART-055: contentSchemaVersion is recorded and stable

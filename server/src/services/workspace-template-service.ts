@@ -4,6 +4,8 @@ import {
   ArtifactTypeSchema,
   ProjectTemplateSnapshotSchema,
   validateArtifactContent,
+  formatArtifactValidationIssues,
+  summarizeArtifactValidationIssues,
 } from '@eidolon/shared';
 import type { z } from 'zod';
 import { AppError } from '../middleware/error-handler.js';
@@ -84,7 +86,7 @@ export async function saveProjectTemplate(
   // Validate the snapshot structure.
   const parsed = ProjectTemplateSnapshotSchema.safeParse(snapshot);
   if (!parsed.success) {
-    throw new AppError(400, 'INVALID_TEMPLATE_SNAPSHOT', 'Template snapshot failed validation', parsed.error.flatten());
+    throw new AppError(400, 'INVALID_TEMPLATE_SNAPSHOT', `Template snapshot failed validation${summarizeArtifactValidationIssues(parsed.error) ? `: ${summarizeArtifactValidationIssues(parsed.error)}` : ''}`, formatArtifactValidationIssues(parsed.error));
   }
 
   const { projectTemplates } = db.schema;
@@ -257,7 +259,7 @@ export async function createProjectFromTemplate(
       // was validated at save time, but guard against schema drift).
       const validation = validateArtifactContent(artifact.type, artifact.content);
       if (!validation.success) {
-        throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Template artifact content failed validation for type ${artifact.type}`, validation.error.flatten());
+        throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Template artifact content failed validation for type ${artifact.type}${summarizeArtifactValidationIssues(validation.error) ? `: ${summarizeArtifactValidationIssues(validation.error)}` : ''}`, formatArtifactValidationIssues(validation.error));
       }
       const newFolderId = artifact.originalFolderId === null ? null : folderIdMap.get(artifact.originalFolderId) ?? null;
       const clonedContent = encryptContent(artifact.content as Record<string, unknown>);
@@ -395,7 +397,7 @@ export async function createArtifactFromTemplate(
   // Validate content (defensive).
   const validation = validateArtifactContent(template.type, template.content);
   if (!validation.success) {
-    throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Template content failed validation', validation.error.flatten());
+    throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Template content failed validation${summarizeArtifactValidationIssues(validation.error) ? `: ${summarizeArtifactValidationIssues(validation.error)}` : ''}`, formatArtifactValidationIssues(validation.error));
   }
 
   // Validate project + folder ownership.

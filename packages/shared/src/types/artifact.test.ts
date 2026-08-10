@@ -11,6 +11,8 @@ import {
   CodeContentSchema,
   ArtifactTypeSchema,
   validateArtifactContent,
+  formatArtifactValidationIssues,
+  summarizeArtifactValidationIssues,
 } from './artifact.js';
 
 // ---------------------------------------------------------------------------
@@ -1305,5 +1307,68 @@ describe('CodeContentSchema', () => {
     expect(ok.success).toBe(true);
     const bad = validateArtifactContent('code', { files: [] });
     expect(bad.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatArtifactValidationIssues — nested path fidelity
+// ---------------------------------------------------------------------------
+
+describe('formatArtifactValidationIssues', () => {
+  it('preserves nested array index + field path for a timeline task date', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'Bad', start: 'not-a-date', end: '2026-01-10', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const issues = formatArtifactValidationIssues(result.error);
+    expect(Array.isArray(issues)).toBe(true);
+    expect(issues.length).toBeGreaterThan(0);
+    const paths = issues.map((i) => i.path);
+    expect(paths).toContain('tasks.0.start');
+    // Each issue carries a message and code
+    for (const issue of issues) {
+      expect(typeof issue.message).toBe('string');
+      expect(issue.message.length).toBeGreaterThan(0);
+      expect(typeof issue.code).toBe('string');
+    }
+  });
+
+  it('preserves the row index + cell key for a sheet unknown column reference', () => {
+    const result = SheetContentSchema.safeParse({
+      columns: [{ id: 'c1', key: 'name' }],
+      rows: [{ id: 'r1', cells: { unknown: { value: 'x' } } }],
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const issues = formatArtifactValidationIssues(result.error);
+    const paths = issues.map((i) => i.path);
+    expect(paths).toContain('rows.0.cells.unknown');
+  });
+
+  it('does NOT collapse to a top-level key the way flatten() would', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'Bad', start: 'not-a-date', end: '2026-01-10', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const issues = formatArtifactValidationIssues(result.error);
+    // flatten() would produce { fieldErrors: { tasks: [...] }, formErrors: [] }
+    // — an object, not an array. The issue list must be an array of
+    // {path,message,code} entries with indexed paths.
+    expect(Array.isArray(issues)).toBe(true);
+    expect(issues.some((i) => /\btasks\.\d+\./.test(i.path))).toBe(true);
+  });
+});
+
+describe('summarizeArtifactValidationIssues', () => {
+  it('produces a human-readable summary with the nested path', () => {
+    const result = TimelineContentSchema.safeParse({
+      tasks: [{ id: 't1', title: 'Bad', start: 'not-a-date', end: '2026-01-10', progress: 0 }],
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    const summary = summarizeArtifactValidationIssues(result.error);
+    expect(summary).toContain('tasks.0.start');
   });
 });

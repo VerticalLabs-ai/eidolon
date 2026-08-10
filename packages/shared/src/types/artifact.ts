@@ -488,3 +488,42 @@ export function validateArtifactContent(type: z.infer<typeof ArtifactTypeSchema>
   };
   return (schemas[type] ?? z.never()).safeParse(content);
 }
+
+/**
+ * Format a Zod validation error into a list of issues that preserve the full
+ * nested field path (e.g. `tasks.0.start`) instead of collapsing to top-level
+ * keys (which is what `error.flatten()` does).
+ *
+ * `error.flatten()` only retains top-level keys, so a failure Zod reports at
+ * `tasks.0.start` is collapsed into a single `tasks` field error. That loses
+ * the array index the UI needs to attach the error to the offending row/cell/
+ * task, and gives the agent authoring path a vague "tasks is invalid" instead
+ * of "tasks.0.start is not a parsable date" — directly costing retry attempts
+ * on agent-generated Sheets/Boards/Timelines.
+ *
+ * Used as the `details` of an `INVALID_ARTIFACT_CONTENT` error so both the UI
+ * and the agent authoring path can pinpoint the offending field.
+ */
+export function formatArtifactValidationIssues(error: z.ZodError): Array<{
+  path: string;
+  message: string;
+  code: string;
+}> {
+  return error.issues.map((issue) => ({
+    path: issue.path.map((segment) => String(segment)).join('.'),
+    message: issue.message,
+    code: issue.code,
+  }));
+}
+
+/**
+ * Build a human-readable summary of a Zod validation error that surfaces the
+ * specific offending field paths (e.g. `tasks.0.start: ... is not a valid
+ * date`). Used to enrich the agent-facing error text so the model can
+ * self-correct a malformed artifact in fewer retries.
+ */
+export function summarizeArtifactValidationIssues(error: z.ZodError): string {
+  return formatArtifactValidationIssues(error)
+    .map((issue) => `${issue.path}${issue.path ? ': ' : ''}${issue.message}`)
+    .join('; ');
+}

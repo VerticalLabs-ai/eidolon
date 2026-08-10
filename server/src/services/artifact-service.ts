@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
-import { ArtifactTypeSchema, validateArtifactContent } from '@eidolon/shared';
+import { ArtifactTypeSchema, validateArtifactContent, formatArtifactValidationIssues, summarizeArtifactValidationIssues } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import { hasSession, mergeExternalUpdate, updateSessionAfterFlush } from '../realtime/coedit-session.js';
@@ -46,7 +46,16 @@ type RevisionRow = {
 
 function assertContent(type: ArtifactType, content: unknown): void {
   const result = validateArtifactContent(type, content);
-  if (!result.success) throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Content does not match the artifact type', result.error.flatten());
+  if (!result.success) {
+    const issues = formatArtifactValidationIssues(result.error);
+    const summary = summarizeArtifactValidationIssues(result.error);
+    throw new AppError(
+      400,
+      'INVALID_ARTIFACT_CONTENT',
+      `Content does not match the artifact type${summary ? `: ${summary}` : ''}`,
+      issues,
+    );
+  }
 }
 
 /** Decrypt the content envelope on an artifact row (returns a new object). */

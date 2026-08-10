@@ -852,4 +852,103 @@ describe('Timeline artifact API — real-Postgres integration', () => {
       expect(badEvents.filter((e) => e.type.startsWith('artifact.'))).toHaveLength(0);
     });
   });
+
+  // =========================================================================
+  // Nested validation error path fidelity (misc-validation-error-path-fidelity)
+  // =========================================================================
+  // Zod reports indexed-collection failures at the full nested path (e.g.
+  // `tasks.0.start`), but the API used to collapse them to top-level keys via
+  // `error.flatten()`. These tests assert the error `details` preserve the
+  // nested path so UI editors and the agent authoring path can pinpoint the
+  // offending task/row/cell. The error code (INVALID_ARTIFACT_CONTENT) and
+  // 400 status contract are unchanged.
+
+  describe('nested validation error path fidelity', () => {
+    /** Assert `details` is an array of issues with `path`/`message`/`code`. */
+    function expectIssueShape(res: { body: { details?: unknown } }) {
+      expect(Array.isArray(res.body.details)).toBe(true);
+      for (const issue of res.body.details as Array<Record<string, unknown>>) {
+        expect(typeof issue.path).toBe('string');
+        expect(typeof issue.message).toBe('string');
+        expect(typeof issue.code).toBe('string');
+      }
+    }
+
+    it('preserves the nested task index + field in details for an unparsable start date', async () => {
+      const content = {
+        tasks: [
+          { id: 't1', title: 'Bad', start: 'not-a-date', end: '2026-01-10', progress: 0 },
+        ],
+      };
+      const res = await createTimeline({ content }).expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+      expectIssueShape(res);
+      const paths = (res.body.details as Array<{ path: string }>).map((i) => i.path);
+      expect(paths).toContain('tasks.0.start');
+      // The agent-facing message also surfaces the offending field path
+      expect(res.body.message).toContain('tasks.0.start');
+    });
+
+    it('preserves the nested task index + field in details for an unparsable end date', async () => {
+      const content = {
+        tasks: [
+          { id: 't1', title: 'Bad', start: '2026-01-01', end: 'also-bad', progress: 0 },
+        ],
+      };
+      const res = await createTimeline({ content }).expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+      const paths = (res.body.details as Array<{ path: string }>).map((i) => i.path);
+      expect(paths).toContain('tasks.0.end');
+      expect(res.body.message).toContain('tasks.0.end');
+    });
+
+    it('preserves the nested path for a second task (index 1), not just the first', async () => {
+      const content = {
+        tasks: [
+          { id: 't0', title: 'Good', start: '2026-01-01', end: '2026-01-10', progress: 0 },
+          { id: 't1', title: 'Bad', start: '2026-01-01', end: '2026-01-05', dependsOn: ['ghost'], progress: 0 },
+        ],
+      };
+      const res = await createTimeline({ content }).expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+      const paths = (res.body.details as Array<{ path: string }>).map((i) => i.path);
+      // The unknown-dependency issue is reported at the second task's dependsOn
+      expect(paths).toContain('tasks.1.dependsOn');
+    });
+
+    it('preserves nested paths on a PATCH rejection (update path, not just create)', async () => {
+      const created = await createTimeline().expect(201);
+      const id = created.body.data.id;
+      const res = await request(app)
+        .patch(`/api/companies/${companyId}/artifacts/${id}`)
+        .send({
+          content: { tasks: [{ id: 'task_1', title: 'Planning', start: 'not-a-date', end: '2026-01-10', progress: 50 }] },
+          version: 1,
+        })
+        .expect(400);
+      expect(res.body.code).toBe('INVALID_ARTIFACT_CONTENT');
+      const paths = (res.body.details as Array<{ path: string }>).map((i) => i.path);
+      expect(paths).toContain('tasks.0.start');
+    });
+
+    it('does NOT collapse nested paths to a single top-level tasks key', async () => {
+      const content = {
+        tasks: [
+          { id: 't1', title: 'Bad', start: 'not-a-date', end: '2026-01-10', progress: 0 },
+        ],
+      };
+      const res = await createTimeline({ content }).expect(400);
+      const details = res.body.details as Array<{ path: string }>;
+      // The details must be an issue list (not a flattened {fieldErrors,formErrors} object)
+      expect(Array.isArray(details)).toBe(true);
+      // No issue should be a bare top-level "tasks" with no index
+      const bareTasks = details.filter((i) => i.path === 'tasks');
+      // A bare "tasks" path is only acceptable for whole-array issues (e.g.
+      // cycle detection); the per-task date error must carry the index.
+      expect(details.some((i) => i.path === 'tasks.0.start')).toBe(true);
+      // Ensure at least one indexed path is present (the whole point of the fix)
+      expect(details.some((i) => /\btasks\.\d+\./.test(i.path))).toBe(true);
+      void bareTasks;
+    });
+  });
 });

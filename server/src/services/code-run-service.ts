@@ -26,7 +26,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CodeContentSchema, SUPPORTED_CODE_LANGUAGES, type CodeLanguage } from '@eidolon/shared';
+import { CodeContentSchema, SUPPORTED_CODE_LANGUAGES, type CodeLanguage, formatArtifactValidationIssues, summarizeArtifactValidationIssues } from '@eidolon/shared';
 import { getArtifact } from './artifact-service.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
@@ -308,7 +308,8 @@ export async function runCodeArtifact(
   }
   const parsed = CodeContentSchema.safeParse(artifact.content);
   if (!parsed.success) {
-    throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Code content does not match the code schema', parsed.error.flatten());
+    const summary = summarizeArtifactValidationIssues(parsed.error);
+    throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Code content does not match the code schema${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
   }
   const content = parsed.data;
   const language = content.language;

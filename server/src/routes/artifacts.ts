@@ -6,7 +6,7 @@ import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifact
 import { moveArtifactToFolder } from '../services/folder-service.js';
 import { runCodeArtifact } from '../services/code-run-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
-import { ArtifactTypeSchema, DashboardContentSchema } from '@eidolon/shared';
+import { ArtifactTypeSchema, DashboardContentSchema, formatArtifactValidationIssues, summarizeArtifactValidationIssues } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel } from '../services/permission-service.js';
 import { requireStepUp, type StepUpScope } from '../services/stepup-service.js';
@@ -280,7 +280,8 @@ export function artifactsRouter(db: DbInstance): Router {
     }
     const parsed = DashboardContentSchema.safeParse(artifact.content);
     if (!parsed.success) {
-      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Dashboard content is invalid', parsed.error.flatten());
+      const summary = summarizeArtifactValidationIssues(parsed.error);
+      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Dashboard content is invalid${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
     }
     const dataSourceId = req.params.dataSourceId;
     const source = parsed.data.dataSources.find((ds) => ds.id === dataSourceId);
@@ -303,7 +304,8 @@ export function artifactsRouter(db: DbInstance): Router {
     }
     const parsed = DashboardContentSchema.safeParse(artifact.content);
     if (!parsed.success) {
-      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Dashboard content is invalid', parsed.error.flatten());
+      const summary = summarizeArtifactValidationIssues(parsed.error);
+      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Dashboard content is invalid${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
     }
     const results = await Promise.all(
       parsed.data.dataSources.map((ds) =>
