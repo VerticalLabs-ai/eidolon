@@ -1084,6 +1084,125 @@ describe('Co-editing WebSocket — real WS clients', () => {
   });
 
   // =========================================================================
+  // W2. Non-participant cursor/selection rejection (co-edit hardening).
+  //     Same auth gap class as the applyOperation fix: a WS client that has
+  //     NOT joined the session cannot inject cursor/selection events.
+  // =========================================================================
+
+  it('non-participant cursor is rejected with error', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    wsB = await openWs(port);
+    await subscribe(wsA, companyId);
+    await subscribe(wsB, companyId);
+
+    // A joins the session; B does NOT
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    // B (non-participant) tries to send a cursor event
+    sendWs(wsB, { type: 'coedit.cursor', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', position: 3 });
+
+    // B should receive a coedit.error
+    const errorMsg = await waitForCoEdit(wsB, 'coedit.error');
+    expect(errorMsg.artifactId).toBe(doc.id);
+    expect(errorMsg.message).toContain('Not a participant');
+
+    // A (participant) should NOT receive the injected cursor as a broadcast
+    const msgs = await collectFor(wsA, 400);
+    const cursorBroadcasts = msgs.filter(m => m.type === 'coedit.cursor.broadcast');
+    expect(cursorBroadcasts).toHaveLength(0);
+  });
+
+  it('non-participant selection is rejected with error', async () => {
+    const doc = await createDoc('# Hello World');
+    wsA = await openWs(port);
+    wsB = await openWs(port);
+    await subscribe(wsA, companyId);
+    await subscribe(wsB, companyId);
+
+    // A joins the session; B does NOT
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    // B (non-participant) tries to send a selection event
+    sendWs(wsB, { type: 'coedit.selection', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', range: { start: 2, end: 7 } });
+
+    // B should receive a coedit.error
+    const errorMsg = await waitForCoEdit(wsB, 'coedit.error');
+    expect(errorMsg.artifactId).toBe(doc.id);
+    expect(errorMsg.message).toContain('Not a participant');
+
+    // A (participant) should NOT receive the injected selection as a broadcast
+    const msgs = await collectFor(wsA, 400);
+    const selBroadcasts = msgs.filter(m => m.type === 'coedit.selection.broadcast');
+    expect(selBroadcasts).toHaveLength(0);
+  });
+
+  it('participant cursor/selection still broadcast after hardening (no regression)', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    wsB = await openWs(port);
+    await subscribe(wsA, companyId);
+    await subscribe(wsB, companyId);
+
+    // Both join the session (both are participants)
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+    await joinSession(wsB, doc.id, 'user-b', 'Bob');
+
+    // B (participant) sends a cursor event — A should receive it
+    sendWs(wsB, { type: 'coedit.cursor', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', position: 3 });
+    const cursorMsg = await waitForCoEdit(wsA, 'coedit.cursor.broadcast');
+    expect(cursorMsg.userId).toBe('user-b');
+    expect(cursorMsg.position).toBe(3);
+
+    // B (participant) sends a selection event — A should receive it
+    sendWs(wsB, { type: 'coedit.selection', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', range: { start: 2, end: 7 } });
+    const selMsg = await waitForCoEdit(wsA, 'coedit.selection.broadcast');
+    expect(selMsg.userId).toBe('user-b');
+    expect(selMsg.range).toEqual({ start: 2, end: 7 });
+  });
+
+  // =========================================================================
+  // W3. Atomic content+title save in updateArtifact co-edit path.
+  //     A PATCH with content + title through an active co-edit session must
+  //     persist both in a single version increment (one DB transaction), not
+  //     two separate operations. Verifies the hardening fix that passes
+  //     input.title to saveArtifactContent directly.
+  // =========================================================================
+
+  it('co-edit PATCH with content + title persists both atomically (single version bump)', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    // PATCH with both content AND title through the active session path
+    const patchRes = await request(app)
+      .patch(`/api/companies/${companyId}/artifacts/${doc.id}`)
+      .send({
+        content: { format: 'markdown', body: '# Hello Updated' },
+        title: '__mtest__ Atomic Title',
+        version: doc.version,
+      })
+      .expect(200);
+
+    // Both content and title should be persisted in the response
+    expect(patchRes.body.data.content.body).toBe('# Hello Updated');
+    expect(patchRes.body.data.title).toBe('__mtest__ Atomic Title');
+    // Single version bump (one transaction, not two)
+    expect(patchRes.body.data.version).toBe(doc.version + 1);
+
+    // Verify persistence via GET
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+    expect(getRes.body.data.content.body).toBe('# Hello Updated');
+    expect(getRes.body.data.title).toBe('__mtest__ Atomic Title');
+    expect(getRes.body.data.version).toBe(doc.version + 1);
+
+    // Exactly one new revision row (atomic single save)
+    const revsRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}/revisions`);
+    expect(revsRes.body.data.length).toBe(2); // create + one PATCH
+  });
+
+  // =========================================================================
   // X. Non-co-editable types (gallery/dashboard/app) — joinSession refuses
   //    to create a session, so PATCH goes through the standard LWW path.
   // =========================================================================

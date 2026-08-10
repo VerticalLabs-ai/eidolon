@@ -71,6 +71,7 @@ export function DocEditor({
   const [body, setBody] = useState(parsed.body);
   const [saveError, setSaveError] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevBodyRef = useRef(parsed.body);
   const opCounterRef = useRef(0);
   const coeditSendOpRef = useRef(coeditSendOp);
@@ -190,10 +191,15 @@ export function DocEditor({
     return () => window.removeEventListener("keydown", handler);
   }, [handleSave, isDirty, saving]);
 
-  // Co-editing: send cursor position on selection change
+  // Co-editing: send cursor position on selection change.
+  // Uses a ref attached to the Textarea component instead of a global
+  // document.querySelector, so the correct editor instance is bound even if
+  // two DocEditor instances were ever mounted simultaneously (querySelector
+  // would return the first match and place the cursor overlay on the wrong
+  // editor).
   useEffect(() => {
     if (!coeditSendCursor) return;
-    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Document body"]');
+    const textarea = textareaRef.current;
     if (!textarea) return;
     const handleSelection = () => {
       const pos = textarea.selectionStart;
@@ -332,6 +338,7 @@ export function DocEditor({
           </div>
         ) : null}
         <Textarea
+          ref={textareaRef}
           value={body}
           onChange={handleBodyChange}
           placeholder="Start writing in markdown…"

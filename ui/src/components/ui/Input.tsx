@@ -4,6 +4,7 @@ import type {
   TextareaHTMLAttributes,
   SelectHTMLAttributes,
   ReactNode,
+  Ref,
 } from "react";
 
 // ── Text Input ───────────────────────────────────────────────────────────
@@ -39,9 +40,10 @@ export function Input({ label, error, className, id, ...props }: InputProps) {
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
   error?: string;
+  ref?: Ref<HTMLTextAreaElement>;
 }
 
-export function Textarea({ label, error, className, id, ...props }: TextareaProps) {
+export function Textarea({ label, error, className, id, ref, ...props }: TextareaProps) {
   const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
   return (
     <div className="space-y-1.5">
@@ -54,6 +56,7 @@ export function Textarea({ label, error, className, id, ...props }: TextareaProp
         </label>
       )}
       <textarea
+        ref={ref}
         id={inputId}
         className={clsx(inputBase, "min-h-[80px] resize-y", className)}
         {...props}

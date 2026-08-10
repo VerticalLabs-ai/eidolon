@@ -482,6 +482,12 @@ export function applyOperation(
 
 /**
  * Broadcast a cursor update to all other participants.
+ *
+ * Authorization: only session participants may broadcast cursor updates.
+ * Without this check, any WS client that knows the artifactId could inject
+ * cursor events into an active session (same auth gap class as the
+ * `applyOperation` fix). Non-participants are rejected with an error that
+ * the WS server surfaces to the sender.
  */
 export function broadcastCursor(
   artifactId: string,
@@ -492,6 +498,9 @@ export function broadcastCursor(
 ): void {
   const session = sessions.get(artifactId);
   if (!session) return;
+  if (!session.participants.has(userId)) {
+    throw new Error('Not a participant in this co-edit session');
+  }
   for (const [pid, participant] of session.participants) {
     if (pid !== userId) {
       sendTo(participant.ws, {
@@ -508,6 +517,9 @@ export function broadcastCursor(
 
 /**
  * Broadcast a selection update to all other participants.
+ *
+ * Authorization: only session participants may broadcast selection updates
+ * (same guard as `broadcastCursor`).
  */
 export function broadcastSelection(
   artifactId: string,
@@ -518,6 +530,9 @@ export function broadcastSelection(
 ): void {
   const session = sessions.get(artifactId);
   if (!session) return;
+  if (!session.participants.has(userId)) {
+    throw new Error('Not a participant in this co-edit session');
+  }
   for (const [pid, participant] of session.participants) {
     if (pid !== userId) {
       sendTo(participant.ws, {

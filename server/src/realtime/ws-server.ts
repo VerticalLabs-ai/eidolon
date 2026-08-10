@@ -205,23 +205,39 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
       break;
     }
     case 'coedit.cursor': {
-      broadcastCursor(
-        msg.artifactId,
-        msg.userId,
-        msg.name,
-        msg.color ?? '',
-        msg.position,
-      );
+      try {
+        broadcastCursor(
+          msg.artifactId,
+          msg.userId,
+          msg.name,
+          msg.color ?? '',
+          msg.position,
+        );
+      } catch (err) {
+        client.ws.send(JSON.stringify({
+          type: 'coedit.error',
+          artifactId: msg.artifactId,
+          message: err instanceof Error ? err.message : 'Cursor broadcast failed',
+        }));
+      }
       break;
     }
     case 'coedit.selection': {
-      broadcastSelection(
-        msg.artifactId,
-        msg.userId,
-        msg.name,
-        msg.color ?? '',
-        msg.range,
-      );
+      try {
+        broadcastSelection(
+          msg.artifactId,
+          msg.userId,
+          msg.name,
+          msg.color ?? '',
+          msg.range,
+        );
+      } catch (err) {
+        client.ws.send(JSON.stringify({
+          type: 'coedit.error',
+          artifactId: msg.artifactId,
+          message: err instanceof Error ? err.message : 'Selection broadcast failed',
+        }));
+      }
       break;
     }
     case 'coedit.save': {
