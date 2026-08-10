@@ -1,9 +1,67 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { WebSocket } from 'ws';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { setupWebSocketServer } from '../realtime/ws-server.js';
+import { getProvider } from '../providers/index.js';
+import type { CompletionResult } from '../providers/types.js';
 import type { DbInstance } from '../types.js';
+
+// ---------------------------------------------------------------------------
+// Provider mocking helpers — deterministic LLM responses for meeting tests
+// ---------------------------------------------------------------------------
+// The meeting summarize/action-items pipelines call `provider.chat()` when
+// `resolveLlm()` finds a configured provider key. To make these tests fully
+// deterministic (no live Anthropic/OpenAI/Google API calls) AND to exercise
+// the full task-mechanics assertions regardless of LLM availability, we
+// stub the provider's `chat` method with a deterministic response and set a
+// throwaway API key so `resolveLlm()` returns a config.
+//
+// The extractive-fallback path (no key → resolveLlm returns null) is covered
+// by a separate dedicated test below.
+
+/** A deterministic LLM summary grounded in the TRANSCRIPT fixture. */
+const MOCK_SUMMARY =
+  'The team discussed launching the billing dashboard next week. Bob will wire up the Stripe integration by Wednesday. Alice noted a login redirect bug to fix beforehand. Carol will write API docs. Dave reminded everyone about the Q3 review on Friday.';
+
+/** A deterministic action-items JSON the extractor is instructed to return. */
+const MOCK_ACTION_ITEMS_JSON = JSON.stringify({
+  actionItems: [
+    { title: 'Wire up Stripe integration', description: 'By Wednesday', priority: 'high' },
+    { title: 'Fix login redirect bug', description: 'Before the billing launch', priority: 'high' },
+    { title: 'Write API docs', description: 'For the new API', priority: 'medium' },
+  ],
+});
+
+/** A type alias for the vi.spyOn mock instance returned by mockProviderChat. */
+type ChatSpy = ReturnType<typeof mockProviderChat>;
+
+function mockProviderChat(response: string) {
+  const provider = getProvider('anthropic');
+  return vi
+    .spyOn(provider, 'chat')
+    .mockResolvedValue({
+      content: response,
+      model: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      inputTokens: 10,
+      outputTokens: 20,
+      costCents: 0,
+      finishReason: 'end_turn',
+      latencyMs: 5,
+    } satisfies CompletionResult);
+}
+
+/** Enable the LLM path in resolveLlm() by setting a throwaway Anthropic key. */
+function enableMockLlm(): void {
+  process.env.ANTHROPIC_API_KEY = 'test-mock-key';
+}
+
+/** Restore the env + spy after a mocked LLM test. */
+function restoreLlm(spy?: ChatSpy): void {
+  delete process.env.ANTHROPIC_API_KEY;
+  spy?.mockRestore();
+}
 
 // ---------------------------------------------------------------------------
 // Realtime WS helpers (mirrors artifacts-ws.test.ts)
@@ -124,6 +182,9 @@ describe('Meetings pipeline', () => {
     wsA = null;
     wss?.close();
     wss = null;
+    // Safety: ensure no mock LLM key leaks between tests (try/finally in
+    // each mocked test handles this, but guard against exceptions).
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   /** Create a meeting via the project-scoped endpoint. */
@@ -172,7 +233,41 @@ describe('Meetings pipeline', () => {
 
   // -- VAL-MEETING-003 + 004: generate a grounded summary -------------------
 
-  it('generates a grounded summary that references transcript content', async () => {
+  it('generates a grounded summary that references transcript content (LLM mocked)', async () => {
+    enableMockLlm();
+    const spy = mockProviderChat(MOCK_SUMMARY);
+    try {
+      const meeting = await createMeeting();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/meetings/${meeting.id}/summarize`)
+        .expect(200);
+      const summary = res.body.data.summary as string;
+      expect(typeof summary).toBe('string');
+      expect(summary.length).toBeGreaterThan(0);
+      // Grounding: the mocked LLM summary references transcript content.
+      const lower = summary.toLowerCase();
+      const grounded =
+        lower.includes('billing') ||
+        lower.includes('stripe') ||
+        lower.includes('login') ||
+        lower.includes('dashboard');
+      expect(grounded).toBe(true);
+      // VAL-MEETING-004: a name absent from the transcript must NOT be invented.
+      expect(lower.includes('chris')).toBe(false);
+      // The provider.chat was actually called (LLM path, not fallback).
+      expect(spy).toHaveBeenCalled();
+      const got = await request(app).get(`/api/companies/${companyId}/meetings/${meeting.id}`).expect(200);
+      expect(got.body.data.summary).toBe(summary);
+    } finally {
+      restoreLlm(spy);
+    }
+  });
+
+  // -- Extractive fallback path (no LLM key → deterministic summary) ---------
+
+  it('falls back to a deterministic extractive summary when no LLM key is set', async () => {
+    // No key set (test-setup.ts deletes keys) → resolveLlm() returns null →
+    // the extractive fallback path runs (no network, deterministic).
     const meeting = await createMeeting();
     const res = await request(app)
       .post(`/api/companies/${companyId}/meetings/${meeting.id}/summarize`)
@@ -180,76 +275,94 @@ describe('Meetings pipeline', () => {
     const summary = res.body.data.summary as string;
     expect(typeof summary).toBe('string');
     expect(summary.length).toBeGreaterThan(0);
-    // Grounding: the summary must reference content present in the transcript.
-    // Either the LLM summary or the extractive fallback mentions transcript
-    // terms. We check for at least one transcript-derived token.
-    const lower = summary.toLowerCase();
-    const grounded =
-      lower.includes('billing') ||
-      lower.includes('stripe') ||
-      lower.includes('login') ||
-      lower.includes('dashboard') ||
-      lower.includes('meeting transcript excerpt');
-    expect(grounded).toBe(true);
-    // VAL-MEETING-004: a name absent from the transcript must NOT be invented.
-    expect(lower.includes('chris')).toBe(false);
+    // The extractive fallback prefixes with "Meeting transcript excerpt".
+    expect(summary.toLowerCase()).toContain('meeting transcript excerpt');
+    // Grounded in transcript content.
+    expect(summary.toLowerCase()).toContain('billing');
     const got = await request(app).get(`/api/companies/${companyId}/meetings/${meeting.id}`).expect(200);
     expect(got.body.data.summary).toBe(summary);
   });
 
   // -- VAL-MEETING-005: extract action items as tasks linked to the project
 
-  it('extracts action items as real tasks linked to the project', async () => {
+  it('extracts action items as real tasks linked to the project (LLM mocked)', async () => {
+    enableMockLlm();
+    const spy = mockProviderChat(MOCK_ACTION_ITEMS_JSON);
+    try {
+      const meeting = await createMeeting();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/meetings/${meeting.id}/action-items`)
+        .expect(200);
+      const tasks = res.body.data.tasks as Array<Record<string, unknown>>;
+      // The mocked LLM always returns 3 action items — assert fully (no
+      // conditional skip). Each must be a real task with an id + title
+      // (linked via the meeting_tasks join).
+      expect(tasks.length).toBe(3);
+      expect(spy).toHaveBeenCalled();
+      for (const t of tasks) {
+        expect(t.id).toBeTruthy();
+        expect(typeof t.title).toBe('string');
+        expect((t.title as string).length).toBeGreaterThan(0);
+        expect(t.projectId).toBe(projectId);
+      }
+      // The meeting's task list endpoint returns them (bidirectional linkage).
+      const tasksList = await request(app).get(`/api/companies/${companyId}/meetings/${meeting.id}/tasks`).expect(200);
+      expect(Array.isArray(tasksList.body.data)).toBe(true);
+      expect(tasksList.body.data.length).toBe(tasks.length);
+      // VAL-MEETING-005: tasks appear in the project task list.
+      const projectTasks = await request(app).get(`/api/companies/${companyId}/tasks?project=${projectId}`).expect(200);
+      const ids = (projectTasks.body.data as Array<{ id: string }>).map((t) => t.id);
+      for (const t of tasks) expect(ids).toContain(t.id);
+    } finally {
+      restoreLlm(spy);
+    }
+  });
+
+  // -- Extractive fallback for action items (no LLM → zero tasks, graceful)
+
+  it('action-items on a meaningful transcript with no LLM key yields zero tasks (graceful, grounded)', async () => {
+    // No key set → resolveLlm() returns null → no LLM call → zero fabricated
+    // tasks. This is the grounded-only fallback (do not invent work).
     const meeting = await createMeeting();
     const res = await request(app)
       .post(`/api/companies/${companyId}/meetings/${meeting.id}/action-items`)
       .expect(200);
-    const tasks = res.body.data.tasks as Array<Record<string, unknown>>;
-    // The LLM may or may not extract items; both are valid. When items are
-    // extracted, each must be a real task with an id + title (linked via the
-    // meeting_tasks join, queryable via the meeting's task list).
-    for (const t of tasks) {
-      expect(t.id).toBeTruthy();
-      expect(typeof t.title).toBe('string');
-      expect(t.projectId).toBe(projectId);
-    }
-    // The meeting's task list endpoint returns them (bidirectional linkage).
-    const tasksList = await request(app).get(`/api/companies/${companyId}/meetings/${meeting.id}/tasks`).expect(200);
-    expect(Array.isArray(tasksList.body.data)).toBe(true);
-    expect(tasksList.body.data.length).toBe(tasks.length);
-    // VAL-MEETING-005: tasks appear in the project task list.
-    if (tasks.length > 0) {
-      const projectTasks = await request(app).get(`/api/companies/${companyId}/tasks?project=${projectId}`).expect(200);
-      const ids = (projectTasks.body.data as Array<{ id: string }>).map((t) => t.id);
-      for (const t of tasks) expect(ids).toContain(t.id);
-    }
+    expect(res.body.data.tasks).toEqual([]);
+    expect(res.body.data.skipped).toBe(true);
   });
 
   // -- VAL-MEETING-010: action items are real tasks (status/assignee/board) -
 
-  it('extracted action items are real tasks editable via PATCH /tasks/:id', async () => {
-    const meeting = await createMeeting();
-    const res = await request(app)
-      .post(`/api/companies/${companyId}/meetings/${meeting.id}/action-items`)
-      .expect(200);
-    const tasks = res.body.data.tasks as Array<Record<string, unknown>>;
-    if (tasks.length === 0) {
-      // No LLM — skip the board-mechanics sub-assertion gracefully (still
-      // assert that zero tasks is a valid graceful result).
-      expect(tasks.length).toBe(0);
-      return;
+  it('extracted action items are real tasks editable via PATCH /tasks/:id (LLM mocked)', async () => {
+    enableMockLlm();
+    const spy = mockProviderChat(MOCK_ACTION_ITEMS_JSON);
+    try {
+      const meeting = await createMeeting();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/meetings/${meeting.id}/action-items`)
+        .expect(200);
+      const tasks = res.body.data.tasks as Array<Record<string, unknown>>;
+      // The mocked LLM always returns 3 action items — the board-mechanics
+      // assertions ALWAYS run (no conditional skip when the LLM is absent).
+      expect(tasks.length).toBe(3);
+      expect(spy).toHaveBeenCalled();
+      const task = tasks[0];
+      // PATCH the task to change status — it behaves like any task.
+      const patched = await request(app)
+        .patch(`/api/companies/${companyId}/tasks/${task.id}`)
+        .send({ status: 'todo' })
+        .expect(200);
+      expect(patched.body.data.status).toBe('todo');
+      // The task remains linked to the meeting via the join table.
+      const meetingTasksList = await request(app).get(`/api/companies/${companyId}/meetings/${meeting.id}/tasks`).expect(200);
+      const linkedIds = (meetingTasksList.body.data as Array<{ id: string }>).map((t) => t.id);
+      expect(linkedIds).toContain(task.id);
+      // VAL-MEETING-010: the task has the meeting-action-item tag (board
+      // mechanics — it is a first-class task in the task system).
+      expect((task.tags as string[] | undefined)?.includes('meeting-action-item')).toBe(true);
+    } finally {
+      restoreLlm(spy);
     }
-    const task = tasks[0];
-    // PATCH the task to change status — it behaves like any task.
-    const patched = await request(app)
-      .patch(`/api/companies/${companyId}/tasks/${task.id}`)
-      .send({ status: 'todo' })
-      .expect(200);
-    expect(patched.body.data.status).toBe('todo');
-    // The task remains linked to the meeting via the join table.
-    const meetingTasksList = await request(app).get(`/api/companies/${companyId}/meetings/${meeting.id}/tasks`).expect(200);
-    const linkedIds = (meetingTasksList.body.data as Array<{ id: string }>).map((t) => t.id);
-    expect(linkedIds).toContain(task.id);
   });
 
   // -- VAL-MEETING-011: empty/garbage transcript handled gracefully (no 500)

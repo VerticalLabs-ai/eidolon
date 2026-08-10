@@ -15,7 +15,7 @@ import { validateProjectOwnership } from '../utils/project-validation.js';
 import type { DbInstance } from '../types.js';
 
 type MeetingStatus = 'active' | 'archived' | 'deleted';
-type Editor = { userId?: string | null; agentId?: string | null };
+type Editor = { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' };
 
 function emit(
   type:
@@ -185,8 +185,8 @@ function isMeaningfulTranscript(transcript: string | null): transcript is string
 function resolveLlm(): { provider: string; apiKey: string; model: string } | null {
   const candidates: Array<{ provider: string; envKey: string; model: string }> = [
     { provider: 'anthropic', envKey: 'ANTHROPIC_API_KEY', model: 'claude-sonnet-4-6' },
-    { provider: 'openai', envKey: 'OPENAI_API_KEY', model: 'gpt-4o-mini' },
-    { provider: 'google', envKey: 'GOOGLE_API_KEY', model: 'gemini-1.5-flash' },
+    { provider: 'openai', envKey: 'OPENAI_API_KEY', model: 'gpt-4.1-mini' },
+    { provider: 'google', envKey: 'GOOGLE_API_KEY', model: 'gemini-2.5-flash' },
   ];
   for (const c of candidates) {
     const key = process.env[c.envKey];
