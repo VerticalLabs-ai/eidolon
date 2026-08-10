@@ -3,6 +3,8 @@ import { X, Shield, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { usePermissions, useGrantPermission, useRevokePermission, useTeams } from "@/lib/hooks";
+import { useServerEvents } from "@/lib/ws";
+import { useQueryClient } from "@tanstack/react-query";
 import type { PermissionResourceType, AccessLevel, GranteeType, PermissionRecord, Team } from "@/lib/api";
 
 interface PermissionManagerProps {
@@ -30,6 +32,17 @@ export function PermissionManager({
   const { data: teams = [] } = useTeams(companyId);
   const grantMutation = useGrantPermission(companyId);
   const revokeMutation = useRevokePermission(companyId);
+  const qc = useQueryClient();
+
+  // Auto-refresh when permissions are externally changed (e.g. revoked via
+  // curl/API by another client). The server emits permission.granted /
+  // permission.revoked events on the company WS channel; invalidate the
+  // permission list query so the dialog re-fetches without a close/reopen.
+  const invalidatePermissions = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["permissions", companyId, resourceType, resourceId] });
+  }, [qc, companyId, resourceType, resourceId]);
+  useServerEvents(companyId, "permission.granted", invalidatePermissions);
+  useServerEvents(companyId, "permission.revoked", invalidatePermissions);
 
   const [granteeType, setGranteeType] = useState<GranteeType>("user");
   const [granteeId, setGranteeId] = useState("");

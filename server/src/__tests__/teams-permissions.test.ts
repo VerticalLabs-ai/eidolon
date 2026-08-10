@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { eq, and } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import { createTestServer, createTestDb } from '../test-utils.js';
 import { eventBus } from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
@@ -162,6 +163,37 @@ describe('Teams + Permissions RBAC — real-Postgres integration', () => {
       const userIds = members.body.data.map((m: any) => m.userId);
       expect(userIds).toContain(testUserIdA);
       expect(userIds).toContain(testUserIdB);
+    });
+
+    it('enriches members with displayName resolved from test_users', async () => {
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .send({ userId: testUserIdA })
+        .expect(201);
+
+      const members = await request(app)
+        .get(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .expect(200);
+      expect(members.body.data).toHaveLength(1);
+      // displayName should be the human-readable name ("Alice"), not the UUID.
+      expect(members.body.data[0].userId).toBe(testUserIdA);
+      expect(members.body.data[0].displayName).toBe('Alice');
+    });
+
+    it('falls back to userId as displayName when no name is resolvable', async () => {
+      // Use an unknown user id that is not in test_users or Clerk.
+      const unknownId = 'unknown-user-' + randomUUID();
+      await request(app)
+        .post(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .send({ userId: unknownId })
+        .expect(201);
+
+      const members = await request(app)
+        .get(`/api/companies/${companyId}/teams/${teamId}/members`)
+        .expect(200);
+      const m = members.body.data.find((x: any) => x.userId === unknownId);
+      expect(m).toBeDefined();
+      expect(m.displayName).toBe(unknownId);
     });
 
     it('is idempotent — adding the same user twice does not duplicate', async () => {

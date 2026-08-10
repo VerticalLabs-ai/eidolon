@@ -243,21 +243,24 @@ function TeamRow({
             <p className="text-xs text-text-secondary py-2">No members yet.</p>
           ) : (
             <ul className="space-y-1" role="list">
-              {members.map((member: TeamMember) => (
+              {members.map((member: TeamMember) => {
+                const label = member.displayName || member.userId;
+                return (
                 <li key={member.id} className="flex items-center gap-2 py-1">
                   <div className="flex h-6 w-6 items-center justify-center rounded-full bg-accent/10 text-xs text-accent">
-                    {member.userId.slice(0, 2).toUpperCase()}
+                    {label.slice(0, 2).toUpperCase()}
                   </div>
-                  <span className="flex-1 truncate text-xs text-text-primary font-mono">{member.userId}</span>
+                  <span className="flex-1 truncate text-xs text-text-primary">{label}</span>
                   <button
                     onClick={() => handleRemoveMember(member.userId)}
                     className="flex h-6 w-6 items-center justify-center rounded-md text-text-secondary hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-                    aria-label={`Remove member ${member.userId}`}
+                    aria-label={`Remove member ${label}`}
                   >
                     <UserMinus className="h-3 w-3" />
                   </button>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>

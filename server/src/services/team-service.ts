@@ -1,6 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
+import { getCompanyMembers } from '../auth.js';
 import type { DbInstance } from '../types.js';
 type Team = {
   id: string;
@@ -15,8 +16,56 @@ type TeamMember = {
   id: string;
   teamId: string;
   userId: string;
+  /** Human-readable name resolved from Clerk (production) or test_users
+   * (local_trusted). Falls back to the raw userId when no name is found so
+   * the UI never shows a bare UUID when a name is available. */
+  displayName: string;
   createdAt: Date;
 };
+
+/**
+ * Resolve display names for a set of user IDs within a company.
+ *
+ * In production (Clerk), names come from the organization's memberships via
+ * {@link getCompanyMembers}. In `local_trusted` mode, the dev user is the
+ * only Clerk user, so additional test users are looked up from the
+ * `test_users` table. Any ID without a resolved name falls back to the raw
+ * userId so callers always receive a non-empty label.
+ */
+async function resolveDisplayNames(
+  db: DbInstance,
+  companyId: string,
+  userIds: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  if (userIds.length === 0) return names;
+
+  // 1. Clerk company members (production + the dev user in local_trusted).
+  const members = await getCompanyMembers(companyId);
+  for (const m of members) {
+    names.set(m.id, m.name || m.id);
+  }
+
+  // 2. test_users table (local_trusted additional test users).
+  const unresolved = userIds.filter((id) => !names.has(id));
+  if (unresolved.length > 0) {
+    const { testUsers } = db.schema;
+    const rows = await db.drizzle
+      .select({ id: testUsers.id, name: testUsers.name })
+      .from(testUsers)
+      .where(and(eq(testUsers.companyId, companyId), inArray(testUsers.id, unresolved)));
+    for (const r of rows) {
+      names.set(r.id, r.name);
+    }
+  }
+
+  // 3. Fallback to the raw userId for anything still unresolved.
+  for (const id of userIds) {
+    if (!names.has(id)) names.set(id, id);
+  }
+
+  return names;
+}
 
 function emitTeam(type: 'team.created' | 'team.updated' | 'team.deleted', companyId: string, team: unknown) {
   eventBus.emitEvent({ type, companyId, payload: { team }, timestamp: new Date().toISOString() });
@@ -100,13 +149,20 @@ export async function removeTeamMember(db: DbInstance, companyId: string, teamId
   emitMember('team.member.removed', companyId, teamId, userId);
 }
 
-/** List members of a team. */
+/** List members of a team. Each member is enriched with a `displayName`
+ * resolved from Clerk (production) or the test_users table (local_trusted)
+ * so the Teams UI can show human-readable names instead of raw UUIDs. */
 export async function listTeamMembers(db: DbInstance, companyId: string, teamId: string): Promise<TeamMember[]> {
   await getTeam(db, companyId, teamId);
   const rows = await db.drizzle.select().from(db.schema.teamMembers)
     .where(eq(db.schema.teamMembers.teamId, teamId))
     .orderBy(db.schema.teamMembers.createdAt);
-  return rows as TeamMember[];
+  const userIds = rows.map((r) => (r as TeamMember).userId);
+  const names = await resolveDisplayNames(db, companyId, userIds);
+  return rows.map((r) => {
+    const m = r as TeamMember;
+    return { ...m, displayName: names.get(m.userId) ?? m.userId };
+  });
 }
 
 /** Get all team ids a user belongs to (within a company). */

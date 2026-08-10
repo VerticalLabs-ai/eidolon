@@ -190,6 +190,21 @@ async function insertArtifact(
   return { artifactId, revisionId };
 }
 
+/** Insert an artifact folder for a company. `parentId` is optional for nesting. */
+async function insertFolder(
+  runner: SqlRunner,
+  companyId: string,
+  name: string,
+  parentId?: string,
+): Promise<string> {
+  const id = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO artifact_folders (id, company_id, parent_id, name, created_at, updated_at) VALUES ('${id}', '${companyId}', ${parentId ? `'${parentId}'` : 'NULL'}, '${name}', '${ts}', '${ts}')`,
+  );
+  return id;
+}
+
 /** Count rows in a table for a given company_id (or by id for the companies table). */
 async function countForCompany(runner: SqlRunner, table: string, companyId: string): Promise<number> {
   const column = table === 'companies' ? 'id' : 'company_id';
@@ -635,5 +650,62 @@ describe('Cleanup script logic', () => {
       `SELECT count(*) as count FROM meeting_tasks WHERE id = '${meetingTaskId}'`,
     );
     expect(parseInt(meetingTaskStillExists[0]?.count ?? '0', 10)).toBe(0);
+  });
+
+  // M4 tech-debt: artifact_folders self-referential FK (ON DELETE SET NULL)
+  // can cause a unique-constraint violation when cascade-deleting a company
+  // that has folders with sibling-named children under different parents.
+  // The cleanup must delete folders leaf-first (reverse hierarchy order).
+  it('deletes artifact_folders in reverse hierarchy order without unique-constraint violation', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ folders-cleanup');
+
+    // Build a tree where two different parents each have a child named "child".
+    // If the parent is deleted first (SET NULL on child.parent_id), both
+    // children collapse to top-level under the same company with the same
+    // name -> unique index collision on
+    // uq_artifact_folders_company_project_parent_name.
+    const parentA = await insertFolder(runner, fixtureId, 'parent-a');
+    const parentB = await insertFolder(runner, fixtureId, 'parent-b');
+    const childA = await insertFolder(runner, fixtureId, 'child', parentA);
+    const childB = await insertFolder(runner, fixtureId, 'child', parentB);
+    // Deeper nesting under childA to verify multi-level leaf-first deletion.
+    const grandchild = await insertFolder(runner, fixtureId, 'grandchild', childA);
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    const folderCount = result.tableCounts.find((c) => c.table === 'artifact_folders');
+    expect(folderCount?.count).toBe(5);
+
+    // All folders + the company are gone.
+    expect(await countForCompany(runner, 'artifact_folders', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'companies', fixtureId)).toBe(0);
+
+    // Verify each specific folder id is gone.
+    for (const fid of [parentA, parentB, childA, childB, grandchild]) {
+      const rows = await runner.query<{ count: string }>(
+        `SELECT count(*) as count FROM artifact_folders WHERE id = '${fid}'`,
+      );
+      expect(parseInt(rows[0]?.count ?? '0', 10)).toBe(0);
+    }
+  });
+
+  // Dry-run reports artifact_folders counts alongside other tables.
+  it('dry-run reports artifact_folders count without deleting', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ folders-dry');
+    await insertFolder(runner, fixtureId, 'top');
+    await insertAgent(runner, fixtureId, 'Agent 1');
+
+    const result = await runCleanup(runner, { execute: false });
+
+    expect(result.mode).toBe('dry-run');
+    const folderCount = result.tableCounts.find((c) => c.table === 'artifact_folders');
+    expect(folderCount?.count).toBe(1);
+
+    // Nothing deleted
+    expect(await countForCompany(runner, 'artifact_folders', fixtureId)).toBe(1);
+    expect(await countForCompany(runner, 'companies', fixtureId)).toBe(1);
   });
 });

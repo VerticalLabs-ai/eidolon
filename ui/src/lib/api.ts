@@ -3024,6 +3024,9 @@ export interface TeamMember {
   id: string;
   teamId: string;
   userId: string;
+  /** Human-readable name resolved server-side from Clerk (production) or
+   * test_users (local_trusted). Falls back to userId when unavailable. */
+  displayName?: string;
   createdAt: string;
 }
 
