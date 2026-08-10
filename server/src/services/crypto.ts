@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
@@ -41,8 +41,8 @@ function deriveKey(material: string): Buffer {
 }
 
 function keyIdFromKey(key: Buffer): string {
-  // Stable, short id from the key material (first 8 bytes hex = 16 chars).
-  return key.subarray(0, 8).toString('hex');
+  // Stable, non-reversible id derived from the key material.
+  return createHash('sha256').update(key).digest('hex').slice(0, 16);
 }
 
 function loadKeys(): void {
