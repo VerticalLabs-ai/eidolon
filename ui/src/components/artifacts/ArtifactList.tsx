@@ -95,6 +95,7 @@ export function ArtifactList({
       { value: "gallery", label: "Gallery" },
       { value: "dashboard", label: "Dashboard" },
       { value: "app", label: "App" },
+      { value: "code", label: "Code" },
     ],
     [],
   );

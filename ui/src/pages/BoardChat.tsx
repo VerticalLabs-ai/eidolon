@@ -29,24 +29,50 @@ import type { Agent, MentionableEntity } from "@/lib/api";
 
 const BOARD_SENDER_ID = "__board__"; // Legacy sentinel; board messages now use null fromAgentId
 
-type MentionEntry = { entityType: "agent" | "user"; entityId: string; label: string };
+type MentionEntry = { entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string };
 
-/** Render content with mention chips inline for persisted mentions. */
+/** Render content with mention chips inline for persisted mentions.
+ *  Artifact mentions render as inline ThreadArtifactCard references. */
 function renderMessageContent(
   content: string,
-  mentions?: MentionEntry[],
+  mentions: MentionEntry[] | undefined,
+  companyId: string,
 ): React.ReactNode {
   if (!mentions || mentions.length === 0) return content;
-  const labels = mentions.map((m) => m.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const regex = new RegExp(`(@(?:${labels.join("|")}))`, "g");
-  const parts = content.split(regex);
-  return parts.map((part, i) => {
-    const mention = mentions.find((m) => `@${m.label}` === part);
-    if (mention) {
-      return <MentionChip key={i} entityType={mention.entityType} label={mention.label} />;
-    }
-    return <span key={i}>{part}</span>;
-  });
+
+  const artifactMentions = mentions.filter((m) => m.entityType === "artifact");
+  const chipMentions = mentions.filter((m) => m.entityType !== "artifact");
+
+  let textRendered: React.ReactNode = content;
+  if (chipMentions.length > 0) {
+    const labels = chipMentions.map((m) => m.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const regex = new RegExp(`(@(?:${labels.join("|")}))`, "g");
+    const parts = content.split(regex);
+    textRendered = parts.map((part, i) => {
+      const mention = chipMentions.find((m) => `@${m.label}` === part);
+      if (mention) {
+        return <MentionChip key={i} entityType={mention.entityType} label={mention.label} />;
+      }
+      return <span key={i}>{part}</span>;
+    });
+  }
+
+  if (artifactMentions.length === 0) return textRendered;
+
+  return (
+    <span>
+      {textRendered}
+      {artifactMentions.map((m) => (
+        <ThreadArtifactCard
+          key={`artifact-mention-${m.entityId}`}
+          artifactId={m.entityId}
+          artifactType={m.artifactType ?? "document"}
+          companyId={companyId}
+          projectId={null}
+        />
+      ))}
+    </span>
+  );
 }
 
 /** Role badge colors (muted, no gradients) */
@@ -170,7 +196,12 @@ export function BoardChat() {
     setMessage(newText);
     setMentions((prev) => [
       ...prev,
-      { entityType: entity.entityType, entityId: entity.entityId, label: entity.label },
+      {
+        entityType: entity.entityType,
+        entityId: entity.entityId,
+        label: entity.label,
+        ...(entity.artifactType ? { artifactType: entity.artifactType } : {}),
+      },
     ]);
     setShowMentionPicker(false);
     mentionStartRef.current = -1;
@@ -554,7 +585,7 @@ export function BoardChat() {
                         )}
                       >
                         <p className="whitespace-pre-wrap break-words text-left">
-                          {renderMessageContent(msg.content, msgMentions)}
+                          {renderMessageContent(msg.content, msgMentions, companyId!)}
                         </p>
                       </div>
 
@@ -693,12 +724,23 @@ export function BoardChat() {
             </button>
           </div>
 
-          {/* Active mention chips */}
+          {/* Active mention chips. Artifact mentions render as inline
+              ThreadArtifactCard references; agent/user as compact chips. */}
           {mentions.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1.5 px-1">
-              {mentions.map((m, i) => (
-                <MentionChip key={i} entityType={m.entityType} label={m.label} />
-              ))}
+              {mentions.map((m, i) =>
+                m.entityType === "artifact" ? (
+                  <ThreadArtifactCard
+                    key={`composer-artifact-${i}`}
+                    artifactId={m.entityId}
+                    artifactType={m.artifactType ?? "document"}
+                    companyId={companyId!}
+                    projectId={null}
+                  />
+                ) : (
+                  <MentionChip key={i} entityType={m.entityType} label={m.label} />
+                ),
+              )}
             </div>
           )}
 

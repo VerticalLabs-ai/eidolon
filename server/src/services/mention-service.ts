@@ -18,6 +18,20 @@ import { getCompanyMembers, isCompanyMember, type CompanyMember } from '../auth.
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 
+// Display labels for artifact types, used as the subtitle in mention picker
+// results. Kept in sync with the UI type labels in ThreadArtifactCard.tsx.
+const ARTIFACT_TYPE_LABELS: Record<string, string> = {
+  document: 'Document',
+  sheet: 'Sheet',
+  board: 'Board',
+  slide_deck: 'Slides',
+  timeline: 'Timeline',
+  gallery: 'Gallery',
+  dashboard: 'Dashboard',
+  app: 'App',
+  code: 'Code',
+};
+
 export interface MentionDispatchContext {
   companyId: string;
   projectId: string | null;
@@ -98,6 +112,16 @@ export class MentionService {
     const users = await this.searchTeammates(companyId, q, limit - results.length);
     results.push(...users);
 
+    // Search artifacts within the company by title. Artifact mentions are
+    // inert structured references (no dispatch): they persist on the thread
+    // item and render as inline ThreadArtifactCards in the UI. Only active
+    // artifacts are mentionable (archived/deleted are excluded).
+    const remaining = limit - results.length;
+    if (remaining > 0) {
+      const artifacts = await this.searchArtifacts(companyId, q, remaining);
+      results.push(...artifacts);
+    }
+
     return results.slice(0, limit);
   }
 
@@ -171,12 +195,54 @@ export class MentionService {
   }
 
   // -------------------------------------------------------------------------
+  // Search artifacts within a company by title (for @-mention pickup).
+  // Only active artifacts are mentionable. Returns MentionableEntity entries
+  // carrying the artifact type so the UI can render the correct card icon.
+  // -------------------------------------------------------------------------
+
+  private async searchArtifacts(
+    companyId: string,
+    q: string,
+    remaining: number,
+  ): Promise<MentionableEntity[]> {
+    if (remaining <= 0) return [];
+
+    const { artifacts } = this.db.schema;
+    const conditions = [
+      eq(artifacts.companyId, companyId),
+      eq(artifacts.status, 'active'),
+    ];
+    if (q) {
+      conditions.push(ilike(artifacts.title, `%${q}%`)!);
+    }
+
+    const rows = await this.db.drizzle
+      .select({
+        id: artifacts.id,
+        title: artifacts.title,
+        type: artifacts.type,
+      })
+      .from(artifacts)
+      .where(and(...conditions))
+      .orderBy(desc(artifacts.updatedAt))
+      .limit(remaining);
+
+    return rows.map((r) => ({
+      entityType: 'artifact' as const,
+      entityId: r.id,
+      label: r.title,
+      subtitle: ARTIFACT_TYPE_LABELS[r.type] ?? r.type,
+      artifactType: r.type,
+    }));
+  }
+
+  // -------------------------------------------------------------------------
   // Resolve a mention entity (verify it belongs to the company)
   // -------------------------------------------------------------------------
 
   async resolveMention(
     companyId: string,
-    entityType: 'agent' | 'user',
+    entityType: 'agent' | 'user' | 'artifact',
     entityId: string,
   ): Promise<boolean> {
     if (entityType === 'agent') {
@@ -187,6 +253,25 @@ export class MentionService {
         .where(and(eq(agents.id, entityId), eq(agents.companyId, companyId)))
         .limit(1);
       return !!agent;
+    }
+
+    if (entityType === 'artifact') {
+      // Artifact mentions resolve when the artifact belongs to the company
+      // and is still active (not archived/deleted). This keeps stale
+      // references from persisting as structured mentions.
+      const { artifacts } = this.db.schema;
+      const [artifact] = await this.db.drizzle
+        .select({ id: artifacts.id })
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.id, entityId),
+            eq(artifacts.companyId, companyId),
+            eq(artifacts.status, 'active'),
+          ),
+        )
+        .limit(1);
+      return !!artifact;
     }
 
     // User mention — verify via real company membership lookup.
@@ -244,6 +329,9 @@ export class MentionService {
         const notified = await this.dispatchUserMention(ctx, mention);
         userNotifications.push({ userId: mention.entityId, notified });
       }
+      // entityType === 'artifact': inert structured reference. No dispatch,
+      // no notification. The mention persists on the thread item and the UI
+      // renders it as an inline ThreadArtifactCard.
     }
 
     return { agentDispatches, userNotifications };

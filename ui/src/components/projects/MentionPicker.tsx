@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, User } from "lucide-react";
+import { Bot, User, FileText } from "lucide-react";
 import { useMentionSearch } from "@/lib/hooks";
 import type { MentionableEntity } from "@/lib/api";
 
@@ -167,8 +167,10 @@ export function MentionPicker({
           >
             {entity.entityType === "agent" ? (
               <Bot className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
-            ) : (
+            ) : entity.entityType === "user" ? (
               <User className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+            ) : (
+              <FileText className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
             )}
             <div className="min-w-0 flex-1">
               <div className="truncate text-text-primary">{entity.label}</div>
@@ -177,7 +179,11 @@ export function MentionPicker({
               )}
             </div>
             <span className="text-xs text-text-muted">
-              {entity.entityType === "agent" ? "Agent" : "Teammate"}
+              {entity.entityType === "agent"
+                ? "Agent"
+                : entity.entityType === "user"
+                  ? "Teammate"
+                  : "Artifact"}
             </span>
           </li>
         ))}
@@ -194,7 +200,7 @@ export function MentionChip({
   entityType,
   label,
 }: {
-  entityType: "agent" | "user";
+  entityType: "agent" | "user" | "artifact";
   label: string;
 }) {
   return (
@@ -205,8 +211,10 @@ export function MentionChip({
     >
       {entityType === "agent" ? (
         <Bot className="h-3 w-3" aria-hidden="true" />
-      ) : (
+      ) : entityType === "user" ? (
         <User className="h-3 w-3" aria-hidden="true" />
+      ) : (
+        <FileText className="h-3 w-3" aria-hidden="true" />
       )}
       {label}
     </span>

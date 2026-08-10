@@ -506,7 +506,7 @@ export interface TaskThreadItem {
   authorAgentId?: string | null;
   content: string | null;
   payload: TaskThreadPayload;
-  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
   interactionType?: "suggested_tasks" | "confirmation" | "form" | null;
   status: TaskThreadItemStatus;
   idempotencyKey?: string | null;
@@ -736,7 +736,7 @@ export interface CreateThreadItemInput {
   kind?: ProjectThreadItem["kind"];
   content?: string;
   payload?: TaskThreadPayload;
-  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
   interactionType?: NonNullable<ProjectThreadItem["interactionType"]>;
   status?: Extract<TaskThreadItemStatus, "pending" | "accepted" | "rejected" | "answered" | "linked">;
 }
@@ -802,10 +802,11 @@ export const updateThreadItem = (
 // ── Mentions ─────────────────────────────────────────────────────────────
 
 export interface MentionableEntity {
-  entityType: "agent" | "user";
+  entityType: "agent" | "user" | "artifact";
   entityId: string;
   label: string;
   subtitle?: string;
+  artifactType?: string;
 }
 
 export const searchMentions = (companyId: string, query: string) => {
@@ -1235,7 +1236,7 @@ export interface SendChatResult {
   threadId: string;
   respondingAgentId: string | null;
   respondingAgentName: string | null;
-  mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
   mentionDispatch?: { dispatchedAgents?: Array<{ agentId: string; agentName: string }> };
 }
 
@@ -1251,7 +1252,7 @@ export const sendChatMessage = (
     content: string;
     targetAgentId?: string;
     threadId?: string;
-    mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+    mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
   },
 ) =>
   request<SendChatResult>(`/companies/${companyId}/chat/send`, {

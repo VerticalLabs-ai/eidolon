@@ -990,7 +990,7 @@ export function useSendChatMessage(companyId: string) {
       content: string;
       targetAgentId?: string;
       threadId?: string;
-      mentions?: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+      mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
     }) => api.sendChatMessage(companyId, data),
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["chat-threads", companyId] });

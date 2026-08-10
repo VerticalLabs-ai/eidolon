@@ -25,22 +25,52 @@ function isAgent(item: ProjectThreadItem) {
   return !!item.authorAgentId;
 }
 
-/** Render content with mention chips inline. */
-function renderContent(content: string, mentions?: ProjectThreadItem["mentions"]): React.ReactNode {
+/** Render content with mention chips inline. Artifact mentions render as
+ * inline ThreadArtifactCard references; agent/user mentions render as chips. */
+function renderContent(
+  content: string,
+  mentions: ProjectThreadItem["mentions"],
+  companyId: string,
+  projectId?: string | null,
+): React.ReactNode {
   if (!mentions || mentions.length === 0) return content;
 
-  // Build a regex that matches any mention label prefixed with @
-  const labels = mentions.map((m) => m.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const regex = new RegExp(`(@(?:${labels.join("|")}))`, "g");
-  const parts = content.split(regex);
+  const artifactMentions = mentions.filter((m) => m.entityType === "artifact");
+  const chipMentions = mentions.filter((m) => m.entityType !== "artifact");
 
-  return parts.map((part, i) => {
-    const mention = mentions.find((m) => `@${m.label}` === part);
-    if (mention) {
-      return <MentionChip key={i} entityType={mention.entityType} label={mention.label} />;
-    }
-    return <span key={i}>{part}</span>;
-  });
+  // First, render text with agent/user mention chips inline.
+  let textRendered: React.ReactNode = content;
+  if (chipMentions.length > 0) {
+    const labels = chipMentions.map((m) => m.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const regex = new RegExp(`(@(?:${labels.join("|")}))`, "g");
+    const parts = content.split(regex);
+    textRendered = parts.map((part, i) => {
+      const mention = chipMentions.find((m) => `@${m.label}` === part);
+      if (mention) {
+        return <MentionChip key={i} entityType={mention.entityType} label={mention.label} />;
+      }
+      return <span key={i}>{part}</span>;
+    });
+  }
+
+  // Append inline artifact cards for artifact mentions. They render after
+  // the message text as clickable ThreadArtifactCard references.
+  if (artifactMentions.length === 0) return textRendered;
+
+  return (
+    <span>
+      {textRendered}
+      {artifactMentions.map((m) => (
+        <ThreadArtifactCard
+          key={`artifact-mention-${m.entityId}`}
+          artifactId={m.entityId}
+          artifactType={m.artifactType ?? "document"}
+          companyId={companyId}
+          projectId={projectId}
+        />
+      ))}
+    </span>
+  );
 }
 
 function InteractionActions({
@@ -70,7 +100,7 @@ function InteractionActions({
 
 interface ComposerState {
   text: string;
-  mentions: Array<{ entityType: "agent" | "user"; entityId: string; label: string }>;
+  mentions: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
 }
 
 export function ProjectThreadPanel({
@@ -168,7 +198,15 @@ export function ProjectThreadPanel({
     const newText = `${before}@${entity.label} `;
     setComposer((prev) => ({
       text: newText,
-      mentions: [...prev.mentions, { entityType: entity.entityType, entityId: entity.entityId, label: entity.label }],
+      mentions: [
+        ...prev.mentions,
+        {
+          entityType: entity.entityType,
+          entityId: entity.entityId,
+          label: entity.label,
+          ...(entity.artifactType ? { artifactType: entity.artifactType } : {}),
+        },
+      ],
     }));
     setShowPicker(false);
     mentionStartRef.current = -1;
@@ -264,7 +302,7 @@ export function ProjectThreadPanel({
                     </div>
                     {item.content && (
                       <p className="mt-1.5 text-sm text-text-primary">
-                        {renderContent(item.content, item.mentions)}
+                        {renderContent(item.content, item.mentions, companyId, item.projectId ?? projectId)}
                       </p>
                     )}
                     {/* Render artifact card(s) if the agent produced artifact(s) */}
@@ -384,12 +422,24 @@ export function ProjectThreadPanel({
                 Post
               </Button>
             </form>
-            {/* Show active mention chips below the input */}
+            {/* Show active mention chips below the input. Artifact mentions
+                render as inline ThreadArtifactCard references; agent/user
+                mentions render as compact chips. */}
             {composer.mentions.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {composer.mentions.map((m, i) => (
-                  <MentionChip key={i} entityType={m.entityType} label={m.label} />
-                ))}
+                {composer.mentions.map((m, i) =>
+                  m.entityType === "artifact" ? (
+                    <ThreadArtifactCard
+                      key={`composer-artifact-${i}`}
+                      artifactId={m.entityId}
+                      artifactType={m.artifactType ?? "document"}
+                      companyId={companyId}
+                      projectId={projectId}
+                    />
+                  ) : (
+                    <MentionChip key={i} entityType={m.entityType} label={m.label} />
+                  ),
+                )}
               </div>
             )}
           </div>

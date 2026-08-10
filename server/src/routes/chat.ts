@@ -182,10 +182,10 @@ export function chatRouter(db: DbInstance): Router {
     // Mentions are persisted durably in the message metadata so thread reads
     // return them for the UI to render chips + artifact cards.
     const mentionService = new MentionService(db);
-    const resolvedMentions: Array<{ entityType: 'agent' | 'user'; entityId: string; label: string }> = [];
+    const resolvedMentions: Array<{ entityType: 'agent' | 'user' | 'artifact'; entityId: string; label: string; artifactType?: string }> = [];
     for (const m of body.mentions) {
       const valid = await mentionService.resolveMention(companyId, m.entityType, m.entityId);
-      if (valid) resolvedMentions.push({ entityType: m.entityType, entityId: m.entityId, label: m.label });
+      if (valid) resolvedMentions.push({ entityType: m.entityType, entityId: m.entityId, label: m.label, ...(m.artifactType ? { artifactType: m.artifactType } : {}) });
     }
 
     const userMetadata = { mentions: resolvedMentions };
