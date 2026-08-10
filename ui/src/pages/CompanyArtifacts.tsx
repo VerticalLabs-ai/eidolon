@@ -298,6 +298,7 @@ export function CompanyArtifacts() {
         onClose={() => setTemplatePickerOpen(false)}
         companyId={companyId!}
         onSelect={handleCreateFromTemplate}
+        filterType={filters.type ? (filters.type as ArtifactType) : null}
       />
     </div>
   );

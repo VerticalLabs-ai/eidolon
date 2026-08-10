@@ -35,19 +35,24 @@ interface ArtifactTemplatePickerProps {
   companyId: string;
   /** Called when a template is selected. The parent creates the artifact. */
   onSelect: (templateId: string, templateName: string) => void;
+  /** Optional type filter — when set, only templates of this type are shown.
+   *  Used to filter by the active list type context (tech-debt fix). */
+  filterType?: ArtifactType | null;
 }
 
 /**
  * Lists the company's artifact templates and lets the user pick one to clone
- * into a new artifact (VAL-TEMPLATE-014).
+ * into a new artifact (VAL-TEMPLATE-014). When `filterType` is supplied, only
+ * templates of that type are shown, matching the active list filter context.
  */
 export function ArtifactTemplatePicker({
   open,
   onClose,
   companyId,
   onSelect,
+  filterType = null,
 }: ArtifactTemplatePickerProps) {
-  const { data: templates = [], isLoading } = useArtifactTemplates(companyId);
+  const { data: templates = [], isLoading } = useArtifactTemplates(companyId, filterType ?? undefined);
   const firstRef = useRef<HTMLButtonElement | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 

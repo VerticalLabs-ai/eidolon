@@ -79,16 +79,13 @@ export function artifactsRouter(db: DbInstance): Router {
     const body = (req as any).validated.body;
     const { userId, orgRole } = actor(req);
     if (body.projectId) {
-      try {
-        await requireAccess(db, companyId, userId, orgRole, 'project', body.projectId, 'edit');
-      } catch (err) {
-        if (err instanceof AppError && err.code === 'FORBIDDEN') {
-          // If the project is unrestricted, member/viewer can create.
-          // requireAccess throws only when access is denied — rethrow.
-          throw err;
-        }
-        throw err;
-      }
+      await requireAccess(db, companyId, userId, orgRole, 'project', body.projectId, 'edit');
+    }
+    // If a folderId is specified, require edit access on the folder (or it
+    // must be unrestricted). Prevents creating an artifact in a folder the
+    // user only has view access to.
+    if (body.folderId) {
+      await requireAccess(db, companyId, userId, orgRole, 'folder', body.folderId, 'edit');
     }
     const row = await createArtifact(db, companyId, body, await editor(db, companyId, req));
     res.status(201).json({ data: row });
@@ -156,7 +153,9 @@ export function artifactsRouter(db: DbInstance): Router {
       res.json({ data: row });
       return;
     }
-    // Content/title edit requires edit access.
+    // Content/title edit requires edit access. When folderId is also supplied
+    // alongside content/title, both are applied atomically (version bump +
+    // folder move) via updateArtifact — the folderId is not silently dropped.
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'edit');
     res.json({ data: await updateArtifact(db, companyId, id, body, await editor(db, companyId, req)) });

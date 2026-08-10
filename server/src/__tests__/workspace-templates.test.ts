@@ -712,4 +712,72 @@ describe('Workspace templates API — real-Postgres integration', () => {
       expect(filtered.body.data[0].type).toBe('document');
     });
   });
+
+  // =========================================================================
+  // Tech-debt fixes: concurrent idempotency, project.created event, archived
+  // artifacts in snapshot
+  // =========================================================================
+  describe('tech-debt: concurrent idempotency retry returns existing project (200)', () => {
+    it('concurrent requests with the same idempotency key do not 500', async () => {
+      await createDoc({ title: '__mtest__ Concurrent Doc' }).expect(201);
+      const tpl = (await saveProjectTemplate({ name: '__mtest__ Concurrent Src' }).expect(201)).body.data;
+      const key = 'concurrent-key-456';
+
+      // Fire two concurrent create-project requests with the same key.
+      // The unique constraint on project_template_clones will fire for one
+      // of them. Both should return 201 with the same project (no 500).
+      const [r1, r2] = await Promise.all([
+        request(app)
+          .post(`/api/companies/${companyId}/project-templates/${tpl.id}/create-project`)
+          .send({ name: '__mtest__ Concurrent P1', idempotencyKey: key }),
+        request(app)
+          .post(`/api/companies/${companyId}/project-templates/${tpl.id}/create-project`)
+          .send({ name: '__mtest__ Concurrent P2', idempotencyKey: key }),
+      ]);
+
+      // Both should succeed (201) — no 500 from the unique violation.
+      expect(r1.status).toBe(201);
+      expect(r2.status).toBe(201);
+      // Both return the same project.
+      expect(r1.body.data.project.id).toBe(r2.body.data.project.id);
+    });
+  });
+
+  describe('tech-debt: createProjectFromTemplate emits project.created event', () => {
+    it('project.created realtime event is emitted when cloning from template', async () => {
+      await createDoc({ title: '__mtest__ Event Src' }).expect(201);
+      const tpl = (await saveProjectTemplate({ name: '__mtest__ Event Tpl' }).expect(201)).body.data;
+
+      const events = await captureEvents(async () => {
+        await request(app)
+          .post(`/api/companies/${companyId}/project-templates/${tpl.id}/create-project`)
+          .send({ name: '__mtest__ Event Proj' })
+          .expect(201);
+      });
+
+      const projectCreated = events.filter((e) => e.type === 'project.created');
+      expect(projectCreated.length).toBe(1);
+      expect(projectCreated[0].payload.project).toBeDefined();
+    });
+  });
+
+  describe('tech-debt: snapshot includes archived artifacts', () => {
+    it('project template snapshot captures archived artifacts, not just active', async () => {
+      const activeDoc = (await createDoc({ title: '__mtest__ Active' }).expect(201)).body.data;
+      const archDoc = (await createDoc({ title: '__mtest__ To Archive' }).expect(201)).body.data;
+
+      // Archive one artifact.
+      await request(app)
+        .post(`/api/companies/${companyId}/artifacts/${archDoc.id}/archive`)
+        .expect(200);
+
+      const tpl = (await saveProjectTemplate({ name: '__mtest__ Archived Tpl' }).expect(201)).body.data;
+
+      // Snapshot should include both the active and archived artifact.
+      expect(tpl.snapshot.artifacts.length).toBe(2);
+      const titles = tpl.snapshot.artifacts.map((a: any) => a.title).sort();
+      expect(titles).toContain('__mtest__ Active');
+      expect(titles).toContain('__mtest__ To Archive');
+    });
+  });
 });

@@ -289,6 +289,7 @@ export function ProjectArtifacts({ companyId, projectId }: ProjectArtifactsProps
         onClose={() => setTemplatePickerOpen(false)}
         companyId={companyId}
         onSelect={handleCreateFromTemplate}
+        filterType={filters.type ? (filters.type as ArtifactType) : null}
       />
     </div>
   );

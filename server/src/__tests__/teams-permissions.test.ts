@@ -654,12 +654,14 @@ describe('Teams + Permissions RBAC — real-Postgres integration', () => {
       await request(app)
         .delete(`/api/companies/${companyId}/teams/${teamId}`)
         .expect(204);
-      // User A can no longer read (team permissions removed)
+      // Team permission records are cleaned up — no tombstones remain.
+      // The resource becomes unrestricted (no grants left), so a member
+      // gets default access (200) rather than being permanently locked out.
       await request(app)
         .get(`/api/companies/${companyId}/artifacts/${teamArtifactId}`)
         .set(impersonate(testUserIdA, 'member'))
-        .expect(403);
-      // Permission record for the team is gone
+        .expect(200);
+      // Permission record for the team is gone (truly deleted, not filtered)
       const perms = await request(app)
         .get(`/api/companies/${companyId}/permissions?resourceType=artifact&resourceId=${teamArtifactId}`)
         .expect(200);
@@ -947,6 +949,42 @@ describe('Teams + Permissions RBAC — real-Postgres integration', () => {
         .set(impersonate(testUserIdB, 'viewer'))
         .expect(200);
       expect(res.body.data.accessLevel).toBe('view');
+    });
+  });
+
+  // =========================================================================
+  // Tech-debt: folder access check on artifact create with folderId
+  // =========================================================================
+  describe('tech-debt: artifact create with folderId checks folder access', () => {
+    it('rejects artifact creation in a view-only folder (403)', async () => {
+      // Restrict the folder to user A with view-only access.
+      await request(app)
+        .post(`/api/companies/${companyId}/permissions`)
+        .send({ resourceType: 'folder', resourceId: folderId, granteeType: 'user', granteeId: testUserIdA, accessLevel: 'view' })
+        .expect(201);
+
+      // User A (member) has view access on the folder but not edit.
+      // Creating an artifact in the folder requires edit access.
+      await request(app)
+        .post(`/api/companies/${companyId}/artifacts`)
+        .set(impersonate(testUserIdA, 'member'))
+        .send({ type: 'document', title: '__mtest__ In Restricted Folder', content: DOC_CONTENT, projectId, folderId })
+        .expect(403);
+    });
+
+    it('allows artifact creation in a folder with edit access', async () => {
+      // Grant edit access on the folder to user A.
+      await request(app)
+        .post(`/api/companies/${companyId}/permissions`)
+        .send({ resourceType: 'folder', resourceId: folderId, granteeType: 'user', granteeId: testUserIdA, accessLevel: 'edit' })
+        .expect(201);
+
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/artifacts`)
+        .set(impersonate(testUserIdA, 'member'))
+        .send({ type: 'document', title: '__mtest__ In Edit Folder', content: DOC_CONTENT, projectId, folderId })
+        .expect(201);
+      expect(res.body.data.folderId).toBe(folderId);
     });
   });
 });

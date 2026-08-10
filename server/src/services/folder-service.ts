@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';

@@ -224,7 +224,7 @@ export async function listArtifacts(db: DbInstance, companyId: string, filters: 
 
 export async function updateArtifact(db: DbInstance, companyId: string, id: string, input: {
   version?: number; title?: string; content?: unknown; projectId?: string | null; message?: string;
-  status?: 'deleted' | 'archived' | 'active';
+  status?: 'deleted' | 'archived' | 'active'; folderId?: string | null;
 }, editor: Editor) {
   const current = await getArtifact(db, companyId, id);
 
@@ -258,6 +258,19 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
   if (version !== current.version) throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', { current: current });
   if (input.content !== undefined) assertContent(current.type, input.content);
   if (input.projectId !== undefined) await validateProjectOwnership(db, companyId, input.projectId);
+  // When folderId is supplied alongside content/title, validate the folder
+  // belongs to the company and shares the artifact's project scope. The
+  // folderId is applied atomically with the content update (no silent drop).
+  if (input.folderId !== undefined && input.folderId !== null) {
+    const folder = await validateFolderOwnership(db, companyId, input.folderId);
+    if (folder) {
+      const folderProject = folder.projectId ?? null;
+      const artifactProject = (input.projectId !== undefined ? input.projectId : current.projectId) ?? null;
+      if (folderProject !== artifactProject) {
+        throw new AppError(400, 'FOLDER_SCOPE_MISMATCH', 'Artifact and folder must share the same project scope');
+      }
+    }
+  }
   // `current.content` is already decrypted (from getArtifact). When content
   // is supplied, encrypt it for storage; when only title/status changes,
   // re-encrypt the (decrypted) current content to keep at-rest ciphertext.
@@ -267,6 +280,7 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
     const [row] = await tx.update(db.schema.artifacts).set({
       title: input.title ?? current.title, content: storedContent,
       projectId: input.projectId === undefined ? current.projectId : input.projectId,
+      ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
       version: current.version + 1, updatedAt: new Date(),
       ...(input.status !== undefined ? { status: input.status, deletedAt: input.status === 'deleted' ? new Date() : null } : {}),
       lastEditedByUserId: editor.userId ?? null, lastEditedByAgentId: editor.agentId ?? null,

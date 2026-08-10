@@ -2,7 +2,6 @@ import { and, eq } from 'drizzle-orm';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
-
 type Team = {
   id: string;
   companyId: string;
@@ -56,15 +55,22 @@ export async function listTeams(db: DbInstance, companyId: string): Promise<Team
   return rows as Team[];
 }
 
-/** Delete a team. Cascades to team_members. Team permission records are
- * intentionally NOT deleted — they become orphaned (the team no longer
- * exists), which keeps the resource restricted so former members lose
- * access (VAL-TEAM-022). The permission service filters orphaned team
- * grants out of list/resolve queries. */
+/** Delete a team. Cascades to team_members and cleans up the team's
+ * permission records so resources do not remain permanently restricted
+ * by orphaned tombstones (VAL-TEAM-022). Without this cleanup, the
+ * permission records would keep `isRestricted=true` on resources that
+ * no longer have any active grantee, locking them for all non-admin users. */
 export async function deleteTeam(db: DbInstance, companyId: string, teamId: string): Promise<void> {
   await getTeam(db, companyId, teamId);
-  // Cascade on team_members removes all memberships. Permission records
-  // referencing this team remain (orphaned) to keep resources restricted.
+  // Delete the team's permission records first (within the same DB operation
+  // batch) so resources are no longer restricted by the deleted team's grants.
+  await db.drizzle.delete(db.schema.artifactPermissions)
+    .where(and(
+      eq(db.schema.artifactPermissions.companyId, companyId),
+      eq(db.schema.artifactPermissions.granteeType, 'team'),
+      eq(db.schema.artifactPermissions.granteeId, teamId),
+    ));
+  // Cascade on team_members removes all memberships.
   await db.drizzle.delete(db.schema.teams)
     .where(and(eq(db.schema.teams.id, teamId), eq(db.schema.teams.companyId, companyId)));
   emitTeam('team.deleted', companyId, { id: teamId, companyId });

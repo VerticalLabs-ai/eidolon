@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
   ArtifactTypeSchema,
@@ -30,6 +30,24 @@ function emit(
   eventBus.emitEvent({ type, companyId, payload, timestamp: new Date().toISOString() });
 }
 
+/** Postgres SQLSTATE for unique violation. */
+const UNIQUE_VIOLATION = '23505';
+
+/**
+ * Walk an error + its cause chain looking for a Postgres error code
+ * (postgres.js may be wrapped by drizzle-orm, so the code can live on a
+ * cause). Returns true if a unique-violation (23505) is found.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth += 1) {
+    const candidate = current as Record<string, unknown>;
+    if (candidate.code === UNIQUE_VIOLATION) return true;
+    current = (candidate as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Project templates
 // ---------------------------------------------------------------------------
@@ -58,9 +76,11 @@ export async function saveProjectTemplate(
   const folderRows = await db.drizzle.select().from(artifactFolders)
     .where(and(eq(artifactFolders.companyId, companyId), eq(artifactFolders.projectId, input.projectId)));
 
-  // Capture active artifacts in the project.
+  // Capture active + archived artifacts in the project. Archived artifacts
+  // are included so templates reflect the full project content, not just
+  // active items (tech-debt fix: snapshot previously excluded archived).
   const artifactRows = await db.drizzle.select().from(artifacts)
-    .where(and(eq(artifacts.companyId, companyId), eq(artifacts.projectId, input.projectId), eq(artifacts.status, 'active')));
+    .where(and(eq(artifacts.companyId, companyId), eq(artifacts.projectId, input.projectId), inArray(artifacts.status, ['active', 'archived'])));
 
   const snapshot: ProjectTemplateSnapshot = {
     settings: {
@@ -193,7 +213,9 @@ export async function createProjectFromTemplate(
   // Map original folder ids → new folder ids (for artifact placement).
   const folderIdMap = new Map<string, string>();
 
-  const result = await db.drizzle.transaction(async (tx) => {
+  let result: { project: unknown; artifacts: unknown[]; folders: string[] };
+  try {
+    result = await db.drizzle.transaction(async (tx) => {
     // 1. Create the new project with the template's settings (overridden by
     //    the caller's name/description when provided).
     const [project] = await tx.insert(projects).values({
@@ -296,6 +318,42 @@ export async function createProjectFromTemplate(
 
     return { project, artifacts: createdArtifacts, folders: Array.from(folderIdMap.values()) };
   });
+  } catch (err) {
+    // Concurrent idempotency retry: two requests with the same
+    // idempotencyKey race past the pre-transaction check. The second
+    // insert into projectTemplateClones hits the unique constraint, which
+    // would surface as HTTP 500. Instead, catch the unique violation and
+    // return the existing cloned project (200) — the same behavior as a
+    // sequential retry (tech-debt fix).
+    if (input.idempotencyKey && isUniqueViolation(err)) {
+      const { projectTemplateClones, projects: projectsTable } = db.schema;
+      const [existing] = await db.drizzle.select().from(projectTemplateClones)
+        .where(and(
+          eq(projectTemplateClones.companyId, companyId),
+          eq(projectTemplateClones.templateId, templateId),
+          eq(projectTemplateClones.idempotencyKey, input.idempotencyKey),
+        ))
+        .limit(1);
+      if (existing) {
+        const [project] = await db.drizzle.select().from(projectsTable)
+          .where(eq(projectsTable.id, existing.projectId)).limit(1);
+        const artifactRows = await db.drizzle.select().from(db.schema.artifacts)
+          .where(and(eq(db.schema.artifacts.companyId, companyId), eq(db.schema.artifacts.projectId, existing.projectId), inArray(db.schema.artifacts.status, ['active', 'archived'])));
+        const folderRows2 = await db.drizzle.select().from(db.schema.artifactFolders)
+          .where(and(eq(db.schema.artifactFolders.companyId, companyId), eq(db.schema.artifactFolders.projectId, existing.projectId)));
+        return {
+          project,
+          artifacts: artifactRows.map((r) => ({ ...r, content: decryptContent(r.content as Record<string, unknown>) })),
+          folders: folderRows2,
+        };
+      }
+    }
+    throw err;
+  }
+
+  // Emit project.created event so subscribed clients see the new project
+  // (tech-debt fix: was missing from createProjectFromTemplate).
+  eventBus.emitEvent({ type: 'project.created', companyId, payload: { project: result.project }, timestamp: new Date().toISOString() });
 
   // Emit artifact.created events for each cloned artifact so subscribed
   // clients refresh. (Emitted after the transaction commits.)

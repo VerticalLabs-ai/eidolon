@@ -422,9 +422,10 @@ export async function listPermissions(
  * artifacts pass, and restricted artifacts pass only if the user has a grant
  * at the required level.
  *
- * To keep this efficient, we do a single query for all permissions in the
- * company that touch any of the artifact ids OR their parent folders/projects,
- * then resolve each artifact individually using the cached data.
+ * This function uses batched queries to avoid N+1: it fetches all folders in
+ * the company (one query), all permissions touching any resource in the
+ * artifact chains (one query), and the user's team memberships (one query),
+ * then resolves access for each artifact in-memory.
  */
 export async function filterAccessibleArtifacts(
   db: DbInstance,
@@ -437,7 +438,7 @@ export async function filterAccessibleArtifacts(
   if (artifactIds.length === 0) return [];
   if (orgRole === 'owner' || orgRole === 'admin') return artifactIds;
 
-  // Fetch all artifacts' folderId + projectId for chain construction.
+  // 1. Fetch all artifacts' folderId + projectId for chain construction.
   const artifacts = await db.drizzle
     .select({
       id: db.schema.artifacts.id,
@@ -450,12 +451,160 @@ export async function filterAccessibleArtifacts(
       inArray(db.schema.artifacts.id, artifactIds),
     ));
 
+  if (artifacts.length === 0) return [];
+
+  // 2. Fetch all folders in the company (one query) for in-memory chain building.
+  const allFolders = await db.drizzle
+    .select({ id: db.schema.artifactFolders.id, parentId: db.schema.artifactFolders.parentId })
+    .from(db.schema.artifactFolders)
+    .where(eq(db.schema.artifactFolders.companyId, companyId));
+  const folderMap = new Map(allFolders.map((f) => [f.id, f.parentId]));
+
+  // 3. Build resource chains for each artifact in-memory.
+  //    Chain: [artifact, folder?, folder?, ..., project?]
+  const chains = new Map<string, { resourceType: ResourceKind; resourceId: string }[]>();
+  const allResourceKeys = new Set<string>(); // "type:id" keys for batch fetch
+  for (const artifact of artifacts) {
+    const chain: { resourceType: ResourceKind; resourceId: string }[] = [
+      { resourceType: 'artifact', resourceId: artifact.id },
+    ];
+    allResourceKeys.add(`artifact:${artifact.id}`);
+    // Walk up the folder parent chain in-memory.
+    if (artifact.folderId) {
+      let currentId: string | null = artifact.folderId;
+      const visited = new Set<string>();
+      for (let depth = 0; depth < 256 && currentId; depth++) {
+        if (visited.has(currentId)) break; // cycle guard
+        visited.add(currentId);
+        chain.push({ resourceType: 'folder', resourceId: currentId });
+        allResourceKeys.add(`folder:${currentId}`);
+        currentId = folderMap.get(currentId) ?? null;
+      }
+    }
+    if (artifact.projectId) {
+      chain.push({ resourceType: 'project', resourceId: artifact.projectId });
+      allResourceKeys.add(`project:${artifact.projectId}`);
+    }
+    chains.set(artifact.id, chain);
+  }
+
+  // 4. Batch-fetch all permissions touching any resource in any chain (one query).
+  //    Build OR conditions for each (resourceType, resourceId) pair.
+  const artifactResourceIds = new Set<string>();
+  const folderResourceIds = new Set<string>();
+  const projectResourceIds = new Set<string>();
+  for (const key of allResourceKeys) {
+    const [type, id] = key.split(':');
+    if (type === 'artifact') artifactResourceIds.add(id);
+    else if (type === 'folder') folderResourceIds.add(id);
+    else if (type === 'project') projectResourceIds.add(id);
+  }
+  const resourceConditions: ReturnType<typeof eq>[] = [];
+  if (artifactResourceIds.size > 0) {
+    resourceConditions.push(
+      and(eq(db.schema.artifactPermissions.resourceType, 'artifact'), inArray(db.schema.artifactPermissions.resourceId, Array.from(artifactResourceIds)))!,
+    );
+  }
+  if (folderResourceIds.size > 0) {
+    resourceConditions.push(
+      and(eq(db.schema.artifactPermissions.resourceType, 'folder'), inArray(db.schema.artifactPermissions.resourceId, Array.from(folderResourceIds)))!,
+    );
+  }
+  if (projectResourceIds.size > 0) {
+    resourceConditions.push(
+      and(eq(db.schema.artifactPermissions.resourceType, 'project'), inArray(db.schema.artifactPermissions.resourceId, Array.from(projectResourceIds)))!,
+    );
+  }
+  const allPermissions: PermissionRow[] = [];
+  if (resourceConditions.length > 0) {
+    const permRows = await db.drizzle.select().from(db.schema.artifactPermissions)
+      .where(and(
+        eq(db.schema.artifactPermissions.companyId, companyId),
+        or(...resourceConditions)!,
+      ));
+    allPermissions.push(...(permRows as PermissionRow[]));
+  }
+
+  // Index permissions by "type:id" for O(1) lookup.
+  const permsByKey = new Map<string, PermissionRow[]>();
+  for (const perm of allPermissions) {
+    const key = `${perm.resourceType}:${perm.resourceId}`;
+    let arr = permsByKey.get(key);
+    if (!arr) { arr = []; permsByKey.set(key, arr); }
+    arr.push(perm);
+  }
+
+  // 5. Fetch user's team memberships (one query).
+  const teamIds = await getUserTeamIds(db, companyId, userId);
+  const teamIdSet = new Set(teamIds);
+
+  // 6. Resolve access for each artifact in-memory.
   const accessible: string[] = [];
   for (const artifact of artifacts) {
-    const level = await resolveAccess(db, companyId, userId, orgRole, 'artifact', artifact.id);
+    const chain = chains.get(artifact.id)!;
+    const level = resolveAccessFromCache(chain, permsByKey, teamIdSet, userId, orgRole);
     if (level !== null && LEVEL_RANK[level] >= LEVEL_RANK[required]) {
       accessible.push(artifact.id);
     }
   }
   return accessible;
+}
+
+/**
+ * Resolve effective access from pre-fetched permission data (no DB queries).
+ * Same algorithm as `resolveAccess` but operates on in-memory caches:
+ * 1. Owner/admin → 'manage'.
+ * 2. Check if any level in the chain is restricted (has any permissions).
+ * 3. If not restricted → default by org role (member=edit, viewer=view).
+ * 4. If restricted → walk most-specific to least-specific; first level with
+ *    a grant for this user determines the access level.
+ * 5. Restricted but no grant → null (no access).
+ */
+function resolveAccessFromCache(
+  chain: { resourceType: ResourceKind; resourceId: string }[],
+  permsByKey: Map<string, PermissionRow[]>,
+  teamIdSet: Set<string>,
+  userId: string,
+  orgRole: string,
+): AccessLevel | null {
+  // 1. Owner/admin manage all (already filtered by caller, but kept for safety).
+  if (orgRole === 'owner' || orgRole === 'admin') return 'manage';
+
+  // 2. Check if any level is restricted.
+  let isRestricted = false;
+  for (const level of chain) {
+    const allPerms = permsByKey.get(`${level.resourceType}:${level.resourceId}`);
+    if (allPerms && allPerms.length > 0) {
+      isRestricted = true;
+      break;
+    }
+  }
+
+  // 3. Not restricted → default access by org role.
+  if (!isRestricted) {
+    if (orgRole === 'member') return 'edit';
+    if (orgRole === 'viewer') return 'view';
+    return null;
+  }
+
+  // 4. Restricted: walk from most specific to least specific.
+  for (const level of chain) {
+    const allPerms = permsByKey.get(`${level.resourceType}:${level.resourceId}`) ?? [];
+    // Filter to permissions that apply to this user (direct user grant or team grant).
+    const userPerms = allPerms.filter((p) => {
+      if (p.granteeType === 'user' && p.granteeId === userId) return true;
+      if (p.granteeType === 'team' && teamIdSet.has(p.granteeId)) return true;
+      return false;
+    });
+    if (userPerms.length > 0) {
+      // Take the max access level among all matching grants at this level.
+      return userPerms.reduce((max, p) => {
+        const rank = LEVEL_RANK[p.accessLevel as AccessLevel] ?? 0;
+        return rank > LEVEL_RANK[max] ? p.accessLevel as AccessLevel : max;
+      }, 'view' as AccessLevel);
+    }
+  }
+
+  // 5. Restricted but no grant for this user.
+  return null;
 }

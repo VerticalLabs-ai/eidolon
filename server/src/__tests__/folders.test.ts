@@ -402,15 +402,17 @@ describe('Artifact folders API — real-Postgres integration', () => {
         .delete(`/api/companies/${companyId}/folders/${top.id}`)
         .expect(204);
 
-      // Referential integrity: no folder.parentId or artifact.folderId points to top.id
+      // Referential integrity: no folder.parentId or artifact.folderId points to top.id.
+      // db.drizzle.execute returns { rows: [...] } — check .rows.length, not
+      // .length (which is undefined and would make `?? 0` always pass).
       const danglingFolders = await db.drizzle.execute(
         sql`SELECT id FROM "artifact_folders" WHERE "parent_id" = ${top.id}`,
       );
-      expect((danglingFolders as any).length ?? 0).toBe(0);
+      expect((danglingFolders as any).rows).toHaveLength(0);
       const danglingArtifacts = await db.drizzle.execute(
         sql`SELECT id FROM "artifacts" WHERE "folder_id" = ${top.id}`,
       );
-      expect((danglingArtifacts as any).length ?? 0).toBe(0);
+      expect((danglingArtifacts as any).rows).toHaveLength(0);
     });
   });
 
@@ -638,6 +640,43 @@ describe('Artifact folders API — real-Postgres integration', () => {
       const folder = (await createFolder({ name: '__mtest__ Direct' }).expect(201)).body.data;
       const res = await createDoc({ folderId: folder.id }).expect(201);
       expect(res.body.data.folderId).toBe(folder.id);
+    });
+  });
+
+  // =========================================================================
+  // Tech-debt fixes: combined content+folderId PATCH, folder access on create
+  // =========================================================================
+  describe('tech-debt: combined content+folderId PATCH applies both', () => {
+    it('PATCH with both content and folderId applies both atomically (version bump + move)', async () => {
+      const folder = (await createFolder({ name: '__mtest__ CombinedMove' }).expect(201)).body.data;
+      const doc = (await createDoc().expect(201)).body.data;
+      expect(doc.folderId).toBeNull();
+      expect(doc.version).toBe(1);
+
+      const patched = await request(app)
+        .patch(`/api/companies/${companyId}/artifacts/${doc.id}`)
+        .send({ content: { format: 'markdown', body: '# Moved + Edited' }, folderId: folder.id, version: 1 })
+        .expect(200);
+
+      // Both content and folderId are applied — folderId is NOT silently dropped.
+      expect(patched.body.data.version).toBe(2);
+      expect(patched.body.data.folderId).toBe(folder.id);
+      expect(patched.body.data.content.body).toBe('# Moved + Edited');
+    });
+
+    it('PATCH with content + folderId=null unfiles the artifact while editing', async () => {
+      const folder = (await createFolder({ name: '__mtest__ Unfile' }).expect(201)).body.data;
+      const doc = (await createDoc({ folderId: folder.id }).expect(201)).body.data;
+      expect(doc.folderId).toBe(folder.id);
+
+      const patched = await request(app)
+        .patch(`/api/companies/${companyId}/artifacts/${doc.id}`)
+        .send({ content: { format: 'markdown', body: '# Unfiled' }, folderId: null, version: 1 })
+        .expect(200);
+
+      expect(patched.body.data.version).toBe(2);
+      expect(patched.body.data.folderId).toBeNull();
+      expect(patched.body.data.content.body).toBe('# Unfiled');
     });
   });
 });
