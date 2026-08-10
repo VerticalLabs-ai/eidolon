@@ -182,7 +182,6 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/tasks', requireAuth, requireOrgMember(), tasksRouter(db));
   app.use('/api/companies/:companyId/goals', requireAuth, requireOrgMember(), goalsRouter(db));
   app.use('/api/companies/:companyId/messages', requireAuth, requireOrgMember(), messagesRouter(db));
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), budgetsRouter(db));
   app.use('/api/companies/:companyId/analytics', requireAuth, requireOrgMember(), analyticsRouter(db));
   app.use('/api/companies/:companyId/workflows', requireAuth, requireOrgMember(), workflowsRouter(db));
   app.use('/api/companies/:companyId/activity', requireAuth, requireOrgMember(), activityRouter(db));
@@ -240,30 +239,59 @@ export function createApp(db: DbInstance): express.Express {
 
   // Unified automations surface (aggregates routines, workflows, webhooks)
   app.use('/api/companies/:companyId/automations', requireAuth, requireOrgMember(), automationsRouter(db));
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), artifactsRouter(db));
+
   // Meetings (M7): single-meeting operations (get/patch/transcript/summarize/
   // action-items/tasks/delete/archive). Mounted at the company level so a
   // meeting can be addressed by id regardless of whether it is project-scoped.
   app.use('/api/companies/:companyId/meetings', requireAuth, requireOrgMember(), meetingItemRouter(db));
-  // Artifact folders (M4): nested folder tree for organizing artifacts.
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), foldersRouter(db));
-  // Project + artifact templates (M4): save/reuse project and artifact snapshots.
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), workspaceTemplatesRouter(db));
-  // Teams (M4): create/list/delete teams + manage membership.
-  // Create/delete are admin/owner only (enforced via requireOrgMember('admin')
-  // on those specific sub-paths below). List/get is open to all members.
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), teamsRouter(db));
-  // Per-resource RBAC permissions (M4): grant/revoke/list/resolve.
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), permissionsRouter(db));
-  // Per-artifact presence (M3): join/leave/typing REST + WS events.
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), presenceRouter(db));
-  // Company member role management (M8 security): downgrade role / remove
-  // member. Admin/owner only (enforced inside the handler). Models session
-  // invalidation on privilege loss (VAL-SEC-011).
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember('admin'), securityMembersRouter(db));
 
   // Local execution environments
   app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));
+
+  // ---------------------------------------------------------------------------
+  // Company-scoped bare-path routers (MOUNTED LAST among company routes).
+  //
+  // These sub-routers all live directly under `/api/companies/:companyId`
+  // (their routes are `/artifacts`, `/costs`, `/folders`, `/teams`, etc.).
+  // They are mounted as a SINGLE composite router so the `:companyId` path
+  // param is captured exactly once per request by one mount layer and
+  // propagated deterministically to every nested sub-router via
+  // `mergeParams`.
+  //
+  // The previous structure mounted eight separate routers at the same
+  // parameterized path `/api/companies/:companyId`, creating eight
+  // independent param-capture layers. Under Express 5 / path-to-regexp v8
+  // that multi-mount structure could intermittently drop the `:id` param
+  // for `GET /api/companies/:companyId/artifacts/:id` on the tsx-watch dev
+  // server: the artifacts list endpoint worked, but the single-artifact
+  // detail GET intermittently returned 404 (ARTIFACT_NOT_FOUND) because the
+  // `:id` param arrived empty at the handler, while the test server
+  // (createTestServer + supertest) and the artifact suite stayed green.
+  // One mount → one param capture → consistent `:id` propagation.
+  // (misc-devserver-artifact-route tech debt.)
+  //
+  // This composite is mounted AFTER every more-specific company route
+  // (meetings, environments, etc.) so those specific mounts intercept their
+  // own paths before any bare-path sub-router runs — and, critically, before
+  // the securityMembers admin guard below. This preserves the prior
+  // ordering where securityMembersRouter was the final bare mount.
+  // ---------------------------------------------------------------------------
+  const companyScopedRouter = express.Router({ mergeParams: true });
+  companyScopedRouter.use(budgetsRouter(db));
+  companyScopedRouter.use(artifactsRouter(db));
+  companyScopedRouter.use(foldersRouter(db));
+  companyScopedRouter.use(workspaceTemplatesRouter(db));
+  companyScopedRouter.use(teamsRouter(db));
+  companyScopedRouter.use(permissionsRouter(db));
+  companyScopedRouter.use(presenceRouter(db));
+  // Company member role/removal is admin/owner only. The handler also
+  // enforces requireAdminOrOwner internally (defense in depth); the
+  // mount-level guard here rejects non-admins before the handler runs,
+  // matching the prior `requireOrgMember('admin')` mount behavior. Because
+  // the composite is the last company mount, this guard only runs for
+  // requests that did not match any more-specific company route.
+  companyScopedRouter.use(requireOrgMember('admin'), securityMembersRouter(db));
+  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), companyScopedRouter);
 
   // ---------------------------------------------------------------------------
   // Static file serving for production UI (legacy single-host deploys).
