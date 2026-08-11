@@ -3,10 +3,10 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import eventBus from '../realtime/events.js';
-import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import type { EidolonEvent } from '../realtime/events.js';
+import { backgroundWork } from '../services/background-work.js';
 
 const ActivityQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -62,6 +62,18 @@ export function activityRecordFromEvent(event: EidolonEvent) {
   let entityType = 'unknown';
   let entityId = event.companyId;
 
+  // VAL-SEC-007: security-relevant events (permission.granted/revoked,
+  // artifact.deleted/archived, etc.) carry an explicit `actor` descriptor so
+  // the audit log records who performed the action rather than defaulting to
+  // 'system'. Fall back to the event-type-derived actor below when absent.
+  if (payload?.actor && typeof payload.actor === 'object') {
+    const a = payload.actor as { type?: string; id?: string };
+    if (a.type === 'user' || a.type === 'agent' || a.type === 'system') {
+      actorType = a.type;
+      actorId = a.id ?? a.type;
+    }
+  }
+
   if (event.type.startsWith('agent.')) {
     entityType = 'agent';
     entityId = payload.agentId ?? payload.agent?.id ?? event.companyId;
@@ -88,6 +100,15 @@ export function activityRecordFromEvent(event: EidolonEvent) {
   } else if (event.type.startsWith('cost.') || event.type.startsWith('budget.')) {
     entityType = 'budget';
     entityId = payload.costEvent?.id ?? payload.alert?.id ?? event.companyId;
+  } else if (event.type.startsWith('permission.')) {
+    entityType = 'permission';
+    entityId = payload.permission?.resourceId ?? payload.resourceId ?? event.companyId;
+  } else if (event.type.startsWith('artifact.')) {
+    entityType = 'artifact';
+    entityId = payload.artifact?.id ?? payload.artifactId ?? event.companyId;
+  } else if (event.type.startsWith('mfa.')) {
+    entityType = 'user_mfa_factor';
+    entityId = payload.factorId ?? payload.factor?.id ?? event.companyId;
   }
 
   const entityName = payload.project?.name ?? payload.task?.title ?? payload.goal?.title;
@@ -101,6 +122,11 @@ export function activityRecordFromEvent(event: EidolonEvent) {
     'goal.created': 'Goal created',
     'goal.updated': 'Goal updated',
     'goal.deleted': 'Goal deleted',
+    'permission.granted': 'Permission granted',
+    'permission.revoked': 'Permission revoked',
+    'artifact.deleted': 'Artifact deleted',
+    'artifact.archived': 'Artifact archived',
+    'mfa.enroll': 'MFA factor enrolled',
   };
   const description = descriptions[event.type] ?? `${event.type.replaceAll('.', ' ')} event`;
 
@@ -137,17 +163,50 @@ export function activityRecordFromEvent(event: EidolonEvent) {
 export function setupActivityLogger(db: DbInstance): void {
   const { activityLog } = db.schema;
 
-  const handler = async (event: EidolonEvent) => {
+  // Security-relevant actions that are recorded via a DIRECT audit insert in
+  // the route handler (with the correct acting user). The event-based logger
+  // skips them so the activity log doesn't get a duplicate 'system'-attributed
+  // row alongside the direct actor-attributed row (VAL-SEC-007).
+  const directlyAudited = new Set([
+    'permission.granted',
+    'permission.revoked',
+    'artifact.deleted',
+    'artifact.archived',
+  ]);
+
+  // Events that are logged DIRECTLY by their owning service with the correct
+  // actor attribution (user/agent) and recipient metadata, rather than via
+  // the generic event→activity record path. The event-based logger must skip
+  // them so the activity log (and the recipient's inbox) does not get a
+  // second, 'system'-attributed row alongside the direct insert.
+  //
+  // thread.mention: MentionService.dispatchUserMention inserts a
+  // user-attributed activity_log row (actorId = authorUserId) carrying
+  // metadata.mentionedUserId, then emits the thread.mention realtime event.
+  // Without this skip, setupActivityLogger would also insert a
+  // system-attributed thread.mention row with the same mentionedUserId, and
+  // both rows would surface in the recipient's inbox — a duplicate
+  // notification (VAL-MENTION-007 / VAL-MENTION-010). MentionService is the
+  // sole inserter of thread.mention activity_log rows.
+  const directlyLoggedEvents = new Set(['thread.mention']);
+
+  const handler = (event: EidolonEvent) => {
     if (event.type === 'company.deleted') {
       return;
     }
-
-    try {
-      await db.drizzle.insert(activityLog).values(activityRecordFromEvent(event));
-    } catch (err) {
-      // Activity logging should never break the application
-      logger.debug({ err }, 'Failed to log activity event');
+    if (directlyAudited.has(event.type)) {
+      return;
     }
+    if (directlyLoggedEvents.has(event.type)) {
+      return;
+    }
+
+    // Track the insert so tests can drain deterministically. Errors are
+    // logged with context, not silently swallowed.
+    backgroundWork.fire(
+      db.drizzle.insert(activityLog).values(activityRecordFromEvent(event)),
+      `activity-log (${event.type})`,
+    );
   };
 
   eventBus.onEvent(handler);

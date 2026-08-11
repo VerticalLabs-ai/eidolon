@@ -48,10 +48,67 @@ export interface RuntimeEvent extends ServerEvent {
     | 'runtime.workspace_finalized';
 }
 
+export interface ArtifactEvent extends ServerEvent {
+  type:
+    | 'artifact.created'
+    | 'artifact.updated'
+    | 'artifact.revision.created'
+    | 'artifact.deleted'
+    | 'artifact.archived'
+    | 'artifact.code.ran';
+}
+
+export interface FolderEvent extends ServerEvent {
+  type:
+    | 'folder.created'
+    | 'folder.updated'
+    | 'folder.deleted';
+}
+
+export interface WorkspaceTemplateEvent extends ServerEvent {
+  type:
+    | 'project_template.created'
+    | 'project_template.deleted'
+    | 'artifact_template.created'
+    | 'artifact_template.deleted';
+}
+
+export interface TeamEvent extends ServerEvent {
+  type:
+    | 'team.created'
+    | 'team.updated'
+    | 'team.deleted'
+    | 'team.member.added'
+    | 'team.member.removed';
+}
+
+export interface PermissionEvent extends ServerEvent {
+  type:
+    | 'permission.granted'
+    | 'permission.revoked';
+}
+
 export interface RoutineEvent extends ServerEvent {
   type:
     | 'routine.triggered'
     | 'jarvis.digest_ready';
+}
+
+export interface PresenceEvent extends ServerEvent {
+  type:
+    | 'presence.join'
+    | 'presence.leave'
+    | 'presence.typing';
+}
+
+export interface MeetingEvent extends ServerEvent {
+  type:
+    | 'meeting.created'
+    | 'meeting.updated'
+    | 'meeting.summary.created'
+    | 'meeting.action_items.created'
+    | 'meeting.deleted'
+    | 'meeting.archived';
 }
 
 export interface EnvironmentEvent extends ServerEvent {
@@ -92,7 +149,8 @@ export interface ProjectThreadEvent extends ServerEvent {
   type:
     | 'project.thread.created'
     | 'project.thread.item.created'
-    | 'project.thread.item.updated';
+    | 'project.thread.item.updated'
+    | 'thread.mention';
 }
 
 export interface GoalEvent extends ServerEvent {
@@ -149,6 +207,13 @@ export type EidolonEvent =
   | EnvironmentEvent
   | ExecutionEvent
   | RuntimeEvent
+  | ArtifactEvent
+  | FolderEvent
+  | WorkspaceTemplateEvent
+  | TeamEvent
+  | PermissionEvent
+  | PresenceEvent
+  | MeetingEvent
   | RoutineEvent;
 
 // ---------------------------------------------------------------------------

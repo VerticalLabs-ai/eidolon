@@ -10,6 +10,7 @@ import {
   Pause,
   RotateCcw,
   XCircle,
+  Calendar,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
@@ -19,6 +20,7 @@ import {
   useMarkInboxRead,
   useRespondTaskInteraction,
   useTask,
+  useTaskMeetings,
   useTaskSubtreeControls,
   useTaskThread,
   useUpdateTask,
@@ -90,6 +92,7 @@ export function TaskDetail() {
   const { companyId, taskId } = useParams();
   const [searchParams] = useSearchParams();
   const { data: task, isLoading } = useTask(companyId, taskId);
+  const { data: taskMeetings = [] } = useTaskMeetings(companyId, taskId);
   const {
     data: thread = [],
     error: threadError,
@@ -559,6 +562,38 @@ export function TaskDetail() {
               </div>
             </div>
           </div>
+
+          {taskMeetings.length > 0 && (
+            <div className="glass rounded-xl overflow-hidden">
+              <div className="border-b border-white/[0.06] px-5 py-4">
+                <h3 className="font-display text-sm font-semibold text-text-primary tracking-wide">
+                  Source meeting
+                </h3>
+              </div>
+              <div className="p-5">
+                <div className="space-y-3">
+                  {taskMeetings.map((meeting) => (
+                    <Link
+                      key={meeting.id}
+                      to={`/company/${companyId}/meetings/${meeting.id}`}
+                      className="flex items-center gap-3 rounded-lg glass-raised p-3 hover:border-neon-cyan/30 transition-colors"
+                    >
+                      <Calendar className="h-4 w-4 text-neon-cyan" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs text-text-primary">{meeting.title}</p>
+                        <p className="text-[10px] text-text-secondary">
+                          {meeting.summary ? "Has summary" : "No summary yet"}
+                        </p>
+                      </div>
+                      {meeting.status === "archived" && (
+                        <Badge variant="default">archived</Badge>
+                      )}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="glass rounded-xl overflow-hidden">
             <div className="border-b border-white/[0.06] px-5 py-4">

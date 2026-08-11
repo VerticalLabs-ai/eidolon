@@ -80,6 +80,12 @@ class WebSocketClient {
       this.ws.onopen = () => {
         this.reconnectAttempts = 0;
         this.setStatus("connected");
+        // Send subscribe message so the server broadcasts events for this company
+        if (this.companyId) {
+          this.ws?.send(
+            JSON.stringify({ type: "subscribe", companyId: this.companyId }),
+          );
+        }
       };
 
       this.ws.onmessage = (event) => {
@@ -152,6 +158,17 @@ class WebSocketClient {
         if (set.size === 0) this.listeners.delete(eventType);
       }
     };
+  }
+
+  /**
+   * Send a message to the server over the WebSocket connection. No-ops if
+   * the connection is not open. Used by the co-editing system to send
+   * operations, cursors, and save requests.
+   */
+  send(msg: Record<string, unknown>): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
   }
 }
 

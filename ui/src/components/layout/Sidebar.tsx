@@ -12,6 +12,7 @@ import {
   Bot,
   BrainCircuit,
   FileText,
+  FolderKanban,
   Globe,
   Inbox,
   LayoutDashboard,
@@ -22,6 +23,7 @@ import {
   Settings,
   ShieldCheck,
   Target,
+  Users,
   X,
   Zap,
 } from "lucide-react";
@@ -79,6 +81,7 @@ const navSections: NavSection[] = [
     label: "Knowledge",
     items: [
       { to: "/documents", icon: BookOpen, label: "Documents" },
+      { to: "/artifacts", icon: FolderKanban, label: "Artifacts" },
       { to: "/prompts", icon: FileText, label: "Prompt Studio" },
     ],
   },
@@ -88,6 +91,8 @@ const navSections: NavSection[] = [
       { to: "/analytics", icon: BarChart3, label: "Analytics" },
       { to: "/approvals", icon: ShieldCheck, label: "Approvals" },
       { to: "/integrations", icon: Plug, label: "Integrations" },
+      { to: "/teams", icon: Users, label: "Teams" },
+      { to: "/security", icon: ShieldCheck, label: "Security" },
       { to: "/settings", icon: Settings, label: "Settings" },
     ],
   },
@@ -115,12 +120,25 @@ function CompanyIconRail() {
     return company.brandColor || defaultColors[index % defaultColors.length];
   }
 
+  // The useBlocker hook in AppShell intercepts company-switch navigation when a
+  // dirty artifact editor is open, so the Sidebar can navigate directly — no
+  // local guard needed (which would otherwise duplicate the dialog).
+  const navigateToCompany = (id: string) => {
+    navigate(`/company/${id}`);
+  };
+
   return (
     <div className="flex h-full w-14 shrink-0 flex-col items-center gap-2 border-r border-white/[0.06] bg-surface/60 py-3 lg:w-12">
       {/* Eidolon logo at top */}
-      <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 lg:h-9 lg:w-9">
+      <button
+        type="button"
+        onClick={() => navigate(companyId ? `/company/${companyId}` : "/")}
+        className="mb-2 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 transition-colors hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:h-9 lg:w-9"
+        aria-label="Eidolon home"
+        title="Eidolon home"
+      >
         <Zap className="h-4 w-4 text-accent" />
-      </div>
+      </button>
 
       {/* Company icons */}
       <div className="flex w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 scrollbar-none">
@@ -133,7 +151,7 @@ function CompanyIconRail() {
             <button
               key={company.id}
               type="button"
-              onClick={() => navigate(`/company/${company.id}`)}
+              onClick={() => navigateToCompany(company.id)}
               title={company.name}
               aria-label={`Switch to ${company.name}`}
               className={clsx(

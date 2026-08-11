@@ -1,4 +1,5 @@
 // Eidolon hooks — v2 with projects, delete, toasts
+import { useRef, useCallback, useState } from "react";
 import {
   useQuery,
   useQueries,
@@ -6,6 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import * as api from "./api";
+import { useServerEvents } from "./ws";
 import type { GoalFilters, TaskFilters, FileFilters } from "./api";
 
 // Helper: server wraps responses in { data: ... }, unwrap it
@@ -74,8 +76,15 @@ export function useUpdateCompany() {
 export function useDeleteCompany() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, hard = false }: { id: string; hard?: boolean }) =>
-      api.deleteCompany(id, hard),
+    mutationFn: ({
+      id,
+      hard = false,
+      stepUpToken,
+    }: {
+      id: string;
+      hard?: boolean;
+      stepUpToken?: string;
+    }) => api.deleteCompany(id, hard, stepUpToken),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["companies"] });
     },
@@ -297,6 +306,18 @@ export function useUpdateThreadItem(companyId: string, projectId: string, thread
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId, threadId] });
     },
+  });
+}
+
+// ── Mentions ───────────────────────────────────────────────────────────────
+
+export function useMentionSearch(companyId: string | undefined, query: string) {
+  return useQuery({
+    queryKey: ["mention-search", companyId, query],
+    queryFn: async () =>
+      unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, query)),
+    enabled: !!companyId,
+    staleTime: 10_000,
   });
 }
 
@@ -613,6 +634,18 @@ export function useTaskThread(companyId: string | undefined, taskId: string | un
       unwrap<api.TaskThreadItem[]>(await api.getTaskThread(companyId!, taskId!)),
     enabled: !!companyId && !!taskId,
     refetchInterval: 10_000,
+  });
+}
+
+/**
+ * Reverse task→meeting backlink (VAL-MEETING-006/007): meetings that
+ * originated a task via the meeting_tasks join table.
+ */
+export function useTaskMeetings(companyId: string | undefined, taskId: string | undefined) {
+  return useQuery({
+    queryKey: ["tasks", companyId, taskId, "meetings"],
+    queryFn: async () => unwrap<api.Meeting[]>(await api.getTaskMeetings(companyId!, taskId!)),
+    enabled: !!companyId && !!taskId,
   });
 }
 
@@ -953,8 +986,12 @@ export function useChatThread(
 export function useSendChatMessage(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { content: string; targetAgentId?: string; threadId?: string }) =>
-      api.sendChatMessage(companyId, data),
+    mutationFn: (data: {
+      content: string;
+      targetAgentId?: string;
+      threadId?: string;
+      mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
+    }) => api.sendChatMessage(companyId, data),
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["chat-threads", companyId] });
       if (vars.threadId) {
@@ -1791,6 +1828,110 @@ export function useUpdateTemplateFromCompany(companyId: string) {
   });
 }
 
+// ── Project Templates (M4) ──────────────────────────────────────────────
+
+export function useProjectTemplates(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-templates", companyId],
+    queryFn: async () =>
+      unwrap<api.ProjectTemplate[]>(
+        await api.listProjectTemplates(companyId!),
+      ),
+    enabled: !!companyId,
+  });
+}
+
+export function useSaveProjectTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { projectId: string; name: string; description?: string | null }) =>
+      api.saveProjectTemplate(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+    },
+  });
+}
+
+export function useDeleteProjectTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteProjectTemplate(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+    },
+  });
+}
+
+export function useCreateProjectFromTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      templateId,
+      data,
+    }: {
+      templateId: string;
+      data: { name?: string; description?: string | null; idempotencyKey?: string };
+    }) => api.createProjectFromTemplate(companyId, templateId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects", companyId] });
+      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+    },
+  });
+}
+
+// ── Artifact Templates (M4) ─────────────────────────────────────────────
+
+export function useArtifactTemplates(
+  companyId: string | undefined,
+  type?: api.ArtifactType,
+) {
+  return useQuery({
+    queryKey: ["artifact-templates", companyId, type],
+    queryFn: async () =>
+      unwrap<api.ArtifactTemplate[]>(
+        await api.listArtifactTemplates(companyId!, type),
+      ),
+    enabled: !!companyId,
+  });
+}
+
+export function useSaveArtifactTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { artifactId: string; name: string; description?: string | null }) =>
+      api.saveArtifactTemplate(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifact-templates", companyId] });
+    },
+  });
+}
+
+export function useDeleteArtifactTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteArtifactTemplate(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifact-templates", companyId] });
+    },
+  });
+}
+
+export function useCreateArtifactFromTemplate(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      templateId,
+      data,
+    }: {
+      templateId: string;
+      data: { projectId?: string | null; folderId?: string | null; title?: string };
+    }) => api.createArtifactFromTemplate(companyId, templateId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
 // ── Inbox ───────────────────────────────────────────────────────────────
 
 export function useInbox(companyId: string | undefined) {
@@ -1939,5 +2080,504 @@ export function useAddApprovalComment(companyId: string) {
         queryKey: ["approvals", companyId, "detail", args.id],
       });
     },
+  });
+}
+
+// ── Artifacts ────────────────────────────────────────────────────────────
+
+export function useArtifacts(
+  companyId: string | undefined,
+  params?: api.ArtifactListParams,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, params ?? {}],
+    queryFn: async () => {
+      const res = await api.listArtifacts(companyId!, params);
+      const body = res as unknown as { data: api.Artifact[]; meta: api.ArtifactListMeta };
+      return {
+        rows: body.data,
+        meta: body.meta,
+      };
+    },
+    enabled: !!companyId,
+  });
+}
+
+export function useProjectArtifacts(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, "project", projectId],
+    queryFn: async () => {
+      const res = await api.listProjectArtifacts(companyId!, projectId!);
+      const body = res as unknown as { data: api.Artifact[] };
+      return body.data;
+    },
+    enabled: !!companyId && !!projectId,
+  });
+}
+
+export function useArtifact(
+  companyId: string | undefined,
+  id: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, id],
+    queryFn: async () => {
+      const res = await api.getArtifact(companyId!, id!);
+      return unwrap<api.Artifact>(res);
+    },
+    enabled: !!companyId && !!id,
+  });
+}
+
+export function useCreateArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createArtifact>[1]) =>
+      api.createArtifact(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useUpdateArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      id: string;
+      version: number;
+      title?: string;
+      content?: Record<string, unknown>;
+      message?: string;
+    }) =>
+      api.updateArtifact(companyId, args.id, {
+        version: args.version,
+        title: args.title,
+        content: args.content,
+        message: args.message,
+      }),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId, args.id] });
+      qc.invalidateQueries({
+        queryKey: ["artifacts", companyId, args.id, "revisions"],
+      });
+    },
+  });
+}
+
+export function useDeleteArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteArtifact(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useArchiveArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.archiveArtifact(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useRestoreArtifact(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.restoreArtifact(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useArtifactRevisions(
+  companyId: string | undefined,
+  id: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["artifacts", companyId, id, "revisions"],
+    queryFn: async () => {
+      const res = await api.listRevisions(companyId!, id!);
+      return unwrap<api.ArtifactRevision[]>(res);
+    },
+    enabled: !!companyId && !!id,
+  });
+}
+
+export function useRestoreRevision(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { id: string; version: number }) =>
+      api.restoreRevision(companyId, args.id, args.version),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId, args.id] });
+      qc.invalidateQueries({
+        queryKey: ["artifacts", companyId, args.id, "revisions"],
+      });
+    },
+  });
+}
+
+// Code artifact run (M6) — bounded sandboxed execution. The mutation returns
+// the run result (stdout/stderr/exit code); callers render it in the output
+// panel. No query cache invalidation: running does not mutate the artifact.
+export function useRunCode(companyId: string) {
+  return useMutation({
+    mutationFn: (artifactId: string) => api.runCodeArtifact(companyId, artifactId),
+  });
+}
+
+// ── Artifact Folders (M4) ───────────────────────────────────────────────
+
+export function useFolders(
+  companyId: string | undefined,
+  projectId?: string | null,
+) {
+  return useQuery({
+    queryKey: ["folders", companyId, projectId ?? undefined],
+    queryFn: async () => {
+      const res = await api.listFolders(companyId!, projectId);
+      const body = res as unknown as { data: api.ArtifactFolder[] };
+      return body.data;
+    },
+    enabled: !!companyId,
+  });
+}
+
+export function useCreateFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createFolder>[1]) =>
+      api.createFolder(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+    },
+  });
+}
+
+export function useUpdateFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      id: string;
+      name?: string;
+      parentId?: string | null;
+    }) => api.updateFolder(companyId, args.id, args),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+    },
+  });
+}
+
+export function useDeleteFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteFolder(companyId, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useMoveArtifactToFolder(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { artifactId: string; folderId: string | null }) =>
+      api.moveArtifactToFolder(companyId, args.artifactId, args.folderId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+// ── Presence (M3) ───────────────────────────────────────────────────────
+//
+// Presence is ephemeral realtime state. The hooks below provide:
+//  - useArtifactPresence: a query seeded by GET + live-patched by WS events
+//    (presence.join/leave/typing) so indicators appear/clear without reload.
+//  - usePresenceActions: fire-and-forget join/leave/typing mutations + a
+//    heartbeat refresher. The caller joins on mount and leaves on unmount.
+//  - useProjectPresence: aggregated presence across artifact types in a
+//    project (VAL-CROSS-014), also live-patched by WS events.
+
+export function useArtifactPresence(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+) {
+  const qc = useQueryClient();
+  const queryKey = ["presence", companyId, artifactId];
+
+  // Live-patch the cached presence list from WS events.
+  useServerEvents(companyId, "presence.join", (event) => {
+    const payload = event.payload as { artifactId?: string; userId?: string; name?: string };
+    if (!artifactId || payload?.artifactId !== artifactId) return;
+    qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
+      const next = old ?? [];
+      if (next.some((p) => p.userId === payload.userId)) return next;
+      return [...next, { userId: payload.userId!, name: payload.name!, typing: false }];
+    });
+  });
+
+  useServerEvents(companyId, "presence.leave", (event) => {
+    const payload = event.payload as { artifactId?: string; userId?: string };
+    if (!artifactId || payload?.artifactId !== artifactId) return;
+    qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
+      if (!old) return old;
+      return old.filter((p) => p.userId !== payload.userId);
+    });
+  });
+
+  useServerEvents(companyId, "presence.typing", (event) => {
+    const payload = event.payload as { artifactId?: string; userId?: string; typing?: boolean };
+    if (!artifactId || payload?.artifactId !== artifactId) return;
+    qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
+      if (!old) return old;
+      return old.map((p) =>
+        p.userId === payload.userId ? { ...p, typing: payload.typing ?? false } : p,
+      );
+    });
+  });
+
+  return useQuery({
+    queryKey,
+    queryFn: async () => {
+      const res = await api.getArtifactPresence(companyId!, artifactId!);
+      const body = res as unknown as { data: { presence: api.PresenceEntry[] } };
+      return body.data.presence;
+    },
+    enabled: !!companyId && !!artifactId,
+    // Presence is realtime; don't refetch aggressively — WS events keep it fresh.
+    staleTime: 30_000,
+  });
+}
+
+export function useProjectPresence(
+  companyId: string | undefined,
+  projectId: string | undefined,
+) {
+  const qc = useQueryClient();
+  const queryKey = ["presence", "project", companyId, projectId];
+
+  // Live-patch: any presence.join/leave re-invalidates the aggregated list so
+  // the project-level indicator updates without reload.
+  const invalidate = () => {
+    if (!projectId) return;
+    qc.invalidateQueries({ queryKey });
+  };
+  useServerEvents(companyId, "presence.join", invalidate);
+  useServerEvents(companyId, "presence.leave", invalidate);
+
+  return useQuery({
+    queryKey,
+    queryFn: async () => {
+      const res = await api.getProjectPresence(companyId!, projectId!);
+      const body = res as unknown as { data: { presence: api.ProjectPresenceEntry[] } };
+      return body.data.presence;
+    },
+    enabled: !!companyId && !!projectId,
+    staleTime: 10_000,
+  });
+}
+
+/**
+ * Presence actions for an artifact editor. Callers should join on mount and
+ * leave on unmount. `notifyTyping` debounces typing notifications and sends
+ * a clear after a short idle window. Returns a cleanup function for unmount.
+ */
+export function usePresenceActions(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+) {
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef = useRef(false);
+  const [selfUserId, setSelfUserId] = useState<string | undefined>(undefined);
+
+  const join = useCallback(async () => {
+    if (!companyId || !artifactId) return;
+    try {
+      const res = await api.joinPresence(companyId, artifactId);
+      const body = res as unknown as { data: { userId: string } };
+      setSelfUserId(body.data.userId);
+    } catch {
+      /* presence is best-effort */
+    }
+    // Heartbeat to keep the session alive (refreshes lastActiveAt).
+    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    heartbeatRef.current = setInterval(async () => {
+      try {
+        await api.joinPresence(companyId, artifactId);
+      } catch {
+        /* ignore */
+      }
+    }, 30_000);
+  }, [companyId, artifactId]);
+
+  const leave = useCallback(async () => {
+    if (!companyId || !artifactId) return;
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    isTypingRef.current = false;
+    try {
+      await api.leavePresence(companyId, artifactId);
+    } catch {
+      /* presence is best-effort */
+    }
+  }, [companyId, artifactId]);
+
+  /** Notify that the user is typing. Debounced; auto-clears after idle. */
+  const notifyTyping = useCallback(async () => {
+    if (!companyId || !artifactId) return;
+    // Reset the idle-clear timer on each keystroke.
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      try {
+        await api.setTypingPresence(companyId, artifactId, true);
+      } catch {
+        /* ignore */
+      }
+    }
+    typingTimerRef.current = setTimeout(async () => {
+      isTypingRef.current = false;
+      try {
+        await api.setTypingPresence(companyId, artifactId, false);
+      } catch {
+        /* ignore */
+      }
+    }, 2_500);
+  }, [companyId, artifactId]);
+
+  return { join, leave, notifyTyping, selfUserId };
+}
+
+// ── Teams + Permissions (M4 RBAC) ───────────────────────────────────────
+
+export function useTeams(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["teams", companyId],
+    queryFn: async () => unwrap<api.Team[]>(await api.getTeams(companyId!)),
+    enabled: !!companyId,
+  });
+}
+
+export function useCreateTeam(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) => unwrap<api.Team>(await api.createTeam(companyId, name)),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["teams", companyId] }),
+  });
+}
+
+export function useDeleteTeam(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (teamId: string) => api.deleteTeam(companyId, teamId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["teams", companyId] }),
+  });
+}
+
+export function useTeamMembers(companyId: string | undefined, teamId: string | undefined) {
+  return useQuery({
+    queryKey: ["teams", companyId, teamId, "members"],
+    queryFn: async () => unwrap<api.TeamMember[]>(await api.getTeamMembers(companyId!, teamId!)),
+    enabled: !!companyId && !!teamId,
+  });
+}
+
+export function useAddTeamMember(companyId: string, teamId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (userId: string) => unwrap<api.TeamMember>(await api.addTeamMember(companyId, teamId, userId)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["teams", companyId, teamId, "members"] });
+      qc.invalidateQueries({ queryKey: ["teams", companyId] });
+    },
+  });
+}
+
+export function useRemoveTeamMember(companyId: string, teamId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (userId: string) => api.removeTeamMember(companyId, teamId, userId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["teams", companyId, teamId, "members"] });
+      qc.invalidateQueries({ queryKey: ["teams", companyId] });
+    },
+  });
+}
+
+export function usePermissions(
+  companyId: string | undefined,
+  resourceType: api.PermissionResourceType | undefined,
+  resourceId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["permissions", companyId, resourceType, resourceId],
+    queryFn: async () => unwrap<api.PermissionRecord[]>(await api.getPermissions(companyId!, resourceType!, resourceId!)),
+    enabled: !!companyId && !!resourceType && !!resourceId,
+  });
+}
+
+export function useGrantPermission(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      resourceType: api.PermissionResourceType;
+      resourceId: string;
+      granteeType: api.GranteeType;
+      granteeId: string;
+      accessLevel: api.AccessLevel;
+    }) => unwrap<api.PermissionRecord>(await api.grantPermission(companyId, data)),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ["permissions", companyId, variables.resourceType, variables.resourceId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useRevokePermission(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      resourceType: api.PermissionResourceType;
+      resourceId: string;
+      granteeType: api.GranteeType;
+      granteeId: string;
+      accessLevel: api.AccessLevel;
+    }) => api.revokePermission(companyId, data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ["permissions", companyId, variables.resourceType, variables.resourceId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+    },
+  });
+}
+
+export function useResolvePermission(
+  companyId: string | undefined,
+  resourceType: api.PermissionResourceType | undefined,
+  resourceId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["permissions", companyId, "resolve", resourceType, resourceId],
+    queryFn: async () => unwrap<{ accessLevel: api.AccessLevel | null }>(await api.resolvePermission(companyId!, resourceType!, resourceId!)),
+    enabled: !!companyId && !!resourceType && !!resourceId,
   });
 }

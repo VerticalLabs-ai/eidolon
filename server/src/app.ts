@@ -7,7 +7,7 @@ import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createServiceTokenMiddleware } from './middleware/service-tokens.js';
-import { apiRateLimit } from './middleware/rate-limit.js';
+import { apiRateLimit, authSensitiveRateLimit } from './middleware/rate-limit.js';
 import { originCsrf } from './middleware/csrf.js';
 import healthRouter from './routes/health.js';
 import { companiesRouter } from './routes/companies.js';
@@ -46,13 +46,25 @@ import { sessionsRouter } from './routes/sessions.js';
 import { skillsRouter } from './routes/skills.js';
 import { routinesRouter } from './routes/routines.js';
 import { automationsRouter } from './routes/automations.js';
+import { artifactsRouter } from './routes/artifacts.js';
+import { meetingsRouter, meetingItemRouter } from './routes/meetings.js';
+import { foldersRouter } from './routes/folders.js';
+import { workspaceTemplatesRouter } from './routes/workspace-templates.js';
+import { teamsRouter } from './routes/teams.js';
+import { permissionsRouter } from './routes/permissions.js';
+import { presenceRouter } from './routes/presence.js';
+import { mentionsRouter } from './routes/mentions.js';
+import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
+import { mfaRouter, stepUpRouter } from './routes/mfa.js';
+import { securityMembersRouter } from './routes/security-members.js';
+import { securityAdminRouter } from './routes/security-admin.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp(db: DbInstance): express.Express {
   const app = express();
-  const { requireAuth, requireOrgMember } = createAuthMiddleware();
+  const { requireAuth, requireOrgMember } = createAuthMiddleware({ db });
   const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
     requireAuth,
     requireOrgMember,
@@ -122,6 +134,28 @@ export function createApp(db: DbInstance): express.Express {
   // Public endpoints (no auth required)
   app.use('/api', healthRouter);
 
+  // Local-trusted test user creation (guarded to AUTH_MODE=local_trusted
+  // inside the route handler; returns 404 otherwise). Available without
+  // auth so validators can create test users programmatically.
+  // VAL-SEC-009: the session-creation endpoint (login-like) is rate-limited.
+  app.use('/api/auth/local-trusted/create-session', authSensitiveRateLimit);
+  app.use('/api/auth/local-trusted', localTrustedAuthRouter(db));
+
+  // MFA + step-up authentication (M8). User-scoped (requireAuth only, not
+  // company-scoped) — MFA protects the user identity across companies.
+  // VAL-SEC-009: MFA verify + step-up re-auth are brute-force surfaces and
+  // carry a strict always-on rate limiter (bypassed in tests via
+  // EIDOLON_RATE_LIMIT_TEST_BYPASS).
+  app.use('/api/auth/mfa/verify', authSensitiveRateLimit);
+  app.use('/api/auth/step-up', authSensitiveRateLimit);
+  app.use('/api/auth/mfa', requireAuth, mfaRouter(db));
+  app.use('/api/auth/step-up', requireAuth, stepUpRouter(db));
+
+  // Security admin (M8): encryption key rotation + posture. Platform-admin
+  // gated (VAL-SEC-010). requireAuth ensures a user is present; the handler
+  // enforces the admin role.
+  app.use('/api/admin', requireAuth, securityAdminRouter(db));
+
   // Adapter registry introspection (public read; no secrets leaked)
   app.use('/api/adapters', adaptersRouter());
   app.use('/api/runtime', runtimeAdaptersRouter());
@@ -153,13 +187,13 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/org-chart', requireAuth, requireOrgMember(), orgChartRouter(db));
   app.use('/api/companies/:companyId/projects', requireAuth, requireOrgMember(), projectsRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/threads', requireAuth, requireOrgMember(), projectThreadsRouter(db));
+  app.use('/api/companies/:companyId/projects/:projectId/meetings', requireAuth, requireOrgMember(), meetingsRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/plans', requireAuth, requireOrgMember(), projectPlansRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/decisions', requireAuth, requireOrgMember(), projectDecisionsRouter(db));
   app.use('/api/companies/:companyId/projects/:projectId/outcomes', requireAuth, requireOrgMember(), projectOutcomesRouter(db));
   app.use('/api/companies/:companyId/tasks', requireAuth, requireOrgMember(), tasksRouter(db));
   app.use('/api/companies/:companyId/goals', requireAuth, requireOrgMember(), goalsRouter(db));
   app.use('/api/companies/:companyId/messages', requireAuth, requireOrgMember(), messagesRouter(db));
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), budgetsRouter(db));
   app.use('/api/companies/:companyId/analytics', requireAuth, requireOrgMember(), analyticsRouter(db));
   app.use('/api/companies/:companyId/workflows', requireAuth, requireOrgMember(), workflowsRouter(db));
   app.use('/api/companies/:companyId/activity', requireAuth, requireOrgMember(), activityRouter(db));
@@ -202,6 +236,9 @@ export function createApp(db: DbInstance): express.Express {
   // Unified inbox feed
   app.use('/api/companies/:companyId/inbox', requireAuth, requireOrgMember(), inboxRouter(db));
 
+  // Mention search (company-scoped agents + teammates for the picker)
+  app.use('/api/companies/:companyId/mentions', requireAuth, requireOrgMember(), mentionsRouter(db));
+
   // Company runtime snapshot
   app.use('/api/companies/:companyId/runtime', requireAuth, requireOrgMember(), runtimeRouter(db));
 
@@ -213,8 +250,58 @@ export function createApp(db: DbInstance): express.Express {
   // Unified automations surface (aggregates routines, workflows, webhooks)
   app.use('/api/companies/:companyId/automations', requireAuth, requireOrgMember(), automationsRouter(db));
 
+  // Meetings (M7): single-meeting operations (get/patch/transcript/summarize/
+  // action-items/tasks/delete/archive). Mounted at the company level so a
+  // meeting can be addressed by id regardless of whether it is project-scoped.
+  app.use('/api/companies/:companyId/meetings', requireAuth, requireOrgMember(), meetingItemRouter(db));
+
   // Local execution environments
   app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));
+
+  // ---------------------------------------------------------------------------
+  // Company-scoped bare-path routers (MOUNTED LAST among company routes).
+  //
+  // These sub-routers all live directly under `/api/companies/:companyId`
+  // (their routes are `/artifacts`, `/costs`, `/folders`, `/teams`, etc.).
+  // They are mounted as a SINGLE composite router so the `:companyId` path
+  // param is captured exactly once per request by one mount layer and
+  // propagated deterministically to every nested sub-router via
+  // `mergeParams`.
+  //
+  // The previous structure mounted eight separate routers at the same
+  // parameterized path `/api/companies/:companyId`, creating eight
+  // independent param-capture layers. Under Express 5 / path-to-regexp v8
+  // that multi-mount structure could intermittently drop the `:id` param
+  // for `GET /api/companies/:companyId/artifacts/:id` on the tsx-watch dev
+  // server: the artifacts list endpoint worked, but the single-artifact
+  // detail GET intermittently returned 404 (ARTIFACT_NOT_FOUND) because the
+  // `:id` param arrived empty at the handler, while the test server
+  // (createTestServer + supertest) and the artifact suite stayed green.
+  // One mount → one param capture → consistent `:id` propagation.
+  // (misc-devserver-artifact-route tech debt.)
+  //
+  // This composite is mounted AFTER every more-specific company route
+  // (meetings, environments, etc.) so those specific mounts intercept their
+  // own paths before any bare-path sub-router runs — and, critically, before
+  // the securityMembers admin guard below. This preserves the prior
+  // ordering where securityMembersRouter was the final bare mount.
+  // ---------------------------------------------------------------------------
+  const companyScopedRouter = express.Router({ mergeParams: true });
+  companyScopedRouter.use(budgetsRouter(db));
+  companyScopedRouter.use(artifactsRouter(db));
+  companyScopedRouter.use(foldersRouter(db));
+  companyScopedRouter.use(workspaceTemplatesRouter(db));
+  companyScopedRouter.use(teamsRouter(db));
+  companyScopedRouter.use(permissionsRouter(db));
+  companyScopedRouter.use(presenceRouter(db));
+  // Company member role/removal is admin/owner only. The handler also
+  // enforces requireAdminOrOwner internally (defense in depth); the
+  // mount-level guard here rejects non-admins before the handler runs,
+  // matching the prior `requireOrgMember('admin')` mount behavior. Because
+  // the composite is the last company mount, this guard only runs for
+  // requests that did not match any more-specific company route.
+  companyScopedRouter.use(requireOrgMember('admin'), securityMembersRouter(db));
+  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), companyScopedRouter);
 
   // ---------------------------------------------------------------------------
   // Static file serving for production UI (legacy single-host deploys).

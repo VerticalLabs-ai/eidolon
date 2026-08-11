@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
+import { clearCompanyPresence } from '../realtime/presence-store.js';
+import { requireStepUp } from '../services/stepup-service.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
@@ -137,6 +139,19 @@ export function companiesRouter(db: DbInstance): Router {
     }
 
     if (hard) {
+      // VAL-SEC-002/003/008: permanent (hard) deletion is a sensitive
+      // operation that requires step-up re-authentication. A valid step-up
+      // session for the `company_delete` scope must be presented via the
+      // `X-Eidolon-Step-Up-Token` header or `?stepUpToken=` query; absent
+      // or expired → 403 MFA_STEP_UP_REQUIRED and NO mutation occurs.
+      const actingUserId = req.user?.id ?? 'dev-user-000';
+      const stepUpToken =
+        (req.query.stepUpToken as string | undefined) ??
+        req.get('X-Eidolon-Step-Up-Token') ??
+        null;
+      await requireStepUp(db, actingUserId, 'company_delete', stepUpToken);
+
+      const deletedCompanyName = existing.name;
       // Every hard-delete operation must be atomic. In particular, the company
       // must not be left partially cleaned if a newly-added company-scoped
       // table rejects its delete.
@@ -234,6 +249,27 @@ export function companiesRouter(db: DbInstance): Router {
         payload: { company: existing },
         timestamp: new Date().toISOString(),
       });
+
+      // Audit: company permanent deletion is security-relevant (VAL-SEC-007).
+      // Inserted AFTER the transaction so the cascade (which deletes the
+      // company's other activity_log rows) doesn't remove this audit entry.
+      // activity_log.company_id is a plain text column (no FK), so the row
+      // survives the company deletion.
+      await db.drizzle.insert(db.schema.activityLog).values({
+        companyId,
+        actorType: 'user',
+        actorId: actingUserId,
+        action: 'company.delete_permanent',
+        entityType: 'company',
+        entityId: companyId,
+        description: `Permanently deleted company "${deletedCompanyName}"`,
+        metadata: { hard: true, companyName: deletedCompanyName },
+        createdAt: new Date(),
+      });
+
+      // Clear in-memory presence entries for the deleted company so stale
+      // viewing/typing indicators don't linger until the TTL sweep.
+      clearCompanyPresence(companyId);
 
       res.status(204).end();
     } else {

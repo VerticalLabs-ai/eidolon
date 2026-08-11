@@ -1,6 +1,7 @@
 import { afterAll, afterEach } from 'vitest';
 import { closeTestDb, closeTestServers } from './test-utils.js';
 import { eventBus } from './realtime/events.js';
+import { backgroundWork } from './services/background-work.js';
 
 /**
  * Hermetic test environment — neutralize auth-relevant env vars that may
@@ -30,6 +31,21 @@ import { eventBus } from './realtime/events.js';
 delete process.env.AUTH_MODE;
 delete process.env.CLERK_SECRET_KEY;
 delete process.env.VITE_AUTH_MODE;
+// Neutralize leaked LLM provider keys so meeting-service.ts `resolveLlm()`
+// returns null in every test. Without this, a developer's gitignored
+// `.env` ANTHROPIC_API_KEY/OPENAI_API_KEY/GOOGLE_API_KEY leaks into
+// `process.env` and `summarizeMeeting()`/`extractActionItems()` make real
+// network calls, blowing past the meetings test's 3000ms `collectUntil`
+// timeout. With the keys deleted, both fall back to the deterministic
+// extractive path (no network, immediate emit).
+delete process.env.ANTHROPIC_API_KEY;
+delete process.env.OPENAI_API_KEY;
+delete process.env.GOOGLE_API_KEY;
+
+// VAL-SEC-009: the auth-sensitive rate limiter is always-on outside tests so
+// the 429 posture is demonstrable in dev/validation. The deterministic
+// real-Postgres suite must never self-throttle, so bypass it for every test.
+process.env.EIDOLON_RATE_LIMIT_TEST_BYPASS = '1';
 
 /**
  * Per-file cleanup hook loaded via Vitest `setupFiles`.
@@ -58,6 +74,13 @@ afterAll(async () => {
  * across `it()` blocks (each test sets up its own state as needed).
  */
 afterEach(async () => {
+  // Drain all in-flight background work BEFORE removing listeners and
+  // closing servers. This ensures fire-and-forget follow-up writes (mention
+  // dispatch, activity logging, co-edit flush) complete before the next
+  // test's resetTestDb() TRUNCATEs all tables — preventing the Postgres
+  // deadlock (40P01/55P03) that occurred when TRUNCATE's ACCESS EXCLUSIVE
+  // lock collided with in-flight background writes.
+  await backgroundWork.drain();
   eventBus.removeAllListeners();
   // Close all persistent listening servers created via createTestServer so
   // no server leaks across tests. This eliminates the per-request

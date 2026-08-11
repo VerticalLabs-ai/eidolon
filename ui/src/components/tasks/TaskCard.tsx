@@ -9,6 +9,7 @@ import {
   ArrowUp,
   ArrowDown,
   Minus,
+  Calendar,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import type { Task } from "@/lib/api";
@@ -79,6 +80,12 @@ export function TaskCard({ task, companyId, compact }: TaskCardProps) {
             {priorityIcons[task.priority] ?? <Minus className="h-3 w-3" />}
             {task.priority}
           </Badge>
+          {task.tags?.includes("meeting-action-item") && (
+            <Badge variant="info">
+              <Calendar className="h-3 w-3" />
+              Meeting
+            </Badge>
+          )}
         </div>
         {task.assigneeAgentId && (
           <div className="flex items-center gap-1.5">

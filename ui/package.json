@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.3",
+    "@eidolon/shared": "workspace:*",
     "@tanstack/react-query": "^5.90.21",
     "better-auth": "^1.6.0",
     "clsx": "^2.1.1",

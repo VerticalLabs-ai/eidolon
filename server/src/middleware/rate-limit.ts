@@ -67,3 +67,51 @@ export const apiRateLimit = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
   max: RATE_LIMIT_REQUESTS_PER_WINDOW * 6,
 });
+
+/**
+ * Strict rate-limit for auth-sensitive endpoints (MFA verify, step-up
+ * re-auth, local-trusted session creation) — the brute-force surface
+ * (VAL-SEC-009).
+ *
+ * Unlike `apiRateLimit`/`authRateLimit`, this limiter is **always active** in
+ * dev and `local_trusted` mode so the 429 posture is demonstrable without
+ * flipping `NODE_ENV=production`. The test suite opts out via the
+ * `EIDOLON_RATE_LIMIT_TEST_BYPASS=1` env var (set in `test-setup.ts`) so the
+ * deterministic real-Postgres suite never self-throttles.
+ *
+ * The limit defaults to 10 requests per 15-minute window per IP — tight
+ * enough that a rapid repeated burst (e.g. curl loop brute-forcing MFA
+ * codes) is throttled with 429, while a normal interactive flow (a handful
+ * of verify/step-up calls) is unaffected. Override with
+ * `RATE_LIMIT_AUTH_SENSITIVE_MAX`.
+ */
+function shouldSkipAuthSensitive(): boolean {
+  if (process.env.EIDOLON_RATE_LIMIT_TEST_BYPASS === '1') return true;
+  return false;
+}
+
+export const authSensitiveRateLimit = rateLimit({
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: shouldSkipAuthSensitive,
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  // Function form so the limit can be tuned at runtime (e.g. a low limit for
+  // validation/verification of the 429 posture) without redeploying.
+  max: () => Number(process.env.RATE_LIMIT_AUTH_SENSITIVE_MAX ?? 10),
+  handler: (req, res, _next, options) => {
+    logger.warn(
+      {
+        ip: req.ip,
+        path: req.path,
+        method: req.method,
+        limit: options.max,
+      },
+      'Auth-sensitive rate limit exceeded',
+    );
+    res.status(429).json({
+      status: 429,
+      code: 'RATE_LIMITED',
+      message: 'Too many requests to this sensitive endpoint. Please wait and try again.',
+    });
+  },
+});

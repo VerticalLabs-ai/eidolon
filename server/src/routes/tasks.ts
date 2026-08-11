@@ -12,6 +12,7 @@ import {
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
+import { getTaskMeetings } from '../services/meeting-service.js';
 
 const TASK_TYPES = ['feature', 'bug', 'chore', 'spike', 'epic'] as const;
 const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -739,6 +740,15 @@ export function tasksRouter(db: DbInstance): Router {
     }
 
     res.json({ data: row });
+  });
+
+  // GET /api/companies/:companyId/tasks/:id/meetings — reverse task→meeting
+  // backlink (VAL-MEETING-006/007). Returns meetings linked to the task via
+  // the meeting_tasks join table, scoped by companyId.
+  router.get('/:id/meetings', async (req, res) => {
+    const { id, companyId } = routeParams(req);
+    const meetings = await getTaskMeetings(db, companyId, id);
+    res.json({ data: meetings });
   });
 
   // PATCH /api/companies/:companyId/tasks/:id - update

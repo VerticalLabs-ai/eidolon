@@ -49,7 +49,7 @@ export function ProjectThreadComposer({
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           placeholder="What should this conversation cover?"
-          className="h-9 w-full rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus:border-accent/60"
+          className="h-9 w-full rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:border-accent/60"
         />
         <label className="block text-xs text-text-secondary" htmlFor="thread-type">
           Thread type
@@ -59,7 +59,7 @@ export function ProjectThreadComposer({
           aria-label="Thread type"
           value={type}
           onChange={(event) => setType(event.target.value as ProjectThreadType)}
-          className="h-9 w-full rounded-md border border-white/10 bg-surface px-3 text-sm text-text-primary outline-none focus:border-accent/60"
+          className="h-9 w-full rounded-md border border-white/10 bg-surface px-3 text-sm text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:border-accent/60"
         >
           {threadTypes.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>

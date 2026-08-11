@@ -19,12 +19,14 @@ import { MemoryService } from './memory.js';
 import { MCPClientService } from './mcp-client.js';
 import { BudgetEnforcer } from './budget-enforcer.js';
 import { decrypt } from './crypto.js';
+import { providerEnvKeyName, resolveProviderApiKey } from './provider-key.js';
 import { continuationRetryDueAt, retryDueAt } from './execution-retry.js';
 import { TaskCheckoutError, TaskCheckoutService } from './task-checkout.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
 import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
+import { ArtifactToolService, ARTIFACT_TOOL_DEFINITIONS } from './artifact-tools.js';
 
 export const MAX_CONTINUATION_RETRIES = 3;
 
@@ -115,6 +117,13 @@ export interface LoopResult {
   iterations: number;
 }
 
+export interface ProducedArtifact {
+  artifactId: string;
+  artifactType: string;
+  action: 'created' | 'updated';
+  version: number;
+}
+
 // ---------------------------------------------------------------------------
 // AgenticLoop
 // ---------------------------------------------------------------------------
@@ -126,6 +135,7 @@ export class AgenticLoop {
   private mcpService: MCPClientService;
   private budgetEnforcer: BudgetEnforcer;
   private checkoutService: TaskCheckoutService;
+  private artifactToolService: ArtifactToolService;
 
   constructor(
     private db: DbInstance,
@@ -137,6 +147,22 @@ export class AgenticLoop {
     this.mcpService = new MCPClientService(db);
     this.budgetEnforcer = new BudgetEnforcer(db);
     this.checkoutService = new TaskCheckoutService(db);
+    this.artifactToolService = new ArtifactToolService(db);
+  }
+
+  /**
+   * Return artifacts produced/updated by the agent during the last run.
+   */
+  getProducedArtifacts(): ProducedArtifact[] {
+    return this.artifactToolService.getProducedArtifacts();
+  }
+  /**
+   * Return meetings produced/summarized by the agent during the last run
+   * (M7 meeting tools). Used by the mention dispatcher to link meeting
+   * outcomes into the thread item payload.
+   */
+  getProducedMeetings(): import('./artifact-tools.js').ProducedMeeting[] {
+    return this.artifactToolService.getProducedMeetings();
   }
 
   /**
@@ -144,6 +170,9 @@ export class AgenticLoop {
    */
   async run(agentId: string, taskId: string, companyId: string): Promise<LoopResult> {
     const { agents, tasks, companies, agentExecutions } = this.db.schema;
+
+    // Reset artifact tracking for this run
+    this.artifactToolService.resetTracking();
 
     // ------------------------------------------------------------------
     // 1. Load agent, task, company
@@ -197,9 +226,12 @@ export class AgenticLoop {
     }
 
     const providerName: string = agent.provider;
+    // Fall back to the server-level env var when the agent has no per-agent key.
+    apiKey = resolveProviderApiKey(providerName, apiKey);
     if (!apiKey && providerName !== 'ollama' && providerName !== 'local') {
       throw new Error(
-        `Agent ${agent.name} has no API key configured for provider "${providerName}".`,
+        `Agent ${agent.name} has no API key configured for provider "${providerName}" ` +
+        `(no per-agent key and no server-level ${providerEnvKeyName(providerName) ?? 'env var'}).`,
       );
     }
 
@@ -351,33 +383,69 @@ export class AgenticLoop {
           // ---- TOOL CALL BRANCH ----
           try {
             const toolCall = JSON.parse(toolCallMatch[1]);
-            const toolServerId = toolCall.serverId || this.resolveServerId(mcpTools, toolCall.name);
 
-            const toolResult = await this.mcpService.callTool(
-              companyId,
-              toolServerId,
-              toolCall.name,
-              toolCall.args ?? {},
-            );
+            // Check for built-in artifact tools first (no MCP transport needed)
+            if (ArtifactToolService.isArtifactTool(toolCall.name)) {
+              const resolvedProjectId = await resolveTaskProjectId(this.db.drizzle, companyId, taskId);
+              const toolResult = await this.artifactToolService.executeTool(
+                toolCall.name,
+                toolCall.args ?? {},
+                { companyId, agentId, projectId: resolvedProjectId },
+              );
 
-            const toolResultText = toolResult.content
-              .map((c) => c.text ?? '')
-              .filter(Boolean)
-              .join('\n');
+              const toolResultText = toolResult.content
+                .map((c) => c.text ?? '')
+                .filter(Boolean)
+                .join('\n');
 
-            step.toolCalls = [{
-              tool: toolCall.name,
-              serverId: toolServerId,
-              args: toolCall.args ?? {},
-              result: toolResultText,
-            }];
+              step.toolCalls = [{
+                tool: toolCall.name,
+                args: toolCall.args ?? {},
+                result: toolResultText,
+              }];
 
-            // Feed tool result back into the conversation
-            messages.push({ role: 'assistant', content: result.content });
-            messages.push({
-              role: 'user',
-              content: `Tool result for "${toolCall.name}":\n${toolResultText}`,
-            });
+              messages.push({ role: 'assistant', content: result.content });
+              if (toolResult.isError) {
+                messages.push({
+                  role: 'user',
+                  content: `Tool error for "${toolCall.name}": ${toolResultText}\n\nPlease try again with valid arguments or continue with a different approach.`,
+                });
+              } else {
+                messages.push({
+                  role: 'user',
+                  content: `Tool result for "${toolCall.name}":\n${toolResultText}`,
+                });
+              }
+            } else {
+              // MCP tool call
+              const toolServerId = toolCall.serverId || this.resolveServerId(mcpTools, toolCall.name);
+
+              const toolResult = await this.mcpService.callTool(
+                companyId,
+                toolServerId,
+                toolCall.name,
+                toolCall.args ?? {},
+              );
+
+              const toolResultText = toolResult.content
+                .map((c) => c.text ?? '')
+                .filter(Boolean)
+                .join('\n');
+
+              step.toolCalls = [{
+                tool: toolCall.name,
+                serverId: toolServerId,
+                args: toolCall.args ?? {},
+                result: toolResultText,
+              }];
+
+              // Feed tool result back into the conversation
+              messages.push({ role: 'assistant', content: result.content });
+              messages.push({
+                role: 'user',
+                content: `Tool result for "${toolCall.name}":\n${toolResultText}`,
+              });
+            }
           } catch (toolErr) {
             const errorMsg = toolErr instanceof Error ? toolErr.message : 'Unknown tool error';
             step.toolCalls = [{
@@ -687,8 +755,17 @@ Do NOT include <task_complete> until you are confident the task is done.`);
           return `## ${t.name} (server: ${t.serverName}, id: ${t.serverId})\n${t.description}\nInput schema:\n\`\`\`json\n${schema}\n\`\`\``;
         })
         .join('\n\n');
-      sections.push(`# Available Tools\n${toolDescriptions}`);
+      sections.push(`# Available MCP Tools\n${toolDescriptions}`);
     }
+
+    // Built-in artifact tools (always available)
+    const artifactToolDescriptions = ARTIFACT_TOOL_DEFINITIONS
+      .map((t) => {
+        const schema = JSON.stringify(t.inputSchema, null, 2);
+        return `## ${t.name} (built-in)\n${t.description}\nInput schema:\n\`\`\`json\n${schema}\n\`\`\``;
+      })
+      .join('\n\n');
+    sections.push(`# Built-in Artifact Tools\nYou have built-in tools to create and manage artifacts (typed, versioned work products like Docs and Sheets) and meetings (transcript → summary → action items). Use these to produce outcomes from your tasks. To call a built-in tool, use the same <tool_call> format but omit the serverId.\n\n${artifactToolDescriptions}`);
 
     // Capabilities
     if (agent.capabilities && agent.capabilities.length > 0) {

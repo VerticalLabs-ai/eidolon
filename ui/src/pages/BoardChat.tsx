@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import {
   MessageCircle,
   Send,
@@ -8,6 +8,8 @@ import {
   ArrowLeft,
   Users,
   Bot,
+  CheckSquare,
+  Link2,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { clsx } from "clsx";
@@ -20,9 +22,58 @@ import {
 import { useServerEvents } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
-import type { Agent } from "@/lib/api";
+import { MentionPicker, MentionChip } from "@/components/projects/MentionPicker";
+import { ThreadArtifactCard } from "@/components/projects/ThreadArtifactCard";
+import { ThreadMeetingCard } from "@/components/projects/ThreadMeetingCard";
+import type { Agent, MentionableEntity } from "@/lib/api";
 
-const BOARD_SENDER_ID = "__board__";
+const BOARD_SENDER_ID = "__board__"; // Legacy sentinel; board messages now use null fromAgentId
+
+type MentionEntry = { entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string };
+
+/** Render content with mention chips inline for persisted mentions.
+ *  Artifact mentions render as inline ThreadArtifactCard references. */
+function renderMessageContent(
+  content: string,
+  mentions: MentionEntry[] | undefined,
+  companyId: string,
+): React.ReactNode {
+  if (!mentions || mentions.length === 0) return content;
+
+  const artifactMentions = mentions.filter((m) => m.entityType === "artifact");
+  const chipMentions = mentions.filter((m) => m.entityType !== "artifact");
+
+  let textRendered: React.ReactNode = content;
+  if (chipMentions.length > 0) {
+    const labels = chipMentions.map((m) => m.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const regex = new RegExp(`(@(?:${labels.join("|")}))`, "g");
+    const parts = content.split(regex);
+    textRendered = parts.map((part, i) => {
+      const mention = chipMentions.find((m) => `@${m.label}` === part);
+      if (mention) {
+        return <MentionChip key={i} entityType={mention.entityType} label={mention.label} />;
+      }
+      return <span key={i}>{part}</span>;
+    });
+  }
+
+  if (artifactMentions.length === 0) return textRendered;
+
+  return (
+    <span>
+      {textRendered}
+      {artifactMentions.map((m) => (
+        <ThreadArtifactCard
+          key={`artifact-mention-${m.entityId}`}
+          artifactId={m.entityId}
+          artifactType={m.artifactType ?? "document"}
+          companyId={companyId}
+          projectId={null}
+        />
+      ))}
+    </span>
+  );
+}
 
 /** Role badge colors (muted, no gradients) */
 const roleBadgeClass: Record<string, string> = {
@@ -50,10 +101,17 @@ export function BoardChat() {
   // Local state
   const [activeThreadId, setActiveThreadId] = useState<string | undefined>();
   const [message, setMessage] = useState("");
+  const [mentions, setMentions] = useState<MentionEntry[]>([]);
   const [targetAgentId, setTargetAgentId] = useState<string | undefined>();
   const [showAgentPicker, setShowAgentPicker] = useState(false);
   const [showThreadList, setShowThreadList] = useState(true);
   const [pendingResponse, setPendingResponse] = useState(false);
+
+  // Mention picker state
+  const [showMentionPicker, setShowMentionPicker] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [pickerAnchor, setPickerAnchor] = useState<DOMRect | null>(null);
+  const mentionStartRef = useRef<number>(-1);
 
   // Thread messages
   const { data: threadMessages } = useChatThread(companyId, activeThreadId);
@@ -106,17 +164,71 @@ export function BoardChat() {
     }
   }, [message]);
 
+  // Handle text input, detecting @ mention triggers (reuses the
+  // MentionPicker/chip flow from ProjectThreadPanel).
+  function handleTextChange(value: string) {
+    setMessage(value);
+
+    const lastAtIndex = value.lastIndexOf("@");
+    if (lastAtIndex >= 0) {
+      const preceding = lastAtIndex > 0 ? value[lastAtIndex - 1] : " ";
+      if (preceding === " " || preceding === "\n" || lastAtIndex === 0) {
+        const afterAt = value.slice(lastAtIndex + 1);
+        if (!afterAt.includes(" ")) {
+          setShowMentionPicker(true);
+          setMentionQuery(afterAt);
+          mentionStartRef.current = lastAtIndex;
+          if (textareaRef.current) {
+            setPickerAnchor(textareaRef.current.getBoundingClientRect());
+          }
+          return;
+        }
+      }
+    }
+    setShowMentionPicker(false);
+  }
+
+  function handleMentionSelect(entity: MentionableEntity) {
+    const start = mentionStartRef.current;
+    if (start < 0) return;
+    const before = message.slice(0, start);
+    const newText = `${before}@${entity.label} `;
+    setMessage(newText);
+    setMentions((prev) => [
+      ...prev,
+      {
+        entityType: entity.entityType,
+        entityId: entity.entityId,
+        label: entity.label,
+        ...(entity.artifactType ? { artifactType: entity.artifactType } : {}),
+      },
+    ]);
+    setShowMentionPicker(false);
+    mentionStartRef.current = -1;
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
   const handleSend = () => {
     const content = message.trim();
     if (!content) return;
 
     const threadId = activeThreadId;
 
+    // Reconcile structured mentions against the current draft text: drop any
+    // mention whose @Label was deleted from the input.
+    const reconciledMentions = mentions.filter((m) => content.includes(`@${m.label}`));
+
     sendChat.mutate(
-      { content, targetAgentId, threadId },
+      {
+        content,
+        targetAgentId,
+        threadId,
+        mentions: reconciledMentions.length > 0 ? reconciledMentions : undefined,
+      },
       {
         onSuccess: (res) => {
           setMessage("");
+          setMentions([]);
           setPendingResponse(true);
           // If new thread, select it
           const result = (res as any)?.data ?? res;
@@ -134,6 +246,8 @@ export function BoardChat() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Let the MentionPicker handle Arrow/Enter/Escape when open
+    if (showMentionPicker) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -143,6 +257,7 @@ export function BoardChat() {
   const startNewThread = () => {
     setActiveThreadId(undefined);
     setMessage("");
+    setMentions([]);
     setShowThreadList(false);
   };
 
@@ -368,8 +483,32 @@ export function BoardChat() {
           ) : (
             <>
               {(threadMessages ?? []).map((msg) => {
-                const isBoard = msg.fromAgentId === BOARD_SENDER_ID;
+                const isBoard = !msg.fromAgentId || msg.fromAgentId === BOARD_SENDER_ID;
                 const agent = !isBoard ? agentMap.get(msg.fromAgentId) : null;
+                // Persisted mentions live in the message metadata (BoardChat
+                // stores them on the user/bound message). Agent responses carry
+                // artifactId/artifactType in metadata when an artifact was produced.
+                const msgMentions = (msg.metadata?.mentions as MentionEntry[] | undefined);
+                // VAL-CROSS-007: render ALL artifacts from metadata.artifacts[]
+                // (agent can produce multiple). Fall back to single
+                // metadata.artifactId/artifactType for backward compat.
+                const msgMeta = msg.metadata as Record<string, unknown> | undefined;
+                const artifactsList = Array.isArray(msgMeta?.artifacts)
+                  ? (msgMeta.artifacts as Array<{ artifactId: string; artifactType: string }>)
+                  : msgMeta?.artifactId != null && msgMeta?.artifactType != null
+                    ? [{ artifactId: String(msgMeta.artifactId), artifactType: String(msgMeta.artifactType) }]
+                    : [];
+                // VAL-CROSS-026: task outcome link from metadata
+                const taskId =
+                  (msgMeta?.mentionDispatch as { taskId?: string } | undefined)?.taskId ??
+                  (typeof msgMeta?.taskId === "string" ? msgMeta.taskId : undefined);
+                // VAL-MEETING-015: meeting outcome card from metadata
+                const meetingId: string | undefined =
+                  typeof msgMeta?.meetingId === "string"
+                    ? msgMeta.meetingId
+                    : Array.isArray(msgMeta?.meetings)
+                      ? (msgMeta.meetings as Array<{ meetingId: string }>)[0]?.meetingId
+                      : undefined;
 
                 return (
                   <div
@@ -445,10 +584,52 @@ export function BoardChat() {
                             : "glass-raised text-text-secondary",
                         )}
                       >
-                        <p className="whitespace-pre-wrap break-words">
-                          {msg.content}
+                        <p className="whitespace-pre-wrap break-words text-left">
+                          {renderMessageContent(msg.content, msgMentions, companyId!)}
                         </p>
                       </div>
+
+                      {/* Artifact card(s) from agent response metadata */}
+                      {artifactsList.map((a) => (
+                        <div key={a.artifactId} className="mt-1.5 max-w-full">
+                          <ThreadArtifactCard
+                            artifactId={a.artifactId}
+                            artifactType={a.artifactType}
+                            companyId={companyId!}
+                            projectId={null}
+                          />
+                        </div>
+                      ))}
+                      {/* VAL-MEETING-015: meeting outcome card from agent response */}
+                      {meetingId != null && (
+                        <div key={`meeting-${meetingId}`} className="mt-1.5 max-w-full">
+                          <ThreadMeetingCard
+                            meetingId={meetingId}
+                            companyId={companyId!}
+                            projectId={null}
+                          />
+                        </div>
+                      )}
+                      {/* Task outcome link from agent response (VAL-CROSS-026) */}
+                      {taskId != null && (
+                        <Link
+                          to={`/company/${companyId}/tasks/${encodeURIComponent(taskId)}`}
+                          data-testid="thread-task-link"
+                          data-task-id={taskId}
+                          className="mt-1.5 max-w-full flex items-center gap-3 rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 transition-colors hover:border-accent/30 hover:bg-accent/[0.04]"
+                        >
+                          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-accent/10 text-accent">
+                            <CheckSquare className="h-4 w-4" aria-hidden="true" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-text-primary">Task created</div>
+                            <div className="truncate text-xs text-text-muted">
+                              Click to view task on the board
+                            </div>
+                          </div>
+                          <Link2 className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />
+                        </Link>
+                      )}
                     </div>
                   </div>
                 );
@@ -486,20 +667,30 @@ export function BoardChat() {
 
         {/* ── Input Area ──────────────────────────────────────────────── */}
         <div className="border-t border-white/[0.06] p-3">
-          <div className="flex items-end gap-2">
+          <div className="relative flex items-end gap-2">
             <textarea
               ref={textareaRef}
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => handleTextChange(e.target.value)}
               onKeyDown={handleKeyDown}
+              aria-label="Message your AI company"
               placeholder={
                 selectedAgent
-                  ? `Message ${selectedAgent.name}...`
-                  : "Message your AI company..."
+                  ? `Message ${selectedAgent.name}... (use @ to mention)`
+                  : "Message your AI company... (use @ to mention)"
               }
               rows={1}
               className="flex-1 resize-none rounded-lg glass px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-muted outline-none transition-all duration-200 focus:border-accent/25 focus:shadow-md focus:shadow-accent/5 border border-transparent min-h-[38px] max-h-[160px]"
             />
+            {showMentionPicker && companyId && (
+              <MentionPicker
+                companyId={companyId}
+                query={mentionQuery}
+                onSelect={handleMentionSelect}
+                onClose={() => setShowMentionPicker(false)}
+                anchorRect={pickerAnchor}
+              />
+            )}
             <button
               onClick={handleSend}
               disabled={!message.trim() || sendChat.isPending}
@@ -532,8 +723,29 @@ export function BoardChat() {
               )}
             </button>
           </div>
+
+          {/* Active mention chips. Artifact mentions render as inline
+              ThreadArtifactCard references; agent/user as compact chips. */}
+          {mentions.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5 px-1">
+              {mentions.map((m, i) =>
+                m.entityType === "artifact" ? (
+                  <ThreadArtifactCard
+                    key={`composer-artifact-${i}`}
+                    artifactId={m.entityId}
+                    artifactType={m.artifactType ?? "document"}
+                    companyId={companyId!}
+                    projectId={null}
+                  />
+                ) : (
+                  <MentionChip key={i} entityType={m.entityType} label={m.label} />
+                ),
+              )}
+            </div>
+          )}
+
           <p className="mt-1.5 text-[10px] text-text-muted px-1">
-            Press Enter to send, Shift+Enter for new line
+            Press Enter to send, Shift+Enter for new line. Type @ to mention an agent or teammate.
           </p>
         </div>
       </div>

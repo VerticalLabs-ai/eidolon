@@ -3,6 +3,19 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import { URL } from 'node:url';
 import logger from '../utils/logger.js';
 import { eventBus, type EidolonEvent } from './events.js';
+import type { DbInstance } from '../types.js';
+import type { CoEditClientMsg } from '@eidolon/shared';
+import {
+  initCoEditManager,
+  joinSession,
+  leaveSession,
+  leaveSessionByWs,
+  applyOperation,
+  broadcastCursor,
+  broadcastSelection,
+  flushSessionSerialized,
+} from './coedit-session.js';
+import { backgroundWork } from '../services/background-work.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -13,6 +26,8 @@ interface TrackedClient {
   subscribedCompanies: Set<string>;
   isAlive: boolean;
   connectedAt: Date;
+  /** Artifact IDs this client has joined a co-edit session for. */
+  coeditArtifacts: Set<string>;
 }
 
 interface InboundMessage {
@@ -29,7 +44,13 @@ const clients = new Map<WebSocket, TrackedClient>();
 
 let wss: WebSocketServer;
 
-export function setupWebSocketServer(server: HttpServer): WebSocketServer {
+export function setupWebSocketServer(server: HttpServer, options?: { db?: DbInstance }): WebSocketServer {
+  // Initialize the co-edit session manager with the DB instance so WS
+  // co-edit messages can load/save artifact content.
+  if (options?.db) {
+    initCoEditManager(options.db);
+  }
+
   wss = new WebSocketServer({ noServer: true });
 
   // Upgrade only for /ws path
@@ -50,6 +71,7 @@ export function setupWebSocketServer(server: HttpServer): WebSocketServer {
       subscribedCompanies: new Set(),
       isAlive: true,
       connectedAt: new Date(),
+      coeditArtifacts: new Set(),
     };
     clients.set(ws, tracked);
 
@@ -61,14 +83,23 @@ export function setupWebSocketServer(server: HttpServer): WebSocketServer {
 
     ws.on('message', (raw) => {
       try {
-        const msg: InboundMessage = JSON.parse(raw.toString());
-        handleClientMessage(tracked, msg);
+        const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+        const type = msg.type as string;
+        if (type && type.startsWith('coedit.')) {
+          handleCoEditMessage(tracked, msg as unknown as CoEditClientMsg);
+        } else {
+          handleClientMessage(tracked, msg as unknown as InboundMessage);
+        }
       } catch {
         ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
       }
     });
 
     ws.on('close', () => {
+      // Leave all co-edit sessions this client was part of
+      for (const artifactId of tracked.coeditArtifacts) {
+        void leaveSessionByWs(artifactId, ws);
+      }
       clients.delete(ws);
       logger.debug({ total: clients.size }, 'WebSocket client disconnected');
     });
@@ -140,6 +171,98 @@ function handleClientMessage(client: TrackedClient, msg: InboundMessage): void {
 
     default:
       client.ws.send(JSON.stringify({ type: 'error', message: `Unknown message type` }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Co-edit message handler
+// ---------------------------------------------------------------------------
+
+function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void {
+  switch (msg.type) {
+    case 'coedit.join': {
+      client.coeditArtifacts.add(msg.artifactId);
+      void joinSession(msg.artifactId, msg.companyId, msg.userId, msg.name, client.ws)
+        .catch((err) => {
+          client.ws.send(JSON.stringify({
+            type: 'coedit.error',
+            artifactId: msg.artifactId,
+            message: err instanceof Error ? err.message : 'Join failed',
+          }));
+        });
+      break;
+    }
+    case 'coedit.op': {
+      try {
+        applyOperation(msg.artifactId, msg.op, msg.userId);
+      } catch (err) {
+        client.ws.send(JSON.stringify({
+          type: 'coedit.error',
+          artifactId: msg.artifactId,
+          message: err instanceof Error ? err.message : 'Op failed',
+        }));
+      }
+      break;
+    }
+    case 'coedit.cursor': {
+      try {
+        broadcastCursor(
+          msg.artifactId,
+          msg.userId,
+          msg.name,
+          msg.color ?? '',
+          msg.position,
+        );
+      } catch (err) {
+        client.ws.send(JSON.stringify({
+          type: 'coedit.error',
+          artifactId: msg.artifactId,
+          message: err instanceof Error ? err.message : 'Cursor broadcast failed',
+        }));
+      }
+      break;
+    }
+    case 'coedit.selection': {
+      try {
+        broadcastSelection(
+          msg.artifactId,
+          msg.userId,
+          msg.name,
+          msg.color ?? '',
+          msg.range,
+        );
+      } catch (err) {
+        client.ws.send(JSON.stringify({
+          type: 'coedit.error',
+          artifactId: msg.artifactId,
+          message: err instanceof Error ? err.message : 'Selection broadcast failed',
+        }));
+      }
+      break;
+    }
+    case 'coedit.save': {
+      // Serialize saves per session (prevents spurious 409 from two rapid
+      // saves racing on session.version) and track the flush so tests can
+      // drain deterministically.
+      backgroundWork.track(
+        flushSessionSerialized(msg.artifactId, { userId: msg.userId, editSource: 'user' }, msg.title),
+        `coedit.save (${msg.artifactId})`,
+      ).catch((err) => {
+        client.ws.send(JSON.stringify({
+          type: 'coedit.error',
+          artifactId: msg.artifactId,
+          message: err instanceof Error ? err.message : 'Save failed',
+        }));
+      });
+      break;
+    }
+    case 'coedit.leave': {
+      client.coeditArtifacts.delete(msg.artifactId);
+      void leaveSession(msg.artifactId, msg.userId);
+      break;
+    }
+    default:
+      client.ws.send(JSON.stringify({ type: 'error', message: 'Unknown coedit message type' }));
   }
 }
 

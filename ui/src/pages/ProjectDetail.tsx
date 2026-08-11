@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil } from "lucide-react";
+import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil, FileEdit, Copy } from "lucide-react";
 import { toast } from "sonner";
-import { useArchiveProject, useProject } from "@/lib/hooks";
+import { useArchiveProject, useProject, useProjectWork, useSaveProjectTemplate } from "@/lib/hooks";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Tabs } from "@/components/ui/Tabs";
@@ -14,20 +14,25 @@ import { isHttpUrl } from "@/lib/urls";
 import { TaskBoard } from "@/pages/TaskBoard";
 import { ProjectHome } from "@/pages/ProjectHome";
 import { ProjectDrive } from "@/pages/ProjectDrive";
+import { ProjectArtifacts } from "@/pages/ProjectArtifacts";
+import { ProjectMeetings } from "@/components/projects/ProjectMeetings";
 import { ProjectThreadComposer } from "@/components/projects/ProjectThreadComposer";
 import { ProjectPlansPanel } from "@/components/projects/ProjectPlansPanel";
 import { ProjectDecisionsPanel } from "@/components/projects/ProjectDecisionsPanel";
 import { ProjectOutcomesPanel } from "@/components/projects/ProjectOutcomesPanel";
 import { AutomationRunsPanel } from "@/components/projects/AutomationRunsPanel";
 import type { Tab } from "@/components/ui/Tabs";
+import { formatDistanceToNow } from "date-fns";
 
-const VALID_TABS = ["home", "work", "drive", "activity"] as const;
+const VALID_TABS = ["home", "work", "drive", "artifacts", "meetings", "activity"] as const;
 type ValidTab = (typeof VALID_TABS)[number];
 
 const tabs: Tab[] = [
   { id: "home", label: "Home" },
   { id: "work", label: "Work" },
   { id: "drive", label: "Drive" },
+  { id: "artifacts", label: "Artifacts" },
+  { id: "meetings", label: "Meetings" },
   { id: "activity", label: "Activity" },
 ];
 
@@ -39,15 +44,75 @@ const statusVariant: Record<string, "default" | "success" | "warning" | "info" |
   archived: "default",
 };
 
+// ── Work view: Artifacts panel (VAL-ART-057) ─────────────────────────────
+
+function WorkArtifactsPanel({
+  companyId,
+  projectId,
+  onNavigateToArtifacts,
+}: {
+  companyId: string;
+  projectId: string;
+  onNavigateToArtifacts: () => void;
+}) {
+  const { data: workSummary } = useProjectWork(companyId, projectId);
+  const artifacts = workSummary?.artifacts ?? [];
+
+  return (
+    <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4" aria-label="Artifacts">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
+          <FileEdit className="h-4 w-4" />
+        </span>
+        <h2 className="text-sm font-semibold text-text-primary font-display">Artifacts</h2>
+      </div>
+      {artifacts.length === 0 ? (
+        <p className="py-4 text-center text-sm text-text-muted" role="status">
+          No artifacts yet
+        </p>
+      ) : (
+        <ul>
+          {artifacts.slice(0, 5).map((artifact) => (
+            <li
+              key={artifact.id}
+              className="flex items-center gap-2 border-b border-white/[0.04] py-2 last:border-b-0"
+            >
+              <FileEdit className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-text-primary">{artifact.title}</p>
+                <p className="text-xs text-text-muted capitalize">
+                  {artifact.type} · v{artifact.version} ·{" "}
+                  {formatDistanceToNow(new Date(artifact.updatedAt), { addSuffix: true })}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={onNavigateToArtifacts}
+        className="mt-3 w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs font-medium text-accent transition-colors hover:bg-accent/[0.06] cursor-pointer"
+      >
+        View all artifacts →
+      </button>
+    </div>
+  );
+}
+
 export function ProjectDetail() {
   const { companyId, projectId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, isLoading, isError, refetch } = useProject(companyId, projectId);
   const archiveMutation = useArchiveProject(companyId ?? "");
+  const saveProjectTemplateMutation = useSaveProjectTemplate(companyId ?? "");
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+  const [templateDescription, setTemplateDescription] = useState("");
 
   const rawTab = searchParams.get("tab");
   const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
@@ -158,6 +223,18 @@ export function ProjectDetail() {
                 Edit Project
               </Button>
               <Button
+                variant="secondary"
+                className="flex-1 sm:flex-none"
+                icon={<Copy className="h-3.5 w-3.5" />}
+                onClick={() => {
+                  setTemplateName(`${project.name} Template`);
+                  setTemplateDescription("");
+                  setSaveTemplateOpen(true);
+                }}
+              >
+                Save as Template
+              </Button>
+              <Button
                 variant="danger"
                 className="flex-1 sm:flex-none"
                 icon={<Archive className="h-3.5 w-3.5" />}
@@ -182,6 +259,11 @@ export function ProjectDetail() {
         {activeTab === "work" && (
           <div className="space-y-4 p-5 sm:p-6">
             <TaskBoard title="Work" />
+            <WorkArtifactsPanel
+              companyId={companyId ?? ""}
+              projectId={project.id}
+              onNavigateToArtifacts={() => handleTabChange("artifacts")}
+            />
             <div className="mx-auto max-w-6xl">
               <ProjectPlansPanel companyId={companyId ?? ""} projectId={project.id} />
             </div>
@@ -201,6 +283,12 @@ export function ProjectDetail() {
         )}
         {activeTab === "drive" && (
           <ProjectDrive companyId={companyId ?? ""} projectId={project.id} />
+        )}
+        {activeTab === "artifacts" && (
+          <ProjectArtifacts companyId={companyId ?? ""} projectId={project.id} />
+        )}
+        {activeTab === "meetings" && (
+          <ProjectMeetings companyId={companyId ?? ""} projectId={project.id} />
         )}
         {activeTab === "activity" && (
           <ProjectActivity key={project.id} companyId={companyId ?? ""} projectId={project.id} />
@@ -268,6 +356,77 @@ export function ProjectDetail() {
               }}
             >
               Confirm Archive
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Save as Template modal (M4) — VAL-TEMPLATE-001 */}
+      <Modal
+        open={saveTemplateOpen}
+        onClose={() => setSaveTemplateOpen(false)}
+        title="Save Project as Template"
+        dismissible={!saveProjectTemplateMutation.isPending}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-secondary">
+            Capture this project's artifacts, folders, and settings as a reusable
+            template. The template is a snapshot — editing the original project
+            afterwards does not change it.
+          </p>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary mb-1 block">
+              Template Name
+            </span>
+            <input
+              type="text"
+              value={templateName}
+              onChange={(e) => setTemplateName(e.target.value)}
+              className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent/50"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-text-secondary mb-1 block">
+              Description (optional)
+            </span>
+            <textarea
+              value={templateDescription}
+              onChange={(e) => setTemplateDescription(e.target.value)}
+              rows={2}
+              className="w-full rounded-md bg-white/[0.04] border border-white/10 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent/50"
+            />
+          </label>
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              variant="ghost"
+              disabled={saveProjectTemplateMutation.isPending}
+              onClick={() => setSaveTemplateOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              loading={saveProjectTemplateMutation.isPending}
+              onClick={() => {
+                saveProjectTemplateMutation.mutate(
+                  {
+                    projectId: project.id,
+                    name: templateName.trim(),
+                    description: templateDescription.trim() || null,
+                  },
+                  {
+                    onSuccess: () => {
+                      toast.success("Project template saved");
+                      setSaveTemplateOpen(false);
+                    },
+                    onError: (err) => {
+                      const msg = err instanceof Error ? err.message : "Save failed";
+                      toast.error(msg);
+                    },
+                  },
+                );
+              }}
+            >
+              Save Template
             </Button>
           </div>
         </div>

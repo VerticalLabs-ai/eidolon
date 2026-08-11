@@ -35,6 +35,17 @@ export const taskThreadItems = pgTable(
       .notNull()
       .$type<Record<string, unknown>>()
       .default({}),
+    mentions: jsonb('mentions')
+      .notNull()
+      .$type<
+        Array<{
+          entityType: 'agent' | 'user' | 'artifact';
+          entityId: string;
+          label: string;
+          artifactType?: string;
+        }>
+      >()
+      .default([]),
     interactionType: text('interaction_type', {
       enum: ['suggested_tasks', 'confirmation', 'form'],
     }),

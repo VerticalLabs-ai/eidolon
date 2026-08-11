@@ -1,4 +1,6 @@
 // Eidolon API Client
+import { toast } from "sonner";
+
 const API_BASE = "/api";
 
 export class ApiError extends Error {
@@ -30,6 +32,23 @@ async function request<T>(
   if (res.status === 401 && !path.startsWith("/auth/")) {
     window.location.href = "/login";
     throw new ApiError(401, "Session expired");
+  }
+
+  // VAL-SEC-006: surface a graceful forbidden state on RBAC denials (403)
+  // rather than letting the UI crash or silently swallow the error. The
+  // structured error body from the server carries the code + message.
+  // VAL-SEC-002/003/008: a 403 with code `MFA_STEP_UP_REQUIRED` is NOT an
+  // RBAC denial — it signals that a sensitive action needs step-up
+  // re-authentication. The caller opens the MfaChallengeModal instead of a
+  // toast, so we skip the toast here and let the caller handle the flow.
+  if (res.status === 403) {
+    const body = await res.json().catch(() => null);
+    const message =
+      body?.message ?? "You do not have permission to perform this action.";
+    if (body?.code !== "MFA_STEP_UP_REQUIRED") {
+      toast.error(`Forbidden: ${message}`);
+    }
+    throw new ApiError(403, message, body);
   }
 
   if (!res.ok) {
@@ -246,8 +265,16 @@ export const updateCompany = (
   data: Partial<Pick<Company, "name" | "description" | "mission" | "status" | "budgetMonthlyCents">>,
 ) => request<Company>(`/companies/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 
-export const deleteCompany = (id: string, hard = false) =>
-  request<void>(`/companies/${id}${hard ? "?hard=true" : ""}`, { method: "DELETE" });
+export const deleteCompany = (id: string, hard = false, stepUpToken?: string) => {
+  const qs = new URLSearchParams();
+  if (hard) qs.set("hard", "true");
+  if (stepUpToken) qs.set("stepUpToken", stepUpToken);
+  const query = qs.toString();
+  return request<void>(
+    `/companies/${id}${query ? `?${query}` : ""}`,
+    { method: "DELETE" },
+  );
+};
 
 // ── Projects ────────────────────────────────────────────────────────────
 
@@ -354,6 +381,8 @@ export interface ProjectHomeSummary {
   };
   // VER-513 composed fields
   healthSummary: HealthSummary;
+  // VAL-ART-056: artifacts section (active only, top 10)
+  artifacts: ArtifactSummary[];
 }
 
 export const getProjectHome = (companyId: string, projectId: string) =>
@@ -477,6 +506,7 @@ export interface TaskThreadItem {
   authorAgentId?: string | null;
   content: string | null;
   payload: TaskThreadPayload;
+  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
   interactionType?: "suggested_tasks" | "confirmation" | "form" | null;
   status: TaskThreadItemStatus;
   idempotencyKey?: string | null;
@@ -512,6 +542,7 @@ export interface ProjectThread {
 export interface ProjectThreadItem extends Omit<TaskThreadItem, "taskId"> {
   taskId: string | null;
   projectThreadId: string | null;
+  projectId: string | null;
 }
 
 export interface ProjectThreadDetail extends ProjectThread {
@@ -705,6 +736,7 @@ export interface CreateThreadItemInput {
   kind?: ProjectThreadItem["kind"];
   content?: string;
   payload?: TaskThreadPayload;
+  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
   interactionType?: NonNullable<ProjectThreadItem["interactionType"]>;
   status?: Extract<TaskThreadItemStatus, "pending" | "accepted" | "rejected" | "answered" | "linked">;
 }
@@ -766,6 +798,24 @@ export const updateThreadItem = (
     `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items/${itemId}`,
     { method: "PATCH", body: JSON.stringify(data) },
   );
+
+// ── Mentions ─────────────────────────────────────────────────────────────
+
+export interface MentionableEntity {
+  entityType: "agent" | "user" | "artifact";
+  entityId: string;
+  label: string;
+  subtitle?: string;
+  artifactType?: string;
+}
+
+export const searchMentions = (companyId: string, query: string) => {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  return request<ApiResponse<MentionableEntity[]>>(
+    `/companies/${companyId}/mentions/search?${params.toString()}`,
+  );
+};
 
 // ── Project Plans ────────────────────────────────────────────────────────
 
@@ -926,6 +976,8 @@ export interface ProjectWorkSummary {
   };
   // VER-513 composed fields
   automationRuns: AutomationRun[];
+  // VAL-ART-057: artifacts section (active only, top 10)
+  artifacts: ArtifactSummary[];
 }
 
 export const getProjectWork = (companyId: string, projectId: string) =>
@@ -1184,6 +1236,8 @@ export interface SendChatResult {
   threadId: string;
   respondingAgentId: string | null;
   respondingAgentName: string | null;
+  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
+  mentionDispatch?: { dispatchedAgents?: Array<{ agentId: string; agentName: string }> };
 }
 
 export const getChatThreads = (companyId: string) =>
@@ -1194,7 +1248,12 @@ export const getChatThread = (companyId: string, threadId: string) =>
 
 export const sendChatMessage = (
   companyId: string,
-  data: { content: string; targetAgentId?: string; threadId?: string },
+  data: {
+    content: string;
+    targetAgentId?: string;
+    threadId?: string;
+    mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
+  },
 ) =>
   request<SendChatResult>(`/companies/${companyId}/chat/send`, {
     method: "POST",
@@ -2357,6 +2416,111 @@ export const updateTemplateFromCompany = (
     { method: "PATCH", body: JSON.stringify(data ?? {}) },
   );
 
+// ── Project Templates (M4) ──────────────────────────────────────────────
+
+export interface ProjectTemplate {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  projectId: string | null;
+  snapshot: {
+    settings: {
+      name: string;
+      description: string | null;
+      status?: string;
+      repoUrl?: string | null;
+    };
+    folders: Array<{ originalId: string; parentId: string | null; name: string }>;
+    artifacts: Array<{
+      type: ArtifactType;
+      title: string;
+      content: Record<string, unknown>;
+      contentSchemaVersion: number;
+      originalFolderId: string | null;
+    }>;
+  };
+  artifactCount: number;
+  folderCount: number;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const saveProjectTemplate = (
+  companyId: string,
+  data: { projectId: string; name: string; description?: string | null },
+) =>
+  request<ProjectTemplate>(`/companies/${companyId}/project-templates`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const listProjectTemplates = (companyId: string) =>
+  request<ProjectTemplate[]>(`/companies/${companyId}/project-templates`);
+
+export const getProjectTemplate = (companyId: string, id: string) =>
+  request<ProjectTemplate>(`/companies/${companyId}/project-templates/${id}`);
+
+export const deleteProjectTemplate = (companyId: string, id: string) =>
+  request<void>(`/companies/${companyId}/project-templates/${id}`, { method: "DELETE" });
+
+export const createProjectFromTemplate = (
+  companyId: string,
+  templateId: string,
+  data: { name?: string; description?: string | null; idempotencyKey?: string },
+) =>
+  request<{ project: Project; artifacts: Artifact[]; folders: unknown[] }>(
+    `/companies/${companyId}/project-templates/${templateId}/create-project`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+// ── Artifact Templates (M4) ─────────────────────────────────────────────
+
+export interface ArtifactTemplate {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string | null;
+  type: ArtifactType;
+  content: Record<string, unknown>;
+  contentSchemaVersion: number;
+  artifactId: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const saveArtifactTemplate = (
+  companyId: string,
+  data: { artifactId: string; name: string; description?: string | null },
+) =>
+  request<ArtifactTemplate>(`/companies/${companyId}/artifact-templates`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const listArtifactTemplates = (companyId: string, type?: ArtifactType) => {
+  const qs = type ? `?type=${type}` : "";
+  return request<ArtifactTemplate[]>(`/companies/${companyId}/artifact-templates${qs}`);
+};
+
+export const getArtifactTemplate = (companyId: string, id: string) =>
+  request<ArtifactTemplate>(`/companies/${companyId}/artifact-templates/${id}`);
+
+export const deleteArtifactTemplate = (companyId: string, id: string) =>
+  request<void>(`/companies/${companyId}/artifact-templates/${id}`, { method: "DELETE" });
+
+export const createArtifactFromTemplate = (
+  companyId: string,
+  templateId: string,
+  data: { projectId?: string | null; folderId?: string | null; title?: string },
+) =>
+  request<Artifact>(
+    `/companies/${companyId}/artifact-templates/${templateId}/create-artifact`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
 // ── Inbox (unified feed) ────────────────────────────────────────────────
 
 export type InboxItemKind = "approval" | "collaboration" | "activity" | "task_thread";
@@ -2502,4 +2666,692 @@ export const addApprovalComment = (
   request<ApprovalComment>(
     `/companies/${companyId}/approvals/${id}/comments`,
     { method: "POST", body: JSON.stringify({ content }) },
+  );
+
+// ── Artifacts ────────────────────────────────────────────────────────────
+
+export type ArtifactType =
+  | "document"
+  | "sheet"
+  | "board"
+  | "slide_deck"
+  | "timeline"
+  | "gallery"
+  | "dashboard"
+  | "app"
+  | "code";
+
+export type ArtifactStatus = "active" | "archived" | "deleted";
+
+export interface Artifact {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  folderId: string | null;
+  type: ArtifactType;
+  title: string;
+  content: Record<string, unknown>;
+  contentSchemaVersion: number;
+  status: ArtifactStatus;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  lastEditedByUserId: string | null;
+  lastEditedByAgentId: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+/** Lightweight artifact summary used in composed views (home/work). */
+export interface ArtifactSummary {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  type: ArtifactType;
+  title: string;
+  status: ArtifactStatus;
+  version: number;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  lastEditedByUserId: string | null;
+  lastEditedByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArtifactRevision {
+  id: string;
+  artifactId: string;
+  version: number;
+  content: Record<string, unknown>;
+  editedByUserId: string | null;
+  editedByAgentId: string | null;
+  editSource: "user" | "agent" | "system";
+  message: string | null;
+  createdAt: string;
+}
+
+export interface ArtifactListMeta {
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ArtifactListParams {
+  projectId?: string;
+  type?: ArtifactType;
+  status?: ArtifactStatus;
+  folderId?: string | "null";
+  limit?: number;
+  offset?: number;
+  sort?: "updatedAt" | "title" | "type" | "createdAt";
+  order?: "asc" | "desc";
+}
+
+function artifactListQuery(params: ArtifactListParams): string {
+  const sp = new URLSearchParams();
+  if (params.projectId) sp.set("projectId", params.projectId);
+  if (params.type) sp.set("type", params.type);
+  if (params.status) sp.set("status", params.status);
+  if (params.folderId) sp.set("folderId", params.folderId);
+  if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params.sort) sp.set("sort", params.sort);
+  if (params.order) sp.set("order", params.order);
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export const listArtifacts = (companyId: string, params?: ArtifactListParams) =>
+  request<ApiResponse<Artifact[]>>(
+    `/companies/${companyId}/artifacts${artifactListQuery(params ?? {})}`,
+  );
+
+export const listProjectArtifacts = (
+  companyId: string,
+  projectId: string,
+) =>
+  request<ApiResponse<Artifact[]>>(
+    `/companies/${companyId}/projects/${projectId}/artifacts`,
+  );
+
+export const getArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}`);
+
+export const createArtifact = (
+  companyId: string,
+  data: {
+    type: ArtifactType;
+    title: string;
+    content: Record<string, unknown>;
+    projectId?: string | null;
+  },
+) =>
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateArtifact = (
+  companyId: string,
+  id: string,
+  data: {
+    version: number;
+    title?: string;
+    content?: Record<string, unknown>;
+    message?: string;
+  },
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const deleteArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}`,
+    { method: "DELETE" },
+  );
+
+export const archiveArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/archive`,
+    { method: "POST" },
+  );
+
+export const restoreArtifact = (companyId: string, id: string) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/restore`,
+    { method: "POST" },
+  );
+
+export const listRevisions = (companyId: string, id: string) =>
+  request<ApiResponse<ArtifactRevision[]>>(
+    `/companies/${companyId}/artifacts/${id}/revisions`,
+  );
+
+export const getRevision = (
+  companyId: string,
+  id: string,
+  version: number,
+) =>
+  request<ApiResponse<ArtifactRevision>>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${version}`,
+  );
+
+export const restoreRevision = (
+  companyId: string,
+  id: string,
+  version: number,
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
+    { method: "POST" },
+  );
+
+// ── Dashboard data-source resolution (M5) ────────────────────────────────
+
+export interface ResolvedDataSource {
+  dataSourceId: string;
+  type: string;
+  data: unknown;
+  resolvedAt: string;
+  error?: string;
+}
+
+export const resolveDashboardSource = (
+  companyId: string,
+  artifactId: string,
+  dataSourceId: string,
+) =>
+  request<ApiResponse<ResolvedDataSource>>(
+    `/companies/${companyId}/artifacts/${artifactId}/dashboard/sources/${dataSourceId}/resolve`,
+  );
+
+export const resolveDashboardAll = (companyId: string, artifactId: string) =>
+  request<ApiResponse<{ sources: ResolvedDataSource[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/dashboard/resolve`,
+  );
+
+// ── Code artifact run (M6) ───────────────────────────────────────────────
+
+export interface CodeRunResult {
+  artifactId: string;
+  language: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  truncated: boolean;
+}
+
+export const runCodeArtifact = (companyId: string, artifactId: string) =>
+  request<ApiResponse<CodeRunResult>>(
+    `/companies/${companyId}/artifacts/${artifactId}/run`,
+    { method: "POST" },
+  );
+
+// ── Artifact Folders (M4) ────────────────────────────────────────────────
+
+export interface ArtifactFolder {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const listFolders = (companyId: string, projectId?: string | null) => {
+  const sp = new URLSearchParams();
+  if (projectId === null) sp.set("projectId", "null");
+  else if (projectId) sp.set("projectId", projectId);
+  const qs = sp.toString();
+  return request<ApiResponse<ArtifactFolder[]>>(
+    `/companies/${companyId}/folders${qs ? `?${qs}` : ""}`,
+  );
+};
+
+export const createFolder = (
+  companyId: string,
+  data: { name: string; projectId?: string | null; parentId?: string | null },
+) =>
+  request<ApiResponse<ArtifactFolder>>(`/companies/${companyId}/folders`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateFolder = (
+  companyId: string,
+  id: string,
+  data: { name?: string; parentId?: string | null },
+) =>
+  request<ApiResponse<ArtifactFolder>>(
+    `/companies/${companyId}/folders/${id}`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+
+export const deleteFolder = (companyId: string, id: string) =>
+  request<void>(`/companies/${companyId}/folders/${id}`, { method: "DELETE" });
+
+/** Move an artifact into/out of a folder (metadata-only; no version bump). */
+export const moveArtifactToFolder = (
+  companyId: string,
+  artifactId: string,
+  folderId: string | null,
+) =>
+  request<ApiResponse<Artifact>>(
+    `/companies/${companyId}/artifacts/${artifactId}`,
+    { method: "PATCH", body: JSON.stringify({ folderId }) },
+  );
+
+// ── Presence (M3) ───────────────────────────────────────────────────────
+
+export interface PresenceEntry {
+  userId: string;
+  name: string;
+  typing: boolean;
+}
+
+export interface ProjectPresenceEntry {
+  userId: string;
+  name: string;
+  artifactIds: string[];
+  typing: boolean;
+}
+
+export const joinPresence = (
+  companyId: string,
+  artifactId: string,
+) =>
+  request<ApiResponse<{ artifactId: string; userId: string; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence/join`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+
+export const leavePresence = (
+  companyId: string,
+  artifactId: string,
+) =>
+  request<ApiResponse<{ artifactId: string; userId: string; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence/leave`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+
+export const setTypingPresence = (
+  companyId: string,
+  artifactId: string,
+  typing: boolean,
+) =>
+  request<ApiResponse<{ artifactId: string; userId: string; typing: boolean; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence/typing`,
+    { method: "POST", body: JSON.stringify({ typing }) },
+  );
+
+export const getArtifactPresence = (
+  companyId: string,
+  artifactId: string,
+) =>
+  request<ApiResponse<{ artifactId: string; presence: PresenceEntry[] }>>(
+    `/companies/${companyId}/artifacts/${artifactId}/presence`,
+  );
+
+export const getProjectPresence = (
+  companyId: string,
+  projectId: string,
+) =>
+  request<ApiResponse<{ projectId: string; presence: ProjectPresenceEntry[] }>>(
+    `/companies/${companyId}/presence?projectId=${projectId}`,
+  );
+
+// ---------------------------------------------------------------------------
+// Teams + Permissions (M4 RBAC)
+// ---------------------------------------------------------------------------
+
+export interface Team {
+  id: string;
+  companyId: string;
+  name: string;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  memberCount?: number;
+}
+
+export interface TeamMember {
+  id: string;
+  teamId: string;
+  userId: string;
+  /** Human-readable name resolved server-side from Clerk (production) or
+   * test_users (local_trusted). Falls back to userId when unavailable. */
+  displayName?: string;
+  createdAt: string;
+}
+
+export type AccessLevel = "view" | "edit" | "manage";
+export type PermissionResourceType = "project" | "folder" | "artifact";
+export type GranteeType = "user" | "team";
+
+export interface PermissionRecord {
+  id: string;
+  companyId: string;
+  resourceType: PermissionResourceType;
+  resourceId: string;
+  granteeType: GranteeType;
+  granteeId: string;
+  accessLevel: AccessLevel;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const getTeams = (companyId: string) =>
+  request<ApiResponse<Team[]>>(`/companies/${companyId}/teams`);
+
+export const createTeam = (companyId: string, name: string) =>
+  request<ApiResponse<Team>>(`/companies/${companyId}/teams`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+
+export const deleteTeam = (companyId: string, teamId: string) =>
+  request<ApiResponse<void>>(`/companies/${companyId}/teams/${teamId}`, {
+    method: "DELETE",
+  });
+
+export const getTeamMembers = (companyId: string, teamId: string) =>
+  request<ApiResponse<TeamMember[]>>(`/companies/${companyId}/teams/${teamId}/members`);
+
+export const addTeamMember = (companyId: string, teamId: string, userId: string) =>
+  request<ApiResponse<TeamMember>>(`/companies/${companyId}/teams/${teamId}/members`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+
+export const removeTeamMember = (companyId: string, teamId: string, userId: string) =>
+  request<ApiResponse<void>>(`/companies/${companyId}/teams/${teamId}/members/${userId}`, {
+    method: "DELETE",
+  });
+
+export const getPermissions = (
+  companyId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+) =>
+  request<ApiResponse<PermissionRecord[]>>(
+    `/companies/${companyId}/permissions?resourceType=${resourceType}&resourceId=${resourceId}`,
+  );
+
+export const grantPermission = (
+  companyId: string,
+  data: {
+    resourceType: PermissionResourceType;
+    resourceId: string;
+    granteeType: GranteeType;
+    granteeId: string;
+    accessLevel: AccessLevel;
+  },
+) =>
+  request<ApiResponse<PermissionRecord>>(`/companies/${companyId}/permissions`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const revokePermission = (
+  companyId: string,
+  data: {
+    resourceType: PermissionResourceType;
+    resourceId: string;
+    granteeType: GranteeType;
+    granteeId: string;
+    accessLevel: AccessLevel;
+  },
+) =>
+  request<ApiResponse<void>>(`/companies/${companyId}/permissions`, {
+    method: "DELETE",
+    body: JSON.stringify(data),
+  });
+
+export const resolvePermission = (
+  companyId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+) =>
+  request<ApiResponse<{ accessLevel: AccessLevel | null }>>(
+    `/companies/${companyId}/permissions/resolve?resourceType=${resourceType}&resourceId=${resourceId}`,
+  );
+
+// ── Meetings (M7) ─────────────────────────────────────────────────────────
+// A meeting is a first-class entity distinct from agent execution transcripts.
+// Pipeline: create → attach transcript → summarize → extract action items
+// (which become real tasks linked to the project).
+
+export type MeetingStatus = "active" | "archived" | "deleted";
+
+export interface Meeting {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  title: string;
+  transcript: string | null;
+  summary: string | null;
+  summaryGeneratedAt: string | null;
+  summaryGeneratedByAgentId: string | null;
+  occurredAt: string | null;
+  status: MeetingStatus;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface MeetingListResponse {
+  data: Meeting[];
+  meta: { total: number; limit: number; offset: number };
+}
+
+export interface MeetingSummarizeResult {
+  summary: string | null;
+  skipped: boolean;
+  reason?: string;
+}
+
+export interface MeetingActionItemsResult {
+  tasks: Array<{
+    id: string;
+    title: string;
+    identifier: string | null;
+    status: string;
+    projectId: string | null;
+  }>;
+  skipped: boolean;
+  reason?: string;
+}
+
+export const listProjectMeetings = (
+  companyId: string,
+  projectId: string,
+  params?: { status?: MeetingStatus; limit?: number; offset?: number },
+) => {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  qs.set("limit", String(params?.limit ?? 50));
+  qs.set("offset", String(params?.offset ?? 0));
+  return request<MeetingListResponse>(
+    `/companies/${companyId}/projects/${projectId}/meetings?${qs.toString()}`,
+  );
+};
+
+export const createMeeting = (
+  companyId: string,
+  projectId: string,
+  data: { title: string; transcript?: string; occurredAt?: string | null },
+) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/projects/${projectId}/meetings`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+
+export const getMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}`);
+
+export const patchMeeting = (
+  companyId: string,
+  meetingId: string,
+  data: { title?: string; transcript?: string | null; status?: MeetingStatus },
+) =>
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+export const attachTranscript = (
+  companyId: string,
+  meetingId: string,
+  transcript: string,
+) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}/transcript`,
+    { method: "POST", body: JSON.stringify({ transcript }) },
+  );
+
+export const summarizeMeetingApi = (companyId: string, meetingId: string) =>
+  request<{ data: MeetingSummarizeResult }>(
+    `/companies/${companyId}/meetings/${meetingId}/summarize`,
+    { method: "POST" },
+  );
+
+export const extractActionItemsApi = (companyId: string, meetingId: string) =>
+  request<{ data: MeetingActionItemsResult }>(
+    `/companies/${companyId}/meetings/${meetingId}/action-items`,
+    { method: "POST" },
+  );
+
+export const getMeetingTasks = (companyId: string, meetingId: string) =>
+  request<{ data: Array<{ id: string; title: string; identifier: string | null; status: string; projectId: string | null }> }>(
+    `/companies/${companyId}/meetings/${meetingId}/tasks`,
+  );
+
+// Reverse task→meeting backlink (VAL-MEETING-006/007): meetings that
+// originated a task (via the meeting_tasks join table).
+export const getTaskMeetings = (companyId: string, taskId: string) =>
+  request<{ data: Meeting[] }>(
+    `/companies/${companyId}/tasks/${taskId}/meetings`,
+  );
+
+export const deleteMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}`,
+    { method: "DELETE" },
+  );
+
+export const archiveMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}/archive`,
+    { method: "POST" },
+  );
+
+export const restoreMeeting = (companyId: string, meetingId: string) =>
+  request<{ data: Meeting }>(
+    `/companies/${companyId}/meetings/${meetingId}/restore`,
+    { method: "POST" },
+  );
+
+// ── M8: MFA + step-up authentication ────────────────────────────────────
+
+export interface MfaFactor {
+  id: string;
+  userId: string;
+  type: "totp";
+  label: string | null;
+  status: "active" | "disabled";
+  createdAt: string;
+}
+
+export interface MfaEnrollment {
+  factor: MfaFactor;
+  otpauthUri: string;
+  secret: string;
+}
+
+export interface StepUpSession {
+  stepUpToken: string;
+  scope: "company_delete" | "artifact_permanent_delete" | "artifact_transfer" | "sensitive_action";
+  grantedAt: string;
+  expiresAt: string;
+}
+
+export const enrollMfaFactor = (label?: string) =>
+  request<{ data: MfaEnrollment }>(`/auth/mfa/enroll`, {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  });
+
+export const listMfaFactors = () =>
+  request<{ data: MfaFactor[] }>(`/auth/mfa/factors`);
+
+export const verifyMfaCode = (code: string) =>
+  request<{ data: { verified: boolean; factorId: string } }>(`/auth/mfa/verify`, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+
+export const disableMfaFactor = (factorId: string) =>
+  request<{ data: { disabled: boolean; factorId: string } }>(
+    `/auth/mfa/factors/${factorId}`,
+    { method: "DELETE" },
+  );
+
+/** Local-trusted only: returns a valid TOTP code for the user's first factor. */
+export const generateValidMfaCode = () =>
+  request<{ data: { code: string } }>(`/auth/mfa/generate-valid-code`, {
+    method: "POST",
+  });
+
+export const requestStepUp = (
+  code: string,
+  scope: StepUpSession["scope"],
+  companyId?: string,
+) =>
+  request<{ data: StepUpSession }>(`/auth/step-up`, {
+    method: "POST",
+    body: JSON.stringify({ code, scope, companyId }),
+  });
+
+export const getStepUpStatus = (scope: StepUpSession["scope"]) =>
+  request<{ data: { hasStepUp: boolean; scope: string } }>(
+    `/auth/step-up/status?scope=${scope}`,
+  );
+
+// Sensitive artifact operations (step-up gated) — M8 VAL-SEC-008.
+
+export const permanentlyDeleteArtifact = (
+  companyId: string,
+  artifactId: string,
+  stepUpToken: string,
+) => {
+  const qs = new URLSearchParams({ permanent: "true", stepUpToken });
+  return request<{ data: { id: string; permanent: true } }>(
+    `/companies/${companyId}/artifacts/${artifactId}?${qs.toString()}`,
+    { method: "DELETE" },
+  );
+};
+
+export const transferArtifactOwnership = (
+  companyId: string,
+  artifactId: string,
+  projectId: string | null,
+  stepUpToken: string,
+) =>
+  request<{ data: Artifact }>(
+    `/companies/${companyId}/artifacts/${artifactId}/transfer?stepUpToken=${encodeURIComponent(stepUpToken)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ projectId }),
+    },
   );

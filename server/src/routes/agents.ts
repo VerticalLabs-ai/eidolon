@@ -18,6 +18,8 @@ import type { DbInstance } from "../types.js";
 import { routeParams } from "../utils/route-params.js";
 import { validateProjectOwnership } from "../utils/project-validation.js";
 import { resolveTaskProjectId } from "../utils/task-project-resolver.js";
+import { MentionService } from "../services/mention-service.js";
+import { backgroundWork } from "../services/background-work.js";
 
 const LIVENESS_STATUS_HEALTHY = "healthy";
 const LAST_USEFUL_ACTION_MANUAL_EXECUTION = "manual_execution_created";
@@ -246,7 +248,8 @@ function normalizeAgentProvider(
 
 function isEncryptedValue(value: string): boolean {
   const parts = value.split(":");
-  return parts.length === 3 && parts.every((part) => part.length > 0);
+  // 4-part = keyId:iv:authTag:ciphertext (current); 3-part = legacy.
+  return (parts.length === 3 || parts.length === 4) && parts.every((part) => part.length > 0);
 }
 
 function normalizeApiKeyForStorage(
@@ -615,6 +618,22 @@ export function agentsRouter(db: DbInstance): Router {
         },
         timestamp: new Date().toISOString(),
       });
+
+      // Process queued mentions when the agent resumes from paused/offline
+      // to an active status (idle/working/error). Tracked fire-and-forget
+      // so the PATCH response isn't blocked by the agentic loop, and tests
+      // can drain deterministically.
+      const PAUSED_STATES = new Set(["paused", "offline"]);
+      if (
+        PAUSED_STATES.has(existing.status) &&
+        !PAUSED_STATES.has(body.status!)
+      ) {
+        const mentionService = new MentionService(db);
+        backgroundWork.fire(
+          mentionService.processQueuedMentions(id),
+          'process-queued-mentions (agent resume)',
+        );
+      }
     }
 
     eventBus.emitEvent({

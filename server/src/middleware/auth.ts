@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { eq } from 'drizzle-orm';
 import { AppError } from './error-handler.js';
 import logger from '../utils/logger.js';
 import type { AuthSession, AuthSessionData, AuthUser } from '../auth.js';
@@ -65,11 +66,46 @@ export interface AuthMiddlewareDeps {
   verify?: (req: Request) => Promise<AuthSession | null>;
   /** Auth mode override for isolated tests. Production reads AUTH_MODE. */
   authMode?: 'local_trusted' | 'authenticated';
+  /** DB instance used to resolve `X-Eidolon-Test-Session-Id` session tokens
+   *  in `local_trusted` mode (VAL-SEC-011 session invalidation on role
+   *  downgrade / company removal). Optional; when absent, session tokens are
+   *  ignored and the header-based role impersonation is used. */
+  db?: any;
 }
 
 export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
   const isLocalTrusted = (deps.authMode ?? process.env.AUTH_MODE) === 'local_trusted';
   const verify = deps.verify ?? ((req: Request) => authenticateRequest(req));
+  const db = deps.db;
+
+  /**
+   * Resolve a `local_trusted` session token (`X-Eidolon-Test-Session-Id`) to
+   * a mutable org role + active flag. Returns null when no token is present
+   * or no db is configured. This lets a server-side role downgrade or
+   * company-removal take effect on the member's NEXT request with the same
+   * session token (VAL-SEC-011) — without it, the role would be caller-
+   * controlled via the header and could not model live invalidation.
+   */
+  async function resolveLocalTrustedSession(
+    req: Request,
+    companyId: string,
+  ): Promise<{ role: string; userId: string } | null> {
+    const token = req.get('X-Eidolon-Test-Session-Id');
+    if (!token || !db) return null;
+    try {
+      const [row] = await db.drizzle
+        .select()
+        .from(db.schema.localTrustedSessions)
+        .where(eq(db.schema.localTrustedSessions.id, token))
+        .limit(1);
+      if (!row) return null;
+      if (row.companyId !== companyId) return null;
+      if (!row.active) return { role: '__revoked__', userId: row.userId };
+      return { role: row.role, userId: row.userId };
+    } catch {
+      return null;
+    }
+  }
 
   async function requireAuth(
     req: Request,
@@ -122,15 +158,53 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
   function requireOrgMember(
     minimumRole?: 'owner' | 'admin' | 'member' | 'viewer',
   ) {
-    return (req: Request, _res: Response, next: NextFunction): void => {
+    return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
       const companyId = String(req.params.companyId ?? '');
 
       if (isLocalTrusted) {
+        // VAL-SEC-011: when a `X-Eidolon-Test-Session-Id` token is present,
+        // resolve the org role from the mutable `local_trusted_sessions`
+        // row. A server-side downgrade or removal updates that row, so the
+        // SAME session token yields the downgraded role (or 401 when
+        // deactivated) on the next request — modeling live session
+        // invalidation on privilege loss. This takes precedence over the
+        // caller-controlled `X-Eidolon-Test-Org-Role` header.
+        const sessionInfo = await resolveLocalTrustedSession(req, companyId);
+        if (sessionInfo?.role === '__revoked__') {
+          return next(
+            new AppError(401, 'SESSION_REVOKED', 'Your session is no longer valid for this company. Please re-authenticate.'),
+          );
+        }
+
+        // Support test impersonation of different org roles + user ids via
+        // headers. This lets integration tests and validators exercise RBAC
+        // (viewer/member/admin/owner) and per-user permissions without a
+        // real Clerk session. Only honored in local_trusted mode. A session
+        // token overrides the header role.
+        const testRole = req.get('X-Eidolon-Test-Org-Role');
+        const testUserId = req.get('X-Eidolon-Test-User-Id');
+        const validRoles = ['owner', 'admin', 'member', 'viewer'];
+        const headerRole = testRole && validRoles.includes(testRole) ? testRole : 'owner';
+        const role = sessionInfo?.role ?? headerRole;
+        const userId = sessionInfo?.userId ?? testUserId ?? DEV_USER.id;
+        if (userId !== DEV_USER.id) {
+          req.user = { ...DEV_USER, id: userId };
+        }
+        // Enforce minimum role for local_trusted with impersonation.
+        if (minimumRole) {
+          const userLevel = ROLE_HIERARCHY[role] ?? 0;
+          const requiredLevel = ROLE_HIERARCHY[minimumRole] ?? 0;
+          if (userLevel < requiredLevel) {
+            return next(
+              new AppError(403, 'INSUFFICIENT_ROLE', `This action requires at least '${minimumRole}' role`),
+            );
+          }
+        }
         req.organizationMembership = {
           id: 'dev-member-000',
-          role: 'owner',
+          role,
           organizationId: companyId,
-          userId: DEV_USER.id,
+          userId,
         };
         return next();
       }

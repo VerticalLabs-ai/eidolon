@@ -78,6 +78,15 @@ const INDIRECT_TABLES: ReadonlyArray<{
     parentTable: 'approvals',
     parentCol: 'id',
   },
+  {
+    // artifact_revisions has no company_id column; it references artifacts
+    // via artifact_id. Must be deleted before artifacts (and before agents,
+    // since edited_by_agent_id references agents(id) with NO ACTION).
+    table: 'artifact_revisions',
+    childCol: 'artifact_id',
+    parentTable: 'artifacts',
+    parentCol: 'id',
+  },
 ];
 
 /**
@@ -88,8 +97,25 @@ const INDIRECT_TABLES: ReadonlyArray<{
  * `knowledge_chunks` has a denormalised `company_id` (not a FK to companies)
  * and a CASCADE FK to `knowledge_documents`. Deleting by `company_id` first
  * avoids the cascade and lets us count the rows explicitly.
+ *
+ * `artifact_folders` is handled separately via
+ * {@link deleteArtifactFoldersReverseHierarchical} (see below) because its
+ * self-referential `parent_id` FK uses `ON DELETE SET NULL`. A naive
+ * `DELETE ... WHERE company_id IN (...)` can delete a parent before its
+ * children, causing the children's `parent_id` to be SET NULL. Two children
+ * from different (deleted) parents with the same name then collide on the
+ * `uq_artifact_folders_company_project_parent_name` unique index (which
+ * coalesces NULL `parent_id` to `'<root>'`). Deleting leaf folders first
+ * (deepest in the hierarchy) avoids the SET NULL trigger entirely.
  */
 const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
+  // meeting_tasks + meetings must be deleted before agents: meetings has
+  // NO ACTION FKs to agents (created_by_agent_id, summary_generated_by_agent_id).
+  // meeting_tasks has a company_id column and CASCADE FKs to meetings + tasks;
+  // deleting it explicitly gives accurate per-table counts (vs relying on the
+  // cascade from meetings/tasks).
+  'meeting_tasks',
+  'meetings',
   'knowledge_chunks',
   'task_thread_items',
   'task_checkouts',
@@ -114,6 +140,10 @@ const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
   'project_plans',
   'project_threads',
   'agent_executions',
+  // artifacts must be deleted before agents (created_by_agent_id /
+  // last_edited_by_agent_id reference agents(id) with NO ACTION).
+  // artifact_revisions are handled as an indirect child via INDIRECT_TABLES.
+  'artifacts',
 ];
 
 /**
@@ -148,6 +178,57 @@ const ALL_DIRECT_TABLES: ReadonlyArray<string> = [
   ...DIRECT_TABLES_PHASE3,
   ...DIRECT_TABLES_PHASE4,
 ];
+
+// ---------------------------------------------------------------------------
+// artifact_folders — reverse-hierarchy deletion
+// ---------------------------------------------------------------------------
+
+/**
+ * Delete `artifact_folders` rows for fixture companies in reverse hierarchy
+ * order (leaf folders first, then their parents, and so on up to the root).
+ *
+ * The `artifact_folders.parent_id` self-referential FK uses
+ * `ON DELETE SET NULL`. If a parent is deleted before its children, the
+ * children's `parent_id` is SET NULL, making them top-level. Two children
+ * from different (deleted) parents that share the same name then collide on
+ * the `uq_artifact_folders_company_project_parent_name` unique index (which
+ * coalesces NULL `parent_id` to `'<root>'`), raising
+ * `duplicate key value violates unique constraint`. Deleting leaf folders
+ * first guarantees no parent is removed while children still exist, so the
+ * SET NULL trigger never fires.
+ *
+ * Implemented as a bounded loop: each iteration deletes every folder that has
+ * no child folders within the fixture set (i.e. current leaves). After each
+ * pass, the next level up becomes leaves. The loop terminates when a pass
+ * deletes zero rows (no folders remain). The depth of any real folder tree is
+ * small, so this converges quickly.
+ *
+ * @internal
+ */
+async function deleteArtifactFoldersReverseHierarchical(
+  tx: SqlRunner,
+  sub: string,
+): Promise<number> {
+  let totalDeleted = 0;
+  for (;;) {
+    const rows = await tx.query<{ id: string }>(
+      `DELETE FROM artifact_folders
+       WHERE id IN (
+         SELECT f.id FROM artifact_folders f
+         WHERE f.company_id IN (${sub})
+           AND NOT EXISTS (
+             SELECT 1 FROM artifact_folders c
+             WHERE c.company_id IN (${sub})
+               AND c.parent_id = f.id
+           )
+       )
+       RETURNING id`,
+    );
+    totalDeleted += rows.length;
+    if (rows.length === 0) break;
+  }
+  return totalDeleted;
+}
 
 // ---------------------------------------------------------------------------
 // SQL helpers
@@ -203,6 +284,13 @@ async function countDryRun(
     counts.push({ table, count: parseInt(rows[0]?.count ?? '0', 10) });
   }
 
+  // artifact_folders — counted by company_id (deleted via reverse-hierarchy
+  // order in execute mode to avoid the self-FK SET NULL unique collision).
+  const folderRows = await runner.query<{ count: string }>(
+    `SELECT count(*) as count FROM artifact_folders WHERE company_id IN (${sub})`,
+  );
+  counts.push({ table: 'artifact_folders', count: parseInt(folderRows[0]?.count ?? '0', 10) });
+
   for (const table of ALL_DIRECT_TABLES) {
     const rows = await runner.query<{ count: string }>(
       `SELECT count(*) as count FROM ${table} WHERE company_id IN (${sub})`,
@@ -239,6 +327,14 @@ async function executeDeletion(
       );
       counts.push({ table, count: rows.length });
     }
+
+    // Phase 1.5 — artifact_folders in reverse hierarchy order (leaf-first).
+    // Must run before companies (cascade) and before artifacts (artifacts
+    // reference folder_id with ON DELETE SET NULL, so deleting folders first
+    // simply nulls out artifact.folder_id). Deleting leaf-first avoids the
+    // self-FK SET NULL unique-constraint collision described above.
+    const folderCount = await deleteArtifactFoldersReverseHierarchical(tx, sub);
+    counts.push({ table: 'artifact_folders', count: folderCount });
 
     // Phase 2-4 — direct tables in dependency order
     for (const table of ALL_DIRECT_TABLES) {

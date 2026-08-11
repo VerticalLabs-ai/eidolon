@@ -171,6 +171,40 @@ async function insertGoal(runner: SqlRunner, companyId: string, title: string): 
   return id;
 }
 
+/** Insert an artifact + revision for a company (with an agent FK). */
+async function insertArtifact(
+  runner: SqlRunner,
+  companyId: string,
+  agentId: string | null,
+  title: string,
+): Promise<{ artifactId: string; revisionId: string }> {
+  const artifactId = randomUUID();
+  const revisionId = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO artifacts (id, company_id, type, title, content, status, version, created_by_agent_id, last_edited_by_agent_id, created_at, updated_at) VALUES ('${artifactId}', '${companyId}', 'document', '${title}', '{"format":"markdown","body":"test"}', 'active', 1, ${agentId ? `'${agentId}'` : 'NULL'}, ${agentId ? `'${agentId}'` : 'NULL'}, '${ts}', '${ts}')`,
+  );
+  await runner.query(
+    `INSERT INTO artifact_revisions (id, artifact_id, version, content, edit_source, edited_by_agent_id, created_at) VALUES ('${revisionId}', '${artifactId}', 1, '{"format":"markdown","body":"test"}', 'agent', ${agentId ? `'${agentId}'` : 'NULL'}, '${ts}')`,
+  );
+  return { artifactId, revisionId };
+}
+
+/** Insert an artifact folder for a company. `parentId` is optional for nesting. */
+async function insertFolder(
+  runner: SqlRunner,
+  companyId: string,
+  name: string,
+  parentId?: string,
+): Promise<string> {
+  const id = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO artifact_folders (id, company_id, parent_id, name, created_at, updated_at) VALUES ('${id}', '${companyId}', ${parentId ? `'${parentId}'` : 'NULL'}, '${name}', '${ts}', '${ts}')`,
+  );
+  return id;
+}
+
 /** Count rows in a table for a given company_id (or by id for the companies table). */
 async function countForCompany(runner: SqlRunner, table: string, companyId: string): Promise<number> {
   const column = table === 'companies' ? 'id' : 'company_id';
@@ -549,5 +583,129 @@ describe('Cleanup script logic', () => {
     const result = await runCleanup(runner, { execute: true });
     expect(result.companyCount).toBe(1);
     expect(result.mode).toBe('execute');
+  });
+
+  // VAL-CROSS-025: Cleanup removes artifacts + revisions despite FK constraints
+  it('removes artifacts and artifact_revisions despite agent FK constraints', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ artifact-cleanup');
+    const agentId = await insertAgent(runner, fixtureId, 'Artifact Agent');
+    const { artifactId, revisionId } = await insertArtifact(runner, fixtureId, agentId, 'Test Doc');
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    // Artifacts and revisions should be removed
+    expect(await countForCompany(runner, 'artifacts', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'agents', fixtureId)).toBe(0);
+
+    // Artifact revisions (indirect child) should also be gone
+    const revCount = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM artifact_revisions WHERE artifact_id = '${artifactId}'`,
+    );
+    expect(parseInt(revCount[0]?.count ?? '0', 10)).toBe(0);
+
+    // Verify the revision ID is gone
+    const revStillExists = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM artifact_revisions WHERE id = '${revisionId}'`,
+    );
+    expect(parseInt(revStillExists[0]?.count ?? '0', 10)).toBe(0);
+  });
+
+  // M7: Cleanup removes meetings + meeting_tasks despite the meetings→agents
+  // NO ACTION FK (created_by_agent_id / summary_generated_by_agent_id). Meetings
+  // must be deleted before agents; meeting_tasks before meetings/tasks.
+  it('removes meetings and meeting_tasks despite agent FK constraints', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ meetings-cleanup');
+    const agentId = await insertAgent(runner, fixtureId, 'Meeting Agent');
+    const taskId = await insertTask(runner, fixtureId, 'Meeting Action Item');
+    const meetingId = randomUUID();
+    const meetingTaskId = randomUUID();
+    const ts = new Date().toISOString();
+    await runner.query(
+      `INSERT INTO meetings (id, company_id, title, transcript, summary, summary_generated_by_agent_id, created_by_agent_id, status, created_at, updated_at) VALUES ('${meetingId}', '${fixtureId}', '__mtest__ meeting', 'Alice: ship it', 'Summary text', '${agentId}', '${agentId}', 'active', '${ts}', '${ts}')`,
+    );
+    await runner.query(
+      `INSERT INTO meeting_tasks (id, meeting_id, task_id, company_id, created_at) VALUES ('${meetingTaskId}', '${meetingId}', '${taskId}', '${fixtureId}', '${ts}')`,
+    );
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    // meetings + meeting_tasks removed, agents removed (no FK violation)
+    expect(await countForCompany(runner, 'meetings', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'meeting_tasks', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'agents', fixtureId)).toBe(0);
+
+    // The specific meeting + join rows are gone
+    const meetingStillExists = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM meetings WHERE id = '${meetingId}'`,
+    );
+    expect(parseInt(meetingStillExists[0]?.count ?? '0', 10)).toBe(0);
+
+    const meetingTaskStillExists = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM meeting_tasks WHERE id = '${meetingTaskId}'`,
+    );
+    expect(parseInt(meetingTaskStillExists[0]?.count ?? '0', 10)).toBe(0);
+  });
+
+  // M4 tech-debt: artifact_folders self-referential FK (ON DELETE SET NULL)
+  // can cause a unique-constraint violation when cascade-deleting a company
+  // that has folders with sibling-named children under different parents.
+  // The cleanup must delete folders leaf-first (reverse hierarchy order).
+  it('deletes artifact_folders in reverse hierarchy order without unique-constraint violation', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ folders-cleanup');
+
+    // Build a tree where two different parents each have a child named "child".
+    // If the parent is deleted first (SET NULL on child.parent_id), both
+    // children collapse to top-level under the same company with the same
+    // name -> unique index collision on
+    // uq_artifact_folders_company_project_parent_name.
+    const parentA = await insertFolder(runner, fixtureId, 'parent-a');
+    const parentB = await insertFolder(runner, fixtureId, 'parent-b');
+    const childA = await insertFolder(runner, fixtureId, 'child', parentA);
+    const childB = await insertFolder(runner, fixtureId, 'child', parentB);
+    // Deeper nesting under childA to verify multi-level leaf-first deletion.
+    const grandchild = await insertFolder(runner, fixtureId, 'grandchild', childA);
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    const folderCount = result.tableCounts.find((c) => c.table === 'artifact_folders');
+    expect(folderCount?.count).toBe(5);
+
+    // All folders + the company are gone.
+    expect(await countForCompany(runner, 'artifact_folders', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'companies', fixtureId)).toBe(0);
+
+    // Verify each specific folder id is gone.
+    for (const fid of [parentA, parentB, childA, childB, grandchild]) {
+      const rows = await runner.query<{ count: string }>(
+        `SELECT count(*) as count FROM artifact_folders WHERE id = '${fid}'`,
+      );
+      expect(parseInt(rows[0]?.count ?? '0', 10)).toBe(0);
+    }
+  });
+
+  // Dry-run reports artifact_folders counts alongside other tables.
+  it('dry-run reports artifact_folders count without deleting', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ folders-dry');
+    await insertFolder(runner, fixtureId, 'top');
+    await insertAgent(runner, fixtureId, 'Agent 1');
+
+    const result = await runCleanup(runner, { execute: false });
+
+    expect(result.mode).toBe('dry-run');
+    const folderCount = result.tableCounts.find((c) => c.table === 'artifact_folders');
+    expect(folderCount?.count).toBe(1);
+
+    // Nothing deleted
+    expect(await countForCompany(runner, 'artifact_folders', fixtureId)).toBe(1);
+    expect(await countForCompany(runner, 'companies', fixtureId)).toBe(1);
   });
 });

@@ -8,6 +8,23 @@ describe('Companies API', () => {
   let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: Awaited<ReturnType<typeof createTestDb>>;
 
+  /**
+   * Helper: enroll a TOTP MFA factor for the dev user and grant a step-up
+   * session for the `company_delete` scope. M8 security gates permanent
+   * (hard) company deletion behind step-up re-authentication.
+   */
+  async function grantCompanyDeleteStepUp(): Promise<string> {
+    await request(app).post('/api/auth/mfa/enroll').send({ label: 'test' }).expect(201);
+    const codeRes = await request(app)
+      .post('/api/auth/mfa/generate-valid-code')
+      .expect(200);
+    const stepUp = await request(app)
+      .post('/api/auth/step-up')
+      .send({ code: codeRes.body.data.code, scope: 'company_delete' })
+      .expect(201);
+    return stepUp.body.data.stepUpToken as string;
+  }
+
   beforeEach(async () => {
     db = await createTestDb();
     app = await createTestServer(db);
@@ -272,7 +289,12 @@ describe('Companies API', () => {
         .send({ name: 'Delete Project' })
         .expect(201);
 
-      await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(204);
+      // M8: permanent deletion requires step-up re-authentication.
+      const stepUpToken = await grantCompanyDeleteStepUp();
+      await request(app)
+        .delete(`/api/companies/${companyId}?hard=true`)
+        .set('X-Eidolon-Step-Up-Token', stepUpToken)
+        .expect(204);
 
       const [company, remainingAgent, remainingTask, remainingProject] = await Promise.all([
         db.drizzle
@@ -319,7 +341,12 @@ describe('Companies API', () => {
       });
       setupActivityLogger(db);
 
-      await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(204);
+      // M8: permanent deletion requires step-up re-authentication.
+      const stepUpToken = await grantCompanyDeleteStepUp();
+      await request(app)
+        .delete(`/api/companies/${companyId}?hard=true`)
+        .set('X-Eidolon-Step-Up-Token', stepUpToken)
+        .expect(204);
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       const remainingActivity = await db.drizzle
@@ -327,7 +354,13 @@ describe('Companies API', () => {
         .from(db.schema.activityLog)
         .where(eq(db.schema.activityLog.companyId, companyId));
 
-      expect(remainingActivity).toHaveLength(0);
+      // VAL-SEC-007: the company permanent-deletion audit entry survives the
+      // cascade (it is inserted after the transaction; activity_log.company_id
+      // has no FK). The pre-deletion 'company.created' row is cascade-deleted.
+      // The event-based logger still skips 'company.deleted' so no duplicate.
+      expect(remainingActivity).toHaveLength(1);
+      expect(remainingActivity[0].action).toBe('company.delete_permanent');
+      expect(remainingActivity[0].actorType).toBe('user');
     });
   });
 

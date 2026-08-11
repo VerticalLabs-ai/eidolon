@@ -4,6 +4,7 @@ import type {
   TextareaHTMLAttributes,
   SelectHTMLAttributes,
   ReactNode,
+  Ref,
 } from "react";
 
 // ── Text Input ───────────────────────────────────────────────────────────
@@ -14,7 +15,7 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 const inputBase =
-  "w-full rounded-lg border border-white/[0.08] bg-surface/80 backdrop-blur-sm px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary/40 outline-none transition-all duration-300 focus:border-neon-cyan/40 focus:shadow-[0_0_15px_rgba(0,243,255,0.1)] disabled:opacity-40";
+  "w-full rounded-lg border border-white/[0.08] bg-surface/80 backdrop-blur-sm px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary/40 outline-none transition-all duration-300 focus:border-neon-cyan/40 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:shadow-[0_0_15px_rgba(0,243,255,0.1)] disabled:opacity-40";
 
 export function Input({ label, error, className, id, ...props }: InputProps) {
   const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
@@ -39,9 +40,10 @@ export function Input({ label, error, className, id, ...props }: InputProps) {
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
   error?: string;
+  ref?: Ref<HTMLTextAreaElement>;
 }
 
-export function Textarea({ label, error, className, id, ...props }: TextareaProps) {
+export function Textarea({ label, error, className, id, ref, ...props }: TextareaProps) {
   const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
   return (
     <div className="space-y-1.5">
@@ -54,6 +56,7 @@ export function Textarea({ label, error, className, id, ...props }: TextareaProp
         </label>
       )}
       <textarea
+        ref={ref}
         id={inputId}
         className={clsx(inputBase, "min-h-[80px] resize-y", className)}
         {...props}
