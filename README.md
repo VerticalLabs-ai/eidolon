@@ -28,6 +28,15 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 | **Project workspace** | Per-project shell with four deep-linkable tabs — Home (composed summary of counts, active work, needs-attention, goals, recent activity and files), Work (scoped task board), Drive (project-scoped file tree), and Activity (work-state header + event timeline). Tabs are URL-routed via `?tab=home|work|drive|activity`. |
 | **Consolidated automation contracts** | Canonical automation and run-history contracts across routines, workflows, and webhooks, with project scoping and linked work. |
 | **Truthful integration health** | Real connectivity checks with SSRF protections, persisted health status, and unified integration/MCP health visibility. |
+| **Collaborative artifacts** | Typed artifacts (Document, Sheet, Board, Slides, Timeline, Gallery, Dashboard, App, Code) with Drizzle `artifacts` + `artifact_revisions` tables, Zod content schemas, CRUD API with optimistic concurrency (409 on stale `revisionVersion`), and append-only revision history. |
+| **Agent-authored artifacts** | Agents create and edit artifacts through built-in tools. Edits record `editSource=agent` and `editedByAgentId`, and the same revision history backs human and agent authoring. |
+| **@-mention collaboration** | `MentionService` resolves user/agent mentions inside artifact and thread content, fires inbox notifications, and emits realtime WS events. A mention picker is available in editors and the thread composer. |
+| **Real-time presence & co-editing** | Online/away/offline presence with cursor tracking; server-authoritative op-based co-editing for Documents, Sheets, and Boards (`CoEditSession`, typed WS op protocol, live cursors, agent merge, reconnect reconciliation). `COEDITABLE_TYPES` gates which artifact types participate (currently `document`, `sheet`, `board`). |
+| **Folders, templates, teams/RBAC** | Self-referential folder tree for artifact organization; project + artifact templates with cloning; teams with per-resource RBAC (view/edit/manage, inheritance, override, role hierarchy) and `requireAdminRole` on privilege-affecting routes. |
+| **Gallery, Dashboard, App** | Gallery (grid + caption image artifacts), Dashboard (data sources + widgets with live data resolution), and App (file list + sandboxed iframe preview) surfaces. |
+| **Code artifact + sandboxed runtime** | Code artifact type with syntax-highlighting editor, plus a sandboxed JS runtime (`code-sandbox-shim.cjs` preload) and Python runtime (`code-sandbox-python.py` preload). Blocks host fs/secrets/subprocess/network egress with bounded timeout + memory limit; shim blocklists are kept at parity between JS and Python. |
+| **Meetings pipeline** | `meetings` + `meeting_tasks` tables, Anthropic-grounded transcript summarization, action items extracted as real tasks with bidirectional meeting↔task linkage, and a Meetings tab UI. |
+| **Enterprise security** | TOTP MFA enrollment + step-up re-auth (5-min bounded, scope-isolated window); session invalidation on role downgrade/removal; AES-256-GCM encryption-at-rest for artifact content + secrets vault with key rotation without data loss; audit logging for security-relevant actions; rate limiting on auth-sensitive endpoints. See [`SECURITY.md`](SECURITY.md). |
 
 ### Project work surfaces (VER-514)
 
@@ -47,6 +56,29 @@ Projects now support durable, human-governed work surfaces across the Home and W
 - **Database migrations** — Migrations `0016` and `0017` add the `automation_runs` table, the webhook `projectId` column, and integration health fields plus `projectId`.
 - **UI surfaces** — The Integrations page shows color-coded health badges (`healthy`, `degraded`, `error`, `unknown`) with real health-check buttons, error messages, and last-check timestamps. `AutomationRunsPanel` shows recent automation runs on the project Work tab. `HealthSummaryCard` shows integration health counts and automation run success/failure counts on the project Home tab.
 
+## Collaborative Artifacts
+
+Eidolon now ships a typed artifact system that lets humans and agents co-author durable work products inside a company.
+
+- **Typed artifacts** — Each artifact has a `type` and a Zod-validated `content` payload. Supported types: `document` (markdown), `sheet` (grid), `board` (Kanban with columns/cards), `slides` (slide deck with blocks), `timeline` (Gantt with tasks/dependencies), `gallery` (grid + caption images), `dashboard` (data sources + widgets), `app` (file list + sandboxed iframe preview), and `code` (syntax-highlighted source). Artifacts and their append-only revision history live in the Drizzle `artifacts` and `artifact_revisions` tables.
+- **CRUD with optimistic concurrency** — Every write carries a `revisionVersion`. A stale version returns `409` so clients can reconcile against the latest revision before re-applying. Revisions are append-only; history is never mutated.
+- **Agent authoring** — Agents create and edit artifacts through built-in tools. Agent edits are tagged `editSource=agent` with `editedByAgentId`, so the same revision history records both human and agent contributions.
+- **@-mention collaboration** — `MentionService` resolves user and agent mentions inside artifact bodies and thread content, posts inbox notifications, and emits realtime WS events. A mention picker is available in the editors and the thread composer.
+- **Editors** — `DocEditor` (markdown), `SheetEditor` (grid), plus dedicated editors for Board, Slides, Timeline, Gallery, Dashboard, App, and Code. Artifacts also surface as cross-surface integration: thread cards, Home live-update, company switch, and keyboard navigation.
+- **Real-time presence & co-editing** — Presence indicators track online/away/offline state and cursor positions. Server-authoritative op-based co-editing is available for Documents, Sheets, and Boards via `CoEditSession` and a typed WS op protocol, with live cursors, agent merge, and reconnect reconciliation. The `COEDITABLE_TYPES` constant gates which artifact types participate in op-based co-editing (currently `document`, `sheet`, `board`). The shared `useArtifactDraftSync` hook keeps baseline-ref draft sync consistent across surfaces.
+- **Folders, templates, teams/RBAC** — A self-referential folder tree organizes artifacts. Project and artifact templates support one-click cloning. Teams carry per-resource RBAC with view/edit/manage permissions, inheritance, override, and a role hierarchy. `requireAdminRole` guards privilege-affecting routes.
+- **Meetings pipeline** — `meetings` and `meeting_tasks` tables back an Anthropic-grounded transcript summarizer. Action items are extracted as real tasks with bidirectional meeting↔task linkage, surfaced in a Meetings tab.
+
+## Enterprise Security
+
+Eidolon ships an enterprise security layer documented in [`SECURITY.md`](SECURITY.md).
+
+- **TOTP MFA + step-up re-auth** — Users enroll a TOTP authenticator. Privilege-affecting actions require step-up re-authentication inside a 5-minute bounded, scope-isolated window.
+- **Session invalidation on role change** — Role downgrade or removal invalidates active sessions so access is revoked immediately.
+- **Encryption-at-rest** — Artifact content and the secrets vault are encrypted with AES-256-GCM. Key rotation re-encrypts content in place without data loss.
+- **Audit logging** — Security-relevant actions (auth, MFA, role changes, key rotation, secret access) are written to the audit log with actor, entity, and timestamp.
+- **Rate limiting on auth-sensitive endpoints** — Auth-sensitive endpoints are rate-limited to blunt brute-force and credential-stuffing attempts.
+
 ## Quickstart
 
 ```bash
@@ -60,6 +92,8 @@ pnpm run dev           # Start server (:3100) + UI (:5173)
 
 The database starts empty — create your first company from the UI. There is no demo/mock data.
 
+> **Mission dev server:** the mission API server runs on **port 3110** so it does not collide with the user's launchd-managed server on 3100. Use `AUTH_MODE=local_trusted` for dev; loopback requests are auto-authenticated. The verified E2E provider is **Anthropic `claude-sonnet-4-6`** — the configured OpenAI key may be invalid.
+
 **Requirements:** Node.js 24 LTS, `pnpm`, Docker, and the [Supabase CLI](https://supabase.com/docs/guides/cli) (`brew install supabase/tap/supabase` on macOS). Auth is handled by Clerk via the Vercel Marketplace integration (see [Deployment](#deployment)).
 
 ## Architecture
@@ -71,11 +105,15 @@ eidolon/
 │   ├── db/          # Drizzle ORM, Postgres, migrations
 │   └── mcp-server/  # @eidolon/mcp-server — MCP wrapper over the REST API
 ├── server/          # Express API + WebSocket server
-│   ├── routes/      # REST endpoints (agents, tasks, approvals, inbox, mcp…)
-│   ├── services/    # Agentic loop, scheduler, knowledge, memory, budgets
+│   ├── routes/      # REST endpoints (agents, tasks, approvals, inbox, artifacts, meetings, mcp…)
+│   ├── services/    # Agentic loop, scheduler, knowledge, memory, budgets,
+│   │                # coedit-session (op-based co-editing), mentions, presence,
+│   │                # background-work (deterministic background-write testing),
+│   │                # artifact templates, folders, teams/RBAC, MFA, encryption, audit,
+│   │                # code-sandbox-shim.cjs (JS) + code-sandbox-python.py (Python) preloads
 │   ├── providers/   # ServerAdapter impls (anthropic, openai, google, ollama)
-│   ├── middleware/  # Auth, rate-limit, validation, error handling
-│   └── realtime/    # WebSocket event bus
+│   ├── middleware/  # Auth, rate-limit, validation, error handling, requireAdminRole
+│   └── realtime/    # WebSocket event bus + co-edit op protocol
 └── ui/              # React + Vite + Tailwind dashboard
     ├── pages/       # Dashboard, TaskBoard, OrgChart, Inbox, Approvals, …
     ├── components/  # Reusable UI + TranscriptView
@@ -91,6 +129,7 @@ eidolon/
 - **Real-time:** WebSocket (`ws`) with typed events and an in-process event bus
 - **Validation:** Zod schemas shared between client and server
 - **MCP:** `@modelcontextprotocol/sdk` for both the client (agent side) and the standalone server package
+- **Quality bar:** 1794 tests, 0 typecheck errors, 0 lint errors across the workspace
 
 ## Development
 
