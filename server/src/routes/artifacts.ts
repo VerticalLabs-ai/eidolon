@@ -11,6 +11,7 @@ import { AppError } from '../middleware/error-handler.js';
 import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel } from '../services/permission-service.js';
 import { requireStepUp, type StepUpScope } from '../services/stepup-service.js';
 import { resolveDataSource, type DashboardDataSource } from '../services/dashboard-data-source.js';
+import { diffRevisions } from '../services/diff-service.js';
 import type { DbInstance } from '../types.js';
 
 const CreateBody = z.object({
@@ -119,6 +120,34 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await getRevision(db, companyId, id, Number(req.params.version)) });
+  });
+  // -------------------------------------------------------------------------
+  // Revision diff (M2): structured diff between two revisions.
+  // GET /artifacts/:id/revisions/:v1/diff/:v2
+  // Returns { diff: DiffResult, fromRevision, toRevision, artifactType }.
+  // Validates both revisions exist + belong to the artifact (404), company-
+  // scoped via requireAccess. Same-version returns an empty diff. Reverse
+  // diff (v2→v1) inverts changes naturally (diffRevisions is symmetric).
+  // -------------------------------------------------------------------------
+  router.get('/artifacts/:id/revisions/:v1/diff/:v2', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    const v1Raw = req.params.v1;
+    const v2Raw = req.params.v2;
+    // Validate version params are numeric (VAL-DIFF-074: malformed → 400).
+    const v1Num = Number(v1Raw);
+    const v2Num = Number(v2Raw);
+    if (!Number.isInteger(v1Num) || v1Num < 1 || !Number.isInteger(v2Num) || v2Num < 1) {
+      throw new AppError(400, 'DIFF_INVALID_VERSION', `Revision versions must be positive integers (got v1=${v1Raw}, v2=${v2Raw})`);
+    }
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
+    // Load artifact (company-scoped 404 via getArtifact) + both revisions
+    // (404 via getRevision if the version doesn't exist for this artifact).
+    const artifact = await getArtifact(db, companyId, id);
+    const fromRevision = await getRevision(db, companyId, id, v1Num);
+    const toRevision = await getRevision(db, companyId, id, v2Num);
+    const diff = diffRevisions(artifact.type, fromRevision.content, toRevision.content);
+    res.json({ diff, fromRevision, toRevision, artifactType: artifact.type });
   });
   router.post('/artifacts/:id/revisions/:version/restore', async (req, res) => {
     const { companyId, id } = routeParams(req);

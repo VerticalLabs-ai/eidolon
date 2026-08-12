@@ -22,6 +22,7 @@ export * from './types/permission.js';
 export * from './types/meeting.js';
 export * from './types/mfa.js';
 export * from './types/search.js';
+export * from './types/diff.js';
 export * from './coedit-ops.js';
 
 // Validators (re-exports schemas + common helpers) -----------------------
