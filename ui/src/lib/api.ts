@@ -1,12 +1,8 @@
 // Eidolon API Client
-import { toast } from "sonner";
-import type {
-  DiffResult,
-  DiffResponse,
-  LinksResponse,
-} from "@eidolon/shared";
+import { toast } from 'sonner';
+import type { DiffResult, DiffResponse, LinksResponse } from '@eidolon/shared';
 
-const API_BASE = "/api";
+const API_BASE = '/api';
 
 export class ApiError extends Error {
   constructor(
@@ -15,28 +11,25 @@ export class ApiError extends Error {
     public body?: unknown,
   ) {
     super(message);
-    this.name = "ApiError";
+    this.name = 'ApiError';
   }
 }
 
-async function request<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
-    credentials: "include",
+    credentials: 'include',
     headers: {
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
       ...options.headers,
     },
     ...options,
   });
 
   // Redirect to login on 401
-  if (res.status === 401 && !path.startsWith("/auth/")) {
-    window.location.href = "/login";
-    throw new ApiError(401, "Session expired");
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    window.location.href = '/login';
+    throw new ApiError(401, 'Session expired');
   }
 
   // VAL-SEC-006: surface a graceful forbidden state on RBAC denials (403)
@@ -48,9 +41,8 @@ async function request<T>(
   // toast, so we skip the toast here and let the caller handle the flow.
   if (res.status === 403) {
     const body = await res.json().catch(() => null);
-    const message =
-      body?.message ?? "You do not have permission to perform this action.";
-    if (body?.code !== "MFA_STEP_UP_REQUIRED") {
+    const message = body?.message ?? 'You do not have permission to perform this action.';
+    if (body?.code !== 'MFA_STEP_UP_REQUIRED') {
       toast.error(`Forbidden: ${message}`);
     }
     throw new ApiError(403, message, body);
@@ -65,7 +57,7 @@ async function request<T>(
     );
   }
 
-  if (res.status === 204) return undefined as T;
+  if (res.status === 204) {return undefined as T;}
   return res.json();
 }
 
@@ -81,7 +73,7 @@ export interface Company {
   name: string;
   description: string | null;
   mission: string | null;
-  status: "active" | "paused" | "archived";
+  status: 'active' | 'paused' | 'archived';
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   settings: Record<string, unknown>;
@@ -178,8 +170,8 @@ export interface Goal {
   updatedAt: string;
 }
 
-export type GoalLevel = "company" | "department" | "team" | "individual";
-export type GoalStatus = "draft" | "active" | "completed" | "cancelled";
+export type GoalLevel = 'company' | 'department' | 'team' | 'individual';
+export type GoalStatus = 'draft' | 'active' | 'completed' | 'cancelled';
 
 export interface CreateGoalInput {
   title: string;
@@ -193,7 +185,7 @@ export interface CreateGoalInput {
 }
 
 export type UpdateGoalInput = Partial<
-  Omit<CreateGoalInput, "description"> & { description: string | null }
+  Omit<CreateGoalInput, 'description'> & { description: string | null }
 >;
 
 export interface Message {
@@ -251,34 +243,32 @@ export interface GoalFilters {
 
 // ── Companies ────────────────────────────────────────────────────────────
 
-export const getCompanies = () => request<Company[]>("/companies");
+export const getCompanies = () => request<Company[]>('/companies');
 
 export const getCompany = (id: string) => request<Company>(`/companies/${id}`);
 
-export const getDashboard = (id: string) =>
-  request<DashboardData>(`/companies/${id}/dashboard`);
+export const getDashboard = (id: string) => request<DashboardData>(`/companies/${id}/dashboard`);
 
 export const createCompany = (data: {
   name: string;
   description?: string;
   mission?: string;
   budgetMonthlyCents?: number;
-}) => request<Company>("/companies", { method: "POST", body: JSON.stringify(data) });
+}) => request<Company>('/companies', { method: 'POST', body: JSON.stringify(data) });
 
 export const updateCompany = (
   id: string,
-  data: Partial<Pick<Company, "name" | "description" | "mission" | "status" | "budgetMonthlyCents">>,
-) => request<Company>(`/companies/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+  data: Partial<
+    Pick<Company, 'name' | 'description' | 'mission' | 'status' | 'budgetMonthlyCents'>
+  >,
+) => request<Company>(`/companies/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
 
 export const deleteCompany = (id: string, hard = false, stepUpToken?: string) => {
   const qs = new URLSearchParams();
-  if (hard) qs.set("hard", "true");
-  if (stepUpToken) qs.set("stepUpToken", stepUpToken);
+  if (hard) {qs.set('hard', 'true');}
+  if (stepUpToken) {qs.set('stepUpToken', stepUpToken);}
   const query = qs.toString();
-  return request<void>(
-    `/companies/${id}${query ? `?${query}` : ""}`,
-    { method: "DELETE" },
-  );
+  return request<void>(`/companies/${id}${query ? `?${query}` : ''}`, { method: 'DELETE' });
 };
 
 // ── Projects ────────────────────────────────────────────────────────────
@@ -294,7 +284,7 @@ export interface Project {
   updatedAt: string;
 }
 
-export type ProjectStatus = "planning" | "active" | "completed" | "archived";
+export type ProjectStatus = 'planning' | 'active' | 'completed' | 'archived';
 
 export interface CreateProjectInput {
   name: string;
@@ -318,22 +308,19 @@ export const getProject = (companyId: string, projectId: string) =>
 
 export const createProject = (companyId: string, data: CreateProjectInput) =>
   request<ApiResponse<Project>>(`/companies/${companyId}/projects`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
-export const updateProject = (
-  companyId: string,
-  projectId: string,
-  data: UpdateProjectInput,
-) => request<ApiResponse<Project>>(`/companies/${companyId}/projects/${projectId}`, {
-  method: "PATCH",
-  body: JSON.stringify(data),
-});
+export const updateProject = (companyId: string, projectId: string, data: UpdateProjectInput) =>
+  request<ApiResponse<Project>>(`/companies/${companyId}/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
 
 export const archiveProject = (companyId: string, projectId: string) =>
   request<ApiResponse<Project>>(`/companies/${companyId}/projects/${projectId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 // ── Project Home Summary ────────────────────────────────────────────────
@@ -391,14 +378,11 @@ export interface ProjectHomeSummary {
 }
 
 export const getProjectHome = (companyId: string, projectId: string) =>
-  request<ApiResponse<ProjectHomeSummary>>(
-    `/companies/${companyId}/projects/${projectId}/home`,
-  );
+  request<ApiResponse<ProjectHomeSummary>>(`/companies/${companyId}/projects/${projectId}/home`);
 
 // ── Agents ───────────────────────────────────────────────────────────────
 
-export const getAgents = (companyId: string) =>
-  request<Agent[]>(`/companies/${companyId}/agents`);
+export const getAgents = (companyId: string) => request<Agent[]>(`/companies/${companyId}/agents`);
 
 export const getAgent = (companyId: string, agentId: string) =>
   request<Agent>(`/companies/${companyId}/agents/${agentId}`);
@@ -422,36 +406,32 @@ export const createAgent = (
   },
 ) =>
   request<Agent>(`/companies/${companyId}/agents`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
-export const updateAgent = (
-  companyId: string,
-  agentId: string,
-  data: Partial<Agent>,
-) =>
+export const updateAgent = (companyId: string, agentId: string, data: Partial<Agent>) =>
   request<Agent>(`/companies/${companyId}/agents/${agentId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export const wakeAgent = (companyId: string, agentId: string) =>
   request<{ agentId: string; wake: boolean; taskId?: string | null }>(
     `/companies/${companyId}/agents/${agentId}/wake`,
-    { method: "POST" },
+    { method: 'POST' },
   );
 
 // ── Tasks ────────────────────────────────────────────────────────────────
 
 export const getTasks = (companyId: string, filters?: TaskFilters) => {
   const params = new URLSearchParams();
-  if (filters?.status) params.set("status", filters.status);
-  if (filters?.priority) params.set("priority", filters.priority);
-  if (filters?.assigneeId) params.set("assigneeId", filters.assigneeId);
-  if (filters?.projectId) params.set("project", filters.projectId);
+  if (filters?.status) {params.set('status', filters.status);}
+  if (filters?.priority) {params.set('priority', filters.priority);}
+  if (filters?.assigneeId) {params.set('assigneeId', filters.assigneeId);}
+  if (filters?.projectId) {params.set('project', filters.projectId);}
   const qs = params.toString();
-  return request<Task[]>(`/companies/${companyId}/tasks${qs ? `?${qs}` : ""}`);
+  return request<Task[]>(`/companies/${companyId}/tasks${qs ? `?${qs}` : ''}`);
 };
 
 export const getTask = (companyId: string, taskId: string) =>
@@ -471,31 +451,27 @@ export const createTask = (
   },
 ) =>
   request<Task>(`/companies/${companyId}/tasks`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
-export const updateTask = (
-  companyId: string,
-  taskId: string,
-  data: Partial<Task>,
-) =>
+export const updateTask = (companyId: string, taskId: string, data: Partial<Task>) =>
   request<Task>(`/companies/${companyId}/tasks/${taskId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export type TaskThreadItemStatus =
-  | "pending"
-  | "accepted"
-  | "rejected"
-  | "answered"
-  | "linked"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "approved";
+  | 'pending'
+  | 'accepted'
+  | 'rejected'
+  | 'answered'
+  | 'linked'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'approved';
 
 export interface TaskThreadPayload extends Record<string, unknown> {
   livenessStatus?: string | null;
@@ -506,13 +482,18 @@ export interface TaskThreadItem {
   id: string;
   companyId: string;
   taskId: string;
-  kind: "comment" | "interaction" | "decision" | "approval_link" | "execution_event";
+  kind: 'comment' | 'interaction' | 'decision' | 'approval_link' | 'execution_event';
   authorUserId?: string | null;
   authorAgentId?: string | null;
   content: string | null;
   payload: TaskThreadPayload;
-  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
-  interactionType?: "suggested_tasks" | "confirmation" | "form" | null;
+  mentions?: Array<{
+    entityType: 'agent' | 'user' | 'artifact';
+    entityId: string;
+    label: string;
+    artifactType?: string;
+  }>;
+  interactionType?: 'suggested_tasks' | 'confirmation' | 'form' | null;
   status: TaskThreadItemStatus;
   idempotencyKey?: string | null;
   relatedApprovalId?: string | null;
@@ -520,16 +501,12 @@ export interface TaskThreadItem {
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string | null;
-  source?: "thread" | "execution" | "approval";
+  source?: 'thread' | 'execution' | 'approval';
 }
 
-export type ProjectThreadType =
-  | "conversation"
-  | "plan_review"
-  | "decision_review"
-  | "standup";
+export type ProjectThreadType = 'conversation' | 'plan_review' | 'decision_review' | 'standup';
 
-export type ProjectThreadStatus = "active" | "archived";
+export type ProjectThreadStatus = 'active' | 'archived';
 
 export interface ProjectThread {
   id: string;
@@ -544,7 +521,7 @@ export interface ProjectThread {
   updatedAt: string;
 }
 
-export interface ProjectThreadItem extends Omit<TaskThreadItem, "taskId"> {
+export interface ProjectThreadItem extends Omit<TaskThreadItem, 'taskId'> {
   taskId: string | null;
   projectThreadId: string | null;
   projectId: string | null;
@@ -555,14 +532,9 @@ export interface ProjectThreadDetail extends ProjectThread {
   meta?: { total: number; limit: number; offset: number };
 }
 
-export type ProjectPlanStatus = "draft" | "active" | "completed" | "cancelled";
-export type ProjectPlanStepType = "action" | "review_gate" | "permission_gate";
-export type ProjectPlanStepStatus =
-  | "pending"
-  | "in_progress"
-  | "completed"
-  | "blocked"
-  | "skipped";
+export type ProjectPlanStatus = 'draft' | 'active' | 'completed' | 'cancelled';
+export type ProjectPlanStepType = 'action' | 'review_gate' | 'permission_gate';
+export type ProjectPlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'blocked' | 'skipped';
 
 export interface ProjectPlan {
   id: string;
@@ -635,7 +607,7 @@ export interface UpdatePlanStepInput {
   stepOrder?: number;
 }
 
-export type ProjectDecisionStatus = "pending" | "approved" | "rejected" | "superseded";
+export type ProjectDecisionStatus = 'pending' | 'approved' | 'rejected' | 'superseded';
 
 export interface ProjectDecision {
   id: string;
@@ -668,18 +640,14 @@ export interface CreateProjectDecisionInput {
 }
 
 export interface UpdateProjectDecisionInput {
-  status: Exclude<ProjectDecisionStatus, "pending">;
+  status: Exclude<ProjectDecisionStatus, 'pending'>;
   rationale?: string;
   supersededById?: string;
 }
 
 export type ProjectOutcomeType =
-  | "document"
-  | "pull_request"
-  | "audit"
-  | "review"
-  | "delivery_summary";
-export type ProjectOutcomeStatus = "pending" | "completed" | "failed";
+  'document' | 'pull_request' | 'audit' | 'review' | 'delivery_summary';
+export type ProjectOutcomeStatus = 'pending' | 'completed' | 'failed';
 
 export interface ProjectOutcome {
   id: string;
@@ -738,16 +706,24 @@ export interface CreateProjectThreadInput {
 }
 
 export interface CreateThreadItemInput {
-  kind?: ProjectThreadItem["kind"];
+  kind?: ProjectThreadItem['kind'];
   content?: string;
   payload?: TaskThreadPayload;
-  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
-  interactionType?: NonNullable<ProjectThreadItem["interactionType"]>;
-  status?: Extract<TaskThreadItemStatus, "pending" | "accepted" | "rejected" | "answered" | "linked">;
+  mentions?: Array<{
+    entityType: 'agent' | 'user' | 'artifact';
+    entityId: string;
+    label: string;
+    artifactType?: string;
+  }>;
+  interactionType?: NonNullable<ProjectThreadItem['interactionType']>;
+  status?: Extract<
+    TaskThreadItemStatus,
+    'pending' | 'accepted' | 'rejected' | 'answered' | 'linked'
+  >;
 }
 
 export interface UpdateThreadItemInput {
-  status: Extract<TaskThreadItemStatus, "accepted" | "rejected" | "answered">;
+  status: Extract<TaskThreadItemStatus, 'accepted' | 'rejected' | 'answered'>;
   note?: string;
   answers?: Record<string, unknown>;
 }
@@ -758,11 +734,11 @@ export const getProjectThreads = (
   filters?: ProjectThreadFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.status) params.set("status", filters.status);
-  if (filters?.type) params.set("type", filters.type);
+  if (filters?.status) {params.set('status', filters.status);}
+  if (filters?.type) {params.set('type', filters.type);}
   const query = params.toString();
   return request<ApiResponse<ProjectThread[]>>(
-    `/companies/${companyId}/projects/${projectId}/threads${query ? `?${query}` : ""}`,
+    `/companies/${companyId}/projects/${projectId}/threads${query ? `?${query}` : ''}`,
   );
 };
 
@@ -776,10 +752,10 @@ export const createProjectThread = (
   projectId: string,
   data: CreateProjectThreadInput,
 ) =>
-  request<ApiResponse<ProjectThread>>(
-    `/companies/${companyId}/projects/${projectId}/threads`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<ApiResponse<ProjectThread>>(`/companies/${companyId}/projects/${projectId}/threads`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export const createThreadItem = (
   companyId: string,
@@ -789,7 +765,7 @@ export const createThreadItem = (
 ) =>
   request<ApiResponse<ProjectThreadItem>>(
     `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items`,
-    { method: "POST", body: JSON.stringify(data) },
+    { method: 'POST', body: JSON.stringify(data) },
   );
 
 export const updateThreadItem = (
@@ -801,13 +777,13 @@ export const updateThreadItem = (
 ) =>
   request<ApiResponse<ProjectThreadItem>>(
     `/companies/${companyId}/projects/${projectId}/threads/${threadId}/items/${itemId}`,
-    { method: "PATCH", body: JSON.stringify(data) },
+    { method: 'PATCH', body: JSON.stringify(data) },
   );
 
 // ── Mentions ─────────────────────────────────────────────────────────────
 
 export interface MentionableEntity {
-  entityType: "agent" | "user" | "artifact";
+  entityType: 'agent' | 'user' | 'artifact';
   entityId: string;
   label: string;
   subtitle?: string;
@@ -816,7 +792,7 @@ export interface MentionableEntity {
 
 export const searchMentions = (companyId: string, query: string) => {
   const params = new URLSearchParams();
-  if (query) params.set("q", query);
+  if (query) {params.set('q', query);}
   return request<ApiResponse<MentionableEntity[]>>(
     `/companies/${companyId}/mentions/search?${params.toString()}`,
   );
@@ -824,7 +800,7 @@ export const searchMentions = (companyId: string, query: string) => {
 
 // ── Cross-Artifact Search (M1) ────────────────────────────────────────────
 
-export type SearchEntityType = "artifact" | "thread_item" | "task";
+export type SearchEntityType = 'artifact' | 'thread_item' | 'task';
 
 export interface SearchResult {
   entityType: SearchEntityType;
@@ -860,18 +836,16 @@ export interface SearchFilters {
 
 export const searchCompany = (companyId: string, query: string, filters?: SearchFilters) => {
   const params = new URLSearchParams();
-  params.set("q", query);
-  if (filters?.type) params.set("type", filters.type);
-  if (filters?.folderId) params.set("folderId", filters.folderId);
-  if (filters?.authorId) params.set("authorId", filters.authorId);
-  if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);
-  if (filters?.dateTo) params.set("dateTo", filters.dateTo);
-  if (filters?.includeArchived) params.set("includeArchived", "true");
-  if (filters?.limit != null) params.set("limit", String(filters.limit));
-  if (filters?.offset != null) params.set("offset", String(filters.offset));
-  return request<SearchResponse>(
-    `/companies/${companyId}/search?${params.toString()}`,
-  );
+  params.set('q', query);
+  if (filters?.type) {params.set('type', filters.type);}
+  if (filters?.folderId) {params.set('folderId', filters.folderId);}
+  if (filters?.authorId) {params.set('authorId', filters.authorId);}
+  if (filters?.dateFrom) {params.set('dateFrom', filters.dateFrom);}
+  if (filters?.dateTo) {params.set('dateTo', filters.dateTo);}
+  if (filters?.includeArchived) {params.set('includeArchived', 'true');}
+  if (filters?.limit != null) {params.set('limit', String(filters.limit));}
+  if (filters?.offset != null) {params.set('offset', String(filters.offset));}
+  return request<SearchResponse>(`/companies/${companyId}/search?${params.toString()}`);
 };
 
 // ── Project Plans ────────────────────────────────────────────────────────
@@ -882,18 +856,14 @@ export const getProjectPlans = (
   filters?: ProjectPlanFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.status) params.set("status", filters.status);
+  if (filters?.status) {params.set('status', filters.status);}
   const query = params.toString();
   return request<ApiResponse<ProjectPlan[]>>(
-    `/companies/${companyId}/projects/${projectId}/plans${query ? `?${query}` : ""}`,
+    `/companies/${companyId}/projects/${projectId}/plans${query ? `?${query}` : ''}`,
   );
 };
 
-export const getProjectPlan = (
-  companyId: string,
-  projectId: string,
-  planId: string,
-) =>
+export const getProjectPlan = (companyId: string, projectId: string, planId: string) =>
   request<ApiResponse<ProjectPlanDetail>>(
     `/companies/${companyId}/projects/${projectId}/plans/${planId}`,
   );
@@ -903,10 +873,10 @@ export const createProjectPlan = (
   projectId: string,
   data: CreateProjectPlanInput,
 ) =>
-  request<ApiResponse<ProjectPlan>>(
-    `/companies/${companyId}/projects/${projectId}/plans`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<ApiResponse<ProjectPlan>>(`/companies/${companyId}/projects/${projectId}/plans`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export const updateProjectPlan = (
   companyId: string,
@@ -916,7 +886,7 @@ export const updateProjectPlan = (
 ) =>
   request<ApiResponse<ProjectPlan>>(
     `/companies/${companyId}/projects/${projectId}/plans/${planId}`,
-    { method: "PATCH", body: JSON.stringify(data) },
+    { method: 'PATCH', body: JSON.stringify(data) },
   );
 
 export const createPlanStep = (
@@ -927,7 +897,7 @@ export const createPlanStep = (
 ) =>
   request<ApiResponse<ProjectPlanStep>>(
     `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps`,
-    { method: "POST", body: JSON.stringify(data) },
+    { method: 'POST', body: JSON.stringify(data) },
   );
 
 export const updatePlanStep = (
@@ -939,7 +909,7 @@ export const updatePlanStep = (
 ) =>
   request<ApiResponse<ProjectPlanStep>>(
     `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps/${stepId}`,
-    { method: "PATCH", body: JSON.stringify(data) },
+    { method: 'PATCH', body: JSON.stringify(data) },
   );
 
 export const advancePlanGate = (
@@ -950,7 +920,7 @@ export const advancePlanGate = (
 ) =>
   request<ApiResponse<ProjectPlanStep>>(
     `/companies/${companyId}/projects/${projectId}/plans/${planId}/steps/${stepId}/advance`,
-    { method: "POST" },
+    { method: 'POST' },
   );
 
 export const getProjectDecisions = (
@@ -959,10 +929,10 @@ export const getProjectDecisions = (
   filters?: ProjectDecisionFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.status) params.set("status", filters.status);
+  if (filters?.status) {params.set('status', filters.status);}
   const query = params.toString();
   return request<ApiResponse<ProjectDecision[]>>(
-    `/companies/${companyId}/projects/${projectId}/decisions${query ? `?${query}` : ""}`,
+    `/companies/${companyId}/projects/${projectId}/decisions${query ? `?${query}` : ''}`,
   );
 };
 
@@ -971,10 +941,10 @@ export const createProjectDecision = (
   projectId: string,
   data: CreateProjectDecisionInput,
 ) =>
-  request<ApiResponse<ProjectDecision>>(
-    `/companies/${companyId}/projects/${projectId}/decisions`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<ApiResponse<ProjectDecision>>(`/companies/${companyId}/projects/${projectId}/decisions`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export const updateProjectDecision = (
   companyId: string,
@@ -984,7 +954,7 @@ export const updateProjectDecision = (
 ) =>
   request<ApiResponse<ProjectDecision>>(
     `/companies/${companyId}/projects/${projectId}/decisions/${decisionId}`,
-    { method: "PATCH", body: JSON.stringify(data) },
+    { method: 'PATCH', body: JSON.stringify(data) },
   );
 
 export const getProjectOutcomes = (
@@ -993,11 +963,11 @@ export const getProjectOutcomes = (
   filters?: ProjectOutcomeFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.type) params.set("type", filters.type);
-  if (filters?.status) params.set("status", filters.status);
+  if (filters?.type) {params.set('type', filters.type);}
+  if (filters?.status) {params.set('status', filters.status);}
   const query = params.toString();
   return request<ApiResponse<ProjectOutcome[]>>(
-    `/companies/${companyId}/projects/${projectId}/outcomes${query ? `?${query}` : ""}`,
+    `/companies/${companyId}/projects/${projectId}/outcomes${query ? `?${query}` : ''}`,
   );
 };
 
@@ -1006,10 +976,10 @@ export const createProjectOutcome = (
   projectId: string,
   data: CreateProjectOutcomeInput,
 ) =>
-  request<ApiResponse<ProjectOutcome>>(
-    `/companies/${companyId}/projects/${projectId}/outcomes`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<ApiResponse<ProjectOutcome>>(`/companies/${companyId}/projects/${projectId}/outcomes`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export const updateProjectOutcome = (
   companyId: string,
@@ -1019,7 +989,7 @@ export const updateProjectOutcome = (
 ) =>
   request<ApiResponse<ProjectOutcome>>(
     `/companies/${companyId}/projects/${projectId}/outcomes/${outcomeId}`,
-    { method: "PATCH", body: JSON.stringify(data) },
+    { method: 'PATCH', body: JSON.stringify(data) },
   );
 
 // ── Project Work (composed endpoint) ─────────────────────────────────────
@@ -1038,9 +1008,7 @@ export interface ProjectWorkSummary {
 }
 
 export const getProjectWork = (companyId: string, projectId: string) =>
-  request<ApiResponse<ProjectWorkSummary>>(
-    `/companies/${companyId}/projects/${projectId}/work`,
-  );
+  request<ApiResponse<ProjectWorkSummary>>(`/companies/${companyId}/projects/${projectId}/work`);
 
 export const getTaskThread = (companyId: string, taskId: string) =>
   request<TaskThreadItem[]>(`/companies/${companyId}/tasks/${taskId}/thread`);
@@ -1050,60 +1018,66 @@ export const addTaskComment = (
   taskId: string,
   content: string,
   idempotencyKey?: string,
+  mentions?: Array<{
+    entityType: 'agent' | 'user' | 'artifact';
+    entityId: string;
+    label: string;
+    artifactType?: string;
+  }>,
 ) =>
   request<TaskThreadItem>(`/companies/${companyId}/tasks/${taskId}/thread/comments`, {
-    method: "POST",
-    body: JSON.stringify({ content, idempotencyKey }),
+    method: 'POST',
+    body: JSON.stringify({ content, idempotencyKey, mentions }),
   });
 
 export const respondTaskInteraction = (
   companyId: string,
   taskId: string,
   interactionId: string,
-  action: "accept" | "reject" | "answer",
+  action: 'accept' | 'reject' | 'answer',
   data?: { note?: string; answers?: Record<string, unknown> },
 ) =>
   request<TaskThreadItem>(
     `/companies/${companyId}/tasks/${taskId}/thread/interactions/${interactionId}/${action}`,
-    { method: "POST", body: JSON.stringify(data ?? {}) },
+    { method: 'POST', body: JSON.stringify(data ?? {}) },
   );
 
 export const pauseTaskSubtree = (companyId: string, taskId: string, reason?: string) =>
   request<{ rootTaskId: string; affectedTaskIds: string[] }>(
     `/companies/${companyId}/tasks/${taskId}/subtree/pause`,
-    { method: "POST", body: JSON.stringify({ reason }) },
+    { method: 'POST', body: JSON.stringify({ reason }) },
   );
 
 export const cancelTaskSubtree = (companyId: string, taskId: string, reason?: string) =>
   request<{ rootTaskId: string; affectedTaskIds: string[] }>(
     `/companies/${companyId}/tasks/${taskId}/subtree/cancel`,
-    { method: "POST", body: JSON.stringify({ reason }) },
+    { method: 'POST', body: JSON.stringify({ reason }) },
   );
 
 export const restoreTaskSubtree = (companyId: string, taskId: string) =>
   request<{ rootTaskId: string; affectedTaskIds: string[] }>(
     `/companies/${companyId}/tasks/${taskId}/subtree/restore`,
-    { method: "POST", body: JSON.stringify({}) },
+    { method: 'POST', body: JSON.stringify({}) },
   );
 
 // ── Goals ────────────────────────────────────────────────────────────────
 
 export const getGoals = (companyId: string, filters?: GoalFilters) => {
   const params = new URLSearchParams();
-  if (filters?.projectId) params.set("project", filters.projectId);
+  if (filters?.projectId) {params.set('project', filters.projectId);}
   const qs = params.toString();
-  return request<Goal[]>(`/companies/${companyId}/goals${qs ? `?${qs}` : ""}`);
+  return request<Goal[]>(`/companies/${companyId}/goals${qs ? `?${qs}` : ''}`);
 };
 
 export const createGoal = (companyId: string, data: CreateGoalInput) =>
   request<ApiResponse<Goal>>(`/companies/${companyId}/goals`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const updateGoal = (companyId: string, goalId: string, data: UpdateGoalInput) =>
   request<ApiResponse<Goal>>(`/companies/${companyId}/goals/${goalId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
@@ -1117,7 +1091,7 @@ export const sendMessage = (
   data: { fromAgentId: string; toAgentId: string; content: string; threadId?: string },
 ) =>
   request<Message>(`/companies/${companyId}/messages`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -1174,31 +1148,25 @@ export const createSecret = (
   data: { name: string; value: string; provider: string; description?: string },
 ) =>
   request<Secret>(`/companies/${companyId}/secrets`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const deleteSecret = (companyId: string, secretId: string) =>
   request<void>(`/companies/${companyId}/secrets/${secretId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 // ── Agent Instructions ──────────────────────────────────────────────────
 
 export const getAgentInstructions = (companyId: string, agentId: string) =>
-  request<{ instructions: string }>(
-    `/companies/${companyId}/agents/${agentId}/instructions`,
-  );
+  request<{ instructions: string }>(`/companies/${companyId}/agents/${agentId}/instructions`);
 
-export const updateAgentInstructions = (
-  companyId: string,
-  agentId: string,
-  instructions: string,
-) =>
-  request<{ instructions: string }>(
-    `/companies/${companyId}/agents/${agentId}/instructions`,
-    { method: "PUT", body: JSON.stringify({ instructions }) },
-  );
+export const updateAgentInstructions = (companyId: string, agentId: string, instructions: string) =>
+  request<{ instructions: string }>(`/companies/${companyId}/agents/${agentId}/instructions`, {
+    method: 'PUT',
+    body: JSON.stringify({ instructions }),
+  });
 
 // ── Agent Config Revisions ──────────────────────────────────────────────
 
@@ -1213,9 +1181,7 @@ export interface ConfigRevision {
 }
 
 export const getAgentRevisions = (companyId: string, agentId: string) =>
-  request<ConfigRevision[]>(
-    `/companies/${companyId}/agents/${agentId}/revisions`,
-  );
+  request<ConfigRevision[]>(`/companies/${companyId}/agents/${agentId}/revisions`);
 
 // ── Agent Executions ────────────────────────────────────────────────────
 
@@ -1237,7 +1203,7 @@ export interface Execution {
     timestamp: string;
     level: string;
     message: string;
-    phase?: "observe" | "think" | "act" | "reflect";
+    phase?: 'observe' | 'think' | 'act' | 'reflect';
     iteration?: number;
     content?: string;
     toolCalls?: Array<{
@@ -1250,7 +1216,7 @@ export interface Execution {
   tokensUsed: number | null;
   durationMs: number | null;
   error: string | null;
-  livenessStatus: "healthy" | "silent" | "stalled" | "recovering" | "recovered";
+  livenessStatus: 'healthy' | 'silent' | 'stalled' | 'recovering' | 'recovered';
   lastUsefulAction: string | null;
   nextActionHint: string | null;
   continuationAttempts: number;
@@ -1262,9 +1228,7 @@ export interface Execution {
 }
 
 export const getAgentExecutions = (companyId: string, agentId: string) =>
-  request<Execution[]>(
-    `/companies/${companyId}/agents/${agentId}/executions`,
-  );
+  request<Execution[]>(`/companies/${companyId}/agents/${agentId}/executions`);
 
 // ── Board Chat ─────────────────────────────────────────────────────────
 
@@ -1293,7 +1257,12 @@ export interface SendChatResult {
   threadId: string;
   respondingAgentId: string | null;
   respondingAgentName: string | null;
-  mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
+  mentions?: Array<{
+    entityType: 'agent' | 'user' | 'artifact';
+    entityId: string;
+    label: string;
+    artifactType?: string;
+  }>;
   mentionDispatch?: { dispatchedAgents?: Array<{ agentId: string; agentName: string }> };
 }
 
@@ -1309,11 +1278,16 @@ export const sendChatMessage = (
     content: string;
     targetAgentId?: string;
     threadId?: string;
-    mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
+    mentions?: Array<{
+      entityType: 'agent' | 'user' | 'artifact';
+      entityId: string;
+      label: string;
+      artifactType?: string;
+    }>;
   },
 ) =>
   request<SendChatResult>(`/companies/${companyId}/chat/send`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -1341,23 +1315,19 @@ export const createWebhook = (
   data: { name: string; eventType: string; targetAgentId?: string },
 ) =>
   request<Webhook>(`/companies/${companyId}/webhooks`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
-export const updateWebhook = (
-  companyId: string,
-  webhookId: string,
-  data: { enabled: boolean },
-) =>
+export const updateWebhook = (companyId: string, webhookId: string, data: { enabled: boolean }) =>
   request<Webhook>(`/companies/${companyId}/webhooks/${webhookId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export const deleteWebhook = (companyId: string, webhookId: string) =>
   request<void>(`/companies/${companyId}/webhooks/${webhookId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 // ── Agent Files ──────────────────────────────────────────────────────────
@@ -1385,16 +1355,12 @@ export interface FileFilters {
   projectId?: string;
 }
 
-export const getFiles = (
-  companyId: string,
-  agentId?: string,
-  filters?: FileFilters,
-) => {
+export const getFiles = (companyId: string, agentId?: string, filters?: FileFilters) => {
   const params = new URLSearchParams();
-  if (agentId) params.set("agentId", agentId);
-  if (filters?.projectId) params.set("project", filters.projectId);
+  if (agentId) {params.set('agentId', agentId);}
+  if (filters?.projectId) {params.set('project', filters.projectId);}
   const qs = params.toString();
-  return request<AgentFile[]>(`/companies/${companyId}/files${qs ? `?${qs}` : ""}`);
+  return request<AgentFile[]>(`/companies/${companyId}/files${qs ? `?${qs}` : ''}`);
 };
 
 export const getFile = (companyId: string, fileId: string) =>
@@ -1415,7 +1381,7 @@ export const createFile = (
   },
 ) =>
   request<AgentFile>(`/companies/${companyId}/files`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -1425,13 +1391,13 @@ export const updateFile = (
   data: { name?: string; content?: string; mimeType?: string; projectId?: string | null },
 ) =>
   request<AgentFile>(`/companies/${companyId}/files/${fileId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export const deleteFile = (companyId: string, fileId: string) =>
   request<void>(`/companies/${companyId}/files/${fileId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 export const getAgentFiles = (companyId: string, agentId: string) =>
@@ -1467,7 +1433,7 @@ export interface Integration {
   updatedAt: string;
 }
 
-export type HealthStatus = "healthy" | "degraded" | "error" | "unknown";
+export type HealthStatus = 'healthy' | 'degraded' | 'error' | 'unknown';
 
 export interface IntegrationsResponse {
   data: Integration[];
@@ -1488,7 +1454,7 @@ export const createIntegration = (
   },
 ) =>
   request<Integration>(`/companies/${companyId}/integrations`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -1503,13 +1469,13 @@ export const updateIntegration = (
   },
 ) =>
   request<Integration>(`/companies/${companyId}/integrations/${integrationId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export const deleteIntegration = (companyId: string, integrationId: string) =>
   request<void>(`/companies/${companyId}/integrations/${integrationId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 export interface TestIntegrationResult {
@@ -1526,14 +1492,14 @@ export interface TestIntegrationResult {
 export const testIntegration = (companyId: string, integrationId: string) =>
   request<ApiResponse<TestIntegrationResult>>(
     `/companies/${companyId}/integrations/${integrationId}/test`,
-    { method: "POST" },
+    { method: 'POST' },
   );
 
 // ── Automation Runs ────────────────────────────────────────────────────
 
-export type AutomationType = "routine" | "workflow" | "webhook";
-export type AutomationRunTriggerType = "manual" | "webhook" | "schedule" | "event" | "api";
-export type AutomationRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type AutomationType = 'routine' | 'workflow' | 'webhook';
+export type AutomationRunTriggerType = 'manual' | 'webhook' | 'schedule' | 'event' | 'api';
+export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface AutomationRun {
   id: string;
@@ -1567,21 +1533,21 @@ export interface AutomationRunFilters {
 
 export const getAutomationRuns = (companyId: string, filters?: AutomationRunFilters) => {
   const params = new URLSearchParams();
-  if (filters?.type) params.set("type", filters.type);
-  if (filters?.status) params.set("status", filters.status);
-  if (filters?.project) params.set("project", filters.project);
-  if (filters?.limit) params.set("limit", String(filters.limit));
-  if (filters?.offset) params.set("offset", String(filters.offset));
+  if (filters?.type) {params.set('type', filters.type);}
+  if (filters?.status) {params.set('status', filters.status);}
+  if (filters?.project) {params.set('project', filters.project);}
+  if (filters?.limit) {params.set('limit', String(filters.limit));}
+  if (filters?.offset) {params.set('offset', String(filters.offset));}
   const qs = params.toString();
   return request<ApiResponse<AutomationRun[]>>(
-    `/companies/${companyId}/automations/runs${qs ? `?${qs}` : ""}`,
+    `/companies/${companyId}/automations/runs${qs ? `?${qs}` : ''}`,
   );
 };
 
 // ── Unified Health Surface ──────────────────────────────────────────────
 
 export interface UnifiedHealthEntry {
-  type: "integration" | "mcp_server";
+  type: 'integration' | 'mcp_server';
   id: string;
   name: string;
   healthStatus: HealthStatus;
@@ -1594,10 +1560,10 @@ export interface UnifiedHealthEntry {
 
 export const getUnifiedHealth = (companyId: string, projectId?: string) => {
   const params = new URLSearchParams();
-  if (projectId) params.set("project", projectId);
+  if (projectId) {params.set('project', projectId);}
   const qs = params.toString();
   return request<ApiResponse<UnifiedHealthEntry[]>>(
-    `/companies/${companyId}/integrations/health${qs ? `?${qs}` : ""}`,
+    `/companies/${companyId}/integrations/health${qs ? `?${qs}` : ''}`,
   );
 };
 
@@ -1657,14 +1623,12 @@ export const addKnowledgeDoc = (
   data: { title: string; content: string; tags?: string[] },
 ) =>
   request<KnowledgeDocument>(`/companies/${companyId}/knowledge`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const getKnowledgeDoc = (companyId: string, docId: string) =>
-  request<KnowledgeDocument & { chunks: unknown[] }>(
-    `/companies/${companyId}/knowledge/${docId}`,
-  );
+  request<KnowledgeDocument & { chunks: unknown[] }>(`/companies/${companyId}/knowledge/${docId}`);
 
 export const updateKnowledgeDoc = (
   companyId: string,
@@ -1672,23 +1636,20 @@ export const updateKnowledgeDoc = (
   data: { title?: string; content?: string; tags?: string[] },
 ) =>
   request<KnowledgeDocument>(`/companies/${companyId}/knowledge/${docId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export const deleteKnowledgeDoc = (companyId: string, docId: string) =>
   request<void>(`/companies/${companyId}/knowledge/${docId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 export const searchKnowledge = (companyId: string, query: string, topK?: number) =>
-  request<KnowledgeSearchResult[]>(
-    `/companies/${companyId}/knowledge/search`,
-    {
-      method: "POST",
-      body: JSON.stringify({ query, topK }),
-    },
-  );
+  request<KnowledgeSearchResult[]>(`/companies/${companyId}/knowledge/search`, {
+    method: 'POST',
+    body: JSON.stringify({ query, topK }),
+  });
 
 // ── Agent Memories ────────────────────────────────────────────────────
 
@@ -1696,7 +1657,7 @@ export interface AgentMemory {
   id: string;
   companyId: string;
   agentId: string;
-  memoryType: "observation" | "decision" | "preference" | "fact" | "lesson";
+  memoryType: 'observation' | 'decision' | 'preference' | 'fact' | 'lesson';
   content: string;
   importance: number;
   sourceTaskId: string | null;
@@ -1707,9 +1668,7 @@ export interface AgentMemory {
 }
 
 export const getAgentMemories = (companyId: string, agentId: string) =>
-  request<AgentMemory[]>(
-    `/companies/${companyId}/agents/${agentId}/memories`,
-  );
+  request<AgentMemory[]>(`/companies/${companyId}/agents/${agentId}/memories`);
 
 export const createAgentMemory = (
   companyId: string,
@@ -1721,26 +1680,18 @@ export const createAgentMemory = (
     tags?: string[];
   },
 ) =>
-  request<AgentMemory>(
-    `/companies/${companyId}/agents/${agentId}/memories`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<AgentMemory>(`/companies/${companyId}/agents/${agentId}/memories`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
-export const deleteAgentMemory = (
-  companyId: string,
-  agentId: string,
-  memoryId: string,
-) =>
-  request<void>(
-    `/companies/${companyId}/agents/${agentId}/memories/${memoryId}`,
-    { method: "DELETE" },
-  );
+export const deleteAgentMemory = (companyId: string, agentId: string, memoryId: string) =>
+  request<void>(`/companies/${companyId}/agents/${agentId}/memories/${memoryId}`, {
+    method: 'DELETE',
+  });
 
 export const clearAgentMemories = (companyId: string, agentId: string) =>
-  request<void>(
-    `/companies/${companyId}/agents/${agentId}/memories`,
-    { method: "DELETE" },
-  );
+  request<void>(`/companies/${companyId}/agents/${agentId}/memories`, { method: 'DELETE' });
 
 export const recallAgentMemories = (
   companyId: string,
@@ -1748,13 +1699,10 @@ export const recallAgentMemories = (
   context: string,
   limit?: number,
 ) =>
-  request<AgentMemory[]>(
-    `/companies/${companyId}/agents/${agentId}/memories/recall`,
-    {
-      method: "POST",
-      body: JSON.stringify({ context, limit }),
-    },
-  );
+  request<AgentMemory[]>(`/companies/${companyId}/agents/${agentId}/memories/recall`, {
+    method: 'POST',
+    body: JSON.stringify({ context, limit }),
+  });
 
 // ── Prompt Templates ──────────────────────────────────────────────────
 
@@ -1784,16 +1732,13 @@ export interface PromptVersion {
   createdAt: string;
 }
 
-export const getGlobalPromptTemplates = () =>
-  request<PromptTemplate[]>("/prompts");
+export const getGlobalPromptTemplates = () => request<PromptTemplate[]>('/prompts');
 
 export const getPromptTemplates = (companyId: string, category?: string) => {
   const params = new URLSearchParams();
-  if (category) params.set("category", category);
+  if (category) {params.set('category', category);}
   const qs = params.toString();
-  return request<PromptTemplate[]>(
-    `/companies/${companyId}/prompts${qs ? `?${qs}` : ""}`,
-  );
+  return request<PromptTemplate[]>(`/companies/${companyId}/prompts${qs ? `?${qs}` : ''}`);
 };
 
 export const createPromptTemplate = (
@@ -1808,7 +1753,7 @@ export const createPromptTemplate = (
   },
 ) =>
   request<PromptTemplate>(`/companies/${companyId}/prompts`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -1825,19 +1770,17 @@ export const updatePromptTemplate = (
   },
 ) =>
   request<PromptTemplate>(`/companies/${companyId}/prompts/${templateId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export const deletePromptTemplate = (companyId: string, templateId: string) =>
   request<void>(`/companies/${companyId}/prompts/${templateId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 export const getPromptVersions = (companyId: string, templateId: string) =>
-  request<PromptVersion[]>(
-    `/companies/${companyId}/prompts/${templateId}/versions`,
-  );
+  request<PromptVersion[]>(`/companies/${companyId}/prompts/${templateId}/versions`);
 
 export const applyPromptToAgent = (
   companyId: string,
@@ -1848,7 +1791,7 @@ export const applyPromptToAgent = (
   request<{ agentId: string; templateId: string; templateName: string; instructions: string }>(
     `/companies/${companyId}/prompts/${templateId}/apply`,
     {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ agentId, variables: variables ?? {} }),
     },
   );
@@ -1881,7 +1824,7 @@ export interface AgentPerformance {
     overall: number;
   };
   totalEvaluations: number;
-  trend: "improving" | "stable" | "declining";
+  trend: 'improving' | 'stable' | 'declining';
   recentEvaluations: AgentEvaluation[];
 }
 
@@ -1901,9 +1844,7 @@ export const getCompanyRankings = (companyId: string) =>
   request<AgentRanking[]>(`/companies/${companyId}/evaluations/rankings`);
 
 export const getAgentEvaluations = (companyId: string, agentId: string) =>
-  request<AgentEvaluation[]>(
-    `/companies/${companyId}/evaluations/agents/${agentId}/evaluations`,
-  );
+  request<AgentEvaluation[]>(`/companies/${companyId}/evaluations/agents/${agentId}/evaluations`);
 
 export const createManualEvaluation = (
   companyId: string,
@@ -1915,15 +1856,13 @@ export const createManualEvaluation = (
     taskId?: string;
   },
 ) =>
-  request<AgentEvaluation>(
-    `/companies/${companyId}/evaluations/agents/${agentId}/evaluations`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<AgentEvaluation>(`/companies/${companyId}/evaluations/agents/${agentId}/evaluations`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export const getAgentPerformance = (companyId: string, agentId: string) =>
-  request<AgentPerformance>(
-    `/companies/${companyId}/evaluations/agents/${agentId}/performance`,
-  );
+  request<AgentPerformance>(`/companies/${companyId}/evaluations/agents/${agentId}/performance`);
 
 // ── MCP (Model Context Protocol) ────────────────────────────────────────
 
@@ -1931,12 +1870,12 @@ export interface MCPServer {
   id: string;
   companyId: string;
   name: string;
-  transport: "stdio" | "sse" | "streamable-http";
+  transport: 'stdio' | 'sse' | 'streamable-http';
   command: string | null;
   args: string[];
   env: Record<string, string>;
   url: string | null;
-  status: "connected" | "disconnected" | "error";
+  status: 'connected' | 'disconnected' | 'error';
   availableTools: MCPToolDef[];
   availableResources: MCPResourceDef[];
   lastConnectedAt: string | null;
@@ -1977,13 +1916,13 @@ export const addMCPServer = (
   },
 ) =>
   request<MCPServer>(`/companies/${companyId}/mcp/servers`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const deleteMCPServer = (companyId: string, serverId: string) =>
   request<void>(`/companies/${companyId}/mcp/servers/${serverId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 export const getMCPTools = (companyId: string) =>
@@ -1996,19 +1935,14 @@ export const callMCPTool = (
 ) =>
   request<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>(
     `/companies/${companyId}/mcp/tools/${toolName}/call`,
-    { method: "POST", body: JSON.stringify(data) },
+    { method: 'POST', body: JSON.stringify(data) },
   );
 
 // ── Hybrid Jarvis Runtime ──────────────────────────────────────────────
 
-export type RuntimeAdapterKind =
-  | "provider"
-  | "process"
-  | "http"
-  | "mcp"
-  | "openjarvis-local";
-export type RuntimeAdapterLocality = "cloud" | "local" | "hybrid";
-export type RuntimeAdapterMode = "on_demand" | "scheduled" | "continuous";
+export type RuntimeAdapterKind = 'provider' | 'process' | 'http' | 'mcp' | 'openjarvis-local';
+export type RuntimeAdapterLocality = 'cloud' | 'local' | 'hybrid';
+export type RuntimeAdapterMode = 'on_demand' | 'scheduled' | 'continuous';
 
 export interface RuntimeAdapterCapabilities {
   runtime: boolean;
@@ -2031,12 +1965,7 @@ export interface RuntimeAdapterCapabilities {
   energyTelemetry: boolean;
 }
 
-export type RuntimeAdapterConfigFieldType =
-  | "text"
-  | "url"
-  | "number"
-  | "boolean"
-  | "string-list";
+export type RuntimeAdapterConfigFieldType = 'text' | 'url' | 'number' | 'boolean' | 'string-list';
 
 export interface RuntimeAdapterConfigField {
   key: string;
@@ -2074,28 +2003,23 @@ export interface RuntimeAdapterDescriptor {
 
 export interface AdapterModelDiscoveryResult {
   adapter: string;
-  models: RuntimeAdapterDescriptor["models"];
-  source: "live" | "static";
-  status: "success" | "error" | "unsupported";
+  models: RuntimeAdapterDescriptor['models'];
+  source: 'live' | 'static';
+  status: 'success' | 'error' | 'unsupported';
   refreshedAt: string;
   diagnostic: string;
 }
 
-export type RuntimeSessionMode =
-  | "on_demand"
-  | "scheduled"
-  | "continuous"
-  | "manual"
-  | "recovery";
+export type RuntimeSessionMode = 'on_demand' | 'scheduled' | 'continuous' | 'manual' | 'recovery';
 export type RuntimeSessionStatus =
-  | "queued"
-  | "running"
-  | "cancelling"
-  | "cancelled"
-  | "finalizing"
-  | "finalized"
-  | "completed"
-  | "failed";
+  | 'queued'
+  | 'running'
+  | 'cancelling'
+  | 'cancelled'
+  | 'finalizing'
+  | 'finalized'
+  | 'completed'
+  | 'failed';
 
 export interface RuntimeSession {
   id: string;
@@ -2132,8 +2056,8 @@ export interface CompanySkill {
   name: string;
   version: string;
   source: string;
-  provenance: "bundled" | "catalog" | "runtime" | "adapter" | "github" | "manual";
-  trustLevel: "markdown_only" | "assets" | "scripts_executables";
+  provenance: 'bundled' | 'catalog' | 'runtime' | 'adapter' | 'github' | 'manual';
+  trustLevel: 'markdown_only' | 'assets' | 'scripts_executables';
   entrypoint: string | null;
   content: string;
   metadata: Record<string, unknown>;
@@ -2148,7 +2072,7 @@ export interface AgentSkillAssignment {
   companyId: string;
   agentId: string;
   skillId: string;
-  syncStatus: "pending" | "synced" | "failed" | "disabled";
+  syncStatus: 'pending' | 'synced' | 'failed' | 'disabled';
   materializedPath: string | null;
   lastSyncedAt: string | null;
   createdAt: string;
@@ -2160,8 +2084,8 @@ export interface JarvisRoutine {
   companyId: string;
   agentId: string | null;
   name: string;
-  mode: "scheduled" | "continuous" | "on_demand";
-  jarvisMode: "daily_briefing" | "monitoring" | "research" | "follow_up" | "custom";
+  mode: 'scheduled' | 'continuous' | 'on_demand';
+  jarvisMode: 'daily_briefing' | 'monitoring' | 'research' | 'follow_up' | 'custom';
   schedule: string | null;
   prompt: string;
   enabled: boolean;
@@ -2190,17 +2114,15 @@ export interface JarvisRoutineTriggerResult {
   execution: JarvisRoutineTriggerExecution | null;
   session: RuntimeSession | null;
   threadItem: TaskThreadItem;
-  status: "session_started" | "task_created_without_agent";
+  status: 'session_started' | 'task_created_without_agent';
 }
 
-export const getRuntimeAdapters = () =>
-  request<RuntimeAdapterDescriptor[]>("/runtime/adapters");
+export const getRuntimeAdapters = () => request<RuntimeAdapterDescriptor[]>('/runtime/adapters');
 
 export const refreshAgentModels = (companyId: string, agentId: string) =>
-  request<AdapterModelDiscoveryResult>(
-    `/companies/${companyId}/agents/${agentId}/models/refresh`,
-    { method: "POST" },
-  );
+  request<AdapterModelDiscoveryResult>(`/companies/${companyId}/agents/${agentId}/models/refresh`, {
+    method: 'POST',
+  });
 
 export const getRuntimeSessions = (companyId: string) =>
   request<RuntimeSession[]>(`/companies/${companyId}/sessions`);
@@ -2220,41 +2142,31 @@ export const createRuntimeSession = (
   },
 ) =>
   request<RuntimeSession>(`/companies/${companyId}/sessions`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const testRuntimeSession = (companyId: string, sessionId: string) =>
-  request<RuntimeAdapterDiagnostic>(
-    `/companies/${companyId}/sessions/${sessionId}/test`,
-    { method: "POST" },
-  );
+  request<RuntimeAdapterDiagnostic>(`/companies/${companyId}/sessions/${sessionId}/test`, {
+    method: 'POST',
+  });
 
-export const runRuntimeSession = (
-  companyId: string,
-  sessionId: string,
-  prompt: string,
-) =>
-  request<RuntimeSession>(
-    `/companies/${companyId}/sessions/${sessionId}/run`,
-    { method: "POST", body: JSON.stringify({ prompt }) },
-  );
+export const runRuntimeSession = (companyId: string, sessionId: string, prompt: string) =>
+  request<RuntimeSession>(`/companies/${companyId}/sessions/${sessionId}/run`, {
+    method: 'POST',
+    body: JSON.stringify({ prompt }),
+  });
 
-export const cancelRuntimeSession = (
-  companyId: string,
-  sessionId: string,
-  reason?: string,
-) =>
+export const cancelRuntimeSession = (companyId: string, sessionId: string, reason?: string) =>
   request<RuntimeSession>(`/companies/${companyId}/sessions/${sessionId}/cancel`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify({ reason }),
   });
 
 export const finalizeRuntimeSession = (companyId: string, sessionId: string) =>
-  request<RuntimeSession>(
-    `/companies/${companyId}/sessions/${sessionId}/finalize`,
-    { method: "POST" },
-  );
+  request<RuntimeSession>(`/companies/${companyId}/sessions/${sessionId}/finalize`, {
+    method: 'POST',
+  });
 
 export const getCompanySkills = (companyId: string) =>
   request<CompanySkill[]>(`/companies/${companyId}/skills`);
@@ -2265,8 +2177,8 @@ export const installCompanySkill = (
     name: string;
     version?: string;
     source?: string;
-    provenance?: CompanySkill["provenance"];
-    trustLevel?: CompanySkill["trustLevel"];
+    provenance?: CompanySkill['provenance'];
+    trustLevel?: CompanySkill['trustLevel'];
     entrypoint?: string;
     content: string;
     metadata?: Record<string, unknown>;
@@ -2276,7 +2188,7 @@ export const installCompanySkill = (
 ) =>
   request<{ skill: CompanySkill; assignments: AgentSkillAssignment[] }>(
     `/companies/${companyId}/skills/install`,
-    { method: "POST", body: JSON.stringify(data) },
+    { method: 'POST', body: JSON.stringify(data) },
   );
 
 export const getJarvisRoutines = (companyId: string) =>
@@ -2287,8 +2199,8 @@ export const createJarvisRoutine = (
   data: {
     agentId?: string | null;
     name: string;
-    mode?: JarvisRoutine["mode"];
-    jarvisMode?: JarvisRoutine["jarvisMode"];
+    mode?: JarvisRoutine['mode'];
+    jarvisMode?: JarvisRoutine['jarvisMode'];
     schedule?: string | null;
     prompt: string;
     enabled?: boolean;
@@ -2297,40 +2209,39 @@ export const createJarvisRoutine = (
   },
 ) =>
   request<JarvisRoutine>(`/companies/${companyId}/routines`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const triggerJarvisRoutine = (companyId: string, routineId: string) =>
-  request<JarvisRoutineTriggerResult>(
-    `/companies/${companyId}/routines/${routineId}/trigger`,
-    { method: "POST" },
-  );
+  request<JarvisRoutineTriggerResult>(`/companies/${companyId}/routines/${routineId}/trigger`, {
+    method: 'POST',
+  });
 
 // ── Agent Collaborations ────────────────────────────────────────────────
 
 export interface AgentCollaboration {
   id: string;
   companyId: string;
-  type: "delegation" | "request_help" | "review" | "consensus" | "escalation";
+  type: 'delegation' | 'request_help' | 'review' | 'consensus' | 'escalation';
   fromAgentId: string;
   toAgentId: string;
   taskId: string | null;
   parentCollaborationId: string | null;
-  status: "pending" | "accepted" | "in_progress" | "completed" | "rejected" | "cancelled";
+  status: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'rejected' | 'cancelled';
   requestContent: string;
   responseContent: string | null;
-  priority: "low" | "medium" | "high" | "critical";
+  priority: 'low' | 'medium' | 'high' | 'critical';
   createdAt: string;
   completedAt: string | null;
 }
 
 export const getCollaborations = (companyId: string, limit?: number) => {
   const params = new URLSearchParams();
-  if (limit) params.set("limit", String(limit));
+  if (limit) {params.set('limit', String(limit));}
   const qs = params.toString();
   return request<AgentCollaboration[]>(
-    `/companies/${companyId}/collaborations${qs ? `?${qs}` : ""}`,
+    `/companies/${companyId}/collaborations${qs ? `?${qs}` : ''}`,
   );
 };
 
@@ -2340,7 +2251,7 @@ export const getCollaboration = (companyId: string, id: string) =>
 export const createCollaboration = (
   companyId: string,
   data: {
-    type: "delegation" | "request_help" | "review" | "escalation";
+    type: 'delegation' | 'request_help' | 'review' | 'escalation';
     fromAgentId: string;
     toAgentId?: string;
     taskId?: string;
@@ -2350,29 +2261,21 @@ export const createCollaboration = (
   },
 ) =>
   request<AgentCollaboration>(`/companies/${companyId}/collaborations`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
-export const respondToCollaboration = (
-  companyId: string,
-  id: string,
-  responseContent: string,
-) =>
-  request<AgentCollaboration>(
-    `/companies/${companyId}/collaborations/${id}/respond`,
-    { method: "POST", body: JSON.stringify({ responseContent }) },
-  );
+export const respondToCollaboration = (companyId: string, id: string, responseContent: string) =>
+  request<AgentCollaboration>(`/companies/${companyId}/collaborations/${id}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ responseContent }),
+  });
 
 export const getAgentCollaborations = (companyId: string, agentId: string) =>
-  request<AgentCollaboration[]>(
-    `/companies/${companyId}/agents/${agentId}/collaborations`,
-  );
+  request<AgentCollaboration[]>(`/companies/${companyId}/agents/${agentId}/collaborations`);
 
 export const getAgentPendingCollaborations = (companyId: string, agentId: string) =>
-  request<AgentCollaboration[]>(
-    `/companies/${companyId}/agents/${agentId}/collaborations/pending`,
-  );
+  request<AgentCollaboration[]>(`/companies/${companyId}/agents/${agentId}/collaborations/pending`);
 
 // ── Company Templates ───────────────────────────────────────────────────
 
@@ -2395,13 +2298,12 @@ export interface CompanyTemplate {
 
 export const getTemplates = (category?: string) => {
   const params = new URLSearchParams();
-  if (category && category !== "all") params.set("category", category);
+  if (category && category !== 'all') {params.set('category', category);}
   const qs = params.toString();
-  return request<CompanyTemplate[]>(`/templates${qs ? `?${qs}` : ""}`);
+  return request<CompanyTemplate[]>(`/templates${qs ? `?${qs}` : ''}`);
 };
 
-export const getTemplate = (id: string) =>
-  request<CompanyTemplate>(`/templates/${id}`);
+export const getTemplate = (id: string) => request<CompanyTemplate>(`/templates/${id}`);
 
 export const saveTemplate = (data: {
   name: string;
@@ -2413,8 +2315,8 @@ export const saveTemplate = (data: {
   tags?: string[];
   isPublic?: boolean;
 }) =>
-  request<CompanyTemplate>("/templates", {
-    method: "POST",
+  request<CompanyTemplate>('/templates', {
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -2432,29 +2334,35 @@ export const updateTemplate = (
   }>,
 ) =>
   request<CompanyTemplate>(`/templates/${id}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
 export const deleteTemplate = (id: string) =>
-  request<void>(`/templates/${id}`, { method: "DELETE" });
+  request<void>(`/templates/${id}`, { method: 'DELETE' });
 
 export const importTemplate = (
   templateId: string,
   overrides?: { companyName?: string; budgetMultiplier?: number },
 ) =>
   request<{ companyId: string }>(`/templates/${templateId}/import`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(overrides ?? {}),
   });
 
 export const exportCompany = (
   companyId: string,
-  data?: { name?: string; description?: string; category?: string; tags?: string[]; version?: string },
+  data?: {
+    name?: string;
+    description?: string;
+    category?: string;
+    tags?: string[];
+    version?: string;
+  },
 ) =>
   request<{ template: CompanyTemplate; config: Record<string, unknown> }>(
     `/companies/${companyId}/export`,
-    { method: "POST", body: JSON.stringify(data ?? {}) },
+    { method: 'POST', body: JSON.stringify(data ?? {}) },
   );
 
 export const updateTemplateFromCompany = (
@@ -2470,7 +2378,7 @@ export const updateTemplateFromCompany = (
 ) =>
   request<{ template: CompanyTemplate; config: Record<string, unknown> }>(
     `/companies/${companyId}/export/${templateId}`,
-    { method: "PATCH", body: JSON.stringify(data ?? {}) },
+    { method: 'PATCH', body: JSON.stringify(data ?? {}) },
   );
 
 // ── Project Templates (M4) ──────────────────────────────────────────────
@@ -2509,7 +2417,7 @@ export const saveProjectTemplate = (
   data: { projectId: string; name: string; description?: string | null },
 ) =>
   request<ProjectTemplate>(`/companies/${companyId}/project-templates`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -2520,7 +2428,7 @@ export const getProjectTemplate = (companyId: string, id: string) =>
   request<ProjectTemplate>(`/companies/${companyId}/project-templates/${id}`);
 
 export const deleteProjectTemplate = (companyId: string, id: string) =>
-  request<void>(`/companies/${companyId}/project-templates/${id}`, { method: "DELETE" });
+  request<void>(`/companies/${companyId}/project-templates/${id}`, { method: 'DELETE' });
 
 export const createProjectFromTemplate = (
   companyId: string,
@@ -2529,7 +2437,7 @@ export const createProjectFromTemplate = (
 ) =>
   request<{ project: Project; artifacts: Artifact[]; folders: unknown[] }>(
     `/companies/${companyId}/project-templates/${templateId}/create-project`,
-    { method: "POST", body: JSON.stringify(data) },
+    { method: 'POST', body: JSON.stringify(data) },
   );
 
 // ── Artifact Templates (M4) ─────────────────────────────────────────────
@@ -2553,12 +2461,12 @@ export const saveArtifactTemplate = (
   data: { artifactId: string; name: string; description?: string | null },
 ) =>
   request<ArtifactTemplate>(`/companies/${companyId}/artifact-templates`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const listArtifactTemplates = (companyId: string, type?: ArtifactType) => {
-  const qs = type ? `?type=${type}` : "";
+  const qs = type ? `?type=${type}` : '';
   return request<ArtifactTemplate[]>(`/companies/${companyId}/artifact-templates${qs}`);
 };
 
@@ -2566,28 +2474,28 @@ export const getArtifactTemplate = (companyId: string, id: string) =>
   request<ArtifactTemplate>(`/companies/${companyId}/artifact-templates/${id}`);
 
 export const deleteArtifactTemplate = (companyId: string, id: string) =>
-  request<void>(`/companies/${companyId}/artifact-templates/${id}`, { method: "DELETE" });
+  request<void>(`/companies/${companyId}/artifact-templates/${id}`, { method: 'DELETE' });
 
 export const createArtifactFromTemplate = (
   companyId: string,
   templateId: string,
   data: { projectId?: string | null; folderId?: string | null; title?: string },
 ) =>
-  request<Artifact>(
-    `/companies/${companyId}/artifact-templates/${templateId}/create-artifact`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<Artifact>(`/companies/${companyId}/artifact-templates/${templateId}/create-artifact`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 // ── Inbox (unified feed) ────────────────────────────────────────────────
 
-export type InboxItemKind = "approval" | "collaboration" | "activity" | "task_thread";
+export type InboxItemKind = 'approval' | 'collaboration' | 'activity' | 'task_thread';
 
 export interface InboxItem {
   id: string;
   kind: InboxItemKind;
   title: string;
   subtitle?: string;
-  priority?: "critical" | "high" | "medium" | "low";
+  priority?: 'critical' | 'high' | 'medium' | 'low';
   status?: string;
   actorId?: string;
   entityType?: string;
@@ -2611,32 +2519,26 @@ export interface InboxResponse {
 }
 
 export const listInbox = (companyId: string, limit = 100) =>
-  request<InboxResponse>(
-    `/companies/${companyId}/inbox?limit=${limit}`,
-  );
+  request<InboxResponse>(`/companies/${companyId}/inbox?limit=${limit}`);
 
 export const markInboxRead = (companyId: string, itemIds: string[]) =>
-  request<{ marked: number; readAt: string }>(
-    `/companies/${companyId}/inbox/read`,
-    { method: "POST", body: JSON.stringify({ itemIds }) },
-  );
+  request<{ marked: number; readAt: string }>(`/companies/${companyId}/inbox/read`, {
+    method: 'POST',
+    body: JSON.stringify({ itemIds }),
+  });
 
 export const markInboxUnread = (companyId: string, itemIds: string[]) =>
-  request<{ cleared: number }>(
-    `/companies/${companyId}/inbox/unread`,
-    { method: "POST", body: JSON.stringify({ itemIds }) },
-  );
+  request<{ cleared: number }>(`/companies/${companyId}/inbox/unread`, {
+    method: 'POST',
+    body: JSON.stringify({ itemIds }),
+  });
 
 // ── Approvals ───────────────────────────────────────────────────────────
 
 export type ApprovalKind =
-  | "budget_change"
-  | "agent_termination"
-  | "task_review"
-  | "custom"
-  | "plan_gate";
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
-export type ApprovalPriority = "critical" | "high" | "medium" | "low";
+  'budget_change' | 'agent_termination' | 'task_review' | 'custom' | 'plan_gate';
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
+export type ApprovalPriority = 'critical' | 'high' | 'medium' | 'low';
 
 export interface Approval {
   id: string;
@@ -2669,9 +2571,7 @@ export interface ApprovalComment {
 }
 
 export const listApprovals = (companyId: string, status?: ApprovalStatus) =>
-  request<Approval[]>(
-    `/companies/${companyId}/approvals${status ? `?status=${status}` : ""}`,
-  );
+  request<Approval[]>(`/companies/${companyId}/approvals${status ? `?status=${status}` : ''}`);
 
 export const getApproval = (companyId: string, id: string) =>
   request<{ approval: Approval; comments: ApprovalComment[] }>(
@@ -2691,54 +2591,46 @@ export const createApproval = (
   },
 ) =>
   request<Approval>(`/companies/${companyId}/approvals`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
 export const decideApproval = (
   companyId: string,
   id: string,
-  data: { decision: "approved" | "rejected"; resolutionNote?: string },
+  data: { decision: 'approved' | 'rejected'; resolutionNote?: string },
 ) =>
   request<Approval>(`/companies/${companyId}/approvals/${id}/decide`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
-export const cancelApproval = (
-  companyId: string,
-  id: string,
-  resolutionNote?: string,
-) =>
+export const cancelApproval = (companyId: string, id: string, resolutionNote?: string) =>
   request<Approval>(`/companies/${companyId}/approvals/${id}/cancel`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify({ resolutionNote }),
   });
 
-export const addApprovalComment = (
-  companyId: string,
-  id: string,
-  content: string,
-) =>
-  request<ApprovalComment>(
-    `/companies/${companyId}/approvals/${id}/comments`,
-    { method: "POST", body: JSON.stringify({ content }) },
-  );
+export const addApprovalComment = (companyId: string, id: string, content: string) =>
+  request<ApprovalComment>(`/companies/${companyId}/approvals/${id}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
 
 // ── Artifacts ────────────────────────────────────────────────────────────
 
 export type ArtifactType =
-  | "document"
-  | "sheet"
-  | "board"
-  | "slide_deck"
-  | "timeline"
-  | "gallery"
-  | "dashboard"
-  | "app"
-  | "code";
+  | 'document'
+  | 'sheet'
+  | 'board'
+  | 'slide_deck'
+  | 'timeline'
+  | 'gallery'
+  | 'dashboard'
+  | 'app'
+  | 'code';
 
-export type ArtifactStatus = "active" | "archived" | "deleted";
+export type ArtifactStatus = 'active' | 'archived' | 'deleted';
 
 export interface Artifact {
   id: string;
@@ -2784,7 +2676,7 @@ export interface ArtifactRevision {
   content: Record<string, unknown>;
   editedByUserId: string | null;
   editedByAgentId: string | null;
-  editSource: "user" | "agent" | "system";
+  editSource: 'user' | 'agent' | 'system';
   message: string | null;
   createdAt: string;
 }
@@ -2799,25 +2691,25 @@ export interface ArtifactListParams {
   projectId?: string;
   type?: ArtifactType;
   status?: ArtifactStatus;
-  folderId?: string | "null";
+  folderId?: string | 'null';
   limit?: number;
   offset?: number;
-  sort?: "updatedAt" | "title" | "type" | "createdAt";
-  order?: "asc" | "desc";
+  sort?: 'updatedAt' | 'title' | 'type' | 'createdAt';
+  order?: 'asc' | 'desc';
 }
 
 function artifactListQuery(params: ArtifactListParams): string {
   const sp = new URLSearchParams();
-  if (params.projectId) sp.set("projectId", params.projectId);
-  if (params.type) sp.set("type", params.type);
-  if (params.status) sp.set("status", params.status);
-  if (params.folderId) sp.set("folderId", params.folderId);
-  if (params.limit !== undefined) sp.set("limit", String(params.limit));
-  if (params.offset !== undefined) sp.set("offset", String(params.offset));
-  if (params.sort) sp.set("sort", params.sort);
-  if (params.order) sp.set("order", params.order);
+  if (params.projectId) {sp.set('projectId', params.projectId);}
+  if (params.type) {sp.set('type', params.type);}
+  if (params.status) {sp.set('status', params.status);}
+  if (params.folderId) {sp.set('folderId', params.folderId);}
+  if (params.limit !== undefined) {sp.set('limit', String(params.limit));}
+  if (params.offset !== undefined) {sp.set('offset', String(params.offset));}
+  if (params.sort) {sp.set('sort', params.sort);}
+  if (params.order) {sp.set('order', params.order);}
   const qs = sp.toString();
-  return qs ? `?${qs}` : "";
+  return qs ? `?${qs}` : '';
 }
 
 export const listArtifacts = (companyId: string, params?: ArtifactListParams) =>
@@ -2825,13 +2717,8 @@ export const listArtifacts = (companyId: string, params?: ArtifactListParams) =>
     `/companies/${companyId}/artifacts${artifactListQuery(params ?? {})}`,
   );
 
-export const listProjectArtifacts = (
-  companyId: string,
-  projectId: string,
-) =>
-  request<ApiResponse<Artifact[]>>(
-    `/companies/${companyId}/projects/${projectId}/artifacts`,
-  );
+export const listProjectArtifacts = (companyId: string, projectId: string) =>
+  request<ApiResponse<Artifact[]>>(`/companies/${companyId}/projects/${projectId}/artifacts`);
 
 export const getArtifact = (companyId: string, id: string) =>
   request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}`);
@@ -2846,7 +2733,7 @@ export const createArtifact = (
   },
 ) =>
   request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -2860,51 +2747,36 @@ export const updateArtifact = (
     message?: string;
   },
 ) =>
-  request<ApiResponse<Artifact>>(
-    `/companies/${companyId}/artifacts/${id}`,
-    { method: "PATCH", body: JSON.stringify(data) },
-  );
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
 
 export const deleteArtifact = (companyId: string, id: string) =>
-  request<ApiResponse<Artifact>>(
-    `/companies/${companyId}/artifacts/${id}`,
-    { method: "DELETE" },
-  );
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}`, { method: 'DELETE' });
 
 export const archiveArtifact = (companyId: string, id: string) =>
-  request<ApiResponse<Artifact>>(
-    `/companies/${companyId}/artifacts/${id}/archive`,
-    { method: "POST" },
-  );
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}/archive`, {
+    method: 'POST',
+  });
 
 export const restoreArtifact = (companyId: string, id: string) =>
-  request<ApiResponse<Artifact>>(
-    `/companies/${companyId}/artifacts/${id}/restore`,
-    { method: "POST" },
-  );
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${id}/restore`, {
+    method: 'POST',
+  });
 
 export const listRevisions = (companyId: string, id: string) =>
-  request<ApiResponse<ArtifactRevision[]>>(
-    `/companies/${companyId}/artifacts/${id}/revisions`,
-  );
+  request<ApiResponse<ArtifactRevision[]>>(`/companies/${companyId}/artifacts/${id}/revisions`);
 
-export const getRevision = (
-  companyId: string,
-  id: string,
-  version: number,
-) =>
+export const getRevision = (companyId: string, id: string, version: number) =>
   request<ApiResponse<ArtifactRevision>>(
     `/companies/${companyId}/artifacts/${id}/revisions/${version}`,
   );
 
-export const restoreRevision = (
-  companyId: string,
-  id: string,
-  version: number,
-) =>
+export const restoreRevision = (companyId: string, id: string, version: number) =>
   request<ApiResponse<Artifact>>(
     `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
-    { method: "POST" },
+    { method: 'POST' },
   );
 
 // ── Revision Diff (M2) ───────────────────────────────────────────────────
@@ -2914,7 +2786,7 @@ export const restoreRevision = (
 // uses the raw DiffResponse type. Re-exported diff types are available for
 // components that render type-specific diff payloads.
 
-export type { DiffResult, DiffResponse } from "@eidolon/shared";
+export type { DiffResult, DiffResponse } from '@eidolon/shared';
 
 export interface DiffRevision {
   id: string;
@@ -2923,29 +2795,20 @@ export interface DiffRevision {
   content: Record<string, unknown>;
   editedByUserId: string | null;
   editedByAgentId: string | null;
-  editSource: "user" | "agent" | "system";
+  editSource: 'user' | 'agent' | 'system';
   message: string | null;
   createdAt: string;
 }
 
-export const getArtifactDiff = (
-  companyId: string,
-  id: string,
-  v1: number,
-  v2: number,
-) =>
-  request<DiffResponse>(
-    `/companies/${companyId}/artifacts/${id}/revisions/${v1}/diff/${v2}`,
-  );
+export const getArtifactDiff = (companyId: string, id: string, v1: number, v2: number) =>
+  request<DiffResponse>(`/companies/${companyId}/artifacts/${id}/revisions/${v1}/diff/${v2}`);
 
 // ── Smart artifact linking (M3) ──────────────────────────────────────────
 // Fetches the bidirectional link graph + related artifacts for an artifact.
 // The server returns { linkedFrom, linkedTo, related } directly (no data
 // wrapper), matching the LinksResponse shared type.
 export const getLinks = (companyId: string, id: string) =>
-  request<LinksResponse>(
-    `/companies/${companyId}/artifacts/${id}/links`,
-  );
+  request<LinksResponse>(`/companies/${companyId}/artifacts/${id}/links`);
 
 // ── Dashboard data-source resolution (M5) ────────────────────────────────
 
@@ -2985,10 +2848,9 @@ export interface CodeRunResult {
 }
 
 export const runCodeArtifact = (companyId: string, artifactId: string) =>
-  request<ApiResponse<CodeRunResult>>(
-    `/companies/${companyId}/artifacts/${artifactId}/run`,
-    { method: "POST" },
-  );
+  request<ApiResponse<CodeRunResult>>(`/companies/${companyId}/artifacts/${artifactId}/run`, {
+    method: 'POST',
+  });
 
 // ── Artifact Folders (M4) ────────────────────────────────────────────────
 
@@ -3004,11 +2866,11 @@ export interface ArtifactFolder {
 
 export const listFolders = (companyId: string, projectId?: string | null) => {
   const sp = new URLSearchParams();
-  if (projectId === null) sp.set("projectId", "null");
-  else if (projectId) sp.set("projectId", projectId);
+  if (projectId === null) {sp.set('projectId', 'null');}
+  else if (projectId) {sp.set('projectId', projectId);}
   const qs = sp.toString();
   return request<ApiResponse<ArtifactFolder[]>>(
-    `/companies/${companyId}/folders${qs ? `?${qs}` : ""}`,
+    `/companies/${companyId}/folders${qs ? `?${qs}` : ''}`,
   );
 };
 
@@ -3017,7 +2879,7 @@ export const createFolder = (
   data: { name: string; projectId?: string | null; parentId?: string | null },
 ) =>
   request<ApiResponse<ArtifactFolder>>(`/companies/${companyId}/folders`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -3026,13 +2888,13 @@ export const updateFolder = (
   id: string,
   data: { name?: string; parentId?: string | null },
 ) =>
-  request<ApiResponse<ArtifactFolder>>(
-    `/companies/${companyId}/folders/${id}`,
-    { method: "PATCH", body: JSON.stringify(data) },
-  );
+  request<ApiResponse<ArtifactFolder>>(`/companies/${companyId}/folders/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
 
 export const deleteFolder = (companyId: string, id: string) =>
-  request<void>(`/companies/${companyId}/folders/${id}`, { method: "DELETE" });
+  request<void>(`/companies/${companyId}/folders/${id}`, { method: 'DELETE' });
 
 /** Move an artifact into/out of a folder (metadata-only; no version bump). */
 export const moveArtifactToFolder = (
@@ -3040,10 +2902,10 @@ export const moveArtifactToFolder = (
   artifactId: string,
   folderId: string | null,
 ) =>
-  request<ApiResponse<Artifact>>(
-    `/companies/${companyId}/artifacts/${artifactId}`,
-    { method: "PATCH", body: JSON.stringify({ folderId }) },
-  );
+  request<ApiResponse<Artifact>>(`/companies/${companyId}/artifacts/${artifactId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ folderId }),
+  });
 
 // ── Presence (M3) ───────────────────────────────────────────────────────
 
@@ -3060,46 +2922,32 @@ export interface ProjectPresenceEntry {
   typing: boolean;
 }
 
-export const joinPresence = (
-  companyId: string,
-  artifactId: string,
-) =>
+export const joinPresence = (companyId: string, artifactId: string) =>
   request<ApiResponse<{ artifactId: string; userId: string; presence: PresenceEntry[] }>>(
     `/companies/${companyId}/artifacts/${artifactId}/presence/join`,
-    { method: "POST", body: JSON.stringify({}) },
+    { method: 'POST', body: JSON.stringify({}) },
   );
 
-export const leavePresence = (
-  companyId: string,
-  artifactId: string,
-) =>
+export const leavePresence = (companyId: string, artifactId: string) =>
   request<ApiResponse<{ artifactId: string; userId: string; presence: PresenceEntry[] }>>(
     `/companies/${companyId}/artifacts/${artifactId}/presence/leave`,
-    { method: "POST", body: JSON.stringify({}) },
+    { method: 'POST', body: JSON.stringify({}) },
   );
 
-export const setTypingPresence = (
-  companyId: string,
-  artifactId: string,
-  typing: boolean,
-) =>
-  request<ApiResponse<{ artifactId: string; userId: string; typing: boolean; presence: PresenceEntry[] }>>(
-    `/companies/${companyId}/artifacts/${artifactId}/presence/typing`,
-    { method: "POST", body: JSON.stringify({ typing }) },
-  );
+export const setTypingPresence = (companyId: string, artifactId: string, typing: boolean) =>
+  request<
+    ApiResponse<{ artifactId: string; userId: string; typing: boolean; presence: PresenceEntry[] }>
+  >(`/companies/${companyId}/artifacts/${artifactId}/presence/typing`, {
+    method: 'POST',
+    body: JSON.stringify({ typing }),
+  });
 
-export const getArtifactPresence = (
-  companyId: string,
-  artifactId: string,
-) =>
+export const getArtifactPresence = (companyId: string, artifactId: string) =>
   request<ApiResponse<{ artifactId: string; presence: PresenceEntry[] }>>(
     `/companies/${companyId}/artifacts/${artifactId}/presence`,
   );
 
-export const getProjectPresence = (
-  companyId: string,
-  projectId: string,
-) =>
+export const getProjectPresence = (companyId: string, projectId: string) =>
   request<ApiResponse<{ projectId: string; presence: ProjectPresenceEntry[] }>>(
     `/companies/${companyId}/presence?projectId=${projectId}`,
   );
@@ -3128,9 +2976,9 @@ export interface TeamMember {
   createdAt: string;
 }
 
-export type AccessLevel = "view" | "edit" | "manage";
-export type PermissionResourceType = "project" | "folder" | "artifact";
-export type GranteeType = "user" | "team";
+export type AccessLevel = 'view' | 'edit' | 'manage';
+export type PermissionResourceType = 'project' | 'folder' | 'artifact';
+export type GranteeType = 'user' | 'team';
 
 export interface PermissionRecord {
   id: string;
@@ -3150,13 +2998,13 @@ export const getTeams = (companyId: string) =>
 
 export const createTeam = (companyId: string, name: string) =>
   request<ApiResponse<Team>>(`/companies/${companyId}/teams`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify({ name }),
   });
 
 export const deleteTeam = (companyId: string, teamId: string) =>
   request<ApiResponse<void>>(`/companies/${companyId}/teams/${teamId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 export const getTeamMembers = (companyId: string, teamId: string) =>
@@ -3164,13 +3012,13 @@ export const getTeamMembers = (companyId: string, teamId: string) =>
 
 export const addTeamMember = (companyId: string, teamId: string, userId: string) =>
   request<ApiResponse<TeamMember>>(`/companies/${companyId}/teams/${teamId}/members`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify({ userId }),
   });
 
 export const removeTeamMember = (companyId: string, teamId: string, userId: string) =>
   request<ApiResponse<void>>(`/companies/${companyId}/teams/${teamId}/members/${userId}`, {
-    method: "DELETE",
+    method: 'DELETE',
   });
 
 export const getPermissions = (
@@ -3193,7 +3041,7 @@ export const grantPermission = (
   },
 ) =>
   request<ApiResponse<PermissionRecord>>(`/companies/${companyId}/permissions`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify(data),
   });
 
@@ -3208,7 +3056,7 @@ export const revokePermission = (
   },
 ) =>
   request<ApiResponse<void>>(`/companies/${companyId}/permissions`, {
-    method: "DELETE",
+    method: 'DELETE',
     body: JSON.stringify(data),
   });
 
@@ -3226,7 +3074,7 @@ export const resolvePermission = (
 // Pipeline: create → attach transcript → summarize → extract action items
 // (which become real tasks linked to the project).
 
-export type MeetingStatus = "active" | "archived" | "deleted";
+export type MeetingStatus = 'active' | 'archived' | 'deleted';
 
 export interface Meeting {
   id: string;
@@ -3276,9 +3124,9 @@ export const listProjectMeetings = (
   params?: { status?: MeetingStatus; limit?: number; offset?: number },
 ) => {
   const qs = new URLSearchParams();
-  if (params?.status) qs.set("status", params.status);
-  qs.set("limit", String(params?.limit ?? 50));
-  qs.set("offset", String(params?.offset ?? 0));
+  if (params?.status) {qs.set('status', params.status);}
+  qs.set('limit', String(params?.limit ?? 50));
+  qs.set('offset', String(params?.offset ?? 0));
   return request<MeetingListResponse>(
     `/companies/${companyId}/projects/${projectId}/meetings?${qs.toString()}`,
   );
@@ -3289,10 +3137,10 @@ export const createMeeting = (
   projectId: string,
   data: { title: string; transcript?: string; occurredAt?: string | null },
 ) =>
-  request<{ data: Meeting }>(
-    `/companies/${companyId}/projects/${projectId}/meetings`,
-    { method: "POST", body: JSON.stringify(data) },
-  );
+  request<{ data: Meeting }>(`/companies/${companyId}/projects/${projectId}/meetings`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export const getMeeting = (companyId: string, meetingId: string) =>
   request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}`);
@@ -3303,70 +3151,65 @@ export const patchMeeting = (
   data: { title?: string; transcript?: string | null; status?: MeetingStatus },
 ) =>
   request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}`, {
-    method: "PATCH",
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
-export const attachTranscript = (
-  companyId: string,
-  meetingId: string,
-  transcript: string,
-) =>
-  request<{ data: Meeting }>(
-    `/companies/${companyId}/meetings/${meetingId}/transcript`,
-    { method: "POST", body: JSON.stringify({ transcript }) },
-  );
+export const attachTranscript = (companyId: string, meetingId: string, transcript: string) =>
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}/transcript`, {
+    method: 'POST',
+    body: JSON.stringify({ transcript }),
+  });
 
 export const summarizeMeetingApi = (companyId: string, meetingId: string) =>
   request<{ data: MeetingSummarizeResult }>(
     `/companies/${companyId}/meetings/${meetingId}/summarize`,
-    { method: "POST" },
+    { method: 'POST' },
   );
 
 export const extractActionItemsApi = (companyId: string, meetingId: string) =>
   request<{ data: MeetingActionItemsResult }>(
     `/companies/${companyId}/meetings/${meetingId}/action-items`,
-    { method: "POST" },
+    { method: 'POST' },
   );
 
 export const getMeetingTasks = (companyId: string, meetingId: string) =>
-  request<{ data: Array<{ id: string; title: string; identifier: string | null; status: string; projectId: string | null }> }>(
-    `/companies/${companyId}/meetings/${meetingId}/tasks`,
-  );
+  request<{
+    data: Array<{
+      id: string;
+      title: string;
+      identifier: string | null;
+      status: string;
+      projectId: string | null;
+    }>;
+  }>(`/companies/${companyId}/meetings/${meetingId}/tasks`);
 
 // Reverse task→meeting backlink (VAL-MEETING-006/007): meetings that
 // originated a task (via the meeting_tasks join table).
 export const getTaskMeetings = (companyId: string, taskId: string) =>
-  request<{ data: Meeting[] }>(
-    `/companies/${companyId}/tasks/${taskId}/meetings`,
-  );
+  request<{ data: Meeting[] }>(`/companies/${companyId}/tasks/${taskId}/meetings`);
 
 export const deleteMeeting = (companyId: string, meetingId: string) =>
-  request<{ data: Meeting }>(
-    `/companies/${companyId}/meetings/${meetingId}`,
-    { method: "DELETE" },
-  );
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}`, { method: 'DELETE' });
 
 export const archiveMeeting = (companyId: string, meetingId: string) =>
-  request<{ data: Meeting }>(
-    `/companies/${companyId}/meetings/${meetingId}/archive`,
-    { method: "POST" },
-  );
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}/archive`, {
+    method: 'POST',
+  });
 
 export const restoreMeeting = (companyId: string, meetingId: string) =>
-  request<{ data: Meeting }>(
-    `/companies/${companyId}/meetings/${meetingId}/restore`,
-    { method: "POST" },
-  );
+  request<{ data: Meeting }>(`/companies/${companyId}/meetings/${meetingId}/restore`, {
+    method: 'POST',
+  });
 
 // ── M8: MFA + step-up authentication ────────────────────────────────────
 
 export interface MfaFactor {
   id: string;
   userId: string;
-  type: "totp";
+  type: 'totp';
   label: string | null;
-  status: "active" | "disabled";
+  status: 'active' | 'disabled';
   createdAt: string;
 }
 
@@ -3378,52 +3221,44 @@ export interface MfaEnrollment {
 
 export interface StepUpSession {
   stepUpToken: string;
-  scope: "company_delete" | "artifact_permanent_delete" | "artifact_transfer" | "sensitive_action";
+  scope: 'company_delete' | 'artifact_permanent_delete' | 'artifact_transfer' | 'sensitive_action';
   grantedAt: string;
   expiresAt: string;
 }
 
 export const enrollMfaFactor = (label?: string) =>
   request<{ data: MfaEnrollment }>(`/auth/mfa/enroll`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify({ label }),
   });
 
-export const listMfaFactors = () =>
-  request<{ data: MfaFactor[] }>(`/auth/mfa/factors`);
+export const listMfaFactors = () => request<{ data: MfaFactor[] }>(`/auth/mfa/factors`);
 
 export const verifyMfaCode = (code: string) =>
   request<{ data: { verified: boolean; factorId: string } }>(`/auth/mfa/verify`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify({ code }),
   });
 
 export const disableMfaFactor = (factorId: string) =>
-  request<{ data: { disabled: boolean; factorId: string } }>(
-    `/auth/mfa/factors/${factorId}`,
-    { method: "DELETE" },
-  );
+  request<{ data: { disabled: boolean; factorId: string } }>(`/auth/mfa/factors/${factorId}`, {
+    method: 'DELETE',
+  });
 
 /** Local-trusted only: returns a valid TOTP code for the user's first factor. */
 export const generateValidMfaCode = () =>
   request<{ data: { code: string } }>(`/auth/mfa/generate-valid-code`, {
-    method: "POST",
+    method: 'POST',
   });
 
-export const requestStepUp = (
-  code: string,
-  scope: StepUpSession["scope"],
-  companyId?: string,
-) =>
+export const requestStepUp = (code: string, scope: StepUpSession['scope'], companyId?: string) =>
   request<{ data: StepUpSession }>(`/auth/step-up`, {
-    method: "POST",
+    method: 'POST',
     body: JSON.stringify({ code, scope, companyId }),
   });
 
-export const getStepUpStatus = (scope: StepUpSession["scope"]) =>
-  request<{ data: { hasStepUp: boolean; scope: string } }>(
-    `/auth/step-up/status?scope=${scope}`,
-  );
+export const getStepUpStatus = (scope: StepUpSession['scope']) =>
+  request<{ data: { hasStepUp: boolean; scope: string } }>(`/auth/step-up/status?scope=${scope}`);
 
 // Sensitive artifact operations (step-up gated) — M8 VAL-SEC-008.
 
@@ -3432,10 +3267,10 @@ export const permanentlyDeleteArtifact = (
   artifactId: string,
   stepUpToken: string,
 ) => {
-  const qs = new URLSearchParams({ permanent: "true", stepUpToken });
+  const qs = new URLSearchParams({ permanent: 'true', stepUpToken });
   return request<{ data: { id: string; permanent: true } }>(
     `/companies/${companyId}/artifacts/${artifactId}?${qs.toString()}`,
-    { method: "DELETE" },
+    { method: 'DELETE' },
   );
 };
 
@@ -3448,7 +3283,7 @@ export const transferArtifactOwnership = (
   request<{ data: Artifact }>(
     `/companies/${companyId}/artifacts/${artifactId}/transfer?stepUpToken=${encodeURIComponent(stepUpToken)}`,
     {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ projectId }),
     },
   );

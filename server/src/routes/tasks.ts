@@ -2,13 +2,13 @@ import { Router, type Request } from 'express';
 import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { MentionSchema } from '@eidolon/shared';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
-import {
-  TaskCheckoutError,
-  TaskCheckoutService,
-} from '../services/task-checkout.js';
+import { TaskCheckoutError, TaskCheckoutService } from '../services/task-checkout.js';
+import { MentionService } from '../services/mention-service.js';
+import { backgroundWork } from '../services/background-work.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
@@ -16,7 +16,15 @@ import { getTaskMeetings } from '../services/meeting-service.js';
 
 const TASK_TYPES = ['feature', 'bug', 'chore', 'spike', 'epic'] as const;
 const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
-const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'cancelled', 'timed_out'] as const;
+const TASK_STATUSES = [
+  'backlog',
+  'todo',
+  'in_progress',
+  'review',
+  'done',
+  'cancelled',
+  'timed_out',
+] as const;
 
 type TaskType = (typeof TASK_TYPES)[number];
 type TaskPriority = (typeof TASK_PRIORITIES)[number];
@@ -35,7 +43,7 @@ function normalizeTaskPriority(value: unknown): TaskPriority {
 }
 
 function rowsFromExecute<T>(result: unknown): T[] {
-  if (Array.isArray(result)) return result as T[];
+  if (Array.isArray(result)) {return result as T[];}
   if (result && typeof result === 'object' && 'rows' in result) {
     return (result as { rows: T[] }).rows;
   }
@@ -103,6 +111,7 @@ const CreateThreadCommentBody = z.object({
   content: z.string().min(1).max(20_000),
   authorAgentId: z.string().uuid().nullable().default(null),
   idempotencyKey: z.string().min(1).max(255).optional(),
+  mentions: z.array(MentionSchema).default([]),
 });
 
 const CreateInteractionBody = z.object({
@@ -134,15 +143,8 @@ const TaskListQuery = z.object({
 export function tasksRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const checkoutService = new TaskCheckoutService(db);
-  const {
-    tasks,
-    agents,
-    approvals,
-    agentExecutions,
-    taskThreadItems,
-    taskCheckouts,
-    taskHolds,
-  } = db.schema;
+  const { tasks, agents, approvals, agentExecutions, taskThreadItems, taskCheckouts, taskHolds } =
+    db.schema;
 
   async function getTaskOrThrow(companyId: string, id: string) {
     const [row] = await db.drizzle
@@ -177,7 +179,7 @@ export function tasksRouter(db: DbInstance): Router {
       SELECT id FROM subtree
     `);
     const ids = rowsFromExecute<{ id: string }>(result).map((row) => row.id);
-    if (ids.length === 0) return [];
+    if (ids.length === 0) {return [];}
 
     return executor
       .select()
@@ -213,8 +215,10 @@ export function tasksRouter(db: DbInstance): Router {
 
     for (const task of dependentTasks) {
       const dependencies = Array.isArray(task.dependencies) ? task.dependencies : [];
-      const unblocked = dependencies.every((dependencyId) => statusById.get(dependencyId) === 'done');
-      if (!unblocked || !task.assigneeAgentId) continue;
+      const unblocked = dependencies.every(
+        (dependencyId) => statusById.get(dependencyId) === 'done',
+      );
+      if (!unblocked || !task.assigneeAgentId) {continue;}
 
       const [wokenAgent] = await db.drizzle
         .update(agents)
@@ -222,12 +226,16 @@ export function tasksRouter(db: DbInstance): Router {
         .where(and(eq(agents.id, task.assigneeAgentId), eq(agents.status, 'idle')))
         .returning({ id: agents.id });
 
-      if (!wokenAgent) continue;
+      if (!wokenAgent) {continue;}
 
       eventBus.emitEvent({
         type: 'task.blocker_resolved',
         companyId,
-        payload: { taskId: task.id, resolvedDependencyId: completedTaskId, assigneeAgentId: task.assigneeAgentId },
+        payload: {
+          taskId: task.id,
+          resolvedDependencyId: completedTaskId,
+          assigneeAgentId: task.assigneeAgentId,
+        },
         timestamp: new Date().toISOString(),
       });
     }
@@ -271,12 +279,16 @@ export function tasksRouter(db: DbInstance): Router {
         .insert(taskThreadItems)
         .values(insertValues)
         .onConflictDoNothing({
-          target: [taskThreadItems.companyId, taskThreadItems.taskId, taskThreadItems.idempotencyKey],
+          target: [
+            taskThreadItems.companyId,
+            taskThreadItems.taskId,
+            taskThreadItems.idempotencyKey,
+          ],
           where: sql`${taskThreadItems.idempotencyKey} IS NOT NULL`,
         })
         .returning();
 
-      if (created) return { row: created, created: true };
+      if (created) {return { row: created, created: true };}
 
       const [existing] = await db.drizzle
         .select()
@@ -290,13 +302,10 @@ export function tasksRouter(db: DbInstance): Router {
         )
         .limit(1);
 
-      if (existing) return { row: existing, created: false };
+      if (existing) {return { row: existing, created: false };}
     }
 
-    const [row] = await db.drizzle
-      .insert(taskThreadItems)
-      .values(insertValues)
-      .returning();
+    const [row] = await db.drizzle.insert(taskThreadItems).values(insertValues).returning();
     return { row, created: true };
   }
 
@@ -307,7 +316,11 @@ export function tasksRouter(db: DbInstance): Router {
     return row;
   }
 
-  function emitThreadItemSeen(companyId: string, taskId: string, item: typeof taskThreadItems.$inferSelect) {
+  function emitThreadItemSeen(
+    companyId: string,
+    taskId: string,
+    item: typeof taskThreadItems.$inferSelect,
+  ) {
     eventBus.emitEvent({
       type: 'task.thread_item_seen',
       companyId,
@@ -349,7 +362,10 @@ export function tasksRouter(db: DbInstance): Router {
       .from(tasks)
       .where(and(...conditions));
 
-    res.json({ data: rows, meta: { total: Number(total), limit: query.limit, offset: query.offset } });
+    res.json({
+      data: rows,
+      meta: { total: Number(total), limit: query.limit, offset: query.offset },
+    });
   });
 
   // GET /api/companies/:companyId/tasks/board - kanban board view
@@ -426,7 +442,10 @@ export function tasksRouter(db: DbInstance): Router {
 
     const approvalIds = new Set(approvalRows.map((approval) => approval.id));
     const canonicalThreadRows = threadRows.filter(
-      (item) => item.kind !== 'approval_link' || !item.relatedApprovalId || !approvalIds.has(item.relatedApprovalId),
+      (item) =>
+        item.kind !== 'approval_link' ||
+        !item.relatedApprovalId ||
+        !approvalIds.has(item.relatedApprovalId),
     );
 
     const items = [
@@ -468,6 +487,17 @@ export function tasksRouter(db: DbInstance): Router {
     const { id, companyId } = routeParams(req);
     await getTaskOrThrow(companyId, id);
 
+    // Resolve mentions: filter out references to entities that don't exist
+    // in this company (non-existent agents, archived artifacts, non-members).
+    const mentionService = new MentionService(db);
+    const resolvedMentions = [];
+    for (const m of body.mentions) {
+      const valid = await mentionService.resolveMention(companyId, m.entityType, m.entityId);
+      if (valid) {
+        resolvedMentions.push(m);
+      }
+    }
+
     const { row, created } = await insertThreadItem({
       companyId,
       taskId: id,
@@ -476,6 +506,7 @@ export function tasksRouter(db: DbInstance): Router {
       authorAgentId: body.authorAgentId,
       content: body.content,
       payload: {},
+      mentions: resolvedMentions,
       status: 'answered',
       idempotencyKey: body.idempotencyKey ?? null,
     });
@@ -489,6 +520,27 @@ export function tasksRouter(db: DbInstance): Router {
         payload: { taskId: id, item: row },
         timestamp: new Date().toISOString(),
       });
+    }
+
+    // Dispatch mentions (agent wake / user notification) — tracked
+    // fire-and-forget so tests can drain deterministically and errors are
+    // logged with context. The POST response isn't blocked by dispatch
+    // failures (the thread item is already persisted). Task threads use
+    // taskId instead of projectThreadId for dispatch context.
+    if (created && resolvedMentions.length > 0) {
+      backgroundWork.fire(
+        mentionService.dispatchMentions({
+          companyId,
+          projectId: row.projectId ?? null,
+          threadId: null,
+          taskId: id,
+          itemId: row.id,
+          content: body.content,
+          mentions: resolvedMentions,
+          authorUserId: req.user?.id ?? null,
+        }),
+        'mention-dispatch (POST task thread comment)',
+      );
     }
 
     res.status(201).json({ data: row });
@@ -586,16 +638,14 @@ export function tasksRouter(db: DbInstance): Router {
 
           for (const suggestedTask of suggested) {
             const title = typeof suggestedTask.title === 'string' ? suggestedTask.title : null;
-            if (!title) continue;
+            if (!title) {continue;}
             taskNumber += 1;
             const taskValues: typeof tasks.$inferInsert = {
               companyId,
               parentId: id,
               title,
               description:
-                typeof suggestedTask.description === 'string'
-                  ? suggestedTask.description
-                  : null,
+                typeof suggestedTask.description === 'string' ? suggestedTask.description : null,
               type: normalizeTaskType(suggestedTask.type),
               status: 'backlog',
               priority: normalizeTaskPriority(suggestedTask.priority),
@@ -608,10 +658,7 @@ export function tasksRouter(db: DbInstance): Router {
               updatedAt: now,
             };
 
-            const [created] = await tx
-              .insert(tasks)
-              .values(taskValues)
-              .returning();
+            const [created] = await tx.insert(tasks).values(taskValues).returning();
             ids.push(created.id);
           }
 
@@ -641,27 +688,44 @@ export function tasksRouter(db: DbInstance): Router {
       kind: 'decision',
       authorUserId: req.user?.id ?? null,
       content: body.note ?? `${status} ${interaction.interactionType ?? 'interaction'}`,
-      payload: { interactionId: interaction.id, status, answers: body.answers ?? {}, createdTaskIds },
+      payload: {
+        interactionId: interaction.id,
+        status,
+        answers: body.answers ?? {},
+        createdTaskIds,
+      },
       status,
     });
 
     return updated;
   }
 
-  router.post('/:id/thread/interactions/:interactionId/accept', validate(InteractionDecisionBody), async (req, res) => {
-    const row = await resolveInteraction(req, 'accepted', req.body);
-    res.json({ data: row });
-  });
+  router.post(
+    '/:id/thread/interactions/:interactionId/accept',
+    validate(InteractionDecisionBody),
+    async (req, res) => {
+      const row = await resolveInteraction(req, 'accepted', req.body);
+      res.json({ data: row });
+    },
+  );
 
-  router.post('/:id/thread/interactions/:interactionId/reject', validate(InteractionDecisionBody), async (req, res) => {
-    const row = await resolveInteraction(req, 'rejected', req.body);
-    res.json({ data: row });
-  });
+  router.post(
+    '/:id/thread/interactions/:interactionId/reject',
+    validate(InteractionDecisionBody),
+    async (req, res) => {
+      const row = await resolveInteraction(req, 'rejected', req.body);
+      res.json({ data: row });
+    },
+  );
 
-  router.post('/:id/thread/interactions/:interactionId/answer', validate(InteractionDecisionBody), async (req, res) => {
-    const row = await resolveInteraction(req, 'answered', req.body);
-    res.json({ data: row });
-  });
+  router.post(
+    '/:id/thread/interactions/:interactionId/answer',
+    validate(InteractionDecisionBody),
+    async (req, res) => {
+      const row = await resolveInteraction(req, 'answered', req.body);
+      res.json({ data: row });
+    },
+  );
 
   // POST /api/companies/:companyId/tasks - create
   router.post('/', validate(CreateTaskBody), async (req, res) => {
@@ -728,10 +792,7 @@ export function tasksRouter(db: DbInstance): Router {
       .select()
       .from(tasks)
       .where(
-        and(
-          eq(tasks.id, routeParams(req).id),
-          eq(tasks.companyId, routeParams(req).companyId),
-        ),
+        and(eq(tasks.id, routeParams(req).id), eq(tasks.companyId, routeParams(req).companyId)),
       )
       .limit(1);
 
@@ -861,7 +922,7 @@ export function tasksRouter(db: DbInstance): Router {
     const { inserted, taskIds } = await db.drizzle.transaction(async (tx) => {
       const subtree = await fetchSubtree(companyId, id, tx);
       const taskIds = subtree.map((task) => task.id);
-      if (taskIds.length === 0) return { inserted: [], taskIds };
+      if (taskIds.length === 0) {return { inserted: [], taskIds };}
 
       await tx
         .select({ id: tasks.id })
@@ -969,7 +1030,7 @@ export function tasksRouter(db: DbInstance): Router {
             updatedAt: now,
           }));
 
-        if (values.length > 0) await tx.insert(taskHolds).values(values);
+        if (values.length > 0) {await tx.insert(taskHolds).values(values);}
       });
     }
 
