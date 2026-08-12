@@ -25,12 +25,7 @@
 // ---------------------------------------------------------------------------
 
 import { sql, eq, and, inArray } from 'drizzle-orm';
-import type {
-  LinkRef,
-  LinkedToRef,
-  RelatedArtifact,
-  LinksResponse,
-} from '@eidolon/shared';
+import type { LinkRef, LinkedToRef, RelatedArtifact, LinksResponse } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 import { getCompanyMembers } from '../auth.js';
 
@@ -59,9 +54,9 @@ interface Mention {
  * Collapses whitespace and truncates to SNIPPET_MAX chars with an ellipsis.
  */
 function buildSnippet(content: string | null): string {
-  if (!content) return '';
+  if (!content) {return '';}
   const clean = content.replace(/\s+/g, ' ').trim();
-  if (clean.length <= SNIPPET_MAX) return clean;
+  if (clean.length <= SNIPPET_MAX) {return clean;}
   return `${clean.slice(0, SNIPPET_MAX - 3)}...`;
 }
 
@@ -69,18 +64,11 @@ function buildSnippet(content: string | null): string {
  * Extract artifact mention entityIds (excluding the target artifact itself)
  * from a thread item's mentions array. Returns a Set of artifact IDs.
  */
-function extractOtherArtifactMentions(
-  mentions: unknown,
-  targetArtifactId: string,
-): Set<string> {
+function extractOtherArtifactMentions(mentions: unknown, targetArtifactId: string): Set<string> {
   const result = new Set<string>();
-  if (!Array.isArray(mentions)) return result;
+  if (!Array.isArray(mentions)) {return result;}
   for (const m of mentions as Mention[]) {
-    if (
-      m.entityType === 'artifact' &&
-      m.entityId &&
-      m.entityId !== targetArtifactId
-    ) {
+    if (m.entityType === 'artifact' && m.entityId && m.entityId !== targetArtifactId) {
       result.add(m.entityId);
     }
   }
@@ -91,11 +79,8 @@ function extractOtherArtifactMentions(
  * Extract the artifactType for the target artifact from a thread item's
  * mentions array (the mention's `artifactType` field, if present).
  */
-function extractArtifactType(
-  mentions: unknown,
-  targetArtifactId: string,
-): string | undefined {
-  if (!Array.isArray(mentions)) return undefined;
+function extractArtifactType(mentions: unknown, targetArtifactId: string): string | undefined {
+  if (!Array.isArray(mentions)) {return undefined;}
   for (const m of mentions as Mention[]) {
     if (m.entityType === 'artifact' && m.entityId === targetArtifactId) {
       return m.artifactType;
@@ -132,7 +117,7 @@ async function resolveUserDisplayNames(
   userIds: string[],
 ): Promise<Map<string, string>> {
   const names = new Map<string, string>();
-  if (userIds.length === 0) return names;
+  if (userIds.length === 0) {return names;}
 
   // 1. Clerk company members (production + the dev user in local_trusted).
   try {
@@ -159,7 +144,7 @@ async function resolveUserDisplayNames(
 
   // 3. Fallback to the raw userId for anything still unresolved.
   for (const id of userIds) {
-    if (!names.has(id)) names.set(id, id);
+    if (!names.has(id)) {names.set(id, id);}
   }
 
   return names;
@@ -172,9 +157,7 @@ async function getLinkedFrom(
 ): Promise<{ linkedFrom: LinkRef[]; coMentionedIds: Set<string> }> {
   // JSONB containment filter: mentions @> '[{"entityType":"artifact","entityId":"..."}]'
   // The GIN index on `mentions` accelerates this reverse-lookup.
-  const mentionFilter = JSON.stringify([
-    { entityType: 'artifact', entityId: artifactId },
-  ]);
+  const mentionFilter = JSON.stringify([{ entityType: 'artifact', entityId: artifactId }]);
 
   const rows = (await db.drizzle.execute(sql`
     SELECT
@@ -202,9 +185,7 @@ async function getLinkedFrom(
 
   // Resolve user display names for all user-authored thread items in a
   // single batch (avoids N+1 queries).
-  const userIds = rows
-    .map((r) => r.author_user_id)
-    .filter((id): id is string => id !== null);
+  const userIds = rows.map((r) => r.author_user_id).filter((id): id is string => id !== null);
   const userNames = await resolveUserDisplayNames(db, companyId, userIds);
 
   const coMentionedIds = new Set<string>();
@@ -212,7 +193,7 @@ async function getLinkedFrom(
   const linkedFrom: LinkRef[] = rows.map((r) => {
     // Extract co-mentioned artifact IDs from this thread item's mentions.
     const others = extractOtherArtifactMentions(r.mentions, artifactId);
-    for (const id of others) coMentionedIds.add(id);
+    for (const id of others) {coMentionedIds.add(id);}
 
     // Extract the artifactType for the target artifact from the mention.
     const artifactType = extractArtifactType(r.mentions, artifactId);
@@ -263,7 +244,7 @@ async function getLinkedTo(
   companyId: string,
   coMentionedIds: Set<string>,
 ): Promise<LinkedToRef[]> {
-  if (coMentionedIds.size === 0) return [];
+  if (coMentionedIds.size === 0) {return [];}
 
   const ids = Array.from(coMentionedIds);
   const a = db.schema.artifacts;
@@ -276,13 +257,7 @@ async function getLinkedTo(
       folderId: a.folderId,
     })
     .from(a)
-    .where(
-      and(
-        eq(a.companyId, companyId),
-        eq(a.status, 'active'),
-        inArray(a.id, ids),
-      ),
-    );
+    .where(and(eq(a.companyId, companyId), eq(a.status, 'active'), inArray(a.id, ids)));
 
   return rows.map((r) => ({
     artifactId: r.id,
@@ -309,91 +284,107 @@ async function getRelated(
   },
   coMentionedIds: Set<string>,
 ): Promise<RelatedArtifact[]> {
-  // Fetch all active artifacts in the company (excluding self) with the
-  // columns needed for scoring. For typical company sizes this is a small
-  // result set; the scoring is done in JS for clarity and maintainability.
-  const a = db.schema.artifacts;
-  const rows = await db.drizzle
-    .select({
-      id: a.id,
-      title: a.title,
-      type: a.type,
-      projectId: a.projectId,
-      folderId: a.folderId,
-      createdByAgentId: a.createdByAgentId,
-      lastEditedByAgentId: a.lastEditedByAgentId,
-    })
-    .from(a)
-    .where(
-      and(
-        eq(a.companyId, companyId),
-        eq(a.status, 'active'),
-        sql`${a.id} != ${artifactId}`,
-      ),
-    );
+  // Single SQL query with CASE WHEN expressions for each scoring factor.
+  // Scoring is done entirely in the database to avoid loading all active
+  // artifacts into memory. The WHERE pre-filter ensures only candidates
+  // with score > 0 are returned (OR of all scoring conditions). SQL NULL
+  // semantics naturally handle NULL factor fields: `column = NULL` evaluates
+  // to NULL (not true), so no match — equivalent to the JS null guards.
+  const coMentionedArr = Array.from(coMentionedIds);
 
-  const related: RelatedArtifact[] = [];
+  // Build the co-mentioned SQL fragment. When the set is empty, use a
+  // literal `false` to avoid passing an empty array (postgres-js inlines
+  // empty arrays as invalid `()` syntax). For non-empty sets, construct
+  // a properly typed text[] using sql.join so each ID is a bound parameter.
+  const coMentionedAny =
+    coMentionedArr.length > 0
+      ? sql`a.id = ANY(ARRAY[${sql.join(
+          coMentionedArr.map((id) => sql`${id}`),
+          sql`, `,
+        )}]::text[])`
+      : sql`false`;
 
-  for (const r of rows) {
+  const rows = (await db.drizzle.execute(sql`
+    SELECT
+      a.id,
+      a.title,
+      a.type,
+      a.project_id,
+      a.folder_id,
+      a.created_by_agent_id,
+      a.last_edited_by_agent_id,
+      (CASE WHEN a.project_id = ${target.projectId} THEN 3 ELSE 0 END) +
+      (CASE WHEN a.folder_id = ${target.folderId} THEN 2 ELSE 0 END) +
+      (CASE WHEN a.created_by_agent_id = ${target.createdByAgentId}
+             OR a.last_edited_by_agent_id = ${target.lastEditedByAgentId}
+            THEN 2 ELSE 0 END) +
+      (CASE WHEN ${coMentionedAny} THEN 1 ELSE 0 END) AS score
+    FROM artifacts a
+    WHERE a.company_id = ${companyId}
+      AND a.status = 'active'
+      AND a.id != ${artifactId}
+      AND (
+        a.project_id = ${target.projectId}
+        OR a.folder_id = ${target.folderId}
+        OR a.created_by_agent_id = ${target.createdByAgentId}
+        OR a.last_edited_by_agent_id = ${target.lastEditedByAgentId}
+        OR ${coMentionedAny}
+      )
+    ORDER BY score DESC, a.title ASC
+    LIMIT ${RELATED_LIMIT}
+  `)) as unknown as Array<{
+    id: string;
+    title: string;
+    type: string;
+    project_id: string | null;
+    folder_id: string | null;
+    created_by_agent_id: string | null;
+    last_edited_by_agent_id: string | null;
+    score: number;
+  }>;
+
+  // Build reasons array in JS from the returned rows. Reasons appear in
+  // deterministic order: same-project, shared-folder, agent-edited, co-mentioned.
+  return rows.map((r) => {
     const reasons: string[] = [];
-    let score = 0;
 
     // Same project: +3
-    if (
-      target.projectId !== null &&
-      r.projectId !== null &&
-      r.projectId === target.projectId
-    ) {
-      score += 3;
+    if (target.projectId !== null && r.project_id !== null && r.project_id === target.projectId) {
       reasons.push('Same project');
     }
 
     // Same folder: +2
-    if (
-      target.folderId !== null &&
-      r.folderId !== null &&
-      r.folderId === target.folderId
-    ) {
-      score += 2;
+    if (target.folderId !== null && r.folder_id !== null && r.folder_id === target.folderId) {
       reasons.push('Shared folder');
     }
 
-    // Shared agent edits: +2 (same createdByAgentId or lastEditedByAgentId)
+    // Shared agent edits: +2 (no double-count — single CASE WHEN with OR)
     const sharedAgent =
       (target.createdByAgentId !== null &&
-        r.createdByAgentId !== null &&
-        r.createdByAgentId === target.createdByAgentId) ||
+        r.created_by_agent_id !== null &&
+        r.created_by_agent_id === target.createdByAgentId) ||
       (target.lastEditedByAgentId !== null &&
-        r.lastEditedByAgentId !== null &&
-        r.lastEditedByAgentId === target.lastEditedByAgentId);
+        r.last_edited_by_agent_id !== null &&
+        r.last_edited_by_agent_id === target.lastEditedByAgentId);
     if (sharedAgent) {
-      score += 2;
       reasons.push('Agent edited');
     }
 
     // Co-mentioned: +1
     if (coMentionedIds.has(r.id)) {
-      score += 1;
       reasons.push('Co-mentioned');
     }
 
-    if (score > 0) {
-      related.push({
-        artifactId: r.id,
-        title: r.title,
-        type: r.type as RelatedArtifact['type'],
-        score,
-        reasons,
-        projectId: r.projectId,
-        folderId: r.folderId,
-      });
-    }
-  }
-
-  // Sort by score descending, tie-break by title for determinism.
-  related.sort((a, b) => b.score - a.score || (a.title < b.title ? -1 : 1));
-
-  return related.slice(0, RELATED_LIMIT);
+    return {
+      artifactId: r.id,
+      title: r.title,
+      type: r.type as RelatedArtifact['type'],
+      score: r.score,
+      reasons,
+      projectId: r.project_id,
+      folderId: r.folder_id,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -424,11 +415,7 @@ export async function getLinks(
   },
 ): Promise<LinksResponse> {
   // linkedFrom + co-mentioned artifact IDs (single GIN-indexed query).
-  const { linkedFrom, coMentionedIds } = await getLinkedFrom(
-    db,
-    companyId,
-    artifactId,
-  );
+  const { linkedFrom, coMentionedIds } = await getLinkedFrom(db, companyId, artifactId);
 
   // linkedTo + related can run in parallel (both depend on coMentionedIds
   // but not on each other).
