@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "exclude": ["exports", "types", "duplicates"],
+  "ignoreBinaries": ["supabase"],
+  "ignoreFiles": [
+    "api/**/*.js",
+    "packages/desktop/forge.config.cjs",
+    "packages/desktop/src/preload.cjs",
+    "server/src/services/orchestrator.ts",
+    "ui/src/components/dashboard/StatCard.tsx",
+    "ui/src/components/ui/AnimatedList.tsx"
+  ],
+  "ignoreDependencies": [
+    "@eidolon/shared",
+    "better-auth",
+    "concurrently",
+    "fs-xattr",
+    "macos-alias",
+    "node-gyp",
+    "pino-pretty",
+    "uuid",
+    "@types/express-serve-static-core",
+    "@types/uuid",
+    "@electron-forge/maker-dmg"
+  ]
+}

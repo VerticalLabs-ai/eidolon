@@ -1,0 +1,73 @@
+name: Build and test performance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '42 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Measure build and test durations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Measure quality gates
+        shell: bash
+        run: |
+          set +e
+          printf 'command,status,duration_seconds\n' > performance.csv
+          overall=0
+
+          measure() {
+            local label="$1"
+            shift
+            local started ended status
+            started="$(date +%s)"
+            "$@"
+            status=$?
+            ended="$(date +%s)"
+            printf '%s,%s,%s\n' "$label" "$status" "$((ended - started))" >> performance.csv
+            if [[ "$status" -ne 0 ]]; then
+              overall=1
+            fi
+          }
+
+          measure typecheck pnpm typecheck
+          measure tests pnpm test:run
+          measure build pnpm build
+          exit "$overall"
+
+      - name: Publish performance summary
+        if: always()
+        run: |
+          {
+            echo "## Build and test performance"
+            echo
+            echo '```csv'
+            cat performance.csv
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload performance measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-test-performance-${{ github.run_id }}
+          path: performance.csv
+          retention-days: 90

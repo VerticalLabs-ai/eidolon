@@ -59,12 +59,19 @@ import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
 import { mfaRouter, stepUpRouter } from './routes/mfa.js';
 import { securityMembersRouter } from './routes/security-members.js';
 import { securityAdminRouter } from './routes/security-admin.js';
+import {
+  metricsRouter,
+  requestIdMiddleware,
+  requestMetricsMiddleware,
+} from './middleware/observability.js';
+import { initializeErrorTracking } from './utils/error-tracking.js';
 import type { DbInstance } from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp(db: DbInstance): express.Express {
   const app = express();
+  initializeErrorTracking();
   const { requireAuth, requireOrgMember } = createAuthMiddleware({ db });
   const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
     requireAuth,
@@ -73,7 +80,7 @@ export function createApp(db: DbInstance): express.Express {
 
   // Vercel overwrites forwarded IP headers before invoking the function.
   // Trust only that single proxy hop; direct/self-hosted deployments stay untrusted.
-  if (process.env.VERCEL === '1') app.set('trust proxy', 1);
+  if (process.env.VERCEL === '1') {app.set('trust proxy', 1);}
 
   // ---------------------------------------------------------------------------
   // CORS (must come before everything so preflight OPTIONS work)
@@ -98,6 +105,10 @@ export function createApp(db: DbInstance): express.Express {
   // Parse JSON bodies (Express 5 built-in)
   app.use(express.json({ limit: '2mb' }));
 
+  // Correlate responses and metrics with a bounded request identifier.
+  app.use(requestIdMiddleware);
+  app.use(requestMetricsMiddleware);
+
   // Broad rate-limit for everything under /api (skipped in test + local_trusted)
   app.use('/api', apiRateLimit);
 
@@ -116,6 +127,10 @@ export function createApp(db: DbInstance): express.Express {
           return (req as any).url === '/api/health';
         },
       },
+      customProps: (req) => ({
+        requestId: (req as any).requestId,
+        traceId: (req as any).traceId,
+      }),
       serializers: {
         req: (req) => ({
           method: req.method,
@@ -134,6 +149,7 @@ export function createApp(db: DbInstance): express.Express {
 
   // Public endpoints (no auth required)
   app.use('/api', healthRouter);
+  app.use('/api', metricsRouter());
 
   // Local-trusted test user creation (guarded to AUTH_MODE=local_trusted
   // inside the route handler; returns 404 otherwise). Available without
@@ -185,60 +201,174 @@ export function createApp(db: DbInstance): express.Express {
 
   // Company-scoped routes (require auth + org membership)
   app.use('/api/companies/:companyId/agents', requireAuth, requireOrgMember(), agentsRouter(db));
-  app.use('/api/companies/:companyId/org-chart', requireAuth, requireOrgMember(), orgChartRouter(db));
-  app.use('/api/companies/:companyId/projects', requireAuth, requireOrgMember(), projectsRouter(db));
-  app.use('/api/companies/:companyId/projects/:projectId/threads', requireAuth, requireOrgMember(), projectThreadsRouter(db));
-  app.use('/api/companies/:companyId/projects/:projectId/meetings', requireAuth, requireOrgMember(), meetingsRouter(db));
-  app.use('/api/companies/:companyId/projects/:projectId/plans', requireAuth, requireOrgMember(), projectPlansRouter(db));
-  app.use('/api/companies/:companyId/projects/:projectId/decisions', requireAuth, requireOrgMember(), projectDecisionsRouter(db));
-  app.use('/api/companies/:companyId/projects/:projectId/outcomes', requireAuth, requireOrgMember(), projectOutcomesRouter(db));
+  app.use(
+    '/api/companies/:companyId/org-chart',
+    requireAuth,
+    requireOrgMember(),
+    orgChartRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/projects',
+    requireAuth,
+    requireOrgMember(),
+    projectsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/projects/:projectId/threads',
+    requireAuth,
+    requireOrgMember(),
+    projectThreadsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/projects/:projectId/meetings',
+    requireAuth,
+    requireOrgMember(),
+    meetingsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/projects/:projectId/plans',
+    requireAuth,
+    requireOrgMember(),
+    projectPlansRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/projects/:projectId/decisions',
+    requireAuth,
+    requireOrgMember(),
+    projectDecisionsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/projects/:projectId/outcomes',
+    requireAuth,
+    requireOrgMember(),
+    projectOutcomesRouter(db),
+  );
   app.use('/api/companies/:companyId/tasks', requireAuth, requireOrgMember(), tasksRouter(db));
   app.use('/api/companies/:companyId/goals', requireAuth, requireOrgMember(), goalsRouter(db));
-  app.use('/api/companies/:companyId/messages', requireAuth, requireOrgMember(), messagesRouter(db));
-  app.use('/api/companies/:companyId/analytics', requireAuth, requireOrgMember(), analyticsRouter(db));
-  app.use('/api/companies/:companyId/workflows', requireAuth, requireOrgMember(), workflowsRouter(db));
-  app.use('/api/companies/:companyId/activity', requireAuth, requireOrgMember(), activityRouter(db));
-  app.use('/api/companies/:companyId/secrets', requireAuth, requireOrgMember('admin'), secretsRouter(db));
+  app.use(
+    '/api/companies/:companyId/messages',
+    requireAuth,
+    requireOrgMember(),
+    messagesRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/analytics',
+    requireAuth,
+    requireOrgMember(),
+    analyticsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/workflows',
+    requireAuth,
+    requireOrgMember(),
+    workflowsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/activity',
+    requireAuth,
+    requireOrgMember(),
+    activityRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/secrets',
+    requireAuth,
+    requireOrgMember('admin'),
+    secretsRouter(db),
+  );
   app.use('/api/companies/:companyId/chat', requireAuth, requireOrgMember(), chatRouter(db));
 
   // Knowledge base
-  app.use('/api/companies/:companyId/knowledge', requireAuth, requireOrgMember(), knowledgeRouter(db));
+  app.use(
+    '/api/companies/:companyId/knowledge',
+    requireAuth,
+    requireOrgMember(),
+    knowledgeRouter(db),
+  );
 
   // File manager
   app.use('/api/companies/:companyId/files', requireAuth, requireOrgMember(), filesRouter(db));
-  app.use('/api/companies/:companyId/agents/:agentId/files', requireAuth, requireOrgMember(), agentFilesRouter(db));
+  app.use(
+    '/api/companies/:companyId/agents/:agentId/files',
+    requireAuth,
+    requireOrgMember(),
+    agentFilesRouter(db),
+  );
 
   // Integrations
-  app.use('/api/companies/:companyId/integrations', requireAuth, requireOrgMember('admin'), integrationsRouter(db));
+  app.use(
+    '/api/companies/:companyId/integrations',
+    requireAuth,
+    requireOrgMember('admin'),
+    integrationsRouter(db),
+  );
 
   // Agent memories
-  app.use('/api/companies/:companyId/agents/:agentId/memories', requireAuth, requireOrgMember(), memoriesRouter(db));
-
+  app.use(
+    '/api/companies/:companyId/agents/:agentId/memories',
+    requireAuth,
+    requireOrgMember(),
+    memoriesRouter(db),
+  );
 
   // Agent evaluations & performance
-  app.use('/api/companies/:companyId/evaluations', requireAuth, requireOrgMember(), evaluationsRouter(db));
+  app.use(
+    '/api/companies/:companyId/evaluations',
+    requireAuth,
+    requireOrgMember(),
+    evaluationsRouter(db),
+  );
 
   // MCP (Model Context Protocol) servers and tools
   app.use('/api/companies/:companyId/mcp', requireAuth, requireOrgMember('admin'), mcpRouter(db));
 
   // Webhook management (admin only)
-  app.use('/api/companies/:companyId/webhooks', requireAuth, requireOrgMember('admin'), webhookManagementRouter(db));
+  app.use(
+    '/api/companies/:companyId/webhooks',
+    requireAuth,
+    requireOrgMember('admin'),
+    webhookManagementRouter(db),
+  );
 
   // Agent Collaboration Protocol
-  app.use('/api/companies/:companyId/collaborations', requireAuth, requireOrgMember(), collaborationsRouter(db));
-  app.use('/api/companies/:companyId/agents/:agentId/collaborations', requireAuth, requireOrgMember(), agentCollaborationsRouter(db));
+  app.use(
+    '/api/companies/:companyId/collaborations',
+    requireAuth,
+    requireOrgMember(),
+    collaborationsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/agents/:agentId/collaborations',
+    requireAuth,
+    requireOrgMember(),
+    agentCollaborationsRouter(db),
+  );
 
   // Company export (admin only)
-  app.use('/api/companies/:companyId/export', requireAuth, requireOrgMember('admin'), companyExportRouter(db));
+  app.use(
+    '/api/companies/:companyId/export',
+    requireAuth,
+    requireOrgMember('admin'),
+    companyExportRouter(db),
+  );
 
   // Approvals (any org member can create/comment; decide requires admin+)
-  app.use('/api/companies/:companyId/approvals', requireAuth, requireOrgMember(), approvalsRouter(db));
+  app.use(
+    '/api/companies/:companyId/approvals',
+    requireAuth,
+    requireOrgMember(),
+    approvalsRouter(db),
+  );
 
   // Unified inbox feed
   app.use('/api/companies/:companyId/inbox', requireAuth, requireOrgMember(), inboxRouter(db));
 
   // Mention search (company-scoped agents + teammates for the picker)
-  app.use('/api/companies/:companyId/mentions', requireAuth, requireOrgMember(), mentionsRouter(db));
+  app.use(
+    '/api/companies/:companyId/mentions',
+    requireAuth,
+    requireOrgMember(),
+    mentionsRouter(db),
+  );
 
   // Cross-artifact search (M1): FTS over artifacts + ILIKE on thread items +
   // tasks. Company-scoped. Mounted before the bare-path composite so the
@@ -249,20 +379,50 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies/:companyId/runtime', requireAuth, requireOrgMember(), runtimeRouter(db));
 
   // Durable runtime sessions, skills, and routines
-  app.use('/api/companies/:companyId/sessions', requireAuth, requireOrgMember('admin'), sessionsRouter(db));
-  app.use('/api/companies/:companyId/skills', requireAuth, requireOrgMember('admin'), skillsRouter(db));
-  app.use('/api/companies/:companyId/routines', requireAuth, requireOrgMember(), routinesRouter(db));
+  app.use(
+    '/api/companies/:companyId/sessions',
+    requireAuth,
+    requireOrgMember('admin'),
+    sessionsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/skills',
+    requireAuth,
+    requireOrgMember('admin'),
+    skillsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/routines',
+    requireAuth,
+    requireOrgMember(),
+    routinesRouter(db),
+  );
 
   // Unified automations surface (aggregates routines, workflows, webhooks)
-  app.use('/api/companies/:companyId/automations', requireAuth, requireOrgMember(), automationsRouter(db));
+  app.use(
+    '/api/companies/:companyId/automations',
+    requireAuth,
+    requireOrgMember(),
+    automationsRouter(db),
+  );
 
   // Meetings (M7): single-meeting operations (get/patch/transcript/summarize/
   // action-items/tasks/delete/archive). Mounted at the company level so a
   // meeting can be addressed by id regardless of whether it is project-scoped.
-  app.use('/api/companies/:companyId/meetings', requireAuth, requireOrgMember(), meetingItemRouter(db));
+  app.use(
+    '/api/companies/:companyId/meetings',
+    requireAuth,
+    requireOrgMember(),
+    meetingItemRouter(db),
+  );
 
   // Local execution environments
-  app.use('/api/companies/:companyId/environments', requireAuth, requireOrgMember('admin'), environmentsRouter(db));
+  app.use(
+    '/api/companies/:companyId/environments',
+    requireAuth,
+    requireOrgMember('admin'),
+    environmentsRouter(db),
+  );
 
   // ---------------------------------------------------------------------------
   // Company-scoped bare-path routers (MOUNTED LAST among company routes).

@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import type { Logger } from 'drizzle-orm/logger';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -29,6 +30,24 @@ if (!process.env.DATABASE_URL) {
     const parsed = dotenv.parse(readFileSync(envPath));
     if (parsed.DATABASE_URL) {
       process.env.DATABASE_URL = parsed.DATABASE_URL;
+    }
+  }
+}
+
+export class QueryCounter implements Logger {
+  private count = 0;
+
+  logQuery(): void {
+    this.count += 1;
+  }
+
+  reset(): void {
+    this.count = 0;
+  }
+
+  assertAtMost(limit: number): void {
+    if (this.count > limit) {
+      throw new Error(`Expected at most ${limit} database queries, received ${this.count}.`);
     }
   }
 }
@@ -71,9 +90,7 @@ function withDatabase(sourceUrl: string, dbName: string): string {
   try {
     parsed = new URL(sourceUrl);
   } catch {
-    throw new Error(
-      `withDatabase: DATABASE_URL is not a valid URL: ${sourceUrl}`,
-    );
+    throw new Error(`withDatabase: DATABASE_URL is not a valid URL: ${sourceUrl}`);
   }
   parsed.pathname = `/${dbName}`;
   return parsed.toString();
@@ -82,9 +99,7 @@ function withDatabase(sourceUrl: string, dbName: string): string {
 function getTestDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {
-    throw new Error(
-      'DATABASE_URL is not set. Ensure .env is present at the repo root.',
-    );
+    throw new Error('DATABASE_URL is not set. Ensure .env is present at the repo root.');
   }
   const mgmtUrl = withDatabase(url, 'eidolon_test');
   // Fail closed: the management database name MUST be exactly 'eidolon_test'.
@@ -120,37 +135,32 @@ function restoreDateSerializers(client: ReturnType<typeof postgres>): void {
  */
 function wrapExecute(drizzleDb: ReturnType<typeof drizzle>): void {
   const originalExecute = drizzleDb.execute.bind(drizzleDb);
-  (drizzleDb as unknown as { execute: (query: unknown) => unknown }).execute =
-    function (query: unknown) {
-      const raw = originalExecute(query as never) as {
-        then: (
-          onFulfilled?: (value: unknown) => unknown,
-          onRejected?: (reason: unknown) => unknown,
-        ) => Promise<unknown>;
-      };
-      const originalThen = raw.then.bind(raw);
-      raw.then = (
+  (drizzleDb as unknown as { execute: (query: unknown) => unknown }).execute = function (
+    query: unknown,
+  ) {
+    const raw = originalExecute(query as never) as {
+      then: (
         onFulfilled?: (value: unknown) => unknown,
         onRejected?: (reason: unknown) => unknown,
-      ) =>
-        originalThen(
-          (result: unknown) => {
-            if (
-              Array.isArray(result) &&
-              (result as { rows?: unknown }).rows === undefined
-            ) {
-              Object.defineProperty(result, 'rows', {
-                value: result,
-                enumerable: false,
-                configurable: true,
-              });
-            }
-            return onFulfilled ? onFulfilled(result) : result;
-          },
-          onRejected,
-        );
-      return raw;
+      ) => Promise<unknown>;
     };
+    const originalThen = raw.then.bind(raw);
+    raw.then = (
+      onFulfilled?: (value: unknown) => unknown,
+      onRejected?: (reason: unknown) => unknown,
+    ) =>
+      originalThen((result: unknown) => {
+        if (Array.isArray(result) && (result as { rows?: unknown }).rows === undefined) {
+          Object.defineProperty(result, 'rows', {
+            value: result,
+            enumerable: false,
+            configurable: true,
+          });
+        }
+        return onFulfilled ? onFulfilled(result) : result;
+      }, onRejected);
+    return raw;
+  };
 }
 
 /**
@@ -160,9 +170,7 @@ function wrapExecute(drizzleDb: ReturnType<typeof drizzle>): void {
  * already present. The template is marked IS_TEMPLATE=true,
  * ALLOW_CONNECTIONS=false so it can be cloned without interference.
  */
-async function ensureTemplateDatabase(
-  mgmtClient: ReturnType<typeof postgres>,
-): Promise<void> {
+async function ensureTemplateDatabase(mgmtClient: ReturnType<typeof postgres>): Promise<void> {
   // Advisory lock prevents concurrent template creation across forks.
   await mgmtClient.unsafe('SELECT pg_advisory_lock(778899)');
   try {
@@ -205,7 +213,7 @@ async function ensureTemplateDatabase(
  * CASCADE`. Excludes `__drizzle_migrations` so the migrator doesn't re-run.
  */
 async function resetTestDb(): Promise<void> {
-  if (!_client) return;
+  if (!_client) {return;}
 
   const rows = await _client`
     SELECT tablename
@@ -216,7 +224,7 @@ async function resetTestDb(): Promise<void> {
   `;
 
   const tables = rows.map((row) => row.tablename as string);
-  if (tables.length === 0) return;
+  if (tables.length === 0) {return;}
 
   const tableList = tables.map((t) => `"public"."${t}"`).join(', ');
   const statement = `TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`;
@@ -233,7 +241,7 @@ async function resetTestDb(): Promise<void> {
     } catch (error) {
       const code = (error as { code?: string }).code;
       const transient = code === DEADLOCK_DETECTED || code === LOCK_NOT_AVAILABLE;
-      if (!transient || attempt >= TRUNCATE_MAX_RETRIES) throw error;
+      if (!transient || attempt >= TRUNCATE_MAX_RETRIES) {throw error;}
       await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
     }
   }
@@ -247,7 +255,7 @@ async function resetTestDb(): Promise<void> {
  * stores the result, and subsequent calls TRUNCATE all public-schema tables
  * (a fast reset, ~5-20ms) and return the same `DbInstance`.
  */
-export async function createTestDb(): Promise<DbInstance> {
+export async function createTestDb(queryLogger?: Logger): Promise<DbInstance> {
   if (_dbInstance && _client) {
     await resetTestDb();
     return _dbInstance;
@@ -263,9 +271,7 @@ export async function createTestDb(): Promise<DbInstance> {
   await ensureTemplateDatabase(mgmtClient);
 
   // Clone the template — much faster than running 18 migrations.
-  await mgmtClient.unsafe(
-    `CREATE DATABASE "${testDbName}" TEMPLATE "${TEMPLATE_DB}"`,
-  );
+  await mgmtClient.unsafe(`CREATE DATABASE "${testDbName}" TEMPLATE "${TEMPLATE_DB}"`);
 
   // Test client — connects to the per-file database.
   const testUrl = withDatabase(baseUrl, testDbName);
@@ -277,7 +283,7 @@ export async function createTestDb(): Promise<DbInstance> {
   });
 
   try {
-    const drizzleDb = drizzle(client);
+    const drizzleDb = queryLogger ? drizzle(client, { logger: queryLogger }) : drizzle(client);
     restoreDateSerializers(client);
     wrapExecute(drizzleDb);
 
@@ -290,9 +296,7 @@ export async function createTestDb(): Promise<DbInstance> {
     return instance;
   } catch (error) {
     await client.end();
-    await mgmtClient.unsafe(
-      `DROP DATABASE IF EXISTS "${testDbName}" WITH (FORCE)`,
-    );
+    await mgmtClient.unsafe(`DROP DATABASE IF EXISTS "${testDbName}" WITH (FORCE)`);
     await mgmtClient.end();
     throw error;
   }
@@ -309,9 +313,7 @@ export async function closeTestDb(): Promise<void> {
     await _client.end();
   }
   if (_mgmtClient && _testDbName) {
-    await _mgmtClient.unsafe(
-      `DROP DATABASE IF EXISTS "${_testDbName}" WITH (FORCE)`,
-    );
+    await _mgmtClient.unsafe(`DROP DATABASE IF EXISTS "${_testDbName}" WITH (FORCE)`);
     await _mgmtClient.end();
   }
   _client = null;
