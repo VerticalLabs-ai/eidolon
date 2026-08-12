@@ -69,6 +69,14 @@ Eidolon now ships a typed artifact system that lets humans and agents co-author 
 - **Folders, templates, teams/RBAC** — A self-referential folder tree organizes artifacts. Project and artifact templates support one-click cloning. Teams carry per-resource RBAC with view/edit/manage permissions, inheritance, override, and a role hierarchy. `requireAdminRole` guards privilege-affecting routes.
 - **Meetings pipeline** — `meetings` and `meeting_tasks` tables back an Anthropic-grounded transcript summarizer. Action items are extracted as real tasks with bidirectional meeting↔task linkage, surfaced in a Meetings tab.
 
+## Artifact Intelligence & Discovery
+
+Eidolon now ships three intelligence and discovery features that make the artifact system searchable, comparable, and connected.
+
+- **Cross-Artifact Search** — Full-text search across all artifact types, threads, and tasks. Because artifact content is encrypted at rest, the index is built on app-maintained `search_text` columns backed by Postgres `tsvector`/`tsquery`. A search bar in the header (`Cmd`/`Ctrl`+`K`) returns instant dropdown results, and a full results page at `/company/:cid/search` provides filters (type, folder, author, date range), snippet highlighting, and pagination.
+- **Revision Diff Viewer** — Compare any two revisions of an artifact with type-specific diff logic. Document/Code/App use line-level diff. Sheet uses cell-level changes. Board uses card-level changes with move detection. Slides uses slide + block changes. Timeline uses task field changes. Gallery uses item changes. Dashboard uses widget + data source changes. Revision history offers a compare mode (select two revisions) and a diff modal. Endpoint: `GET /api/companies/:cid/artifacts/:id/revisions/:v1/diff/:v2`.
+- **Smart Artifact Linking** — Discover relationships between artifacts. "Linked From" shows thread items that @-mention this artifact via a GIN-indexed JSONB reverse lookup. "Related" shows scored artifacts by same project (+3), same folder (+2), shared agent edits (+2), and co-mentioned (+1). A links panel lives in the artifact editor sidebar, and @-mentions in thread content are now clickable links that navigate to the artifact editor.
+
 ## Enterprise Security
 
 Eidolon ships an enterprise security layer documented in [`SECURITY.md`](SECURITY.md).
