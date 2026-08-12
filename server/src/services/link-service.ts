@@ -138,8 +138,10 @@ async function getLinkedFrom(
       ti.mentions,
       COALESCE(pt.title, t.title, 'Thread item') AS thread_title
     FROM task_thread_items ti
-    LEFT JOIN project_threads pt ON ti.project_thread_id = pt.id
-    LEFT JOIN tasks t ON ti.task_id = t.id
+    LEFT JOIN project_threads pt
+      ON ti.project_thread_id = pt.id AND pt.company_id = ti.company_id
+    LEFT JOIN tasks t
+      ON ti.task_id = t.id AND t.company_id = ti.company_id
     WHERE ti.company_id = ${companyId}
       AND ti.mentions @> ${mentionFilter}::jsonb
     ORDER BY ti.created_at DESC
