@@ -218,9 +218,17 @@ async function getLinkedFrom(
     const artifactType = extractArtifactType(r.mentions, artifactId);
 
     // Build author object: only set userId or agentId, not both.
+    // In local_trusted AUTH_MODE the thread-items route always sets
+    // authorUserId (the dev user is always present) AND authorAgentId when
+    // an agent authored the item. The contract (VAL-LINK-005) requires only
+    // one of userId/agentId: agentId wins when present (agent-authored),
+    // otherwise userId (user-authored).
     const author: LinkRef['author'] = {};
-    if (r.author_user_id) author.userId = r.author_user_id;
-    if (r.author_agent_id) author.agentId = r.author_agent_id;
+    if (r.author_agent_id) {
+      author.agentId = r.author_agent_id;
+    } else if (r.author_user_id) {
+      author.userId = r.author_user_id;
+    }
 
     // Resolve human-readable author name.
     let authorName: string | undefined;

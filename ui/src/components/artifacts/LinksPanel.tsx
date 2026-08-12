@@ -109,16 +109,13 @@ export function LinksPanel({
 
   const navigateToArtifact = useCallback(
     (artifact: RelatedArtifact) => {
-      const base = `/company/${companyId}`;
-      if (artifact.projectId) {
-        navigate(
-          `${base}/projects/${artifact.projectId}?artifactId=${encodeURIComponent(artifact.artifactId)}`,
-        );
-      } else {
-        navigate(
-          `${base}/artifacts?artifactId=${encodeURIComponent(artifact.artifactId)}`,
-        );
-      }
+      // Always navigate to the artifact editor route. The project page does
+      // not render the artifact editor, so routing related artifacts through
+      // /projects/:projectId?artifactId=... would leave the user on the
+      // project page without the editor open (VAL-LINK-036).
+      navigate(
+        `/company/${companyId}/artifacts?artifactId=${encodeURIComponent(artifact.artifactId)}`,
+      );
     },
     [navigate, companyId],
   );

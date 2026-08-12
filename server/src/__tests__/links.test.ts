@@ -90,6 +90,7 @@ async function createThreadItem(
   opts: {
     content: string;
     mentions: Array<{ entityType: string; entityId: string; label: string; artifactType?: string }>;
+    authorAgentId?: string;
   },
 ): Promise<string> {
   const res = await request(app)
@@ -98,6 +99,7 @@ async function createThreadItem(
       kind: 'comment',
       content: opts.content,
       mentions: opts.mentions,
+      authorAgentId: opts.authorAgentId ?? null,
     })
     .expect(201);
   return res.body.data.id;
@@ -279,6 +281,33 @@ describe('Smart artifact linking API — VAL-LINK-001..027, 042..046', () => {
       const author = res.body.linkedFrom[0].author;
       expect(author).toBeDefined();
       expect(author.userId).toBeDefined();
+      // User-authored: agentId must NOT be set (only one of userId/agentId)
+      expect(author.agentId).toBeUndefined();
+    });
+
+    it('author reports agentId (and not userId) when authored by an agent', async () => {
+      const targetId = await createArtifact(app, companyId, {
+        title: '__mtest__ Author Agent Test',
+        projectId,
+      });
+      const threadId = await createThread(app, companyId, projectId, 'Agent Author Thread');
+      await createThreadItem(app, companyId, projectId, threadId, {
+        content: 'Agent-authored mention @__mtest__ Author Agent Test',
+        mentions: [{ entityType: 'artifact', entityId: targetId, label: '__mtest__ Author Agent Test' }],
+        authorAgentId: agentId,
+      });
+
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/artifacts/${targetId}/links`)
+        .expect(200);
+
+      const author = res.body.linkedFrom[0].author;
+      expect(author).toBeDefined();
+      // Agent-authored: agentId set, userId NOT set (contract: only one)
+      expect(author.agentId).toBe(agentId);
+      expect(author.userId).toBeUndefined();
+      // authorName should resolve to the agent's name
+      expect(res.body.linkedFrom[0].authorName).toBe('Links Agent');
     });
   });
 
