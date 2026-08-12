@@ -53,6 +53,7 @@ import { teamsRouter } from './routes/teams.js';
 import { permissionsRouter } from './routes/permissions.js';
 import { presenceRouter } from './routes/presence.js';
 import { mentionsRouter } from './routes/mentions.js';
+import { searchRouter } from './routes/search.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
 import { mfaRouter, stepUpRouter } from './routes/mfa.js';
 import { securityMembersRouter } from './routes/security-members.js';
@@ -228,6 +229,11 @@ export function createApp(db: DbInstance): express.Express {
 
   // Mention search (company-scoped agents + teammates for the picker)
   app.use('/api/companies/:companyId/mentions', requireAuth, requireOrgMember(), mentionsRouter(db));
+
+  // Cross-artifact search (M1): FTS over artifacts + ILIKE on thread items +
+  // tasks. Company-scoped. Mounted before the bare-path composite so the
+  // /search path is intercepted here, not by the artifacts sub-router.
+  app.use('/api/companies/:companyId/search', requireAuth, requireOrgMember(), searchRouter(db));
 
   // Company runtime snapshot
   app.use('/api/companies/:companyId/runtime', requireAuth, requireOrgMember(), runtimeRouter(db));

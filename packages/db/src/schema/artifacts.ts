@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -15,6 +16,35 @@ import { companies } from './companies.js';
 import { projects } from './projects.js';
 import { agents } from './agents.js';
 import { artifactFolders } from './artifact_folders.js';
+
+// ---------------------------------------------------------------------------
+// Full-text search support (M1 — Cross-Artifact Search)
+// ---------------------------------------------------------------------------
+// Artifact `content` is encrypted at rest (M8 VAL-SEC-004), so a SQL
+// `GENERATED` tsvector column over `content` would index ciphertext and be
+// useless for search. Instead the application layer decrypts the content,
+// extracts searchable text per artifact type, and maintains two columns:
+//
+//   • `search_text` — the plaintext extracted text (title + content text),
+//                     used by `ts_headline` to produce original-case snippets.
+//   • `search_tsv`  — a `tsvector` built with `setweight` (title weight A,
+//                     content text weight B), used for FTS matching +
+//                     `ts_rank` ranking. A GIN index makes `@@` fast.
+//
+// Both columns are populated on every artifact create/update by
+// `artifact-service.ts` (and the workspace-template clone path). Storing the
+// extracted text (a lossy flattened representation) rather than the full
+// structured `content` is the standard search-index tradeoff required by the
+// mission's content-search requirement; the structured `content` stays
+// encrypted.
+// ---------------------------------------------------------------------------
+
+/** Drizzle adapter for the Postgres `tsvector` column type. */
+const tsvector = customType<{ data: unknown }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 export const artifactTypeEnum = pgEnum('artifact_type', [
   'document',
@@ -44,6 +74,10 @@ export const artifacts = pgTable(
     title: text('title').notNull(),
     content: jsonb('content').notNull().default({}).$type<Record<string, unknown>>(),
     contentSchemaVersion: integer('content_schema_version').notNull().default(1),
+    // M1 search: plaintext extracted text (for ts_headline snippets). App-maintained.
+    searchText: text('search_text'),
+    // M1 search: tsvector (title weight A + content text weight B). App-maintained.
+    searchTsv: tsvector('search_tsv'),
     status: artifactStatusEnum('status').notNull().default('active'),
     createdByUserId: text('created_by_user_id'),
     createdByAgentId: text('created_by_agent_id').references(() => agents.id),
@@ -63,6 +97,8 @@ export const artifacts = pgTable(
     index('idx_artifacts_company_project').on(table.companyId, table.projectId),
     index('idx_artifacts_company_type').on(table.companyId, table.type),
     index('idx_artifacts_company_folder').on(table.companyId, table.folderId),
+    // GIN index for fast full-text search over the app-maintained tsvector.
+    index('idx_artifacts_search_tsv').using('gin', table.searchTsv),
     check('chk_artifacts_version_positive', sql`${table.version} > 0`),
     check('chk_artifacts_schema_version_positive', sql`${table.contentSchemaVersion} > 0`),
   ],

@@ -21,6 +21,7 @@ export * from './types/workspace-template.js';
 export * from './types/permission.js';
 export * from './types/meeting.js';
 export * from './types/mfa.js';
+export * from './types/search.js';
 export * from './coedit-ops.js';
 
 // Validators (re-exports schemas + common helpers) -----------------------
