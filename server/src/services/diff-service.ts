@@ -195,8 +195,8 @@ function diffSheet(
 ): { result: SheetDiffResult; summary: DiffSummary } {
   const fromColumns = (fromContent.columns as Array<{ id: string; key: string; width?: number }> | undefined) ?? [];
   const toColumns = (toContent.columns as Array<{ id: string; key: string; width?: number }> | undefined) ?? [];
-  const fromRows = (fromContent.rows as Array<{ id: string; cells: Record<string, { value: unknown }> }> | undefined) ?? [];
-  const toRows = (toContent.rows as Array<{ id: string; cells: Record<string, { value: unknown }> }> | undefined) ?? [];
+  const fromRows = (fromContent.rows as Array<{ id: string; cells: Record<string, { value: unknown; formula?: string }> }> | undefined) ?? [];
+  const toRows = (toContent.rows as Array<{ id: string; cells: Record<string, { value: unknown; formula?: string }> }> | undefined) ?? [];
 
   // Column changes
   const fromColMap = indexById(fromColumns);
@@ -252,10 +252,14 @@ function diffSheet(
       const allKeys = Array.from(new Set([...Object.keys(fromCells), ...Object.keys(toCells)]));
       const cellDeltas: SheetCellDelta[] = [];
       for (const key of allKeys) {
-        const fromVal = fromCells[key]?.value;
-        const toVal = toCells[key]?.value;
-        if (!jsonEqual(fromVal, toVal)) {
-          cellDeltas.push({ columnKey: key, from: fromVal, to: toVal });
+        const fromCell = fromCells[key];
+        const toCell = toCells[key];
+        const fromVal = fromCell?.value;
+        const toVal = toCell?.value;
+        const fromFormula = fromCell?.formula;
+        const toFormula = toCell?.formula;
+        if (!jsonEqual(fromVal, toVal) || fromFormula !== toFormula) {
+          cellDeltas.push({ columnKey: key, from: { value: fromVal, formula: fromFormula }, to: { value: toVal, formula: toFormula } });
         }
       }
       if (cellDeltas.length > 0) {
@@ -603,6 +607,9 @@ function diffFiles(
 ): { result: FileDiffResult; summary: DiffSummary } {
   const fromFiles = (fromContent.files as Array<{ path: string; content: string }> | undefined) ?? [];
   const toFiles = (toContent.files as Array<{ path: string; content: string }> | undefined) ?? [];
+  const metadataDeltas = ['definition', 'language', 'entrypoint']
+    .filter((field) => !jsonEqual(fromContent[field], toContent[field]))
+    .map((field) => ({ field, from: fromContent[field], to: toContent[field] }));
 
   const fromMap = new Map<string, { path: string; content: string }>();
   for (const f of fromFiles) fromMap.set(f.path, f);
@@ -641,10 +648,10 @@ function diffFiles(
 
   const additions = fileChanges.filter((f) => f.type === 'added').length + addedLines;
   const deletions = fileChanges.filter((f) => f.type === 'removed').length + removedLines;
-  const modifications = modifiedFileCount;
+  const modifications = modifiedFileCount + metadataDeltas.length;
 
   return {
-    result: { fileChanges },
+    result: { fileChanges, metadataDeltas },
     summary: { additions, deletions, modifications },
   };
 }

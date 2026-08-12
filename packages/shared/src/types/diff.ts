@@ -336,6 +336,11 @@ export type FileChange = z.infer<typeof FileChangeSchema>;
 
 export const FileDiffResultSchema = z.object({
   fileChanges: z.array(FileChangeSchema),
+  metadataDeltas: z.array(z.object({
+    field: z.string(),
+    from: z.unknown(),
+    to: z.unknown(),
+  })).default([]),
 });
 export type FileDiffResult = z.infer<typeof FileDiffResultSchema>;
 
