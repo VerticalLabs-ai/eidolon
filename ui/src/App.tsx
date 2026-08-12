@@ -30,6 +30,7 @@ import { CompanySettings } from "@/pages/CompanySettings";
 import { Templates } from "@/pages/Templates";
 import { Approvals } from "@/pages/Approvals";
 import { CompanyArtifacts } from "@/pages/CompanyArtifacts";
+import { SearchResults } from "@/pages/SearchResults";
 import { MeetingDetail } from "@/pages/MeetingDetail";
 import { TeamsPage } from "@/pages/TeamsPage";
 import { SecuritySettings } from "@/pages/SecuritySettings";
@@ -127,6 +128,7 @@ const router = createBrowserRouter(
         <Route path="integrations" element={<Integrations />} />
         <Route path="approvals" element={<Approvals />} />
         <Route path="artifacts" element={<CompanyArtifacts />} />
+        <Route path="search" element={<SearchResults />} />
         <Route path="teams" element={<TeamsPage />} />
         <Route path="security" element={<SecuritySettings />} />
         <Route path="settings" element={<CompanySettings />} />

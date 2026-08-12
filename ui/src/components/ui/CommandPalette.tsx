@@ -43,9 +43,13 @@ export function CommandPalette() {
   const { data: tasks } = useTasks(companyId);
   const base = `/company/${companyId}`;
 
+  // The global Cmd/Ctrl+K shortcut is owned by the header SearchBar (M1
+  // cross-artifact search, VAL-SEARCH-041), which focuses the search input.
+  // The CommandPalette is opened via the "Commands" affordance below; it no
+  // longer binds Cmd+K to avoid a conflicting global listener.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         setOpen((prev) => !prev);
       }

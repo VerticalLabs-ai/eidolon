@@ -1,5 +1,5 @@
 // Eidolon hooks — v2 with projects, delete, toasts
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import {
   useQuery,
   useQueries,
@@ -318,6 +318,60 @@ export function useMentionSearch(companyId: string | undefined, query: string) {
       unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, query)),
     enabled: !!companyId,
     staleTime: 10_000,
+  });
+}
+
+// ── Cross-Artifact Search (M1) ────────────────────────────────────────────
+
+/**
+ * Debounced cross-artifact search via TanStack Query. The query is only
+ * sent to the server after `query` has been stable for `debounceMs`
+ * (default 300ms), preventing request spam while typing (VAL-SEARCH-046).
+ * Returns previous results while a new query is in flight so the dropdown
+ * stays populated during typing.
+ */
+export function useSearch(
+  companyId: string | undefined,
+  query: string,
+  filters?: api.SearchFilters,
+  debounceMs = 300,
+) {
+  // Local debounce: only advance the debounced query when it has been stable
+  // for the configured window. This avoids firing a request per keystroke.
+  const [debounced, setDebounced] = useState(query);
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebounced(query), debounceMs);
+    return () => window.clearTimeout(handle);
+  }, [query, debounceMs]);
+
+  const trimmed = debounced.trim();
+  const enabled = !!companyId && trimmed.length >= 2;
+
+  return useQuery({
+    queryKey: ["search", companyId, trimmed, filters ?? {}],
+    queryFn: async () =>
+      api.searchCompany(companyId!, trimmed, filters),
+    enabled,
+    staleTime: 15_000,
+    placeholderData: (prev) => prev,
+    retry: 1,
+  });
+}
+
+/**
+ * Fetch mentionable entities (agents + teammates) with an empty query to
+ * populate the author filter dropdown on the search results page. Returns
+ * only user entities (artifact authors are users; the search `authorId`
+ * filter maps to `created_by_user_id`).
+ */
+export function useSearchAuthors(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["search-authors", companyId],
+    queryFn: async () =>
+      unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, "")),
+    enabled: !!companyId,
+    staleTime: 60_000,
+    select: (entities) => entities.filter((e) => e.entityType === "user"),
   });
 }
 

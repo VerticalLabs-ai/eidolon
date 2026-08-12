@@ -817,6 +817,58 @@ export const searchMentions = (companyId: string, query: string) => {
   );
 };
 
+// ── Cross-Artifact Search (M1) ────────────────────────────────────────────
+
+export type SearchEntityType = "artifact" | "thread_item" | "task";
+
+export interface SearchResult {
+  entityType: SearchEntityType;
+  entityId: string;
+  title: string;
+  snippet: string;
+  rank: number;
+  artifactType?: ArtifactType;
+  projectId?: string | null;
+  folderId?: string | null;
+  status?: string;
+  // Thread-item navigation context.
+  taskId?: string | null;
+  projectThreadId?: string | null;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  total: number;
+  query: string;
+}
+
+export interface SearchFilters {
+  type?: string;
+  folderId?: string;
+  authorId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  includeArchived?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export const searchCompany = (companyId: string, query: string, filters?: SearchFilters) => {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.folderId) params.set("folderId", filters.folderId);
+  if (filters?.authorId) params.set("authorId", filters.authorId);
+  if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);
+  if (filters?.dateTo) params.set("dateTo", filters.dateTo);
+  if (filters?.includeArchived) params.set("includeArchived", "true");
+  if (filters?.limit != null) params.set("limit", String(filters.limit));
+  if (filters?.offset != null) params.set("offset", String(filters.offset));
+  return request<SearchResponse>(
+    `/companies/${companyId}/search?${params.toString()}`,
+  );
+};
+
 // ── Project Plans ────────────────────────────────────────────────────────
 
 export const getProjectPlans = (

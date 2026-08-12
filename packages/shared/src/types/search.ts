@@ -44,6 +44,11 @@ export const SearchResultSchema = z.object({
   folderId: z.string().nullable().optional(),
   // Task-only: the task's current status (e.g. 'todo', 'in_progress', 'done').
   status: z.string().optional(),
+  // Thread-item-only navigation context. A thread item belongs to either a
+  // task thread (taskId set) or a project thread (projectThreadId + projectId
+  // set). The UI uses these to link a thread-item result to its thread.
+  taskId: z.string().nullable().optional(),
+  projectThreadId: z.string().nullable().optional(),
 });
 export type SearchResult = z.infer<typeof SearchResultSchema>;
 

@@ -176,6 +176,9 @@ interface ThreadItemHit {
   content: string | null;
   title: string | null;
   created_at: Date;
+  task_id: string | null;
+  project_thread_id: string | null;
+  project_id: string | null;
 }
 
 async function searchThreadItems(
@@ -197,7 +200,10 @@ async function searchThreadItems(
       ti.id,
       ti.content,
       COALESCE(pt.title, t.title, 'Thread item') AS title,
-      ti.created_at
+      ti.created_at,
+      ti.task_id,
+      ti.project_thread_id,
+      ti.project_id
     FROM task_thread_items ti
     LEFT JOIN project_threads pt ON ti.project_thread_id = pt.id
     LEFT JOIN tasks t ON ti.task_id = t.id
@@ -281,10 +287,21 @@ export async function search(
   // to fill the requested page after sorting + slicing.
   const cap = (input.limit + input.offset) * SOURCE_CAP_MULTIPLIER + 5;
 
+  // The `type` filter is artifact-specific (thread items and tasks have no
+  // artifact type). When it is set, skip the non-artifact sources so the
+  // result list contains only artifacts of the requested type
+  // (VAL-SEARCH-055). The folder and author filters are likewise
+  // artifact-only, so non-artifact sources are skipped when either is set.
+  const skipNonArtifacts = !!(input.type || input.folderId || input.authorId);
+
   const [artifactResult, threadResult, taskResult] = await Promise.all([
     searchArtifacts(db, input, cap),
-    searchThreadItems(db, input, cap),
-    searchTasks(db, input, cap),
+    skipNonArtifacts
+      ? Promise.resolve({ hits: [], total: 0 })
+      : searchThreadItems(db, input, cap),
+    skipNonArtifacts
+      ? Promise.resolve({ hits: [], total: 0 })
+      : searchTasks(db, input, cap),
   ]);
 
   // Convert artifact hits → SearchResult.
@@ -306,6 +323,9 @@ export async function search(
     title: h.title ?? 'Thread item',
     snippet: buildSnippet(h.content ?? '', input.query),
     rank: recencyRank(h.created_at, 0.1),
+    taskId: h.task_id,
+    projectThreadId: h.project_thread_id,
+    projectId: h.project_id,
   }));
 
   // Convert task hits → SearchResult.

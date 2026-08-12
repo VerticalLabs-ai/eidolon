@@ -8,6 +8,7 @@ import { useWebSocket } from "@/lib/ws";
 import { useEventToasts } from "@/lib/toasts";
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { CommandPalette } from "@/components/ui/CommandPalette";
+import { SearchBar } from "@/components/search/SearchBar";
 import { ProjectCreationProvider } from "@/components/projects/ProjectCreationProvider";
 import { CompanySwitchDialog } from "@/components/artifacts/CompanySwitchDialog";
 import { getDirtyEditorGuard } from "@/lib/dirty-editor";
@@ -181,6 +182,9 @@ export function AppShell() {
               <h1 className="text-sm font-semibold text-text-primary font-display">
                 {company?.name || "Loading..."}
               </h1>
+            </div>
+            <div className="flex flex-1 items-center justify-center px-4 sm:px-8">
+              <SearchBar />
             </div>
             <div className="flex items-center gap-3">
               <StatusIndicator
