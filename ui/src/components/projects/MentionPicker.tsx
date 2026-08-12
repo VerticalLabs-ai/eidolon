@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Bot, User, FileText } from "lucide-react";
 import { useMentionSearch } from "@/lib/hooks";
 import type { MentionableEntity } from "@/lib/api";
@@ -193,30 +194,62 @@ export function MentionPicker({
 }
 
 // ---------------------------------------------------------------------------
-// Mention chip — rendered in the composer and thread items
+// Mention chip — rendered inline in thread item content and the composer.
+// Artifact mentions are clickable Links that navigate to the artifact editor;
+// agent/user mentions remain non-clickable spans.
 // ---------------------------------------------------------------------------
 
 export function MentionChip({
   entityType,
   label,
+  companyId,
+  entityId,
 }: {
   entityType: "agent" | "user" | "artifact";
   label: string;
+  /** When provided for artifact mentions, the chip renders as a clickable
+   * Link to the artifact editor. */
+  companyId?: string;
+  entityId?: string;
 }) {
+  const icon =
+    entityType === "agent" ? (
+      <Bot className="h-3 w-3" aria-hidden="true" />
+    ) : entityType === "user" ? (
+      <User className="h-3 w-3" aria-hidden="true" />
+    ) : (
+      <FileText className="h-3 w-3" aria-hidden="true" />
+    );
+
+  const inner = (
+    <>
+      {icon}
+      {label}
+    </>
+  );
+
+  // Artifact mentions with navigation context render as clickable Links.
+  if (entityType === "artifact" && companyId && entityId) {
+    return (
+      <Link
+        to={`/company/${companyId}/artifacts?artifactId=${encodeURIComponent(entityId)}`}
+        className="inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20 hover:text-accent"
+        data-testid="mention-chip"
+        data-entity-type={entityType}
+        data-artifact-id={entityId}
+      >
+        {inner}
+      </Link>
+    );
+  }
+
   return (
     <span
       className="inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 py-0.5 text-xs font-medium text-accent"
       data-testid="mention-chip"
       data-entity-type={entityType}
     >
-      {entityType === "agent" ? (
-        <Bot className="h-3 w-3" aria-hidden="true" />
-      ) : entityType === "user" ? (
-        <User className="h-3 w-3" aria-hidden="true" />
-      ) : (
-        <FileText className="h-3 w-3" aria-hidden="true" />
-      )}
-      {label}
+      {inner}
     </span>
   );
 }

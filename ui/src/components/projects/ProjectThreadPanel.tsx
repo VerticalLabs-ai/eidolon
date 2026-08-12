@@ -15,6 +15,7 @@ import { Card } from "@/components/ui/Card";
 import { MentionPicker, MentionChip } from "./MentionPicker";
 import { ThreadArtifactCard } from "./ThreadArtifactCard";
 import { ThreadMeetingCard } from "./ThreadMeetingCard";
+import { renderMentionContent } from "@/lib/mention-render";
 import type { ProjectThreadItem, MentionableEntity } from "@/lib/api";
 
 function author(item: ProjectThreadItem) {
@@ -23,54 +24,6 @@ function author(item: ProjectThreadItem) {
 
 function isAgent(item: ProjectThreadItem) {
   return !!item.authorAgentId;
-}
-
-/** Render content with mention chips inline. Artifact mentions render as
- * inline ThreadArtifactCard references; agent/user mentions render as chips. */
-function renderContent(
-  content: string,
-  mentions: ProjectThreadItem["mentions"],
-  companyId: string,
-  projectId?: string | null,
-): React.ReactNode {
-  if (!mentions || mentions.length === 0) return content;
-
-  const artifactMentions = mentions.filter((m) => m.entityType === "artifact");
-  const chipMentions = mentions.filter((m) => m.entityType !== "artifact");
-
-  // First, render text with agent/user mention chips inline.
-  let textRendered: React.ReactNode = content;
-  if (chipMentions.length > 0) {
-    const labels = chipMentions.map((m) => m.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const regex = new RegExp(`(@(?:${labels.join("|")}))`, "g");
-    const parts = content.split(regex);
-    textRendered = parts.map((part, i) => {
-      const mention = chipMentions.find((m) => `@${m.label}` === part);
-      if (mention) {
-        return <MentionChip key={i} entityType={mention.entityType} label={mention.label} />;
-      }
-      return <span key={i}>{part}</span>;
-    });
-  }
-
-  // Append inline artifact cards for artifact mentions. They render after
-  // the message text as clickable ThreadArtifactCard references.
-  if (artifactMentions.length === 0) return textRendered;
-
-  return (
-    <span>
-      {textRendered}
-      {artifactMentions.map((m) => (
-        <ThreadArtifactCard
-          key={`artifact-mention-${m.entityId}`}
-          artifactId={m.entityId}
-          artifactType={m.artifactType ?? "document"}
-          companyId={companyId}
-          projectId={projectId}
-        />
-      ))}
-    </span>
-  );
 }
 
 function InteractionActions({
@@ -302,7 +255,7 @@ export function ProjectThreadPanel({
                     </div>
                     {item.content && (
                       <p className="mt-1.5 text-sm text-text-primary">
-                        {renderContent(item.content, item.mentions, companyId, item.projectId ?? projectId)}
+                        {renderMentionContent(item.content, item.mentions, companyId)}
                       </p>
                     )}
                     {/* Render artifact card(s) if the agent produced artifact(s) */}
