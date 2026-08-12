@@ -74,8 +74,6 @@ export const artifacts = pgTable(
     title: text('title').notNull(),
     content: jsonb('content').notNull().default({}).$type<Record<string, unknown>>(),
     contentSchemaVersion: integer('content_schema_version').notNull().default(1),
-    // M1 search: plaintext extracted text (for ts_headline snippets). App-maintained.
-    searchText: text('search_text'),
     // M1 search: tsvector (title weight A + content text weight B). App-maintained.
     searchTsv: tsvector('search_tsv'),
     status: artifactStatusEnum('status').notNull().default('active'),

@@ -13,7 +13,7 @@ import eventBus from '../realtime/events.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import { getArtifact } from './artifact-service.js';
 import { encryptContent, decryptContent } from './content-encryption.js';
-import { extractSearchText, buildSearchText, buildSearchTsvSql } from './search-text.js';
+import { extractSearchText, buildSearchTsvSql } from './search-text.js';
 import type { DbInstance } from '../types.js';
 
 type ArtifactType = z.infer<typeof ArtifactTypeSchema>;
@@ -289,7 +289,6 @@ export async function createProjectFromTemplate(
       // M1 search: populate the search index for cloned artifacts so they are
       // immediately searchable (artifact.content is already decrypted here).
       const cloneContentText = extractSearchText(artifact.type, artifact.content as Record<string, unknown>);
-      const cloneSearchText = buildSearchText(artifact.title, cloneContentText);
       const [created] = await tx.insert(artifacts).values({
         companyId,
         projectId,
@@ -297,7 +296,6 @@ export async function createProjectFromTemplate(
         type: artifact.type,
         title: artifact.title,
         content: clonedContent,
-        searchText: cloneSearchText,
         searchTsv: buildSearchTsvSql(artifact.title, cloneContentText),
         contentSchemaVersion: artifact.contentSchemaVersion,
         createdByUserId: userId,
@@ -494,7 +492,6 @@ export async function createArtifactFromTemplate(
     // M1 search: populate the search index for template-cloned artifacts so
     // they are immediately searchable (template.content is decrypted here).
     const cloneContentText = extractSearchText(template.type, template.content);
-    const cloneSearchText = buildSearchText(effectiveTitle, cloneContentText);
     const [artifact] = await tx.insert(artifacts).values({
       companyId,
       projectId: input.projectId ?? null,
@@ -502,7 +499,6 @@ export async function createArtifactFromTemplate(
       type: template.type,
       title: effectiveTitle,
       content: templatedContent,
-      searchText: cloneSearchText,
       searchTsv: buildSearchTsvSql(effectiveTitle, cloneContentText),
       contentSchemaVersion: template.contentSchemaVersion,
       createdByUserId: userId,
