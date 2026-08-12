@@ -1,0 +1,453 @@
+openapi: 3.0.3
+info:
+  title: Eidolon API
+  version: 1.0.0
+  description: |
+    REST API for managing AI companies, agents, projects, tasks, and runtime
+    operations. All company-scoped endpoints require an authenticated user
+    with membership in the requested company.
+servers:
+  - url: /
+    description: Current deployment
+tags:
+  - name: Health
+  - name: Adapters
+  - name: Companies
+  - name: Agents
+  - name: Projects
+  - name: Tasks
+  - name: Goals
+security:
+  - clerkCookie: []
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Read service health
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/adapters:
+    get:
+      tags: [Adapters]
+      summary: List available runtime adapters
+      security: []
+      responses:
+        '200':
+          description: Adapter registry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Adapter'
+  /api/companies:
+    get:
+      tags: [Companies]
+      summary: List companies visible to the current user
+      responses:
+        '200':
+          description: Companies
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Company'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Companies]
+      summary: Create a company
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCompanyRequest'
+      responses:
+        '201':
+          description: Company created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Company'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/companies/{companyId}:
+    parameters:
+      - $ref: '#/components/parameters/CompanyId'
+    get:
+      tags: [Companies]
+      summary: Get a company
+      responses:
+        '200':
+          description: Company
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Company'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Companies]
+      summary: Update a company
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCompanyRequest'
+      responses:
+        '200':
+          description: Company updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Company'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/companies/{companyId}/agents:
+    parameters:
+      - $ref: '#/components/parameters/CompanyId'
+    get:
+      tags: [Agents]
+      summary: List company agents
+      responses:
+        '200':
+          description: Agents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+    post:
+      tags: [Agents]
+      summary: Create an agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Agent'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+  /api/companies/{companyId}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/CompanyId'
+    get:
+      tags: [Tasks]
+      summary: List company tasks
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [todo, in_progress, blocked, done, cancelled]
+        - in: query
+          name: projectId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+  /api/companies/{companyId}/goals:
+    parameters:
+      - $ref: '#/components/parameters/CompanyId'
+    get:
+      tags: [Goals]
+      summary: List company goals
+      responses:
+        '200':
+          description: Goals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Goal'
+components:
+  securitySchemes:
+    clerkCookie:
+      type: apiKey
+      in: cookie
+      name: __session
+  parameters:
+    CompanyId:
+      name: companyId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Unauthorized:
+      description: Authentication is required
+    NotFound:
+      description: Resource was not found
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, uptime, timestamp, wsClients, memory]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        uptime:
+          type: number
+        timestamp:
+          type: string
+          format: date-time
+        wsClients:
+          type: integer
+        memory:
+          type: object
+          required: [rss, heapUsed]
+          properties:
+            rss:
+              type: integer
+            heapUsed:
+              type: integer
+    Adapter:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+    Company:
+      type: object
+      required: [id, name, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateCompanyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        budgetMonthlyCents:
+          type: integer
+          minimum: 0
+    UpdateCompanyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          nullable: true
+    Agent:
+      type: object
+      required: [id, companyId, name, provider, model]
+      properties:
+        id:
+          type: string
+          format: uuid
+        companyId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        status:
+          type: string
+    CreateAgentRequest:
+      type: object
+      required: [name, provider, model]
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        role:
+          type: string
+        instructions:
+          type: string
+    Task:
+      type: object
+      required: [id, companyId, title, status, priority]
+      properties:
+        id:
+          type: string
+          format: uuid
+        companyId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [todo, in_progress, blocked, done, cancelled]
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+    CreateTaskRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        projectId:
+          type: string
+          format: uuid
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+    Goal:
+      type: object
+      required: [id, companyId, title, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        companyId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string

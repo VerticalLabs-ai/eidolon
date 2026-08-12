@@ -1,0 +1,78 @@
+name: Sentry alert to issue
+
+on:
+  repository_dispatch:
+    types: [sentry-alert]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  create-issue:
+    name: Create a deduplicated Sentry issue
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or reuse GitHub issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const payload = context.payload.client_payload ?? {};
+            const sentryIssue = payload.issue ?? payload.data?.issue ?? {};
+            const shortId = String(
+              sentryIssue.shortId ?? sentryIssue.id ?? payload.shortId ?? 'unknown',
+            );
+            const rawTitle = sentryIssue.title ?? payload.title ?? 'Unclassified Sentry alert';
+            const title = `Sentry alert: ${String(rawTitle).slice(0, 180)}`;
+            const url = sentryIssue.web_url ?? sentryIssue.url ?? payload.url ?? '';
+
+            const openIssues = await github.paginate(
+              github.rest.issues.listForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 100,
+              },
+            );
+
+            if (openIssues.some((issue) => issue.body?.includes(`Sentry ID: ${shortId}`))) {
+              core.info(`An open issue already tracks Sentry ID ${shortId}.`);
+              return;
+            }
+
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'sentry',
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'sentry',
+                color: '6f42c1',
+                description: 'Created from Sentry error tracking',
+              });
+            }
+
+            const body = [
+              'Automated issue from Sentry.',
+              '',
+              `Sentry ID: ${shortId}`,
+              url ? `Sentry link: ${url}` : null,
+              '',
+              'Triage the error in Sentry before adding customer or request data here.',
+            ].filter(Boolean).join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['sentry'],
+            });

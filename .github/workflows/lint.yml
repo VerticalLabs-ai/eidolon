@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -24,7 +26,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: ".nvmrc"
+          node-version-file: '.nvmrc'
           cache: pnpm
 
       - name: Install dependencies
@@ -32,3 +34,12 @@ jobs:
 
       - name: Run ESLint
         run: pnpm lint
+
+      - name: Check formatting for changed files
+        run: pnpm format:changed
+
+      - name: Check duplicated code
+        run: pnpm duplication
+
+      - name: Check dead code and unused dependencies
+        run: pnpm dead-code

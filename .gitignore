@@ -55,6 +55,7 @@ yarn-error.log*
 *.db-shm
 /data/
 eidolon-data/
+/server/profiles/
 
 # -----------------------------------------------------------------------------
 # Tooling / IDE (un-ignore shared editor config if you add it later)

@@ -1,0 +1,45 @@
+name: Roll back Vercel production
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_url:
+        description: Vercel deployment URL for the last known-good production deployment
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll back production
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate deployment URL
+        env:
+          DEPLOYMENT_URL: ${{ inputs.deployment_url }}
+        run: |
+          case "$DEPLOYMENT_URL" in
+            https://eidolon-*.vercel.app|https://eidolon.verticallabs.ai)
+              ;;
+            *)
+              echo "::error::Deployment URL must be an Eidolon Vercel deployment or canonical production URL"
+              exit 1
+              ;;
+          esac
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Roll back production
+        env:
+          DEPLOYMENT_URL: ${{ inputs.deployment_url }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [[ -z "$VERCEL_TOKEN" ]]; then
+            echo "::error::VERCEL_TOKEN is not configured for the production environment"
+            exit 1
+          fi
+          vercel rollback "$DEPLOYMENT_URL" --token "$VERCEL_TOKEN" --yes

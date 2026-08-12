@@ -7,6 +7,8 @@ routing, branch/PR process, verification gates, and design standards for this re
 Copilot does not auto-read `AGENTS.md`, so the key rules are restated here:
 
 - **Never push directly to `main`.** Branch + PR per the workflow in `AGENTS.md`.
+- **Route Eidolon work to Linear team `EID`.** Historical `VER-*` references
+  are not valid routing for new work.
 - **Match the existing stack and conventions** — read `package.json`/`AGENTS.md`
   before introducing new libraries, patterns, or styling.
 - **Never hardcode or invent secrets/API keys.** Source them from `.env`.

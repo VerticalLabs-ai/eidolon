@@ -1,7 +1,8 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import logger from '../utils/logger.js';
 import eventBus from '../realtime/events.js';
 import type { DbInstance } from '../types.js';
+import { calculateBudgetStatus, type BudgetStatus } from './budget-status.js';
 
 /**
  * Budget enforcement service.
@@ -81,9 +82,7 @@ export class BudgetEnforcer {
     const triggeredAlerts: string[] = [];
 
     if (agent.budgetMonthlyCents > 0) {
-      const utilizationPct = Math.round(
-        (newSpent / agent.budgetMonthlyCents) * 100,
-      );
+      const utilizationPct = Math.round((newSpent / agent.budgetMonthlyCents) * 100);
 
       const alerts = await this.db.drizzle
         .select()
@@ -91,8 +90,8 @@ export class BudgetEnforcer {
         .where(eq(budgetAlerts.companyId, agent.companyId));
 
       for (const alert of alerts) {
-        if (alert.triggered) continue;
-        if (alert.agentId && alert.agentId !== agentId) continue;
+        if (alert.triggered) {continue;}
+        if (alert.agentId && alert.agentId !== agentId) {continue;}
 
         if (utilizationPct >= alert.thresholdPercent) {
           triggeredAlerts.push(
@@ -138,13 +137,7 @@ export class BudgetEnforcer {
   /**
    * Check remaining budget for an agent.
    */
-  async checkBudget(agentId: string): Promise<{
-    withinBudget: boolean;
-    budgetCents: number;
-    spentCents: number;
-    remainingCents: number;
-    utilizationPct: number;
-  } | null> {
+  async checkBudget(agentId: string): Promise<BudgetStatus | null> {
     const { agents } = this.db.schema;
 
     const [agent] = await this.db.drizzle
@@ -153,21 +146,11 @@ export class BudgetEnforcer {
       .where(eq(agents.id, agentId))
       .limit(1);
 
-    if (!agent) return null;
+    if (!agent) {
+      return null;
+    }
 
-    const remaining = agent.budgetMonthlyCents - agent.spentMonthlyCents;
-    const utilization =
-      agent.budgetMonthlyCents > 0
-        ? Math.round((agent.spentMonthlyCents / agent.budgetMonthlyCents) * 100)
-        : 0;
-
-    return {
-      withinBudget: remaining > 0 || agent.budgetMonthlyCents === 0,
-      budgetCents: agent.budgetMonthlyCents,
-      spentCents: agent.spentMonthlyCents,
-      remainingCents: Math.max(0, remaining),
-      utilizationPct: utilization,
-    };
+    return calculateBudgetStatus(agent.budgetMonthlyCents, agent.spentMonthlyCents);
   }
 
   /**
@@ -187,22 +170,15 @@ export class BudgetEnforcer {
       .returning();
 
     // Reset company-level spent counters
-    await this.db.drizzle
-      .update(companies)
-      .set({
-        spentMonthlyCents: 0,
-        updatedAt: now,
-      });
+    await this.db.drizzle.update(companies).set({
+      spentMonthlyCents: 0,
+      updatedAt: now,
+    });
 
     // Reset budget alert triggers
-    await this.db.drizzle
-      .update(budgetAlerts)
-      .set({ triggered: false, triggeredAt: null });
+    await this.db.drizzle.update(budgetAlerts).set({ triggered: false, triggeredAt: null });
 
-    logger.info(
-      { agentsReset: result.length },
-      'BudgetEnforcer: monthly budgets reset',
-    );
+    logger.info({ agentsReset: result.length }, 'BudgetEnforcer: monthly budgets reset');
 
     return result.length;
   }

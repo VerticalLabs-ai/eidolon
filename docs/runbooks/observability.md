@@ -49,17 +49,6 @@ automated alert delivery. Treat repeated health failures, elevated 5xx rates,
 or stuck runtime sessions as escalation triggers and follow the [incident
 runbook](incident.md).
 
-## Provider circuit breakers
-
-Cloud-provider chat calls share a per-provider circuit breaker. After five
-consecutive failures, Eidolon temporarily rejects new calls for 30 seconds,
-then permits one recovery probe. A successful probe closes the circuit.
-
-Operators can adjust `EIDOLON_PROVIDER_CIRCUIT_FAILURE_THRESHOLD` and
-`EIDOLON_PROVIDER_CIRCUIT_RESET_MS` for their provider reliability profile.
-Treat repeated open-circuit errors as a provider incident and follow the
-[incident runbook](incident.md).
-
 ## Profiling
 
 Build the server, start the representative workload, and run
