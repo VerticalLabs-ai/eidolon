@@ -37,8 +37,8 @@ function docContent(title, body) {
   return { format: 'markdown', body: body || `# ${title}\n\nInitial content for ${title}.` };
 }
 
-function artMention(aid, artifactType = 'document') {
-  return { entityType: 'artifact', entityId: aid, label: 'artifact', artifactType };
+function artMention(aid, label, artifactType = 'document') {
+  return { entityType: 'artifact', entityId: aid, label, artifactType };
 }
 
 async function main() {
@@ -145,14 +145,14 @@ async function main() {
   const item1 = await postId(`/api/companies/${cid}/projects/${pid}/threads/${thread1}/items`, {
     kind: 'comment',
     content: 'Reviewing the Cross Main Budget Plan for Q3. The forecast looks solid. @Cross Main Budget Plan needs approval before Friday.',
-    mentions: [artMention(mainId)],
+    mentions: [artMention(mainId, 'Cross Main Budget Plan')],
   });
   console.log(`item1=${item1}`);
 
   const item2 = await postId(`/api/companies/${cid}/projects/${pid}/threads/${thread1}/items`, {
     kind: 'comment',
     content: 'The Cross Related Roadmap aligns with the budget. @Cross Related Roadmap should be reviewed alongside @Cross Main Budget Plan.',
-    mentions: [artMention(relatedId), artMention(mainId)],
+    mentions: [artMention(relatedId, 'Cross Related Roadmap'), artMention(mainId, 'Cross Main Budget Plan')],
   }, { 'X-Eidolon-Agent-Id': agentId });
   console.log(`item2=${item2}`);
 
@@ -160,7 +160,7 @@ async function main() {
   const item3 = await postId(`/api/companies/${cid}/projects/${pid}/threads/${thread2}/items`, {
     kind: 'comment',
     content: 'Planning session for the budget. @Cross Main Budget Plan is the key document.',
-    mentions: [artMention(mainId)],
+    mentions: [artMention(mainId, 'Cross Main Budget Plan')],
   });
   console.log(`item3=${item3}`);
 
