@@ -35,7 +35,15 @@ const ARTIFACT_TYPE_LABELS: Record<string, string> = {
 export interface MentionDispatchContext {
   companyId: string;
   projectId: string | null;
-  threadId: string;
+  // projectThreadId — required for project-thread dispatch. When taskId is
+  // set instead, the dispatch operates in task-thread context (no
+  // projectThreadId needed). Exactly one of threadId or taskId should be
+  // set: project threads use threadId, task threads use taskId.
+  threadId: string | null;
+  // taskId — set when dispatching mentions in a task-thread context (POST
+  // /tasks/:taskId/thread/comments). When set, response/queue/failure items
+  // are linked to the task thread via taskId instead of projectThreadId.
+  taskId?: string | null;
   itemId: string;
   content: string;
   mentions: Mention[];
@@ -99,7 +107,7 @@ export class MentionService {
 
     for (const a of agentRows) {
       // Skip paused/offline agents — they cannot be dispatched
-      if (a.status === 'paused' || a.status === 'offline') continue;
+      if (a.status === 'paused' || a.status === 'offline') {continue;}
       results.push({
         entityType: 'agent',
         entityId: a.id,
@@ -130,7 +138,7 @@ export class MentionService {
     q: string,
     remaining: number,
   ): Promise<MentionableEntity[]> {
-    if (remaining <= 0) return [];
+    if (remaining <= 0) {return [];}
 
     // Query real company members via Clerk org membership (or the dev user
     // in local_trusted mode). Never hard-coded — always reflects actual
@@ -155,7 +163,7 @@ export class MentionService {
         label: m.name,
         subtitle: m.email ?? 'Teammate',
       });
-      if (entities.length >= remaining) break;
+      if (entities.length >= remaining) {break;}
     }
 
     // Also include test users created via the
@@ -187,7 +195,7 @@ export class MentionService {
           label: tu.name,
           subtitle: tu.email,
         });
-        if (entities.length >= remaining) break;
+        if (entities.length >= remaining) {break;}
       }
     }
 
@@ -205,13 +213,10 @@ export class MentionService {
     q: string,
     remaining: number,
   ): Promise<MentionableEntity[]> {
-    if (remaining <= 0) return [];
+    if (remaining <= 0) {return [];}
 
     const { artifacts } = this.db.schema;
-    const conditions = [
-      eq(artifacts.companyId, companyId),
-      eq(artifacts.status, 'active'),
-    ];
+    const conditions = [eq(artifacts.companyId, companyId), eq(artifacts.status, 'active')];
     if (q) {
       conditions.push(ilike(artifacts.title, `%${q}%`)!);
     }
@@ -307,12 +312,48 @@ export class MentionService {
   }
 
   // -------------------------------------------------------------------------
+  // Thread-context helpers: task threads use taskId (no projectThreadId),
+  // project threads use projectThreadId (no taskId). The check constraint on
+  // task_thread_items enforces exactly-one-not-null. These helpers keep the
+  // dispatch methods agnostic to which thread type they're operating in.
+  // -------------------------------------------------------------------------
+
+  private threadLinkage(ctx: MentionDispatchContext): {
+    taskId: string | null;
+    projectThreadId: string | null;
+  } {
+    if (ctx.taskId) {
+      return { taskId: ctx.taskId, projectThreadId: null };
+    }
+    return { taskId: null, projectThreadId: ctx.threadId };
+  }
+
+  private emitDispatchItemEvent(
+    ctx: MentionDispatchContext,
+    item: typeof this.db.schema.taskThreadItems.$inferSelect,
+  ): void {
+    if (ctx.taskId) {
+      eventBus.emitEvent({
+        type: 'task.commented',
+        companyId: ctx.companyId,
+        payload: { taskId: ctx.taskId, item },
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      eventBus.emitEvent({
+        type: 'project.thread.item.created',
+        companyId: ctx.companyId,
+        payload: { threadId: ctx.threadId, item },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Dispatch mentions after a thread item is posted
   // -------------------------------------------------------------------------
 
-  async dispatchMentions(
-    ctx: MentionDispatchContext,
-  ): Promise<MentionDispatchResult> {
+  async dispatchMentions(ctx: MentionDispatchContext): Promise<MentionDispatchResult> {
     const agentDispatches: MentionDispatchResult['agentDispatches'] = [];
     const userNotifications: MentionDispatchResult['userNotifications'] = [];
 
@@ -344,7 +385,12 @@ export class MentionService {
   private async dispatchAgentMention(
     ctx: MentionDispatchContext,
     mention: Mention,
-  ): Promise<{ agentId: string; status: 'dispatched' | 'queued' | 'skipped'; responseItemId?: string; error?: string }> {
+  ): Promise<{
+    agentId: string;
+    status: 'dispatched' | 'queued' | 'skipped';
+    responseItemId?: string;
+    error?: string;
+  }> {
     const { agents } = this.db.schema;
 
     const [agent] = await this.db.drizzle
@@ -447,8 +493,7 @@ export class MentionService {
       .values({
         companyId: ctx.companyId,
         projectId: ctx.projectId,
-        projectThreadId: ctx.threadId,
-        taskId: null,
+        ...this.threadLinkage(ctx),
         kind: 'comment',
         authorAgentId: agentId,
         content: responseContent.slice(0, 20_000),
@@ -460,12 +505,7 @@ export class MentionService {
       } as any)
       .returning();
 
-    eventBus.emitEvent({
-      type: 'project.thread.item.created',
-      companyId: ctx.companyId,
-      payload: { threadId: ctx.threadId, item: responseItem },
-      timestamp: new Date().toISOString(),
-    });
+    this.emitDispatchItemEvent(ctx, responseItem);
 
     return responseItem.id;
   }
@@ -477,15 +517,15 @@ export class MentionService {
   private async buildThreadContext(ctx: MentionDispatchContext): Promise<string> {
     const { taskThreadItems } = this.db.schema;
 
+    // Task threads are linked by taskId; project threads by projectThreadId.
+    const threadFilter = ctx.taskId
+      ? eq(taskThreadItems.taskId, ctx.taskId)
+      : eq(taskThreadItems.projectThreadId, ctx.threadId!);
+
     const recentItems = await this.db.drizzle
       .select()
       .from(taskThreadItems)
-      .where(
-        and(
-          eq(taskThreadItems.companyId, ctx.companyId),
-          eq(taskThreadItems.projectThreadId, ctx.threadId),
-        ),
-      )
+      .where(and(eq(taskThreadItems.companyId, ctx.companyId), threadFilter))
       .orderBy(desc(taskThreadItems.createdAt))
       .limit(10);
 
@@ -521,8 +561,7 @@ export class MentionService {
       .values({
         companyId: ctx.companyId,
         projectId: ctx.projectId,
-        projectThreadId: ctx.threadId,
-        taskId: null,
+        ...this.threadLinkage(ctx),
         kind: 'execution_event',
         authorAgentId: null,
         content: `@${mention.label} is ${agentStatus}. Mention queued — the agent will process this when resumed.`,
@@ -540,12 +579,7 @@ export class MentionService {
       } as any)
       .returning();
 
-    eventBus.emitEvent({
-      type: 'project.thread.item.created',
-      companyId: ctx.companyId,
-      payload: { threadId: ctx.threadId, item: queueItem },
-      timestamp: new Date().toISOString(),
-    });
+    this.emitDispatchItemEvent(ctx, queueItem);
   }
 
   // -------------------------------------------------------------------------
@@ -606,9 +640,8 @@ export class MentionService {
     for (const queuedItem of queuedItems) {
       const payload = queuedItem.payload as Record<string, unknown> | null;
       const queuedMention = payload?.queuedMention as
-        | { agentId?: string; itemId?: string; content?: string }
-        | undefined;
-      if (!queuedMention?.itemId) continue;
+        { agentId?: string; itemId?: string; content?: string } | undefined;
+      if (!queuedMention?.itemId) {continue;}
 
       // Mark the queued item as processed FIRST to prevent double-dispatch
       // if processQueuedMentions is called again concurrently.
@@ -643,12 +676,15 @@ export class MentionService {
         continue;
       }
 
-      // Build the dispatch context from the original mention item
+      // Build the dispatch context from the original mention item.
+      // Task-thread queued items have taskId set (projectThreadId null);
+      // project-thread queued items have projectThreadId set.
       const threadId = queuedItem.projectThreadId ?? originalItem.projectThreadId;
-      if (!threadId) {
+      const queuedTaskId = queuedItem.taskId ?? originalItem.taskId;
+      if (!threadId && !queuedTaskId) {
         logger.warn(
           { queuedItemId: queuedItem.id },
-          'processQueuedMentions: queued item has no threadId',
+          'processQueuedMentions: queued item has no threadId or taskId',
         );
         errors++;
         continue;
@@ -657,7 +693,8 @@ export class MentionService {
       const ctx: MentionDispatchContext = {
         companyId: agent.companyId,
         projectId: originalItem.projectId ?? queuedItem.projectId ?? null,
-        threadId,
+        threadId: threadId ?? null,
+        taskId: queuedTaskId ?? null,
         itemId: originalItem.id,
         content: queuedMention.content ?? originalItem.content ?? '',
         mentions: [
@@ -691,11 +728,15 @@ export class MentionService {
         );
         errors++;
         // Post a failure item so the thread reflects the error
-        await this.postAgentFailureItem(ctx, {
-          entityType: 'agent',
-          entityId: agentId,
-          label: agent.name,
-        }, errorMsg);
+        await this.postAgentFailureItem(
+          ctx,
+          {
+            entityType: 'agent',
+            entityId: agentId,
+            label: agent.name,
+          },
+          errorMsg,
+        );
       }
     }
 
@@ -724,7 +765,7 @@ export class MentionService {
     threadId: string,
     removedAgentIds: string[],
   ): Promise<{ cancelled: number }> {
-    if (removedAgentIds.length === 0) return { cancelled: 0 };
+    if (removedAgentIds.length === 0) {return { cancelled: 0 };}
 
     const { taskThreadItems } = this.db.schema;
     let cancelled = 0;
@@ -749,7 +790,7 @@ export class MentionService {
       for (const queuedItem of queuedItems) {
         const payload = queuedItem.payload as Record<string, unknown> | null;
         const queuedMention = payload?.queuedMention as Record<string, unknown> | undefined;
-        if (!queuedMention) continue;
+        if (!queuedMention) {continue;}
 
         const now = new Date();
         await this.db.drizzle
@@ -804,8 +845,7 @@ export class MentionService {
       .values({
         companyId: ctx.companyId,
         projectId: ctx.projectId,
-        projectThreadId: ctx.threadId,
-        taskId: null,
+        ...this.threadLinkage(ctx),
         kind: 'execution_event',
         authorAgentId: null,
         content: `@${mention.label} failed to respond: ${error.slice(0, 500)}`,
@@ -823,12 +863,7 @@ export class MentionService {
       } as any)
       .returning();
 
-    eventBus.emitEvent({
-      type: 'project.thread.item.created',
-      companyId: ctx.companyId,
-      payload: { threadId: ctx.threadId, item: failItem },
-      timestamp: new Date().toISOString(),
-    });
+    this.emitDispatchItemEvent(ctx, failItem);
   }
 
   // -------------------------------------------------------------------------
@@ -854,6 +889,7 @@ export class MentionService {
       metadata: {
         mentionedUserId: mention.entityId,
         threadId: ctx.threadId,
+        taskId: ctx.taskId ?? null,
         itemId: ctx.itemId,
         projectId: ctx.projectId,
         mentionLabel: mention.label,
@@ -869,6 +905,7 @@ export class MentionService {
       payload: {
         mentionedUserId: mention.entityId,
         threadId: ctx.threadId,
+        taskId: ctx.taskId ?? null,
         itemId: ctx.itemId,
         mention,
         content: ctx.content.slice(0, 500),
