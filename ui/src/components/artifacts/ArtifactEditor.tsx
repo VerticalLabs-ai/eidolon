@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AppWindow, Code2, AlertCircle, RotateCcw, Copy, Shield, Lock, Trash2, ArrowRightLeft } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
@@ -15,6 +16,7 @@ import { DashboardEditor } from "./DashboardEditor";
 import { AppEditor } from "./AppEditor";
 import { CodeEditor } from "./CodeEditor";
 import { RevisionHistory } from "./RevisionHistory";
+import { DiffModal } from "./DiffModal";
 import { PresenceIndicator } from "./PresenceIndicator";
 import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
 import { SaveArtifactTemplateModal } from "./SaveArtifactTemplateModal";
@@ -84,6 +86,39 @@ export function ArtifactEditor({
   const { data: projects } = useProjects(companyId);
   const { status: wsStatus } = useWebSocket(companyId);
   const qc = useQueryClient();
+
+  // ── Revision diff (M2) ──────────────────────────────────────────────────
+  // The diff modal is driven by the `?diff=v1-v2` URL query param so the view
+  // is shareable/bookmarkable (VAL-DIFF-061/064). Opening the modal via the
+  // Compare button sets the param; closing removes it. Direct navigation to
+  // `?diff=v1-v2` opens the modal automatically.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const diffParam = searchParams.get("diff");
+  const diffVersions: [number, number] | null = (() => {
+    if (!diffParam) return null;
+    const m = /^(\d+)-(\d+)$/.exec(diffParam);
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (!Number.isInteger(a) || a < 1 || !Number.isInteger(b) || b < 1) return null;
+    return [a, b];
+  })();
+  const diffOpen = diffVersions !== null;
+
+  const openDiff = useCallback(
+    (v1: number, v2: number) => {
+      const next = new URLSearchParams(searchParams);
+      next.set("diff", `${v1}-${v2}`);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const closeDiff = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("diff");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   // ── RBAC (M4): resolve the acting user's access level on this artifact ─
   // view → read-only editor; edit → can edit; manage → can edit + manage
@@ -804,9 +839,21 @@ export function ArtifactEditor({
             onRestore={handleRestore}
             restoring={restoreMutation.isPending}
             readOnly={!canManage}
+            onCompare={openDiff}
           />
         )}
       </div>
+
+      {/* Revision diff modal (M2) — driven by ?diff=v1-v2 so it is
+          shareable/bookmarkable and opens on direct URL navigation. */}
+      <DiffModal
+        open={diffOpen}
+        onClose={closeDiff}
+        companyId={companyId}
+        artifactId={artifactId}
+        v1={diffVersions ? diffVersions[0] : 1}
+        v2={diffVersions ? diffVersions[1] : 1}
+      />
     </div>
   );
 }

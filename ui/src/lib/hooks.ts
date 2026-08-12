@@ -2282,6 +2282,27 @@ export function useRestoreRevision(companyId: string) {
   });
 }
 
+// ── Revision Diff (M2) ───────────────────────────────────────────────────
+// Fetches the structured diff between two revisions. The server returns
+// { diff, fromRevision, toRevision, artifactType } directly (no data wrapper).
+// Enabled only when both versions are supplied. retry: 1 so 404s surface as
+// errors quickly (the modal renders an error state).
+export function useDiff(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+  v1: number | undefined,
+  v2: number | undefined,
+) {
+  return useQuery({
+    queryKey: ["diff", companyId, artifactId, v1, v2],
+    queryFn: async () =>
+      api.getArtifactDiff(companyId!, artifactId!, v1!, v2!),
+    enabled: !!companyId && !!artifactId && v1 != null && v2 != null,
+    retry: 1,
+    staleTime: 5 * 60_000,
+  });
+}
+
 // Code artifact run (M6) — bounded sandboxed execution. The mutation returns
 // the run result (stdout/stderr/exit code); callers render it in the output
 // panel. No query cache invalidation: running does not mutate the artifact.

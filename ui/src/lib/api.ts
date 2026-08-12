@@ -1,5 +1,9 @@
 // Eidolon API Client
 import { toast } from "sonner";
+import type {
+  DiffResult,
+  DiffResponse,
+} from "@eidolon/shared";
 
 const API_BASE = "/api";
 
@@ -2900,6 +2904,37 @@ export const restoreRevision = (
   request<ApiResponse<Artifact>>(
     `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
     { method: "POST" },
+  );
+
+// ── Revision Diff (M2) ───────────────────────────────────────────────────
+// GET /artifacts/:id/revisions/:v1/diff/:v2 returns a structured diff
+// envelope: { diff: DiffResult, fromRevision, toRevision, artifactType }.
+// The server returns this directly (no { data: ... } wrapper), so the client
+// uses the raw DiffResponse type. Re-exported diff types are available for
+// components that render type-specific diff payloads.
+
+export type { DiffResult, DiffResponse } from "@eidolon/shared";
+
+export interface DiffRevision {
+  id: string;
+  artifactId: string;
+  version: number;
+  content: Record<string, unknown>;
+  editedByUserId: string | null;
+  editedByAgentId: string | null;
+  editSource: "user" | "agent" | "system";
+  message: string | null;
+  createdAt: string;
+}
+
+export const getArtifactDiff = (
+  companyId: string,
+  id: string,
+  v1: number,
+  v2: number,
+) =>
+  request<DiffResponse>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${v1}/diff/${v2}`,
   );
 
 // ── Dashboard data-source resolution (M5) ────────────────────────────────
