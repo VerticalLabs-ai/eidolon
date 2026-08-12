@@ -25,55 +25,12 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { MentionPicker, MentionChip } from "@/components/projects/MentionPicker";
 import { ThreadArtifactCard } from "@/components/projects/ThreadArtifactCard";
 import { ThreadMeetingCard } from "@/components/projects/ThreadMeetingCard";
+import { renderMentionContent } from "@/lib/mention-render";
 import type { Agent, MentionableEntity } from "@/lib/api";
 
 const BOARD_SENDER_ID = "__board__"; // Legacy sentinel; board messages now use null fromAgentId
 
 type MentionEntry = { entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string };
-
-/** Render content with mention chips inline for persisted mentions.
- *  Artifact mentions render as inline ThreadArtifactCard references. */
-function renderMessageContent(
-  content: string,
-  mentions: MentionEntry[] | undefined,
-  companyId: string,
-): React.ReactNode {
-  if (!mentions || mentions.length === 0) return content;
-
-  const artifactMentions = mentions.filter((m) => m.entityType === "artifact");
-  const chipMentions = mentions.filter((m) => m.entityType !== "artifact");
-
-  let textRendered: React.ReactNode = content;
-  if (chipMentions.length > 0) {
-    const labels = chipMentions.map((m) => m.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const regex = new RegExp(`(@(?:${labels.join("|")}))`, "g");
-    const parts = content.split(regex);
-    textRendered = parts.map((part, i) => {
-      const mention = chipMentions.find((m) => `@${m.label}` === part);
-      if (mention) {
-        return <MentionChip key={i} entityType={mention.entityType} label={mention.label} />;
-      }
-      return <span key={i}>{part}</span>;
-    });
-  }
-
-  if (artifactMentions.length === 0) return textRendered;
-
-  return (
-    <span>
-      {textRendered}
-      {artifactMentions.map((m) => (
-        <ThreadArtifactCard
-          key={`artifact-mention-${m.entityId}`}
-          artifactId={m.entityId}
-          artifactType={m.artifactType ?? "document"}
-          companyId={companyId}
-          projectId={null}
-        />
-      ))}
-    </span>
-  );
-}
 
 /** Role badge colors (muted, no gradients) */
 const roleBadgeClass: Record<string, string> = {
@@ -585,7 +542,7 @@ export function BoardChat() {
                         )}
                       >
                         <p className="whitespace-pre-wrap break-words text-left">
-                          {renderMessageContent(msg.content, msgMentions, companyId!)}
+                          {renderMentionContent(msg.content, msgMentions, companyId!)}
                         </p>
                       </div>
 
