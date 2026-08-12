@@ -84,6 +84,9 @@ export const taskThreadItems = pgTable(
       table.createdAt,
     ),
     index('idx_task_thread_items_payload').using('gin', table.payload),
+    // M3 smart artifact linking: GIN index on mentions JSONB for efficient
+    // reverse-lookup via `mentions @> '[{"entityType":"artifact","entityId":"..."}]'`.
+    index('idx_task_thread_items_mentions_gin').using('gin', table.mentions),
     uniqueIndex('uq_task_thread_items_idempotency').on(
       table.companyId,
       table.taskId,

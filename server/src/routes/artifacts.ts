@@ -12,6 +12,7 @@ import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLev
 import { requireStepUp, type StepUpScope } from '../services/stepup-service.js';
 import { resolveDataSource, type DashboardDataSource } from '../services/dashboard-data-source.js';
 import { diffRevisions } from '../services/diff-service.js';
+import { getLinks } from '../services/link-service.js';
 import type { DbInstance } from '../types.js';
 
 const CreateBody = z.object({
@@ -168,6 +169,30 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await getArtifact(db, companyId, id) });
+  });
+  // -------------------------------------------------------------------------
+  // Smart artifact linking (M3): bidirectional link graph + related artifacts.
+  // GET /artifacts/:id/links
+  // Returns { linkedFrom, linkedTo, related }.
+  //   linkedFrom — thread items mentioning this artifact (GIN reverse-lookup)
+  //   linkedTo   — artifacts mentioned alongside this artifact in threads
+  //   related    — scored artifacts by shared project/folder/agent/co-mention
+  // Company-scoped via requireAccess. 404 for non-existent artifact via
+  // getArtifact. View access is sufficient (links are read-only metadata).
+  // -------------------------------------------------------------------------
+  router.get('/artifacts/:id/links', async (req, res) => {
+    const { companyId, id } = routeParams(req);
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
+    // getArtifact throws 404 if not found or not in company.
+    const artifact = await getArtifact(db, companyId, id);
+    const links = await getLinks(db, companyId, id, {
+      projectId: artifact.projectId,
+      folderId: artifact.folderId,
+      createdByAgentId: artifact.createdByAgentId,
+      lastEditedByAgentId: artifact.lastEditedByAgentId,
+    });
+    res.json(links);
   });
   router.patch('/artifacts/:id', validate(UpdateBody), async (req, res) => {
     const { companyId, id } = routeParams(req);
