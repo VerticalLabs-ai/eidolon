@@ -1,5 +1,5 @@
 // Eidolon hooks — v2 with projects, delete, toasts
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import {
   useQuery,
   useQueries,
@@ -318,6 +318,60 @@ export function useMentionSearch(companyId: string | undefined, query: string) {
       unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, query)),
     enabled: !!companyId,
     staleTime: 10_000,
+  });
+}
+
+// ── Cross-Artifact Search (M1) ────────────────────────────────────────────
+
+/**
+ * Debounced cross-artifact search via TanStack Query. The query is only
+ * sent to the server after `query` has been stable for `debounceMs`
+ * (default 300ms), preventing request spam while typing (VAL-SEARCH-046).
+ * Returns previous results while a new query is in flight so the dropdown
+ * stays populated during typing.
+ */
+export function useSearch(
+  companyId: string | undefined,
+  query: string,
+  filters?: api.SearchFilters,
+  debounceMs = 300,
+) {
+  // Local debounce: only advance the debounced query when it has been stable
+  // for the configured window. This avoids firing a request per keystroke.
+  const [debounced, setDebounced] = useState(query);
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebounced(query), debounceMs);
+    return () => window.clearTimeout(handle);
+  }, [query, debounceMs]);
+
+  const trimmed = debounced.trim();
+  const enabled = !!companyId && trimmed.length >= 2;
+
+  return useQuery({
+    queryKey: ["search", companyId, trimmed, filters ?? {}],
+    queryFn: async () =>
+      api.searchCompany(companyId!, trimmed, filters),
+    enabled,
+    staleTime: 15_000,
+    placeholderData: (prev) => prev,
+    retry: 1,
+  });
+}
+
+/**
+ * Fetch mentionable entities (agents + teammates) with an empty query to
+ * populate the author filter dropdown on the search results page. Returns
+ * only user entities (artifact authors are users; the search `authorId`
+ * filter maps to `created_by_user_id`).
+ */
+export function useSearchAuthors(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ["search-authors", companyId],
+    queryFn: async () =>
+      unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, "")),
+    enabled: !!companyId,
+    staleTime: 60_000,
+    select: (entities) => entities.filter((e) => e.entityType === "user"),
   });
 }
 
@@ -2225,6 +2279,45 @@ export function useRestoreRevision(companyId: string) {
         queryKey: ["artifacts", companyId, args.id, "revisions"],
       });
     },
+  });
+}
+
+// ── Revision Diff (M2) ───────────────────────────────────────────────────
+// Fetches the structured diff between two revisions. The server returns
+// { diff, fromRevision, toRevision, artifactType } directly (no data wrapper).
+// Enabled only when both versions are supplied. retry: 1 so 404s surface as
+// errors quickly (the modal renders an error state).
+export function useDiff(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+  v1: number | undefined,
+  v2: number | undefined,
+) {
+  return useQuery({
+    queryKey: ["diff", companyId, artifactId, v1, v2],
+    queryFn: async () =>
+      api.getArtifactDiff(companyId!, artifactId!, v1!, v2!),
+    enabled: !!companyId && !!artifactId && v1 != null && v2 != null,
+    retry: 1,
+    staleTime: 5 * 60_000,
+  });
+}
+
+// ── Smart artifact linking (M3) ──────────────────────────────────────────
+// Fetches the bidirectional link graph + related artifacts for an artifact.
+// The server returns { linkedFrom, linkedTo, related } directly (no data
+// wrapper). Enabled when both companyId and artifactId are supplied. The
+// query key includes the artifactId so navigating to a different artifact
+// re-fetches automatically (VAL-LINK-039).
+export function useLinks(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["links", companyId, artifactId],
+    queryFn: async () => api.getLinks(companyId!, artifactId!),
+    enabled: !!companyId && !!artifactId,
+    staleTime: 30_000,
   });
 }
 

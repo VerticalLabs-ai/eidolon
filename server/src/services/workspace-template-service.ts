@@ -13,6 +13,7 @@ import eventBus from '../realtime/events.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import { getArtifact } from './artifact-service.js';
 import { encryptContent, decryptContent } from './content-encryption.js';
+import { extractSearchText, buildSearchText, buildSearchTsvSql } from './search-text.js';
 import type { DbInstance } from '../types.js';
 
 type ArtifactType = z.infer<typeof ArtifactTypeSchema>;
@@ -285,6 +286,10 @@ export async function createProjectFromTemplate(
       }
       const newFolderId = artifact.originalFolderId === null ? null : folderIdMap.get(artifact.originalFolderId) ?? null;
       const clonedContent = encryptContent(artifact.content as Record<string, unknown>);
+      // M1 search: populate the search index for cloned artifacts so they are
+      // immediately searchable (artifact.content is already decrypted here).
+      const cloneContentText = extractSearchText(artifact.type, artifact.content as Record<string, unknown>);
+      const cloneSearchText = buildSearchText(artifact.title, cloneContentText);
       const [created] = await tx.insert(artifacts).values({
         companyId,
         projectId,
@@ -292,6 +297,8 @@ export async function createProjectFromTemplate(
         type: artifact.type,
         title: artifact.title,
         content: clonedContent,
+        searchText: cloneSearchText,
+        searchTsv: buildSearchTsvSql(artifact.title, cloneContentText),
         contentSchemaVersion: artifact.contentSchemaVersion,
         createdByUserId: userId,
         lastEditedByUserId: userId,
@@ -481,15 +488,22 @@ export async function createArtifactFromTemplate(
     }
   }
 
+  const effectiveTitle = input.title ?? `Untitled ${template.type}`;
   const created = await db.drizzle.transaction(async (tx) => {
     const templatedContent = encryptContent(template.content);
+    // M1 search: populate the search index for template-cloned artifacts so
+    // they are immediately searchable (template.content is decrypted here).
+    const cloneContentText = extractSearchText(template.type, template.content);
+    const cloneSearchText = buildSearchText(effectiveTitle, cloneContentText);
     const [artifact] = await tx.insert(artifacts).values({
       companyId,
       projectId: input.projectId ?? null,
       folderId: resolvedFolderId,
       type: template.type,
-      title: input.title ?? `Untitled ${template.type}`,
+      title: effectiveTitle,
       content: templatedContent,
+      searchText: cloneSearchText,
+      searchTsv: buildSearchTsvSql(effectiveTitle, cloneContentText),
       contentSchemaVersion: template.contentSchemaVersion,
       createdByUserId: userId,
       lastEditedByUserId: userId,

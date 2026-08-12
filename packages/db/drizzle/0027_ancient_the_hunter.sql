@@ -1,0 +1,1 @@
+CREATE INDEX "idx_task_thread_items_mentions_gin" ON "task_thread_items" USING gin ("mentions");

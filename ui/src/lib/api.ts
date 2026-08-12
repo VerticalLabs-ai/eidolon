@@ -1,5 +1,10 @@
 // Eidolon API Client
 import { toast } from "sonner";
+import type {
+  DiffResult,
+  DiffResponse,
+  LinksResponse,
+} from "@eidolon/shared";
 
 const API_BASE = "/api";
 
@@ -814,6 +819,58 @@ export const searchMentions = (companyId: string, query: string) => {
   if (query) params.set("q", query);
   return request<ApiResponse<MentionableEntity[]>>(
     `/companies/${companyId}/mentions/search?${params.toString()}`,
+  );
+};
+
+// ── Cross-Artifact Search (M1) ────────────────────────────────────────────
+
+export type SearchEntityType = "artifact" | "thread_item" | "task";
+
+export interface SearchResult {
+  entityType: SearchEntityType;
+  entityId: string;
+  title: string;
+  snippet: string;
+  rank: number;
+  artifactType?: ArtifactType;
+  projectId?: string | null;
+  folderId?: string | null;
+  status?: string;
+  // Thread-item navigation context.
+  taskId?: string | null;
+  projectThreadId?: string | null;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  total: number;
+  query: string;
+}
+
+export interface SearchFilters {
+  type?: string;
+  folderId?: string;
+  authorId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  includeArchived?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export const searchCompany = (companyId: string, query: string, filters?: SearchFilters) => {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.folderId) params.set("folderId", filters.folderId);
+  if (filters?.authorId) params.set("authorId", filters.authorId);
+  if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);
+  if (filters?.dateTo) params.set("dateTo", filters.dateTo);
+  if (filters?.includeArchived) params.set("includeArchived", "true");
+  if (filters?.limit != null) params.set("limit", String(filters.limit));
+  if (filters?.offset != null) params.set("offset", String(filters.offset));
+  return request<SearchResponse>(
+    `/companies/${companyId}/search?${params.toString()}`,
   );
 };
 
@@ -2848,6 +2905,46 @@ export const restoreRevision = (
   request<ApiResponse<Artifact>>(
     `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,
     { method: "POST" },
+  );
+
+// ── Revision Diff (M2) ───────────────────────────────────────────────────
+// GET /artifacts/:id/revisions/:v1/diff/:v2 returns a structured diff
+// envelope: { diff: DiffResult, fromRevision, toRevision, artifactType }.
+// The server returns this directly (no { data: ... } wrapper), so the client
+// uses the raw DiffResponse type. Re-exported diff types are available for
+// components that render type-specific diff payloads.
+
+export type { DiffResult, DiffResponse } from "@eidolon/shared";
+
+export interface DiffRevision {
+  id: string;
+  artifactId: string;
+  version: number;
+  content: Record<string, unknown>;
+  editedByUserId: string | null;
+  editedByAgentId: string | null;
+  editSource: "user" | "agent" | "system";
+  message: string | null;
+  createdAt: string;
+}
+
+export const getArtifactDiff = (
+  companyId: string,
+  id: string,
+  v1: number,
+  v2: number,
+) =>
+  request<DiffResponse>(
+    `/companies/${companyId}/artifacts/${id}/revisions/${v1}/diff/${v2}`,
+  );
+
+// ── Smart artifact linking (M3) ──────────────────────────────────────────
+// Fetches the bidirectional link graph + related artifacts for an artifact.
+// The server returns { linkedFrom, linkedTo, related } directly (no data
+// wrapper), matching the LinksResponse shared type.
+export const getLinks = (companyId: string, id: string) =>
+  request<LinksResponse>(
+    `/companies/${companyId}/artifacts/${id}/links`,
   );
 
 // ── Dashboard data-source resolution (M5) ────────────────────────────────

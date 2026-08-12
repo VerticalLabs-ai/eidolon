@@ -29,6 +29,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import { shortId } from "@/lib/ids";
+import { renderMentionContent } from "@/lib/mention-render";
 import type { TaskThreadItem } from "@/lib/api";
 
 const statusFlow = ["backlog", "todo", "in_progress", "review", "done"];
@@ -394,7 +395,7 @@ export function TaskDetail() {
                           </div>
                           {item.content && (
                             <p className="whitespace-pre-wrap text-sm leading-relaxed text-text-primary">
-                              {item.content}
+                              {renderMentionContent(item.content, item.mentions, companyId)}
                             </p>
                           )}
                           {item.kind === "execution_event" && (

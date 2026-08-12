@@ -20,6 +20,7 @@ vi.mock("@/components/projects/ProjectCreationProvider", () => ({
 vi.mock("@/components/ui/CommandPalette", () => ({ CommandPalette: () => null }));
 vi.mock("@/lib/hooks", () => ({
   useCompany: () => ({ data: { name: "Eidolon QA Lab" } }),
+  useSearch: () => ({ data: { results: [], total: 0, query: "" } }),
 }));
 vi.mock("@/lib/ws", () => ({ useWebSocket: () => ({ status: "disabled" }) }));
 vi.mock("@/lib/toasts", () => ({ useEventToasts: () => undefined }));
