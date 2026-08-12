@@ -5,7 +5,7 @@ import eventBus from '../realtime/events.js';
 import { hasSession, mergeExternalUpdate, updateSessionAfterFlush } from '../realtime/coedit-session.js';
 import { validateFolderOwnership } from './folder-service.js';
 import { encryptContent, decryptContent } from './content-encryption.js';
-import { extractSearchText, buildSearchText, buildSearchTsvSql } from './search-text.js';
+import { extractSearchText, buildSearchTsvSql } from './search-text.js';
 import type { DbInstance } from '../types.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import type { z } from 'zod';
@@ -114,11 +114,9 @@ export async function saveArtifactContent(
   // content + effective title (title is undefined when unchanged).
   const effectiveTitle = title !== undefined ? title : current.title;
   const contentText = extractSearchText(current.type, content);
-  const searchText = buildSearchText(effectiveTitle, contentText);
   const updated = await db.drizzle.transaction(async (tx) => {
     const [row] = await tx.update(db.schema.artifacts).set({
       content: encryptedContent,
-      searchText,
       searchTsv: buildSearchTsvSql(effectiveTitle, contentText),
       ...(title !== undefined ? { title } : {}),
       ...(folderId !== undefined ? { folderId } : {}),
@@ -172,12 +170,10 @@ export async function createArtifact(db: DbInstance, companyId: string, input: {
   // M1 search: populate the app-maintained search index from the decrypted
   // content at create time so the artifact is immediately searchable.
   const contentText = extractSearchText(input.type, input.content as Record<string, unknown>);
-  const searchText = buildSearchText(input.title, contentText);
   const created = await db.drizzle.transaction(async (tx) => {
     const [artifact] = await tx.insert(artifacts).values({
       companyId, projectId: input.projectId ?? null, folderId: input.folderId ?? null,
       type: input.type, title: input.title, content: encryptedContent,
-      searchText,
       searchTsv: buildSearchTsvSql(input.title, contentText),
       createdByUserId: editor.userId ?? null, createdByAgentId: editor.agentId ?? null,
       lastEditedByUserId: editor.userId ?? null, lastEditedByAgentId: editor.agentId ?? null,
@@ -304,11 +300,9 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
   // (decrypted) content + effective title so edits are reflected in search.
   const effectiveTitle = input.title ?? current.title;
   const contentText = extractSearchText(current.type, plaintextContent);
-  const searchText = buildSearchText(effectiveTitle, contentText);
   const updated = await db.drizzle.transaction(async (tx) => {
     const [row] = await tx.update(db.schema.artifacts).set({
       title: input.title ?? current.title, content: storedContent,
-      searchText,
       searchTsv: buildSearchTsvSql(effectiveTitle, contentText),
       projectId: input.projectId === undefined ? current.projectId : input.projectId,
       ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),

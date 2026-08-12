@@ -30,6 +30,7 @@ import { search } from '../services/search-service.js';
 import type { DbInstance } from '../types.js';
 
 const MAX_LIMIT = 100;
+const MAX_OFFSET = 10_000;
 const DEFAULT_LIMIT = 20;
 const MIN_QUERY_LENGTH = 2;
 
@@ -111,8 +112,8 @@ export function searchRouter(db: DbInstance): Router {
     let offset = 0;
     if (offsetRaw !== undefined) {
       const n = Number(offsetRaw);
-      if (!Number.isInteger(n) || n < 0) {
-        throw new AppError(400, 'SEARCH_INVALID_OFFSET', 'offset must be a non-negative integer');
+      if (!Number.isInteger(n) || n < 0 || n > MAX_OFFSET) {
+        throw new AppError(400, 'SEARCH_INVALID_OFFSET', `offset must be a non-negative integer no greater than ${MAX_OFFSET}`);
       }
       offset = n;
     }

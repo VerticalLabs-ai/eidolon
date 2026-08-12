@@ -25,18 +25,13 @@ import { artifactFolders } from './artifact_folders.js';
 // useless for search. Instead the application layer decrypts the content,
 // extracts searchable text per artifact type, and maintains two columns:
 //
-//   • `search_text` — the plaintext extracted text (title + content text),
-//                     used by `ts_headline` to produce original-case snippets.
 //   • `search_tsv`  — a `tsvector` built with `setweight` (title weight A,
 //                     content text weight B), used for FTS matching +
 //                     `ts_rank` ranking. A GIN index makes `@@` fast.
 //
-// Both columns are populated on every artifact create/update by
-// `artifact-service.ts` (and the workspace-template clone path). Storing the
-// extracted text (a lossy flattened representation) rather than the full
-// structured `content` is the standard search-index tradeoff required by the
-// mission's content-search requirement; the structured `content` stays
-// encrypted.
+// The vector is populated on every artifact create/update by
+// `artifact-service.ts` (and the workspace-template clone path). It contains
+// only the derived search index; structured `content` remains encrypted.
 // ---------------------------------------------------------------------------
 
 /** Drizzle adapter for the Postgres `tsvector` column type. */
@@ -74,8 +69,6 @@ export const artifacts = pgTable(
     title: text('title').notNull(),
     content: jsonb('content').notNull().default({}).$type<Record<string, unknown>>(),
     contentSchemaVersion: integer('content_schema_version').notNull().default(1),
-    // M1 search: plaintext extracted text (for ts_headline snippets). App-maintained.
-    searchText: text('search_text'),
     // M1 search: tsvector (title weight A + content text weight B). App-maintained.
     searchTsv: tsvector('search_tsv'),
     status: artifactStatusEnum('status').notNull().default('active'),

@@ -144,8 +144,7 @@ async function searchArtifacts(
       a.folder_id,
       a.status,
       ts_rank(a.search_tsv, ${tsquery}) AS rank,
-      ts_headline('english', a.search_text, ${tsquery},
-                   'MaxWords=35, MinWords=15, ShortWord=0, StartSel=<<, StopSel=>>, MaxFragments=1') AS snippet
+      a.title AS snippet
     FROM artifacts a
     WHERE a.search_tsv @@ ${tsquery} AND ${whereClause}
     ORDER BY rank DESC, a.updated_at DESC
@@ -279,7 +278,8 @@ export async function search(
 ): Promise<{ results: SearchResult[]; total: number; query: string }> {
   // Cap each source at limit + offset so the merged list has enough rows
   // to fill the requested page after sorting + slicing.
-  const cap = (input.limit + input.offset) * SOURCE_CAP_MULTIPLIER + 5;
+  // Keep the DB work bounded even if this function is called outside the route.
+  const cap = Math.min((input.limit + input.offset) * SOURCE_CAP_MULTIPLIER + 5, 10_005);
 
   const [artifactResult, threadResult, taskResult] = await Promise.all([
     searchArtifacts(db, input, cap),
