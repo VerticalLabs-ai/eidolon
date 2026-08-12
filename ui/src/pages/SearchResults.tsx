@@ -64,7 +64,12 @@ export function SearchResults() {
   const offset = Math.max(0, Number(searchParams.get("offset") ?? "0"));
 
   // Sidebar filter data sources.
-  const { data: folders = [] } = useFolders(companyId, null);
+  // Pass `undefined` (not `null`) for projectId so useFolders fetches ALL
+  // folders for the company — both company-level (project_id IS NULL) and
+  // project-scoped. Passing `null` would filter to project_id IS NULL only,
+  // leaving the dropdown empty when folders are project-scoped.
+  // (VAL-SEARCH-056)
+  const { data: folders = [] } = useFolders(companyId, undefined);
   const { data: authors = [] } = useSearchAuthors(companyId);
 
   const filters = useMemo(

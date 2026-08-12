@@ -128,8 +128,13 @@ async function searchArtifacts(
   if (input.type) conditions.push(sql`a.type = ${input.type}`);
   if (input.folderId) conditions.push(sql`a.folder_id = ${input.folderId}`);
   if (input.authorId) conditions.push(sql`a.created_by_user_id = ${input.authorId}`);
-  if (input.dateFrom) conditions.push(sql`a.updated_at >= ${input.dateFrom}`);
-  if (input.dateTo) conditions.push(sql`a.updated_at <= ${input.dateTo}`);
+  // Bind dates as ISO strings — Drizzle's `sql` template serializes Date
+  // objects via Date.toString() (locale format like "Tue Dec 31 2024...")
+  // which Postgres cannot parse, causing HTTP 500. ISO 8601 strings are
+  // unambiguously parsed by Postgres as timestamps.
+  // (VAL-SEARCH-019/020/021/039/058)
+  if (input.dateFrom) conditions.push(sql`a.updated_at >= ${input.dateFrom.toISOString()}`);
+  if (input.dateTo) conditions.push(sql`a.updated_at <= ${input.dateTo.toISOString()}`);
 
   const whereClause = sql.join(conditions, sql` AND `);
   const tsquery = sql`plainto_tsquery('english', ${input.query})`;
@@ -191,8 +196,8 @@ async function searchThreadItems(
     sql`ti.company_id = ${input.companyId}`,
     sql`ti.content ILIKE ${pattern}`,
   ];
-  if (input.dateFrom) conditions.push(sql`ti.created_at >= ${input.dateFrom}`);
-  if (input.dateTo) conditions.push(sql`ti.created_at <= ${input.dateTo}`);
+  if (input.dateFrom) conditions.push(sql`ti.created_at >= ${input.dateFrom.toISOString()}`);
+  if (input.dateTo) conditions.push(sql`ti.created_at <= ${input.dateTo.toISOString()}`);
   const whereClause = sql.join(conditions, sql` AND `);
 
   const hitsRows = await db.drizzle.execute(sql`
@@ -245,8 +250,8 @@ async function searchTasks(
     sql`company_id = ${input.companyId}`,
     sql`(title ILIKE ${pattern} OR description ILIKE ${pattern})`,
   ];
-  if (input.dateFrom) conditions.push(sql`updated_at >= ${input.dateFrom}`);
-  if (input.dateTo) conditions.push(sql`updated_at <= ${input.dateTo}`);
+  if (input.dateFrom) conditions.push(sql`updated_at >= ${input.dateFrom.toISOString()}`);
+  if (input.dateTo) conditions.push(sql`updated_at <= ${input.dateTo.toISOString()}`);
   const whereClause = sql.join(conditions, sql` AND `);
 
   const hitsRows = await db.drizzle.execute(sql`
