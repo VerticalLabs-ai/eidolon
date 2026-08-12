@@ -65,8 +65,8 @@ export function RevisionHistory({
   };
 
   return (
-    <aside
-      className="flex w-64 shrink-0 flex-col border-l border-white/[0.06] bg-surface/60"
+    <div
+      className="flex h-full flex-col"
       aria-label="Revision history"
     >
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2.5">
@@ -193,6 +193,6 @@ export function RevisionHistory({
           </ul>
         )}
       </div>
-    </aside>
+    </div>
   );
 }

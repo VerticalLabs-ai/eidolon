@@ -16,6 +16,7 @@ import { DashboardEditor } from "./DashboardEditor";
 import { AppEditor } from "./AppEditor";
 import { CodeEditor } from "./CodeEditor";
 import { RevisionHistory } from "./RevisionHistory";
+import { LinksPanel } from "./LinksPanel";
 import { DiffModal } from "./DiffModal";
 import { PresenceIndicator } from "./PresenceIndicator";
 import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
@@ -32,6 +33,7 @@ import {
   useSaveArtifactTemplate,
   useResolvePermission,
   useProjects,
+  useLinks,
 } from "@/lib/hooks";
 import { useMfaStepUp, isMfaStepUpRequired } from "@/lib/useMfaStepUp";
 import { useServerEvents } from "@/lib/ws";
@@ -74,6 +76,11 @@ export function ArtifactEditor({
     artifactId,
   );
   const { data: revisions } = useArtifactRevisions(companyId, artifactId);
+  // ── Smart artifact linking (M3) ───────────────────────────────────────
+  // Fetches the link graph when the editor opens. The query key includes
+  // the artifactId so navigating to a different artifact re-fetches
+  // automatically (VAL-LINK-038/039).
+  const linksQuery = useLinks(companyId, artifactId);
   const updateMutation = useUpdateArtifact(companyId);
   const restoreMutation = useRestoreRevision(companyId);
   const saveArtifactTemplateMutation = useSaveArtifactTemplate(companyId);
@@ -831,17 +838,31 @@ export function ArtifactEditor({
           )}
         </div>
 
-        {/* Revision history panel */}
-        {revisions && revisions.length > 0 && (
-          <RevisionHistory
-            revisions={revisions}
-            currentVersion={artifact.version}
-            onRestore={handleRestore}
-            restoring={restoreMutation.isPending}
-            readOnly={!canManage}
-            onCompare={openDiff}
+        {/* Sidebar: revision history (top) + links panel (bottom).
+            The sidebar always renders so the Links panel is visible for any
+            artifact (VAL-LINK-028). When no revisions exist, only the
+            Links panel is shown. */}
+        <aside className="flex w-64 shrink-0 flex-col border-l border-white/[0.06] bg-surface/60">
+          {revisions && revisions.length > 0 && (
+            <div className="flex-1 overflow-hidden">
+              <RevisionHistory
+                revisions={revisions}
+                currentVersion={artifact.version}
+                onRestore={handleRestore}
+                restoring={restoreMutation.isPending}
+                readOnly={!canManage}
+                onCompare={openDiff}
+              />
+            </div>
+          )}
+          <LinksPanel
+            companyId={companyId}
+            artifactId={artifactId}
+            links={linksQuery.data}
+            isLoading={linksQuery.isLoading}
+            isError={linksQuery.isError}
           />
-        )}
+        </aside>
       </div>
 
       {/* Revision diff modal (M2) — driven by ?diff=v1-v2 so it is

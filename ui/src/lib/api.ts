@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type {
   DiffResult,
   DiffResponse,
+  LinksResponse,
 } from "@eidolon/shared";
 
 const API_BASE = "/api";
@@ -2935,6 +2936,15 @@ export const getArtifactDiff = (
 ) =>
   request<DiffResponse>(
     `/companies/${companyId}/artifacts/${id}/revisions/${v1}/diff/${v2}`,
+  );
+
+// ── Smart artifact linking (M3) ──────────────────────────────────────────
+// Fetches the bidirectional link graph + related artifacts for an artifact.
+// The server returns { linkedFrom, linkedTo, related } directly (no data
+// wrapper), matching the LinksResponse shared type.
+export const getLinks = (companyId: string, id: string) =>
+  request<LinksResponse>(
+    `/companies/${companyId}/artifacts/${id}/links`,
   );
 
 // ── Dashboard data-source resolution (M5) ────────────────────────────────

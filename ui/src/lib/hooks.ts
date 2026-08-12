@@ -2303,6 +2303,24 @@ export function useDiff(
   });
 }
 
+// ── Smart artifact linking (M3) ──────────────────────────────────────────
+// Fetches the bidirectional link graph + related artifacts for an artifact.
+// The server returns { linkedFrom, linkedTo, related } directly (no data
+// wrapper). Enabled when both companyId and artifactId are supplied. The
+// query key includes the artifactId so navigating to a different artifact
+// re-fetches automatically (VAL-LINK-039).
+export function useLinks(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["links", companyId, artifactId],
+    queryFn: async () => api.getLinks(companyId!, artifactId!),
+    enabled: !!companyId && !!artifactId,
+    staleTime: 30_000,
+  });
+}
+
 // Code artifact run (M6) — bounded sandboxed execution. The mutation returns
 // the run result (stdout/stderr/exit code); callers render it in the output
 // panel. No query cache invalidation: running does not mutate the artifact.

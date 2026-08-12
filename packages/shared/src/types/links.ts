@@ -42,8 +42,16 @@ export const LinkRefSchema = z.object({
       agentId: z.string().optional(),
     })
     .optional(),
+  /** Human-readable author name (agent name or user display name). */
+  authorName: z.string().optional(),
   createdAt: z.string(),
   artifactType: z.string().optional(),
+  /** Navigation context: taskId when the thread item belongs to a task
+   * thread, null otherwise. The UI uses this to navigate to the task. */
+  taskId: z.string().nullable().optional(),
+  /** Navigation context: projectId when the thread item belongs to a project
+   * thread, null otherwise. The UI uses this to navigate to the project. */
+  projectId: z.string().nullable().optional(),
 });
 export type LinkRef = z.infer<typeof LinkRefSchema>;
 

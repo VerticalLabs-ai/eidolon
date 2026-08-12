@@ -32,6 +32,7 @@ import type {
   LinksResponse,
 } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
+import { getCompanyMembers } from '../auth.js';
 
 /** Maximum linkedFrom entries returned (most recent first). */
 const LINKED_FROM_LIMIT = 20;
@@ -112,9 +113,56 @@ interface LinkedFromRow {
   content: string | null;
   author_user_id: string | null;
   author_agent_id: string | null;
+  agent_name: string | null;
   created_at: Date;
   mentions: unknown;
   thread_title: string | null;
+  task_id: string | null;
+  project_id: string | null;
+}
+
+/**
+ * Resolve human-readable display names for user author IDs. Uses the same
+ * pattern as team-service: Clerk company members first, then test_users
+ * (local_trusted), then fallback to the raw userId.
+ */
+async function resolveUserDisplayNames(
+  db: DbInstance,
+  companyId: string,
+  userIds: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  if (userIds.length === 0) return names;
+
+  // 1. Clerk company members (production + the dev user in local_trusted).
+  try {
+    const members = await getCompanyMembers(companyId);
+    for (const m of members) {
+      names.set(m.id, m.name || m.id);
+    }
+  } catch {
+    // getCompanyMembers can throw in local_trusted without Clerk; fall through.
+  }
+
+  // 2. test_users table (local_trusted additional test users).
+  const unresolved = userIds.filter((id) => !names.has(id));
+  if (unresolved.length > 0) {
+    const { testUsers } = db.schema;
+    const rows = await db.drizzle
+      .select({ id: testUsers.id, name: testUsers.name })
+      .from(testUsers)
+      .where(and(eq(testUsers.companyId, companyId), inArray(testUsers.id, unresolved)));
+    for (const r of rows) {
+      names.set(r.id, r.name);
+    }
+  }
+
+  // 3. Fallback to the raw userId for anything still unresolved.
+  for (const id of userIds) {
+    if (!names.has(id)) names.set(id, id);
+  }
+
+  return names;
 }
 
 async function getLinkedFrom(
@@ -134,19 +182,30 @@ async function getLinkedFrom(
       ti.content,
       ti.author_user_id,
       ti.author_agent_id,
+      ag.name AS agent_name,
       ti.created_at,
       ti.mentions,
+      ti.task_id,
+      pt.project_id,
       COALESCE(pt.title, t.title, 'Thread item') AS thread_title
     FROM task_thread_items ti
     LEFT JOIN project_threads pt
       ON ti.project_thread_id = pt.id AND pt.company_id = ti.company_id
     LEFT JOIN tasks t
       ON ti.task_id = t.id AND t.company_id = ti.company_id
+    LEFT JOIN agents ag ON ti.author_agent_id = ag.id
     WHERE ti.company_id = ${companyId}
       AND ti.mentions @> ${mentionFilter}::jsonb
     ORDER BY ti.created_at DESC
     LIMIT ${LINKED_FROM_LIMIT}
   `)) as unknown as LinkedFromRow[];
+
+  // Resolve user display names for all user-authored thread items in a
+  // single batch (avoids N+1 queries).
+  const userIds = rows
+    .map((r) => r.author_user_id)
+    .filter((id): id is string => id !== null);
+  const userNames = await resolveUserDisplayNames(db, companyId, userIds);
 
   const coMentionedIds = new Set<string>();
 
@@ -163,13 +222,24 @@ async function getLinkedFrom(
     if (r.author_user_id) author.userId = r.author_user_id;
     if (r.author_agent_id) author.agentId = r.author_agent_id;
 
+    // Resolve human-readable author name.
+    let authorName: string | undefined;
+    if (r.author_agent_id && r.agent_name) {
+      authorName = r.agent_name;
+    } else if (r.author_user_id) {
+      authorName = userNames.get(r.author_user_id);
+    }
+
     return {
       threadItemId: r.id,
       threadTitle: r.thread_title ?? 'Thread item',
       contentSnippet: buildSnippet(r.content),
       author: Object.keys(author).length > 0 ? author : undefined,
+      authorName,
       createdAt: new Date(r.created_at).toISOString(),
       artifactType,
+      taskId: r.task_id,
+      projectId: r.project_id,
     };
   });
 
