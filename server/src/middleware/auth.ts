@@ -92,16 +92,24 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
     companyId: string,
   ): Promise<{ role: string; userId: string } | null> {
     const token = req.get('X-Eidolon-Test-Session-Id');
-    if (!token || !db) {return null;}
+    if (!token || !db) {
+      return null;
+    }
     try {
       const [row] = await db.drizzle
         .select()
         .from(db.schema.localTrustedSessions)
         .where(eq(db.schema.localTrustedSessions.id, token))
         .limit(1);
-      if (!row) {return null;}
-      if (row.companyId !== companyId) {return null;}
-      if (!row.active) {return { role: '__revoked__', userId: row.userId };}
+      if (!row) {
+        return null;
+      }
+      if (row.companyId !== companyId) {
+        return null;
+      }
+      if (!row.active) {
+        return { role: '__revoked__', userId: row.userId };
+      }
       return { role: row.role, userId: row.userId };
     } catch {
       return null;
@@ -134,7 +142,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
       };
       next();
     } catch (err) {
-      if (err instanceof AppError) {return next(err);}
+      if (err instanceof AppError) {
+        return next(err);
+      }
       logger.debug({ err }, 'Auth: session validation failed');
       next(new AppError(401, 'UNAUTHORIZED', 'Authentication required'));
     }
@@ -222,7 +232,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
     }
 
     // Authenticated (Clerk) mode — query company_members
-    if (!req.user || !db) {return null;}
+    if (!req.user || !db) {
+      return null;
+    }
 
     try {
       const [memberRow] = await db.drizzle
@@ -236,7 +248,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
         )
         .limit(1);
 
-      if (!memberRow) {return null;}
+      if (!memberRow) {
+        return null;
+      }
       return {
         role: memberRow.role,
         userId: req.user.id,
@@ -252,7 +266,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
    * to owner-level when `req.user.role === 'admin'`. Audit-logged.
    */
   function applyAdminBypass(req: Request, companyId: string): boolean {
-    if (req.user?.role !== 'admin') {return false;}
+    if (req.user?.role !== 'admin') {
+      return false;
+    }
     logger.info(
       {
         action: 'admin_bypass_owner_access',
@@ -301,7 +317,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
       // would always trigger the bypass and prevent header impersonation
       // and DB-based membership resolution. Local_trusted default owner
       // access is handled by resolveMembership instead.
-      if (!isLocalTrusted && applyAdminBypass(req, companyId)) {return next();}
+      if (!isLocalTrusted && applyAdminBypass(req, companyId)) {
+        return next();
+      }
 
       try {
         const membership = await resolveMembership(req, companyId);
@@ -332,7 +350,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
         };
         next();
       } catch (err) {
-        if (err instanceof AppError) {return next(err);}
+        if (err instanceof AppError) {
+          return next(err);
+        }
         next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
       }
     };
@@ -368,7 +388,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
 
       // Platform admin bypass (audit-logged). Only applies in authenticated
       // (Clerk) mode — see requireOrgMember for rationale.
-      if (!isLocalTrusted && applyAdminBypass(req, companyId)) {return next();}
+      if (!isLocalTrusted && applyAdminBypass(req, companyId)) {
+        return next();
+      }
 
       // If a preceding middleware (e.g. requireOrgMember) already resolved
       // membership for this company, reuse it to avoid a duplicate query.
@@ -411,11 +433,44 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
         };
         next();
       } catch (err) {
-        if (err instanceof AppError) {return next(err);}
+        if (err instanceof AppError) {
+          return next(err);
+        }
         next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
       }
     };
   }
 
-  return { requireAuth, requireOrgMember, requirePermission };
+  /**
+   * Method-aware permission middleware for routers that handle both reads
+   * and writes behind a single mount. GET/HEAD/OPTIONS requests are checked
+   * against the `read` permission; all other methods (POST/PATCH/PUT/DELETE)
+   * are checked against the `write` permission.
+   *
+   * This enables a single router mount to enforce different permissions for
+   * reads vs writes without splitting the mount. For example:
+   *
+   *   requirePermissionByMethod({ read: 'company.view', write: 'artifact.create' })
+   *
+   * - GET /artifacts     → company.view    (all roles including viewer)
+   * - POST /artifacts    → artifact.create  (owner+admin+member, NOT viewer)
+   *
+   * When a preceding middleware has already resolved membership for the same
+   * company, the inner `requirePermission` calls reuse `req.organizationMembership`
+   * and skip a duplicate DB query.
+   */
+  function requirePermissionByMethod(perms: { read: Permission; write: Permission }) {
+    const readMiddleware = requirePermission(perms.read);
+    const writeMiddleware = requirePermission(perms.write);
+    return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+      const method = req.method.toUpperCase();
+      const isRead = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+      if (isRead) {
+        return readMiddleware(req, _res, next);
+      }
+      return writeMiddleware(req, _res, next);
+    };
+  }
+
+  return { requireAuth, requireOrgMember, requirePermission, requirePermissionByMethod };
 }

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { Request } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { eq, sql, inArray, and } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
@@ -7,6 +7,7 @@ import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import { clearCompanyPresence } from '../realtime/presence-store.js';
 import { requireStepUp } from '../services/stepup-service.js';
+import { hasPermission, type Permission, type Role } from '../middleware/permissions.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
@@ -60,9 +61,103 @@ export function companiesRouter(db: DbInstance): Router {
   function resolveUserId(req: Request): string {
     if (isLocalTrusted) {
       const testUserId = req.get('X-Eidolon-Test-User-Id');
-      if (testUserId) {return testUserId;}
+      if (testUserId) {
+        return testUserId;
+      }
     }
     return req.user?.id ?? 'dev-user-000';
+  }
+
+  /**
+   * Permission middleware for company-level operations that use `:id` as
+   * the route parameter (not `:companyId`). This is needed because the
+   * companies router is mounted at `/api/companies` with `requireAuth`
+   * only — the `requirePermission` middleware in auth.ts reads
+   * `req.params.companyId`, which is not set for `/:id` routes.
+   *
+   * Resolves the user's role from `company_members` (or local_trusted
+   * impersonation/default) and checks `hasPermission` against the
+   * permission matrix. Sets `req.organizationMembership` for downstream
+   * handlers.
+   */
+  function checkCompanyPermission(permission: Permission) {
+    return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+      const companyId = String(req.params.id ?? '');
+      if (!companyId) {
+        return next(new AppError(400, 'BAD_REQUEST', 'Company ID is required'));
+      }
+
+      // Platform admin bypass (authenticated mode only)
+      if (!isLocalTrusted && req.user?.role === 'admin') {
+        req.organizationMembership = {
+          id: 'admin-bypass',
+          role: 'owner',
+          organizationId: companyId,
+          userId: req.user.id,
+        };
+        return next();
+      }
+
+      let role: string;
+      if (isLocalTrusted) {
+        const testRole = req.get('X-Eidolon-Test-Org-Role');
+        const validRoles = ['owner', 'admin', 'member', 'viewer'];
+        if (testRole && validRoles.includes(testRole)) {
+          role = testRole;
+        } else {
+          const userId = resolveUserId(req);
+          try {
+            const [memberRow] = await db.drizzle
+              .select()
+              .from(companyMembers)
+              .where(
+                and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, userId)),
+              )
+              .limit(1);
+            role = memberRow?.role ?? 'owner';
+          } catch {
+            role = 'owner';
+          }
+        }
+      } else {
+        if (!req.user) {
+          return next(new AppError(401, 'UNAUTHORIZED', 'Authentication required'));
+        }
+        try {
+          const [memberRow] = await db.drizzle
+            .select()
+            .from(companyMembers)
+            .where(
+              and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, req.user.id)),
+            )
+            .limit(1);
+          if (!memberRow) {
+            return next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
+          }
+          role = memberRow.role;
+        } catch {
+          return next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
+        }
+      }
+
+      if (!hasPermission(role as Role, permission)) {
+        return next(
+          new AppError(
+            403,
+            'INSUFFICIENT_PERMISSION',
+            `This action requires '${permission}' permission`,
+          ),
+        );
+      }
+
+      req.organizationMembership = {
+        id: 'local',
+        role,
+        organizationId: companyId,
+        userId: resolveUserId(req),
+      };
+      next();
+    };
   }
 
   // GET /api/companies - list companies where the user has a company_members row
@@ -160,38 +255,44 @@ export function companiesRouter(db: DbInstance): Router {
     res.json({ data: { role: memberRow.role } });
   });
 
-  // PATCH /api/companies/:id - update
-  router.patch('/:id', validate(UpdateCompanyBody), async (req, res) => {
-    const body = req.body as z.infer<typeof UpdateCompanyBody>;
+  // PATCH /api/companies/:id - update (requires company.settings.update permission)
+  router.patch(
+    '/:id',
+    checkCompanyPermission('company.settings.update'),
+    validate(UpdateCompanyBody),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof UpdateCompanyBody>;
 
-    const [existing] = await db.drizzle
-      .select()
-      .from(companies)
-      .where(eq(companies.id, routeParams(req).id))
-      .limit(1);
+      const [existing] = await db.drizzle
+        .select()
+        .from(companies)
+        .where(eq(companies.id, routeParams(req).id))
+        .limit(1);
 
-    if (!existing) {
-      throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${routeParams(req).id} not found`);
-    }
+      if (!existing) {
+        throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${routeParams(req).id} not found`);
+      }
 
-    const [updated] = await db.drizzle
-      .update(companies)
-      .set({ ...body, updatedAt: new Date() })
-      .where(eq(companies.id, routeParams(req).id))
-      .returning();
+      const [updated] = await db.drizzle
+        .update(companies)
+        .set({ ...body, updatedAt: new Date() })
+        .where(eq(companies.id, routeParams(req).id))
+        .returning();
 
-    eventBus.emitEvent({
-      type: 'company.updated',
-      companyId: updated.id,
-      payload: { company: updated, changes: Object.keys(body) },
-      timestamp: new Date().toISOString(),
-    });
+      eventBus.emitEvent({
+        type: 'company.updated',
+        companyId: updated.id,
+        payload: { company: updated, changes: Object.keys(body) },
+        timestamp: new Date().toISOString(),
+      });
 
-    res.json({ data: updated });
-  });
+      res.json({ data: updated });
+    },
+  );
 
   // DELETE /api/companies/:id - soft delete (archive) or hard delete with ?hard=true
-  router.delete('/:id', async (req, res) => {
+  // (requires company.delete permission — owner only)
+  router.delete('/:id', checkCompanyPermission('company.delete'), async (req, res) => {
     const companyId = routeParams(req).id;
     const hard = req.query.hard === 'true';
 
