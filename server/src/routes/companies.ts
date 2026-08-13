@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { eq, sql } from 'drizzle-orm';
+import type { Request } from 'express';
+import { eq, sql, inArray, and } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -40,34 +41,81 @@ const UpdateCompanyBody = z.object({
 
 export function companiesRouter(db: DbInstance): Router {
   const router = Router();
-  const { companies, agents, tasks } = db.schema;
+  const { companies, agents, tasks, companyMembers } = db.schema;
 
-  // GET /api/companies - list all
-  router.get('/', async (_req, res) => {
-    const rows = await db.drizzle.select().from(companies);
+  // Capture auth mode at creation time (same pattern as createAuthMiddleware).
+  // process.env.AUTH_MODE is set during createApp() and may be restored
+  // afterward, so we must not read it at request time.
+  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+
+  /**
+   * Resolve the effective user id for the current request.
+   *
+   * In local_trusted mode, `requireAuth` injects `dev-user-000` and does
+   * not process impersonation headers.  The `X-Eidolon-Test-User-Id`
+   * header lets tests simulate different users (same pattern as
+   * `resolveMembership` in auth.ts).  In authenticated (Clerk) mode the
+   * header is ignored and the real Clerk user id is used.
+   */
+  function resolveUserId(req: Request): string {
+    if (isLocalTrusted) {
+      const testUserId = req.get('X-Eidolon-Test-User-Id');
+      if (testUserId) {return testUserId;}
+    }
+    return req.user?.id ?? 'dev-user-000';
+  }
+
+  // GET /api/companies - list companies where the user has a company_members row
+  router.get('/', async (req, res) => {
+    const userId = resolveUserId(req);
+    const memberCompanyIds = db.drizzle
+      .select({ companyId: companyMembers.companyId })
+      .from(companyMembers)
+      .where(eq(companyMembers.userId, userId));
+
+    const rows = await db.drizzle
+      .select()
+      .from(companies)
+      .where(inArray(companies.id, memberCompanyIds));
+
     res.json({ data: rows });
   });
 
   // POST /api/companies - create
   router.post('/', validate(CreateCompanyBody), async (req, res) => {
     const body = req.body as z.infer<typeof CreateCompanyBody>;
+    const userId = resolveUserId(req);
     const now = new Date();
-    const [row] = await db.drizzle
-      .insert(companies)
-      .values({
-        name: body.name,
-        description: body.description ?? null,
-        mission: body.mission ?? null,
-        status: body.status,
-        budgetMonthlyCents: body.budgetMonthlyCents,
-        spentMonthlyCents: 0,
-        settings: body.settings,
-        brandColor: body.brandColor ?? null,
-        logoUrl: body.logoUrl ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+
+    // Insert company and owner membership atomically so the creator is
+    // always recorded as the owner of their new company (VAL-RBAC-012).
+    const [row] = await db.drizzle.transaction(async (tx) => {
+      const [company] = await tx
+        .insert(companies)
+        .values({
+          name: body.name,
+          description: body.description ?? null,
+          mission: body.mission ?? null,
+          status: body.status,
+          budgetMonthlyCents: body.budgetMonthlyCents,
+          spentMonthlyCents: 0,
+          settings: body.settings,
+          brandColor: body.brandColor ?? null,
+          logoUrl: body.logoUrl ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      await tx.insert(companyMembers).values({
+        companyId: company.id,
+        userId,
+        role: 'owner',
+        createdByUserId: userId,
+      });
+
+      return [company];
+    });
 
     eventBus.emitEvent({
       type: 'company.created',
@@ -91,6 +139,25 @@ export function companiesRouter(db: DbInstance): Router {
       throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${routeParams(req).id} not found`);
     }
     res.json({ data: row });
+  });
+
+  // GET /api/companies/:id/my-role - current user's role in this company
+  // Permission: company.view (all members can view; non-members get 403)
+  router.get('/:id/my-role', async (req, res) => {
+    const companyId = routeParams(req).id;
+    const userId = resolveUserId(req);
+
+    const [memberRow] = await db.drizzle
+      .select({ role: companyMembers.role })
+      .from(companyMembers)
+      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, userId)))
+      .limit(1);
+
+    if (!memberRow) {
+      throw new AppError(403, 'NOT_MEMBER', 'You are not a member of this company');
+    }
+
+    res.json({ data: { role: memberRow.role } });
   });
 
   // PATCH /api/companies/:id - update
@@ -146,9 +213,7 @@ export function companiesRouter(db: DbInstance): Router {
       // or expired → 403 MFA_STEP_UP_REQUIRED and NO mutation occurs.
       const actingUserId = req.user?.id ?? 'dev-user-000';
       const stepUpToken =
-        (req.query.stepUpToken as string | undefined) ??
-        req.get('X-Eidolon-Step-Up-Token') ??
-        null;
+        (req.query.stepUpToken as string | undefined) ?? req.get('X-Eidolon-Step-Up-Token') ?? null;
       await requireStepUp(db, actingUserId, 'company_delete', stepUpToken);
 
       const deletedCompanyName = existing.name;
@@ -166,14 +231,18 @@ export function companiesRouter(db: DbInstance): Router {
           .from(db.schema.knowledgeDocuments)
           .where(eq(db.schema.knowledgeDocuments.companyId, companyId));
         for (const doc of docs) {
-          await tx.delete(db.schema.knowledgeChunks).where(eq(db.schema.knowledgeChunks.documentId, doc.id));
+          await tx
+            .delete(db.schema.knowledgeChunks)
+            .where(eq(db.schema.knowledgeChunks.documentId, doc.id));
         }
         const templates = await tx
           .select({ id: db.schema.promptTemplates.id })
           .from(db.schema.promptTemplates)
           .where(eq(db.schema.promptTemplates.companyId, companyId));
         for (const template of templates) {
-          await tx.delete(db.schema.promptVersions).where(eq(db.schema.promptVersions.templateId, template.id));
+          await tx
+            .delete(db.schema.promptVersions)
+            .where(eq(db.schema.promptVersions.templateId, template.id));
         }
         // Chunks also carry a denormalized company_id and may exist even when
         // their document has already been removed.
@@ -183,7 +252,9 @@ export function companiesRouter(db: DbInstance): Router {
           .from(db.schema.approvals)
           .where(eq(db.schema.approvals.companyId, companyId));
         for (const approval of approvals) {
-          await tx.delete(db.schema.approvalComments).where(eq(db.schema.approvalComments.approvalId, approval.id));
+          await tx
+            .delete(db.schema.approvalComments)
+            .where(eq(db.schema.approvalComments.approvalId, approval.id));
         }
 
         // Audit and join rows reference agents, tasks, executions, approvals,
