@@ -915,6 +915,57 @@ describe('RBAC Contract Validation', () => {
       const after = await getCompany(companyIdB);
       expect(after?.status).toBe(before?.status);
     });
+
+    it('user with membership only in A cannot access B (no company_members row in B)', async () => {
+      const companyARes = await request(app)
+        .post('/api/companies')
+        .set('X-Eidolon-Test-User-Id', 'cross-company-user-a')
+        .send({ name: '__mtest__ Cross Company A', settings: { testFixture: true } })
+        .expect(201);
+      const companyA = companyARes.body.data.id as string;
+      const companyBRes = await request(app)
+        .post('/api/companies')
+        .set('X-Eidolon-Test-User-Id', 'cross-company-user-b')
+        .send({ name: '__mtest__ Cross Company B', settings: { testFixture: true } })
+        .expect(201);
+      const companyB = companyBRes.body.data.id as string;
+
+      expect(await getMembership(companyA, 'cross-company-user-a')).not.toBeNull();
+      expect(await getMembership(companyB, 'cross-company-user-a')).toBeNull();
+      expect((await getMembership(companyB, 'cross-company-user-b'))?.role).toBe('owner');
+
+      const snapshot = async () => ({
+        company: await getCompany(companyB),
+        artifacts: (
+          await db.drizzle
+            .select()
+            .from(db.schema.artifacts)
+            .where(eq(db.schema.artifacts.companyId, companyB))
+        ).length,
+        members: await countMembers(companyB),
+      });
+      const before = await snapshot();
+      const denied = [
+        request(app).get(`/api/companies/${companyB}/agents`),
+        request(app)
+          .post(`/api/companies/${companyB}/artifacts`)
+          .send({
+            type: 'document',
+            title: 'cross-company denied',
+            content: { format: 'markdown', body: '# denied' },
+          }),
+        request(app).patch(`/api/companies/${companyB}`).send({ name: 'cross-company denied' }),
+        request(app).delete(`/api/companies/${companyB}`),
+      ];
+
+      for (const pending of denied) {
+        const response = await pending
+          .set('X-Eidolon-Test-User-Id', 'cross-company-user-a')
+          .expect(403);
+        expect(['NOT_MEMBER', 'INSUFFICIENT_PERMISSION']).toContain(response.body.code);
+      }
+      expect(await snapshot()).toEqual(before);
+    });
   });
 
   // =========================================================================
@@ -1083,6 +1134,213 @@ describe('RBAC Contract Validation', () => {
           // DB state check: name unchanged for denied roles
           const after = await getCompany(companyId);
           expect(after?.name).toBe(before?.name);
+        }
+      }
+    });
+
+    it('tests the complete migrated write inventory for every role', async () => {
+      const id = '00000000-0000-4000-8000-000000000001';
+      const routes: Array<{
+        name: string;
+        method: 'post' | 'patch' | 'delete';
+        path: string;
+        permission: Permission;
+        body?: Record<string, unknown>;
+      }> = [
+        {
+          name: 'agents POST',
+          method: 'post',
+          path: '/agents',
+          permission: 'agent.manage',
+          body: { name: 'route agent', role: 'engineer' },
+        },
+        {
+          name: 'projects POST',
+          method: 'post',
+          path: '/projects',
+          permission: 'project.create',
+          body: { name: 'route project' },
+        },
+        {
+          name: 'projects PATCH',
+          method: 'patch',
+          path: `/projects/${id}`,
+          permission: 'project.update',
+          body: { name: 'route project update' },
+        },
+        {
+          name: 'tasks POST',
+          method: 'post',
+          path: '/tasks',
+          permission: 'task.create',
+          body: { title: 'route task' },
+        },
+        {
+          name: 'tasks PATCH',
+          method: 'patch',
+          path: `/tasks/${id}`,
+          permission: 'task.update',
+          body: { title: 'route task update' },
+        },
+        { name: 'tasks DELETE', method: 'delete', path: `/tasks/${id}`, permission: 'task.delete' },
+        {
+          name: 'chat POST',
+          method: 'post',
+          path: '/chat/send',
+          permission: 'chat.participate',
+          body: { content: 'route chat' },
+        },
+        {
+          name: 'artifacts POST',
+          method: 'post',
+          path: '/artifacts',
+          permission: 'artifact.create',
+          body: {
+            type: 'document',
+            title: 'route artifact',
+            content: { format: 'markdown', body: '# route' },
+          },
+        },
+        {
+          name: 'artifacts PATCH',
+          method: 'patch',
+          path: `/artifacts/${id}`,
+          permission: 'artifact.update',
+          body: { title: 'route artifact update' },
+        },
+        {
+          name: 'artifacts DELETE',
+          method: 'delete',
+          path: `/artifacts/${id}`,
+          permission: 'artifact.delete',
+        },
+        {
+          name: 'goals POST',
+          method: 'post',
+          path: '/goals',
+          permission: 'content.create',
+          body: { title: 'route goal' },
+        },
+        {
+          name: 'goals PATCH',
+          method: 'patch',
+          path: `/goals/${id}`,
+          permission: 'content.update',
+          body: { title: 'route goal update' },
+        },
+        {
+          name: 'files POST',
+          method: 'post',
+          path: '/files',
+          permission: 'artifact.create',
+          body: { name: 'route-file.txt', content: 'route' },
+        },
+        {
+          name: 'knowledge POST',
+          method: 'post',
+          path: '/knowledge',
+          permission: 'artifact.create',
+          body: { title: 'route knowledge', content: 'route' },
+        },
+        {
+          name: 'workflows POST',
+          method: 'post',
+          path: '/workflows',
+          permission: 'content.create',
+          body: { name: 'route workflow' },
+        },
+        {
+          name: 'evaluations POST',
+          method: 'post',
+          path: '/evaluations',
+          permission: 'content.create',
+          body: { agentId: id, score: 1 },
+        },
+        {
+          name: 'secrets POST',
+          method: 'post',
+          path: '/secrets',
+          permission: 'secrets.manage',
+          body: { name: 'route secret', value: 'route' },
+        },
+        {
+          name: 'integrations POST',
+          method: 'post',
+          path: '/integrations',
+          permission: 'integrations.manage',
+          body: { name: 'route integration', type: 'custom' },
+        },
+        {
+          name: 'sessions POST',
+          method: 'post',
+          path: '/sessions',
+          permission: 'sessions.manage',
+          body: { name: 'route session' },
+        },
+        {
+          name: 'skills POST',
+          method: 'post',
+          path: '/skills/install',
+          permission: 'skills.manage',
+          body: { name: 'route skill' },
+        },
+        {
+          name: 'environments POST',
+          method: 'post',
+          path: '/environments',
+          permission: 'environments.manage',
+          body: { name: 'route environment' },
+        },
+        {
+          name: 'companies PATCH',
+          method: 'patch',
+          path: '',
+          permission: 'company.settings.update',
+          body: { name: 'route company update' },
+        },
+        { name: 'companies DELETE', method: 'delete', path: '', permission: 'company.delete' },
+      ];
+      const state = async () => ({
+        company: await getCompany(companyId),
+        members: await countMembers(companyId),
+        artifacts: (
+          await db.drizzle
+            .select()
+            .from(db.schema.artifacts)
+            .where(eq(db.schema.artifacts.companyId, companyId))
+        ).length,
+        tasks: (
+          await db.drizzle
+            .select()
+            .from(db.schema.tasks)
+            .where(eq(db.schema.tasks.companyId, companyId))
+        ).length,
+        projects: (
+          await db.drizzle
+            .select()
+            .from(db.schema.projects)
+            .where(eq(db.schema.projects.companyId, companyId))
+        ).length,
+        goals: (
+          await db.drizzle
+            .select()
+            .from(db.schema.goals)
+            .where(eq(db.schema.goals.companyId, companyId))
+        ).length,
+      });
+
+      for (const route of routes) {
+        for (const role of ['owner', 'admin', 'member', 'viewer'] as Role[]) {
+          const before = await state();
+          const target = route.path ? url(route.path) : `/api/companies/${companyId}`;
+          const builder = (request(app) as any)[route.method](target).set(roleHeader(role));
+          const response = route.body ? await builder.send(route.body) : await builder;
+          const allowed = hasPermission(role, route.permission);
+          if (!allowed) {
+            expect(response.status, `${route.name} as ${role}`).toBe(403);
+            expect(response.body.code).toBe('INSUFFICIENT_PERMISSION');
+            expect(await state(), `${route.name} as ${role} changed DB state`).toEqual(before);
+          }
         }
       }
     });

@@ -175,9 +175,20 @@ export function companiesRouter(db: DbInstance): Router {
                 and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, userId)),
               )
               .limit(1);
-            role = memberRow?.role ?? 'owner';
+            if (memberRow) {
+              role = memberRow.role;
+            } else if (userId === 'dev-user-000') {
+              role = 'owner';
+            } else {
+              const [anyMembership] = await db.drizzle
+                .select({ id: companyMembers.id })
+                .from(companyMembers)
+                .where(eq(companyMembers.userId, userId))
+                .limit(1);
+              role = anyMembership ? 'none' : 'owner';
+            }
           } catch {
-            role = 'owner';
+            role = userId === 'dev-user-000' ? 'owner' : 'none';
           }
         }
       } else {

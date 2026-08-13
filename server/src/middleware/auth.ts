@@ -224,13 +224,24 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
                 ),
               )
               .limit(1);
-            role = memberRow?.role ?? 'owner';
+            if (memberRow) {
+              role = memberRow.role;
+            } else if (userId === DEV_USER.id) {
+              role = 'owner';
+            } else {
+              const [anyMembership] = await db.drizzle
+                .select({ id: db.schema.companyMembers.id })
+                .from(db.schema.companyMembers)
+                .where(eq(db.schema.companyMembers.userId, userId))
+                .limit(1);
+              role = anyMembership ? 'none' : 'owner';
+            }
           } catch {
-            role = 'owner';
+            role = userId === DEV_USER.id ? 'owner' : 'none';
           }
         } else {
           // No db → default owner (backward compat)
-          role = 'owner';
+          role = userId === DEV_USER.id ? 'owner' : 'none';
         }
       }
 
