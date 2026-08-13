@@ -197,6 +197,13 @@
       "when": 1786510211328,
       "tag": "0027_ancient_the_hunter",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1786635777069,
+      "tag": "0028_slippery_king_cobra",
+      "breakpoints": true
     }
   ]
 }

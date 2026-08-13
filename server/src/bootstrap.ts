@@ -71,6 +71,9 @@ import {
   userMfaFactors,
   stepUpSessions,
   localTrustedSessions,
+  companyMembers,
+  companyInvitations,
+  agentApiKeys,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -140,6 +143,9 @@ const SCHEMA_BUNDLE = {
   userMfaFactors,
   stepUpSessions,
   localTrustedSessions,
+  companyMembers,
+  companyInvitations,
+  agentApiKeys,
 } as const;
 
 export interface BootstrapOptions {
@@ -174,9 +180,7 @@ function resolveConnectionString(): string {
   // Supabase-CLI docker instance. On Vercel only the POSTGRES_URL family is
   // present (no DATABASE_URL), so hosted Supabase wins there.
   const candidate =
-    process.env.DATABASE_URL ??
-    process.env.POSTGRES_URL ??
-    process.env.POSTGRES_URL_NON_POOLING;
+    process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? process.env.POSTGRES_URL_NON_POOLING;
   if (!candidate) {
     throw new Error(
       'No Postgres connection string set. On Vercel: add the Supabase ' +
@@ -190,7 +194,7 @@ function resolveConnectionString(): string {
 function maskUrl(url: string): string {
   try {
     const u = new URL(url);
-    if (u.password) u.password = '***';
+    if (u.password) {u.password = '***';}
     return u.toString();
   } catch {
     return '(unparseable url)';
@@ -198,11 +202,7 @@ function maskUrl(url: string): string {
 }
 
 async function build(options: BootstrapOptions): Promise<BootstrapResult> {
-  const {
-    runMigrations = true,
-    setupActivityLog = true,
-    maxConnections = 10,
-  } = options;
+  const { runMigrations = true, setupActivityLog = true, maxConnections = 10 } = options;
 
   const connectionString = resolveConnectionString();
   logger.info({ db: maskUrl(connectionString) }, 'Opening Postgres connection');

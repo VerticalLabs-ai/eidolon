@@ -40,10 +40,7 @@ export {
   routines,
 } from './runtime.js';
 export { automationRuns } from './automation_runs.js';
-export {
-  artifacts,
-  artifactRevisions,
-} from './artifacts.js';
+export { artifacts, artifactRevisions } from './artifacts.js';
 export { artifactFolders } from './artifact_folders.js';
 export {
   projectTemplates,
@@ -57,3 +54,6 @@ export { meetings, meetingTasks } from './meetings.js';
 export { userMfaFactors } from './user_mfa_factors.js';
 export { stepUpSessions } from './step_up_sessions.js';
 export { localTrustedSessions } from './local_trusted_sessions.js';
+export { companyMembers } from './company_members.js';
+export { companyInvitations } from './company_invitations.js';
+export { agentApiKeys } from './agent_api_keys.js';
