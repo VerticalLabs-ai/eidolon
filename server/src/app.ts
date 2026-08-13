@@ -58,7 +58,10 @@ import { mentionsRouter } from './routes/mentions.js';
 import { searchRouter } from './routes/search.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
 import { mfaRouter, stepUpRouter } from './routes/mfa.js';
-import { securityMembersRouter } from './routes/security-members.js';
+import {
+  securityMemberRoleRouter,
+  securityMemberRemovalRouter,
+} from './routes/security-members.js';
 import { securityAdminRouter } from './routes/security-admin.js';
 import {
   metricsRouter,
@@ -740,14 +743,24 @@ export function createApp(db: DbInstance): express.Express {
   );
   presenceScoped.use(presenceRouter(db));
   companyScopedRouter.use(presenceScoped);
-  // Company member role/removal is admin/owner only (member.remove
-  // permission). The handler also enforces requireAdminOrOwner internally
-  // (defense in depth); the mount-level guard here rejects non-admins
-  // before the handler runs, matching the prior `requireOrgMember('admin')`
-  // mount behavior. Because the composite is the last company mount, this
-  // guard only runs for requests that did not match any more-specific
-  // company route.
-  companyScopedRouter.use(requirePermission('member.remove'), securityMembersRouter(db));
+  // Company member role management (promote/demote) is owner only
+  // (member.promote permission). The handler also enforces requireOwner
+  // internally (defense in depth). Mounted at the specific path so the
+  // permission middleware only runs for role-change requests.
+  companyScopedRouter.use(
+    '/members/:userId/role',
+    requirePermission('member.promote'),
+    securityMemberRoleRouter(db),
+  );
+  // Company member removal is admin/owner only (member.remove permission).
+  // The handler also enforces requireAdminOrOwner internally (defense in
+  // depth). Mounted at the specific path so the permission middleware only
+  // runs for member-removal requests.
+  companyScopedRouter.use(
+    '/members/:userId',
+    requirePermission('member.remove'),
+    securityMemberRemovalRouter(db),
+  );
   app.use(
     '/api/companies/:companyId',
     requireAuth,

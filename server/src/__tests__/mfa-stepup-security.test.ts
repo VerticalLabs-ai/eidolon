@@ -46,13 +46,8 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
 
   // Helper: enroll a TOTP factor for the dev user and return a valid code.
   async function enrollAndgetCode(label = 'Test Authenticator') {
-    await request(app)
-      .post('/api/auth/mfa/enroll')
-      .send({ label })
-      .expect(201);
-    const codeRes = await request(app)
-      .post('/api/auth/mfa/generate-valid-code')
-      .expect(200);
+    await request(app).post('/api/auth/mfa/enroll').send({ label }).expect(201);
+    const codeRes = await request(app).post('/api/auth/mfa/generate-valid-code').expect(200);
     return codeRes.body.data.code as string;
   }
 
@@ -78,9 +73,7 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
       expect(res.body.data.secret).toMatch(/^[A-Z2-7]+$/);
 
       // The factor is listed among the user's active factors.
-      const list = await request(app)
-        .get('/api/auth/mfa/factors')
-        .expect(200);
+      const list = await request(app).get('/api/auth/mfa/factors').expect(200);
 
       expect(list.body.data.length).toBeGreaterThanOrEqual(1);
       const enrolled = list.body.data.find((f: any) => f.id === res.body.data.factor.id);
@@ -94,10 +87,7 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
     it('verifies a valid TOTP code (challenge succeeds)', async () => {
       const code = await enrollAndgetCode('Verify Test');
 
-      const res = await request(app)
-        .post('/api/auth/mfa/verify')
-        .send({ code })
-        .expect(200);
+      const res = await request(app).post('/api/auth/mfa/verify').send({ code }).expect(200);
 
       expect(res.body.data.verified).toBe(true);
       expect(res.body.data.factorId).toBeTruthy();
@@ -106,10 +96,7 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
     it('rejects an invalid TOTP code (challenge fails)', async () => {
       await enrollAndgetCode('Invalid Test');
 
-      await request(app)
-        .post('/api/auth/mfa/verify')
-        .send({ code: '000000' })
-        .expect(401);
+      await request(app).post('/api/auth/mfa/verify').send({ code: '000000' }).expect(401);
     });
 
     it('disabling a factor removes it from the active list', async () => {
@@ -119,13 +106,9 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
         .expect(201);
       const factorId = res.body.data.factor.id;
 
-      await request(app)
-        .delete(`/api/auth/mfa/factors/${factorId}`)
-        .expect(200);
+      await request(app).delete(`/api/auth/mfa/factors/${factorId}`).expect(200);
 
-      const list = await request(app)
-        .get('/api/auth/mfa/factors')
-        .expect(200);
+      const list = await request(app).get('/api/auth/mfa/factors').expect(200);
       expect(list.body.data.find((f: any) => f.id === factorId)).toBeUndefined();
     });
   });
@@ -142,9 +125,7 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
       const before = await request(app).get(`/api/companies/${companyId}`).expect(200);
 
       // Attempt the sensitive action without step-up → 403 MFA_STEP_UP_REQUIRED.
-      const res = await request(app)
-        .delete(`/api/companies/${companyId}?hard=true`)
-        .expect(403);
+      const res = await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(403);
       expect(res.body.code).toBe('MFA_STEP_UP_REQUIRED');
 
       // VAL-SEC-003: dismissing the challenge leaves the resource unchanged.
@@ -163,9 +144,7 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
         .expect(401);
 
       // No step-up session exists, so the gated action is still blocked.
-      await request(app)
-        .delete(`/api/companies/${companyId}?hard=true`)
-        .expect(403);
+      await request(app).delete(`/api/companies/${companyId}?hard=true`).expect(403);
 
       // Valid step-up code → step-up session granted.
       const stepUp = await request(app)
@@ -224,7 +203,12 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
     beforeEach(async () => {
       const art = await request(app)
         .post(`/api/companies/${companyId}/artifacts`)
-        .send({ type: 'document', title: '__mtest__ Permanent Doc', content: DOC_CONTENT, projectId })
+        .send({
+          type: 'document',
+          title: '__mtest__ Permanent Doc',
+          content: DOC_CONTENT,
+          projectId,
+        })
         .expect(201);
       artifactId = art.body.data.id;
       code = await enrollAndgetCode('Artifact Step-Up');
@@ -256,9 +240,7 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
         .expect(200);
 
       // Hard-deleted → the row is gone (404).
-      await request(app)
-        .get(`/api/companies/${companyId}/artifacts/${artifactId}`)
-        .expect(404);
+      await request(app).get(`/api/companies/${companyId}/artifacts/${artifactId}`).expect(404);
 
       // Revisions are cascade-deleted.
       const revs = await db.drizzle
@@ -340,17 +322,19 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
     const targetUserId = 'sec-test-user-001';
 
     beforeEach(async () => {
-      // Create a local-trusted session as an admin for the target user.
+      // Create a local-trusted session as an owner for the target user.
+      // Owner is required because role changes require member.promote
+      // (owner only) in the RBAC permission matrix.
       const res = await request(app)
         .post('/api/auth/local-trusted/create-session')
-        .send({ companyId, userId: targetUserId, role: 'admin' })
+        .send({ companyId, userId: targetUserId, role: 'owner' })
         .expect(201);
       sessionId = res.body.data.id;
     });
 
     it('admin action succeeds before downgrade; same session denied after downgrade', async () => {
       // An admin-gated action (e.g. listing integrations requires admin)
-      // succeeds with the admin session.
+      // succeeds with the owner session (owner has all permissions).
       await request(app)
         .get(`/api/companies/${companyId}/integrations`)
         .set('X-Eidolon-Test-Session-Id', sessionId)
@@ -396,7 +380,7 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
         .expect(401);
     });
 
-    it('role downgrade revokes the user\'s step-up sessions', async () => {
+    it("role downgrade revokes the user's step-up sessions", async () => {
       // Enroll MFA + grant step-up for the target user (dev user enrolls,
       // then we simulate the target user holding step-up by inserting one).
       const code = await enrollAndgetCode('Downgrade StepUp');
@@ -427,7 +411,8 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
         .expect(403);
     });
 
-    it('a non-admin session cannot downgrade another member (403)', async () => {
+    it('a non-owner session cannot downgrade another member (403)', async () => {
+      // Member session: cannot change roles (member.promote is owner only)
       const memberSession = await request(app)
         .post('/api/auth/local-trusted/create-session')
         .send({ companyId, userId: 'member-actor', role: 'member' })
@@ -436,6 +421,18 @@ describe('MFA + step-up + session invalidation (M8 security)', () => {
       await request(app)
         .post(`/api/companies/${companyId}/members/${targetUserId}/role`)
         .set('X-Eidolon-Test-Session-Id', memberSession.body.data.id)
+        .send({ role: 'viewer' })
+        .expect(403);
+
+      // Admin session: also cannot change roles (member.promote is owner only)
+      const adminSession = await request(app)
+        .post('/api/auth/local-trusted/create-session')
+        .send({ companyId, userId: 'admin-actor-3', role: 'admin' })
+        .expect(201);
+
+      await request(app)
+        .post(`/api/companies/${companyId}/members/${targetUserId}/role`)
+        .set('X-Eidolon-Test-Session-Id', adminSession.body.data.id)
         .send({ role: 'viewer' })
         .expect(403);
     });
