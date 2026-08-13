@@ -64,6 +64,8 @@ import {
 } from './routes/security-members.js';
 import { securityAdminRouter } from './routes/security-admin.js';
 import { membersRouter } from './routes/members.js';
+import { invitationsRouter } from './routes/invitations.js';
+import { clerkWebhookRouter } from './routes/clerk-webhook.js';
 import {
   metricsRouter,
   requestIdMiddleware,
@@ -116,8 +118,20 @@ export function createApp(db: DbInstance): express.Express {
   // Global middleware (auth sessions are Clerk cookies; no handshake to mount)
   // ---------------------------------------------------------------------------
 
-  // Parse JSON bodies (Express 5 built-in)
-  app.use(express.json({ limit: '2mb' }));
+  // Parse JSON bodies (Express 5 built-in).
+  // The verify callback captures the raw body for Clerk webhook signature
+  // verification — verifyWebhook needs the original bytes, not re-serialized
+  // JSON. Only stored for the /api/webhooks/clerk path to limit overhead.
+  app.use(
+    express.json({
+      limit: '2mb',
+      verify: (req, _res, buf) => {
+        if ((req as any).originalUrl?.startsWith('/api/webhooks/clerk')) {
+          (req as any).rawBody = buf.toString('utf8');
+        }
+      },
+    }),
+  );
 
   // Correlate responses and metrics with a bounded request identifier.
   app.use(requestIdMiddleware);
@@ -628,6 +642,24 @@ export function createApp(db: DbInstance): express.Express {
   //   POST   /:memberId/role → member.promote (owner only, backward compat)
   //   DELETE /:memberId      → member.remove   (owner + admin)
   app.use('/api/companies/:companyId/members', requireAuth, membersRouter(db, requirePermission));
+
+  // Invitation management (M2): create, list, revoke.
+  // Each endpoint applies requirePermission('member.invite') inside the
+  // router (owner + admin only).
+  //   POST   /                → member.invite  (create invitation)
+  //   GET    /                → member.invite  (list invitations)
+  //   DELETE /:invitationId   → member.invite  (revoke invitation)
+  app.use(
+    '/api/companies/:companyId/invitations',
+    requireAuth,
+    invitationsRouter(db, requirePermission),
+  );
+
+  // Clerk webhook handler (M2): public endpoint (no auth middleware).
+  // Verifies the Clerk webhook signature in production mode; bypasses
+  // verification in local_trusted mode for testing.
+  //   POST /api/webhooks/clerk → handle user.created events
+  app.use('/api/webhooks/clerk', clerkWebhookRouter(db));
 
   // ---------------------------------------------------------------------------
   // Company-scoped bare-path routers (MOUNTED LAST among company routes).
