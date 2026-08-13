@@ -63,6 +63,7 @@ import {
   securityMemberRemovalRouter,
 } from './routes/security-members.js';
 import { securityAdminRouter } from './routes/security-admin.js';
+import { membersRouter } from './routes/members.js';
 import {
   metricsRouter,
   requestIdMiddleware,
@@ -620,6 +621,14 @@ export function createApp(db: DbInstance): express.Express {
     environmentsRouter(db),
   );
 
+  // Member management (M2): list, promote/demote, remove.
+  // Each endpoint applies its own requirePermission inside the router:
+  //   GET    /              → member.list   (all roles)
+  //   PATCH  /:memberId/role → member.promote (owner only)
+  //   POST   /:memberId/role → member.promote (owner only, backward compat)
+  //   DELETE /:memberId      → member.remove   (owner + admin)
+  app.use('/api/companies/:companyId/members', requireAuth, membersRouter(db, requirePermission));
+
   // ---------------------------------------------------------------------------
   // Company-scoped bare-path routers (MOUNTED LAST among company routes).
   //
@@ -743,24 +752,6 @@ export function createApp(db: DbInstance): express.Express {
   );
   presenceScoped.use(presenceRouter(db));
   companyScopedRouter.use(presenceScoped);
-  // Company member role management (promote/demote) is owner only
-  // (member.promote permission). The handler also enforces requireOwner
-  // internally (defense in depth). Mounted at the specific path so the
-  // permission middleware only runs for role-change requests.
-  companyScopedRouter.use(
-    '/members/:userId/role',
-    requirePermission('member.promote'),
-    securityMemberRoleRouter(db),
-  );
-  // Company member removal is admin/owner only (member.remove permission).
-  // The handler also enforces requireAdminOrOwner internally (defense in
-  // depth). Mounted at the specific path so the permission middleware only
-  // runs for member-removal requests.
-  companyScopedRouter.use(
-    '/members/:userId',
-    requirePermission('member.remove'),
-    securityMemberRemovalRouter(db),
-  );
   app.use(
     '/api/companies/:companyId',
     requireAuth,
