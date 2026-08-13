@@ -60,6 +60,30 @@ export function agentApiKeysRouter(db: DbInstance, requirePermission: RequirePer
       };
       const actingUserId = req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000';
 
+      // Validate agentId: if provided, verify the agent exists AND belongs
+      // to the same company as the route's companyId. Return 400 if the
+      // agent belongs to a different company or doesn't exist.
+      if (body.agentId) {
+        const { agents } = db.schema;
+        const [agent] = await db.drizzle
+          .select({ id: agents.id, companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, body.agentId))
+          .limit(1);
+
+        if (!agent) {
+          throw new AppError(400, 'AGENT_NOT_FOUND', 'The specified agent does not exist');
+        }
+
+        if (agent.companyId !== companyId) {
+          throw new AppError(
+            400,
+            'AGENT_COMPANY_MISMATCH',
+            'The specified agent does not belong to this company',
+          );
+        }
+      }
+
       // Generate raw key, hash, and derive prefix
       const rawKey = generateRawKey();
       const keyHash = hashKey(rawKey);

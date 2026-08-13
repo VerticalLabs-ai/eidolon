@@ -30,7 +30,14 @@ import type { DbInstance } from '../types.js';
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const CreateInvitationBody = z.object({
-  email: z.string().refine((v) => EMAIL_REGEX.test(v), 'Invalid email format'),
+  // Trim whitespace before validation so that padded emails like
+  // '  Alice@Test.com  ' pass the format check. The email is then
+  // lowercased via the transform so that case-insensitive duplicate
+  // detection and consistent storage are guaranteed downstream.
+  email: z
+    .string()
+    .refine((v) => EMAIL_REGEX.test(v.trim()), 'Invalid email format')
+    .transform((v) => v.trim().toLowerCase()),
   role: z.enum(['owner', 'admin', 'member', 'viewer']).default('member'),
 });
 
@@ -58,14 +65,22 @@ export function invitationsRouter(db: DbInstance, requirePermission: RequirePerm
       };
       const actingUserId = req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000';
 
+      // Normalize email: trim whitespace and convert to lowercase.
+      // This ensures case-insensitive duplicate detection and consistent
+      // storage. The same normalization is applied in the Clerk webhook
+      // handler so that webhook email matching is case-insensitive.
+      const normalizedEmail = body.email.trim().toLowerCase();
+
       // Check for duplicate pending invitation for the same email+company.
+      // Uses the normalized email so that case variants (e.g.,
+      // John@Example.com vs john@example.com) are treated as duplicates.
       const [existing] = await db.drizzle
         .select({ id: companyInvitations.id })
         .from(companyInvitations)
         .where(
           and(
             eq(companyInvitations.companyId, companyId),
-            eq(companyInvitations.email, body.email),
+            eq(companyInvitations.email, normalizedEmail),
             eq(companyInvitations.status, 'pending'),
           ),
         )
@@ -79,13 +94,13 @@ export function invitationsRouter(db: DbInstance, requirePermission: RequirePerm
         );
       }
 
-      // Insert the new invitation.
+      // Insert the new invitation with the normalized email.
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       const [invitation] = await db.drizzle
         .insert(companyInvitations)
         .values({
           companyId,
-          email: body.email,
+          email: normalizedEmail,
           role: body.role,
           status: 'pending',
           invitedByUserId: actingUserId,
@@ -101,8 +116,8 @@ export function invitationsRouter(db: DbInstance, requirePermission: RequirePerm
         action: 'invitation.created',
         entityType: 'company_invitation',
         entityId: invitation.id,
-        description: `Invited ${body.email} as ${body.role}`,
-        metadata: { email: body.email, role: body.role },
+        description: `Invited ${normalizedEmail} as ${body.role}`,
+        metadata: { email: normalizedEmail, role: body.role },
         createdAt: new Date(),
       });
 

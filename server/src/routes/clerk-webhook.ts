@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { verifyWebhook } from '@clerk/backend/webhooks';
 import { AppError } from '../middleware/error-handler.js';
 import type { DbInstance } from '../types.js';
@@ -85,7 +85,11 @@ export function clerkWebhookRouter(db: DbInstance): Router {
       const email: string | undefined = primaryEmailObj?.email_address;
 
       if (clerkUserId && email) {
-        await processInvitations(db, email, clerkUserId);
+        // Normalize email: trim whitespace and convert to lowercase.
+        // This matches the normalization applied in invitations.ts so that
+        // webhook email matching is case-insensitive.
+        const normalizedEmail = email.trim().toLowerCase();
+        await processInvitations(db, normalizedEmail, clerkUserId);
       }
     }
 
@@ -107,6 +111,13 @@ export function clerkWebhookRouter(db: DbInstance): Router {
  *
  * Expired invitations are skipped (not accepted, no membership created).
  * Revoked invitations are not matched (status != 'pending').
+ *
+ * Atomicity: invitation acceptance and membership creation are wrapped in a
+ * single transaction per invitation. The invitation status update uses a
+ * conditional WHERE clause (status='pending' AND expiresAt > now()) so that
+ * a concurrent revocation or expiry cannot be overridden. If the conditional
+ * UPDATE matches 0 rows, the membership is not created (the invitation was
+ * revoked or expired between the SELECT and the UPDATE).
  */
 async function processInvitations(
   db: DbInstance,
@@ -128,29 +139,49 @@ async function processInvitations(
       continue;
     }
 
-    // Create the company_members row with the invitation's role.
-    // onConflictDoNothing handles the edge case where the user is already
-    // a member (e.g., webhook retried after a partial failure).
-    await db.drizzle
-      .insert(companyMembers)
-      .values({
-        companyId: invitation.companyId,
-        userId: clerkUserId,
-        role: invitation.role,
-        createdByUserId: invitation.invitedByUserId,
-      })
-      .onConflictDoNothing();
+    // Atomically accept the invitation and create the membership in a single
+    // transaction. The conditional UPDATE on the invitation ensures that only
+    // a pending, non-expired invitation is accepted — if a concurrent
+    // revocation or expiry changed the status, the UPDATE matches 0 rows and
+    // we skip membership creation.
+    await db.drizzle.transaction(async (tx) => {
+      // Conditional UPDATE: only accept if still pending and not expired.
+      const accepted = await tx
+        .update(companyInvitations)
+        .set({
+          status: 'accepted',
+          acceptedByUserId: clerkUserId,
+          acceptedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(companyInvitations.id, invitation.id),
+            eq(companyInvitations.status, 'pending'),
+            sql`${companyInvitations.expiresAt} > ${now}`,
+          ),
+        )
+        .returning({ id: companyInvitations.id });
 
-    // Mark the invitation as accepted.
-    await db.drizzle
-      .update(companyInvitations)
-      .set({
-        status: 'accepted',
-        acceptedByUserId: clerkUserId,
-        acceptedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(companyInvitations.id, invitation.id));
+      if (accepted.length === 0) {
+        // The invitation was no longer pending or had expired between the
+        // SELECT and this UPDATE. Skip membership creation.
+        return;
+      }
+
+      // Create the company_members row with the invitation's role.
+      // onConflictDoNothing handles the edge case where the user is already
+      // a member (e.g., webhook retried after a partial failure).
+      await tx
+        .insert(companyMembers)
+        .values({
+          companyId: invitation.companyId,
+          userId: clerkUserId,
+          role: invitation.role,
+          createdByUserId: invitation.invitedByUserId,
+        })
+        .onConflictDoNothing();
+    });
 
     logger.info(
       {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -134,12 +134,23 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
     return null;
   }
 
-  /** Count how many owners the company has. */
-  async function countOwners(companyId: string): Promise<number> {
-    const owners = await db.drizzle
+  /**
+   * Lock all owner rows for the company within a transaction and return the
+   * count. The SELECT ... FOR UPDATE prevents concurrent transactions from
+   * changing the owner count between the check and the subsequent mutation.
+   * In READ COMMITTED isolation, a concurrent transaction that has modified
+   * an owner row will block this SELECT until it commits; once it commits,
+   * the row is re-evaluated against the updated values.
+   */
+  async function countOwnersForUpdate(
+    tx: Parameters<Parameters<typeof db.drizzle.transaction>[0]>[0],
+    companyId: string,
+  ): Promise<number> {
+    const owners = await tx
       .select({ id: companyMembers.id })
       .from(companyMembers)
-      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.role, 'owner')));
+      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.role, 'owner')))
+      .for('update');
     return owners.length;
   }
 
@@ -186,61 +197,81 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
       throw new AppError(404, 'MEMBER_NOT_FOUND', 'Member not found in this company');
     }
 
-    // Last-owner protection: cannot demote the last owner to a non-owner role.
-    // Only applies when the target has a company_members row (not a session-
-    // only fallback).
-    if (targetMember.fromCompanyMembers && targetMember.role === 'owner' && body.role !== 'owner') {
-      const ownerCount = await countOwners(companyId);
-      if (ownerCount <= 1) {
-        throw new AppError(
-          400,
-          'LAST_OWNER_PROTECTION',
-          'Cannot demote the last owner of the company',
-        );
-      }
-    }
+    // Atomic last-owner protection: wrap the owner-count check and the role
+    // update in a single transaction with SELECT ... FOR UPDATE on all owner
+    // rows. This prevents a race condition where another concurrent request
+    // demotes or removes the other owner between the count and the update.
+    //
+    // Only applies when the target has a company_members row (not a
+    // session-only fallback) and the target is an owner being demoted to a
+    // non-owner role.
+    const isOwnerBeingDemoted =
+      targetMember.fromCompanyMembers && targetMember.role === 'owner' && body.role !== 'owner';
 
-    // In local_trusted mode, update the mutable session row so the change
-    // takes effect on the member's next request with the same session token.
-    if (isLocalTrusted) {
-      const { localTrustedSessions } = db.schema;
-      const [existingSession] = await db.drizzle
-        .select()
-        .from(localTrustedSessions)
-        .where(
-          and(
-            eq(localTrustedSessions.companyId, companyId),
-            eq(localTrustedSessions.userId, targetMember.userId),
-          ),
-        )
-        .limit(1);
+    const updatedRole: string = body.role;
+    let needsStepUpRevocation = false;
 
-      if (existingSession) {
-        const isDowngrade = ROLE_HIERARCHY[body.role] < ROLE_HIERARCHY[existingSession.role];
-
-        await db.drizzle
-          .update(localTrustedSessions)
-          .set({ role: body.role, updatedAt: new Date() })
-          .where(eq(localTrustedSessions.id, existingSession.id));
-
-        // A privilege downgrade revokes the member's step-up sessions.
-        if (isDowngrade) {
-          await revokeUserStepUps(db, targetMember.userId);
+    await db.drizzle.transaction(async (tx) => {
+      if (isOwnerBeingDemoted) {
+        // Lock all owner rows so no concurrent transaction can change the
+        // owner count between this check and the UPDATE below.
+        const ownerCount = await countOwnersForUpdate(tx, companyId);
+        if (ownerCount <= 1) {
+          throw new AppError(
+            400,
+            'LAST_OWNER_PROTECTION',
+            'Cannot demote the last owner of the company',
+          );
         }
       }
-    }
 
-    // Update the company_members row (if one exists — the member may have
-    // been found via local_trusted_sessions without a company_members row)
-    await db.drizzle
-      .update(companyMembers)
-      .set({ role: body.role, updatedAt: new Date() })
-      .where(
-        and(
-          eq(companyMembers.companyId, companyId),
-          eq(companyMembers.userId, targetMember.userId),
-        ),
-      );
+      // In local_trusted mode, update the mutable session row so the change
+      // takes effect on the member's next request with the same session token.
+      if (isLocalTrusted) {
+        const { localTrustedSessions } = db.schema;
+        const [existingSession] = await tx
+          .select()
+          .from(localTrustedSessions)
+          .where(
+            and(
+              eq(localTrustedSessions.companyId, companyId),
+              eq(localTrustedSessions.userId, targetMember.userId),
+            ),
+          )
+          .limit(1);
+
+        if (existingSession) {
+          const isDowngrade = ROLE_HIERARCHY[body.role] < ROLE_HIERARCHY[existingSession.role];
+
+          await tx
+            .update(localTrustedSessions)
+            .set({ role: body.role, updatedAt: new Date() })
+            .where(eq(localTrustedSessions.id, existingSession.id));
+
+          // A privilege downgrade revokes the member's step-up sessions.
+          if (isDowngrade) {
+            needsStepUpRevocation = true;
+          }
+        }
+      }
+
+      // Update the company_members row (if one exists — the member may have
+      // been found via local_trusted_sessions without a company_members row)
+      await tx
+        .update(companyMembers)
+        .set({ role: body.role, updatedAt: new Date() })
+        .where(
+          and(
+            eq(companyMembers.companyId, companyId),
+            eq(companyMembers.userId, targetMember.userId),
+          ),
+        );
+    });
+
+    // Revoke step-up sessions outside the transaction (uses db directly)
+    if (needsStepUpRevocation) {
+      await revokeUserStepUps(db, targetMember.userId);
+    }
 
     // Audit log
     await db.drizzle.insert(db.schema.activityLog).values({
@@ -307,46 +338,60 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
       );
     }
 
-    // Last-owner protection: cannot remove the last owner.
-    // Only applies when the target has a company_members row.
-    if (targetMember.fromCompanyMembers && targetMember.role === 'owner') {
-      const ownerCount = await countOwners(companyId);
-      if (ownerCount <= 1) {
-        throw new AppError(
-          400,
-          'LAST_OWNER_PROTECTION',
-          'Cannot remove the last owner of the company',
-        );
-      }
-    }
+    // Atomic last-owner protection: wrap the owner-count check and the
+    // deletion in a single transaction with SELECT ... FOR UPDATE on all
+    // owner rows. This prevents a race condition where another concurrent
+    // request removes the other owner between the count and the delete.
+    //
+    // Only applies when the target has a company_members row and is an owner.
+    const isOwnerRemoval = targetMember.fromCompanyMembers && targetMember.role === 'owner';
 
-    // In local_trusted mode, deactivate the member's session so their
-    // existing session token is rejected on the next request.
-    if (isLocalTrusted) {
-      const { localTrustedSessions } = db.schema;
-      await db.drizzle
-        .update(localTrustedSessions)
-        .set({ active: false, updatedAt: new Date() })
+    await db.drizzle.transaction(async (tx) => {
+      if (isOwnerRemoval) {
+        // Lock all owner rows so no concurrent transaction can change the
+        // owner count between this check and the DELETE below.
+        const ownerCount = await countOwnersForUpdate(tx, companyId);
+        if (ownerCount <= 1) {
+          throw new AppError(
+            400,
+            'LAST_OWNER_PROTECTION',
+            'Cannot remove the last owner of the company',
+          );
+        }
+      }
+
+      // In local_trusted mode, deactivate the member's session so their
+      // existing session token is rejected on the next request.
+      if (isLocalTrusted) {
+        const { localTrustedSessions } = db.schema;
+        await tx
+          .update(localTrustedSessions)
+          .set({ active: false, updatedAt: new Date() })
+          .where(
+            and(
+              eq(localTrustedSessions.companyId, companyId),
+              eq(localTrustedSessions.userId, targetMember.userId),
+            ),
+          );
+      }
+
+      // Delete the company_members row — removed user immediately loses
+      // access. (If the member was found via local_trusted_sessions without
+      // a company_members row, this is a no-op DELETE.)
+      await tx
+        .delete(companyMembers)
         .where(
           and(
-            eq(localTrustedSessions.companyId, companyId),
-            eq(localTrustedSessions.userId, targetMember.userId),
+            eq(companyMembers.companyId, companyId),
+            eq(companyMembers.userId, targetMember.userId),
           ),
         );
+    });
+
+    // Revoke step-up sessions outside the transaction (uses db directly)
+    if (isLocalTrusted) {
       await revokeUserStepUps(db, targetMember.userId);
     }
-
-    // Delete the company_members row — removed user immediately loses
-    // access. (If the member was found via local_trusted_sessions without
-    // a company_members row, this is a no-op DELETE.)
-    await db.drizzle
-      .delete(companyMembers)
-      .where(
-        and(
-          eq(companyMembers.companyId, companyId),
-          eq(companyMembers.userId, targetMember.userId),
-        ),
-      );
 
     // Audit log
     await db.drizzle.insert(db.schema.activityLog).values({

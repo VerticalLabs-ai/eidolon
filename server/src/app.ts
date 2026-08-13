@@ -58,10 +58,6 @@ import { mentionsRouter } from './routes/mentions.js';
 import { searchRouter } from './routes/search.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
 import { mfaRouter, stepUpRouter } from './routes/mfa.js';
-import {
-  securityMemberRoleRouter,
-  securityMemberRemovalRouter,
-} from './routes/security-members.js';
 import { securityAdminRouter } from './routes/security-admin.js';
 import { membersRouter } from './routes/members.js';
 import { invitationsRouter } from './routes/invitations.js';
