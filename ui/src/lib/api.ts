@@ -57,7 +57,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     );
   }
 
-  if (res.status === 204) {return undefined as T;}
+  if (res.status === 204) {
+    return undefined as T;
+  }
   return res.json();
 }
 
@@ -252,6 +254,22 @@ export interface CompanyMember {
   createdAt: string;
 }
 
+export type InvitationStatus = 'pending' | 'accepted' | 'revoked' | 'expired';
+
+export interface CompanyInvitation {
+  id: string;
+  companyId: string;
+  email: string;
+  role: Role;
+  status: InvitationStatus;
+  invitedByUserId: string;
+  acceptedByUserId?: string | null;
+  acceptedAt?: string | null;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export const getMyRole = (companyId: string) =>
   request<{ role: Role }>(`/companies/${companyId}/my-role`);
 
@@ -267,6 +285,21 @@ export const updateMemberRole = (companyId: string, memberId: string, role: Role
 export const removeMember = (companyId: string, memberId: string) =>
   request<{ companyId: string; userId: string; removed: boolean }>(
     `/companies/${companyId}/members/${memberId}`,
+    { method: 'DELETE' },
+  );
+
+export const getInvitations = (companyId: string) =>
+  request<CompanyInvitation[]>(`/companies/${companyId}/invitations`);
+
+export const createInvitation = (companyId: string, data: { email: string; role: Role }) =>
+  request<CompanyInvitation>(`/companies/${companyId}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const revokeInvitation = (companyId: string, invitationId: string) =>
+  request<CompanyInvitation | { revoked: boolean }>(
+    `/companies/${companyId}/invitations/${invitationId}`,
     { method: 'DELETE' },
   );
 
@@ -294,8 +327,12 @@ export const updateCompany = (
 
 export const deleteCompany = (id: string, hard = false, stepUpToken?: string) => {
   const qs = new URLSearchParams();
-  if (hard) {qs.set('hard', 'true');}
-  if (stepUpToken) {qs.set('stepUpToken', stepUpToken);}
+  if (hard) {
+    qs.set('hard', 'true');
+  }
+  if (stepUpToken) {
+    qs.set('stepUpToken', stepUpToken);
+  }
   const query = qs.toString();
   return request<void>(`/companies/${id}${query ? `?${query}` : ''}`, { method: 'DELETE' });
 };
@@ -455,10 +492,18 @@ export const wakeAgent = (companyId: string, agentId: string) =>
 
 export const getTasks = (companyId: string, filters?: TaskFilters) => {
   const params = new URLSearchParams();
-  if (filters?.status) {params.set('status', filters.status);}
-  if (filters?.priority) {params.set('priority', filters.priority);}
-  if (filters?.assigneeId) {params.set('assigneeId', filters.assigneeId);}
-  if (filters?.projectId) {params.set('project', filters.projectId);}
+  if (filters?.status) {
+    params.set('status', filters.status);
+  }
+  if (filters?.priority) {
+    params.set('priority', filters.priority);
+  }
+  if (filters?.assigneeId) {
+    params.set('assigneeId', filters.assigneeId);
+  }
+  if (filters?.projectId) {
+    params.set('project', filters.projectId);
+  }
   const qs = params.toString();
   return request<Task[]>(`/companies/${companyId}/tasks${qs ? `?${qs}` : ''}`);
 };
@@ -763,8 +808,12 @@ export const getProjectThreads = (
   filters?: ProjectThreadFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.status) {params.set('status', filters.status);}
-  if (filters?.type) {params.set('type', filters.type);}
+  if (filters?.status) {
+    params.set('status', filters.status);
+  }
+  if (filters?.type) {
+    params.set('type', filters.type);
+  }
   const query = params.toString();
   return request<ApiResponse<ProjectThread[]>>(
     `/companies/${companyId}/projects/${projectId}/threads${query ? `?${query}` : ''}`,
@@ -821,7 +870,9 @@ export interface MentionableEntity {
 
 export const searchMentions = (companyId: string, query: string) => {
   const params = new URLSearchParams();
-  if (query) {params.set('q', query);}
+  if (query) {
+    params.set('q', query);
+  }
   return request<ApiResponse<MentionableEntity[]>>(
     `/companies/${companyId}/mentions/search?${params.toString()}`,
   );
@@ -866,14 +917,30 @@ export interface SearchFilters {
 export const searchCompany = (companyId: string, query: string, filters?: SearchFilters) => {
   const params = new URLSearchParams();
   params.set('q', query);
-  if (filters?.type) {params.set('type', filters.type);}
-  if (filters?.folderId) {params.set('folderId', filters.folderId);}
-  if (filters?.authorId) {params.set('authorId', filters.authorId);}
-  if (filters?.dateFrom) {params.set('dateFrom', filters.dateFrom);}
-  if (filters?.dateTo) {params.set('dateTo', filters.dateTo);}
-  if (filters?.includeArchived) {params.set('includeArchived', 'true');}
-  if (filters?.limit != null) {params.set('limit', String(filters.limit));}
-  if (filters?.offset != null) {params.set('offset', String(filters.offset));}
+  if (filters?.type) {
+    params.set('type', filters.type);
+  }
+  if (filters?.folderId) {
+    params.set('folderId', filters.folderId);
+  }
+  if (filters?.authorId) {
+    params.set('authorId', filters.authorId);
+  }
+  if (filters?.dateFrom) {
+    params.set('dateFrom', filters.dateFrom);
+  }
+  if (filters?.dateTo) {
+    params.set('dateTo', filters.dateTo);
+  }
+  if (filters?.includeArchived) {
+    params.set('includeArchived', 'true');
+  }
+  if (filters?.limit != null) {
+    params.set('limit', String(filters.limit));
+  }
+  if (filters?.offset != null) {
+    params.set('offset', String(filters.offset));
+  }
   return request<SearchResponse>(`/companies/${companyId}/search?${params.toString()}`);
 };
 
@@ -885,7 +952,9 @@ export const getProjectPlans = (
   filters?: ProjectPlanFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.status) {params.set('status', filters.status);}
+  if (filters?.status) {
+    params.set('status', filters.status);
+  }
   const query = params.toString();
   return request<ApiResponse<ProjectPlan[]>>(
     `/companies/${companyId}/projects/${projectId}/plans${query ? `?${query}` : ''}`,
@@ -958,7 +1027,9 @@ export const getProjectDecisions = (
   filters?: ProjectDecisionFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.status) {params.set('status', filters.status);}
+  if (filters?.status) {
+    params.set('status', filters.status);
+  }
   const query = params.toString();
   return request<ApiResponse<ProjectDecision[]>>(
     `/companies/${companyId}/projects/${projectId}/decisions${query ? `?${query}` : ''}`,
@@ -992,8 +1063,12 @@ export const getProjectOutcomes = (
   filters?: ProjectOutcomeFilters,
 ) => {
   const params = new URLSearchParams();
-  if (filters?.type) {params.set('type', filters.type);}
-  if (filters?.status) {params.set('status', filters.status);}
+  if (filters?.type) {
+    params.set('type', filters.type);
+  }
+  if (filters?.status) {
+    params.set('status', filters.status);
+  }
   const query = params.toString();
   return request<ApiResponse<ProjectOutcome[]>>(
     `/companies/${companyId}/projects/${projectId}/outcomes${query ? `?${query}` : ''}`,
@@ -1087,7 +1162,9 @@ export const restoreTaskSubtree = (companyId: string, taskId: string) =>
 
 export const getGoals = (companyId: string, filters?: GoalFilters) => {
   const params = new URLSearchParams();
-  if (filters?.projectId) {params.set('project', filters.projectId);}
+  if (filters?.projectId) {
+    params.set('project', filters.projectId);
+  }
   const qs = params.toString();
   return request<Goal[]>(`/companies/${companyId}/goals${qs ? `?${qs}` : ''}`);
 };
@@ -1380,8 +1457,12 @@ export interface FileFilters {
 
 export const getFiles = (companyId: string, agentId?: string, filters?: FileFilters) => {
   const params = new URLSearchParams();
-  if (agentId) {params.set('agentId', agentId);}
-  if (filters?.projectId) {params.set('project', filters.projectId);}
+  if (agentId) {
+    params.set('agentId', agentId);
+  }
+  if (filters?.projectId) {
+    params.set('project', filters.projectId);
+  }
   const qs = params.toString();
   return request<AgentFile[]>(`/companies/${companyId}/files${qs ? `?${qs}` : ''}`);
 };
@@ -1556,11 +1637,21 @@ export interface AutomationRunFilters {
 
 export const getAutomationRuns = (companyId: string, filters?: AutomationRunFilters) => {
   const params = new URLSearchParams();
-  if (filters?.type) {params.set('type', filters.type);}
-  if (filters?.status) {params.set('status', filters.status);}
-  if (filters?.project) {params.set('project', filters.project);}
-  if (filters?.limit) {params.set('limit', String(filters.limit));}
-  if (filters?.offset) {params.set('offset', String(filters.offset));}
+  if (filters?.type) {
+    params.set('type', filters.type);
+  }
+  if (filters?.status) {
+    params.set('status', filters.status);
+  }
+  if (filters?.project) {
+    params.set('project', filters.project);
+  }
+  if (filters?.limit) {
+    params.set('limit', String(filters.limit));
+  }
+  if (filters?.offset) {
+    params.set('offset', String(filters.offset));
+  }
   const qs = params.toString();
   return request<ApiResponse<AutomationRun[]>>(
     `/companies/${companyId}/automations/runs${qs ? `?${qs}` : ''}`,
@@ -1583,7 +1674,9 @@ export interface UnifiedHealthEntry {
 
 export const getUnifiedHealth = (companyId: string, projectId?: string) => {
   const params = new URLSearchParams();
-  if (projectId) {params.set('project', projectId);}
+  if (projectId) {
+    params.set('project', projectId);
+  }
   const qs = params.toString();
   return request<ApiResponse<UnifiedHealthEntry[]>>(
     `/companies/${companyId}/integrations/health${qs ? `?${qs}` : ''}`,
@@ -1759,7 +1852,9 @@ export const getGlobalPromptTemplates = () => request<PromptTemplate[]>('/prompt
 
 export const getPromptTemplates = (companyId: string, category?: string) => {
   const params = new URLSearchParams();
-  if (category) {params.set('category', category);}
+  if (category) {
+    params.set('category', category);
+  }
   const qs = params.toString();
   return request<PromptTemplate[]>(`/companies/${companyId}/prompts${qs ? `?${qs}` : ''}`);
 };
@@ -2261,7 +2356,9 @@ export interface AgentCollaboration {
 
 export const getCollaborations = (companyId: string, limit?: number) => {
   const params = new URLSearchParams();
-  if (limit) {params.set('limit', String(limit));}
+  if (limit) {
+    params.set('limit', String(limit));
+  }
   const qs = params.toString();
   return request<AgentCollaboration[]>(
     `/companies/${companyId}/collaborations${qs ? `?${qs}` : ''}`,
@@ -2321,7 +2418,9 @@ export interface CompanyTemplate {
 
 export const getTemplates = (category?: string) => {
   const params = new URLSearchParams();
-  if (category && category !== 'all') {params.set('category', category);}
+  if (category && category !== 'all') {
+    params.set('category', category);
+  }
   const qs = params.toString();
   return request<CompanyTemplate[]>(`/templates${qs ? `?${qs}` : ''}`);
 };
@@ -2723,14 +2822,30 @@ export interface ArtifactListParams {
 
 function artifactListQuery(params: ArtifactListParams): string {
   const sp = new URLSearchParams();
-  if (params.projectId) {sp.set('projectId', params.projectId);}
-  if (params.type) {sp.set('type', params.type);}
-  if (params.status) {sp.set('status', params.status);}
-  if (params.folderId) {sp.set('folderId', params.folderId);}
-  if (params.limit !== undefined) {sp.set('limit', String(params.limit));}
-  if (params.offset !== undefined) {sp.set('offset', String(params.offset));}
-  if (params.sort) {sp.set('sort', params.sort);}
-  if (params.order) {sp.set('order', params.order);}
+  if (params.projectId) {
+    sp.set('projectId', params.projectId);
+  }
+  if (params.type) {
+    sp.set('type', params.type);
+  }
+  if (params.status) {
+    sp.set('status', params.status);
+  }
+  if (params.folderId) {
+    sp.set('folderId', params.folderId);
+  }
+  if (params.limit !== undefined) {
+    sp.set('limit', String(params.limit));
+  }
+  if (params.offset !== undefined) {
+    sp.set('offset', String(params.offset));
+  }
+  if (params.sort) {
+    sp.set('sort', params.sort);
+  }
+  if (params.order) {
+    sp.set('order', params.order);
+  }
   const qs = sp.toString();
   return qs ? `?${qs}` : '';
 }
@@ -2889,8 +3004,11 @@ export interface ArtifactFolder {
 
 export const listFolders = (companyId: string, projectId?: string | null) => {
   const sp = new URLSearchParams();
-  if (projectId === null) {sp.set('projectId', 'null');}
-  else if (projectId) {sp.set('projectId', projectId);}
+  if (projectId === null) {
+    sp.set('projectId', 'null');
+  } else if (projectId) {
+    sp.set('projectId', projectId);
+  }
   const qs = sp.toString();
   return request<ApiResponse<ArtifactFolder[]>>(
     `/companies/${companyId}/folders${qs ? `?${qs}` : ''}`,
@@ -3147,7 +3265,9 @@ export const listProjectMeetings = (
   params?: { status?: MeetingStatus; limit?: number; offset?: number },
 ) => {
   const qs = new URLSearchParams();
-  if (params?.status) {qs.set('status', params.status);}
+  if (params?.status) {
+    qs.set('status', params.status);
+  }
   qs.set('limit', String(params?.limit ?? 50));
   qs.set('offset', String(params?.offset ?? 0));
   return request<MeetingListResponse>(

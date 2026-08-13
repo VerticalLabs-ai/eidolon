@@ -65,6 +65,34 @@ export function useRemoveMember(companyId: string) {
   });
 }
 
+export function useInvitations(companyId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['invitations', companyId],
+    queryFn: async () => unwrap<api.CompanyInvitation[]>(await api.getInvitations(companyId!)),
+    enabled: !!companyId && enabled,
+  });
+}
+
+export function useCreateInvitation(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { email: string; role: api.Role }) => api.createInvitation(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['invitations', companyId] });
+    },
+  });
+}
+
+export function useRevokeInvitation(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (invitationId: string) => api.revokeInvitation(companyId, invitationId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['invitations', companyId] });
+    },
+  });
+}
+
 // ── Companies ────────────────────────────────────────────────────────────
 
 export function useCompanies() {
@@ -1909,7 +1937,9 @@ export function useMarkInboxRead(companyId: string) {
       return { prev };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) {qc.setQueryData(['inbox', companyId], ctx.prev);}
+      if (ctx?.prev) {
+        qc.setQueryData(['inbox', companyId], ctx.prev);
+      }
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['inbox', companyId] });
@@ -2260,28 +2290,40 @@ export function useArtifactPresence(companyId: string | undefined, artifactId: s
   // Live-patch the cached presence list from WS events.
   useServerEvents(companyId, 'presence.join', (event) => {
     const payload = event.payload as { artifactId?: string; userId?: string; name?: string };
-    if (!artifactId || payload?.artifactId !== artifactId) {return;}
+    if (!artifactId || payload?.artifactId !== artifactId) {
+      return;
+    }
     qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
       const next = old ?? [];
-      if (next.some((p) => p.userId === payload.userId)) {return next;}
+      if (next.some((p) => p.userId === payload.userId)) {
+        return next;
+      }
       return [...next, { userId: payload.userId!, name: payload.name!, typing: false }];
     });
   });
 
   useServerEvents(companyId, 'presence.leave', (event) => {
     const payload = event.payload as { artifactId?: string; userId?: string };
-    if (!artifactId || payload?.artifactId !== artifactId) {return;}
+    if (!artifactId || payload?.artifactId !== artifactId) {
+      return;
+    }
     qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
-      if (!old) {return old;}
+      if (!old) {
+        return old;
+      }
       return old.filter((p) => p.userId !== payload.userId);
     });
   });
 
   useServerEvents(companyId, 'presence.typing', (event) => {
     const payload = event.payload as { artifactId?: string; userId?: string; typing?: boolean };
-    if (!artifactId || payload?.artifactId !== artifactId) {return;}
+    if (!artifactId || payload?.artifactId !== artifactId) {
+      return;
+    }
     qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
-      if (!old) {return old;}
+      if (!old) {
+        return old;
+      }
       return old.map((p) =>
         p.userId === payload.userId ? { ...p, typing: payload.typing ?? false } : p,
       );
@@ -2308,7 +2350,9 @@ export function useProjectPresence(companyId: string | undefined, projectId: str
   // Live-patch: any presence.join/leave re-invalidates the aggregated list so
   // the project-level indicator updates without reload.
   const invalidate = () => {
-    if (!projectId) {return;}
+    if (!projectId) {
+      return;
+    }
     qc.invalidateQueries({ queryKey });
   };
   useServerEvents(companyId, 'presence.join', invalidate);
@@ -2338,7 +2382,9 @@ export function usePresenceActions(companyId: string | undefined, artifactId: st
   const [selfUserId, setSelfUserId] = useState<string | undefined>(undefined);
 
   const join = useCallback(async () => {
-    if (!companyId || !artifactId) {return;}
+    if (!companyId || !artifactId) {
+      return;
+    }
     try {
       const res = await api.joinPresence(companyId, artifactId);
       const body = res as unknown as { data: { userId: string } };
@@ -2347,7 +2393,9 @@ export function usePresenceActions(companyId: string | undefined, artifactId: st
       /* presence is best-effort */
     }
     // Heartbeat to keep the session alive (refreshes lastActiveAt).
-    if (heartbeatRef.current) {clearInterval(heartbeatRef.current);}
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+    }
     heartbeatRef.current = setInterval(async () => {
       try {
         await api.joinPresence(companyId, artifactId);
@@ -2358,7 +2406,9 @@ export function usePresenceActions(companyId: string | undefined, artifactId: st
   }, [companyId, artifactId]);
 
   const leave = useCallback(async () => {
-    if (!companyId || !artifactId) {return;}
+    if (!companyId || !artifactId) {
+      return;
+    }
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
       heartbeatRef.current = null;
@@ -2377,9 +2427,13 @@ export function usePresenceActions(companyId: string | undefined, artifactId: st
 
   /** Notify that the user is typing. Debounced; auto-clears after idle. */
   const notifyTyping = useCallback(async () => {
-    if (!companyId || !artifactId) {return;}
+    if (!companyId || !artifactId) {
+      return;
+    }
     // Reset the idle-clear timer on each keystroke.
-    if (typingTimerRef.current) {clearTimeout(typingTimerRef.current);}
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current);
+    }
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       try {
