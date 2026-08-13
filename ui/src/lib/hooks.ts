@@ -1,35 +1,110 @@
 // Eidolon hooks — v2 with projects, delete, toasts
-import { useRef, useCallback, useState, useEffect } from "react";
-import {
-  useQuery,
-  useQueries,
-  useMutation,
-  useQueryClient,
-} from "@tanstack/react-query";
-import * as api from "./api";
-import { useServerEvents } from "./ws";
-import type { GoalFilters, TaskFilters, FileFilters } from "./api";
+import { useRef, useCallback, useState, useEffect } from 'react';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import * as api from './api';
+import { useServerEvents } from './ws';
+import type { GoalFilters, TaskFilters, FileFilters } from './api';
 
 // Helper: server wraps responses in { data: ... }, unwrap it
 function unwrap<T>(res: unknown): T {
-  if (res && typeof res === "object" && "data" in res) {
+  if (res && typeof res === 'object' && 'data' in res) {
     return (res as { data: T }).data;
   }
   return res as T;
+}
+
+// ── RBAC: Roles & Members ────────────────────────────────────────────────
+
+/**
+ * Fetch the current user's role for a company. The server returns
+ * `{ role: "owner|admin|member|viewer" }` at the top level (not wrapped
+ * in `data`), so we extract `role` directly.
+ */
+export function useMyRole(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ['my-role', companyId],
+    queryFn: async () => {
+      const res = await api.getMyRole(companyId!);
+      // Response may be { role } or { data: { role } } depending on middleware
+      if (res && typeof res === 'object' && 'data' in res) {
+        return (res as { data: { role: api.Role } }).data.role;
+      }
+      return (res as { role: api.Role }).role;
+    },
+    enabled: !!companyId,
+    retry: false,
+  });
+}
+
+export function useMembers(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ['members', companyId],
+    queryFn: async () => unwrap<api.CompanyMember[]>(await api.getMembers(companyId!)),
+    enabled: !!companyId,
+  });
+}
+
+export function useUpdateMemberRole(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ memberId, role }: { memberId: string; role: api.Role }) =>
+      api.updateMemberRole(companyId, memberId, role),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['members', companyId] });
+    },
+  });
+}
+
+export function useRemoveMember(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (memberId: string) => api.removeMember(companyId, memberId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['members', companyId] });
+    },
+  });
+}
+
+export function useInvitations(companyId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['invitations', companyId],
+    queryFn: async () => unwrap<api.CompanyInvitation[]>(await api.getInvitations(companyId!)),
+    enabled: !!companyId && enabled,
+  });
+}
+
+export function useCreateInvitation(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { email: string; role: api.Role }) => api.createInvitation(companyId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['invitations', companyId] });
+    },
+  });
+}
+
+export function useRevokeInvitation(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (invitationId: string) => api.revokeInvitation(companyId, invitationId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['invitations', companyId] });
+    },
+  });
 }
 
 // ── Companies ────────────────────────────────────────────────────────────
 
 export function useCompanies() {
   return useQuery({
-    queryKey: ["companies"],
+    queryKey: ['companies'],
     queryFn: async () => unwrap<api.Company[]>(await api.getCompanies()),
   });
 }
 
 export function useCompany(id: string | undefined) {
   return useQuery({
-    queryKey: ["companies", id],
+    queryKey: ['companies', id],
     queryFn: async () => unwrap<api.Company>(await api.getCompany(id!)),
     enabled: !!id,
   });
@@ -37,7 +112,7 @@ export function useCompany(id: string | undefined) {
 
 export function useDashboard(id: string | undefined) {
   return useQuery({
-    queryKey: ["dashboard", id],
+    queryKey: ['dashboard', id],
     queryFn: async () => unwrap<api.DashboardData>(await api.getDashboard(id!)),
     enabled: !!id,
     refetchInterval: 10_000,
@@ -47,10 +122,9 @@ export function useDashboard(id: string | undefined) {
 export function useCreateCompany() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.createCompany>[0]) =>
-      api.createCompany(data),
+    mutationFn: (data: Parameters<typeof api.createCompany>[0]) => api.createCompany(data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ['companies'] });
     },
   });
 }
@@ -58,17 +132,12 @@ export function useCreateCompany() {
 export function useUpdateCompany() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: Parameters<typeof api.updateCompany>[1];
-    }) => api.updateCompany(id, data),
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.updateCompany>[1] }) =>
+      api.updateCompany(id, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["companies"] });
-      qc.invalidateQueries({ queryKey: ["companies", vars.id] });
-      qc.invalidateQueries({ queryKey: ["dashboard", vars.id] });
+      qc.invalidateQueries({ queryKey: ['companies'] });
+      qc.invalidateQueries({ queryKey: ['companies', vars.id] });
+      qc.invalidateQueries({ queryKey: ['dashboard', vars.id] });
     },
   });
 }
@@ -86,7 +155,7 @@ export function useDeleteCompany() {
       stepUpToken?: string;
     }) => api.deleteCompany(id, hard, stepUpToken),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ['companies'] });
     },
   });
 }
@@ -95,18 +164,15 @@ export function useDeleteCompany() {
 
 export function useProjects(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["projects", companyId],
+    queryKey: ['projects', companyId],
     queryFn: async () => unwrap<api.Project[]>(await api.getProjects(companyId!)),
     enabled: !!companyId,
   });
 }
 
-export function useProject(
-  companyId: string | undefined,
-  projectId: string | undefined,
-) {
+export function useProject(companyId: string | undefined, projectId: string | undefined) {
   return useQuery({
-    queryKey: ["projects", companyId, projectId],
+    queryKey: ['projects', companyId, projectId],
     queryFn: async () => unwrap<api.Project>(await api.getProject(companyId!, projectId!)),
     enabled: !!companyId && !!projectId,
   });
@@ -119,11 +185,11 @@ export function useCreateProject(companyId: string) {
     mutationFn: async (data: api.CreateProjectInput) =>
       unwrap<api.Project>(await api.createProject(companyId, data)),
     onSuccess: (project) => {
-      qc.setQueryData<api.Project[]>(["projects", companyId], (current) => [
+      qc.setQueryData<api.Project[]>(['projects', companyId], (current) => [
         project,
         ...(current?.filter((item) => item.id !== project.id) ?? []),
       ]);
-      qc.invalidateQueries({ queryKey: ["projects", companyId] });
+      qc.invalidateQueries({ queryKey: ['projects', companyId] });
     },
   });
 }
@@ -132,20 +198,15 @@ export function useUpdateProject(companyId: string) {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({
-      projectId,
-      data,
-    }: {
-      projectId: string;
-      data: api.UpdateProjectInput;
-    }) => unwrap<api.Project>(await api.updateProject(companyId, projectId, data)),
+    mutationFn: async ({ projectId, data }: { projectId: string; data: api.UpdateProjectInput }) =>
+      unwrap<api.Project>(await api.updateProject(companyId, projectId, data)),
     onSuccess: (project) => {
-      qc.setQueryData(["projects", companyId, project.id], project);
-      qc.setQueryData<api.Project[]>(["projects", companyId], (current) =>
-        current?.map((item) => item.id === project.id ? project : item),
+      qc.setQueryData(['projects', companyId, project.id], project);
+      qc.setQueryData<api.Project[]>(['projects', companyId], (current) =>
+        current?.map((item) => (item.id === project.id ? project : item)),
       );
-      qc.invalidateQueries({ queryKey: ["projects", companyId] });
-      qc.invalidateQueries({ queryKey: ["projects", companyId, project.id] });
+      qc.invalidateQueries({ queryKey: ['projects', companyId] });
+      qc.invalidateQueries({ queryKey: ['projects', companyId, project.id] });
     },
   });
 }
@@ -157,24 +218,21 @@ export function useArchiveProject(companyId: string) {
     mutationFn: async ({ projectId }: { projectId: string }) =>
       unwrap<api.Project>(await api.archiveProject(companyId, projectId)),
     onSuccess: (project) => {
-      qc.setQueryData(["projects", companyId, project.id], project);
-      qc.setQueryData<api.Project[]>(["projects", companyId], (current) =>
-        current?.map((item) => item.id === project.id ? project : item),
+      qc.setQueryData(['projects', companyId, project.id], project);
+      qc.setQueryData<api.Project[]>(['projects', companyId], (current) =>
+        current?.map((item) => (item.id === project.id ? project : item)),
       );
-      qc.invalidateQueries({ queryKey: ["projects", companyId] });
-      qc.invalidateQueries({ queryKey: ["projects", companyId, project.id] });
+      qc.invalidateQueries({ queryKey: ['projects', companyId] });
+      qc.invalidateQueries({ queryKey: ['projects', companyId, project.id] });
     },
   });
 }
 
 // ── Project Home Summary ────────────────────────────────────────────────
 
-export function useProjectHome(
-  companyId: string | undefined,
-  projectId: string | undefined,
-) {
+export function useProjectHome(companyId: string | undefined, projectId: string | undefined) {
   return useQuery({
-    queryKey: ["project-home", companyId, projectId],
+    queryKey: ['project-home', companyId, projectId],
     queryFn: async () =>
       unwrap<api.ProjectHomeSummary>(await api.getProjectHome(companyId!, projectId!)),
     enabled: !!companyId && !!projectId,
@@ -189,7 +247,7 @@ export function useProjectThreads(
   filters?: api.ProjectThreadFilters,
 ) {
   return useQuery({
-    queryKey: ["project-threads", companyId, projectId, filters],
+    queryKey: ['project-threads', companyId, projectId, filters],
     queryFn: async () =>
       unwrap<api.ProjectThread[]>(await api.getProjectThreads(companyId!, projectId!, filters)),
     enabled: !!companyId && !!projectId,
@@ -202,7 +260,7 @@ export function useProjectThread(
   threadId: string | undefined,
 ) {
   return useQuery({
-    queryKey: ["project-thread", companyId, projectId, threadId],
+    queryKey: ['project-thread', companyId, projectId, threadId],
     queryFn: async () =>
       unwrap<api.ProjectThreadDetail>(
         await api.getProjectThread(companyId!, projectId!, threadId!),
@@ -221,15 +279,13 @@ export function useProjectThreadItems(
   projectId: string | undefined,
   filters?: api.ProjectThreadFilters,
 ) {
-  const threads = useProjectThreads(companyId, projectId, filters ?? { status: "active" });
+  const threads = useProjectThreads(companyId, projectId, filters ?? { status: 'active' });
   const threadIds = threads.data?.map((t) => t.id) ?? [];
   const queries = useQueries({
     queries: threadIds.map((id) => ({
-      queryKey: ["project-thread", companyId, projectId, id],
+      queryKey: ['project-thread', companyId, projectId, id],
       queryFn: async () =>
-        unwrap<api.ProjectThreadDetail>(
-          await api.getProjectThread(companyId!, projectId!, id),
-        ),
+        unwrap<api.ProjectThreadDetail>(await api.getProjectThread(companyId!, projectId!, id)),
       enabled: !!companyId && !!projectId,
     })),
   });
@@ -237,9 +293,7 @@ export function useProjectThreadItems(
   const isError = threads.isError || queries.some((q) => q.isError);
   const items = queries
     .flatMap((q) => q.data?.items ?? [])
-    .sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   return { data: items, threads: threads.data ?? [], isLoading, isError };
 }
 
@@ -263,9 +317,9 @@ export function useResolveThreadItem(companyId: string, projectId: string) {
     }) => api.updateThreadItem(companyId, projectId, threadId, itemId, data),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({
-        queryKey: ["project-thread", companyId, projectId, vars.threadId],
+        queryKey: ['project-thread', companyId, projectId, vars.threadId],
       });
-      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-threads', companyId, projectId] });
     },
   });
 }
@@ -276,7 +330,7 @@ export function useCreateProjectThread(companyId: string, projectId: string) {
     mutationFn: (data: api.CreateProjectThreadInput) =>
       api.createProjectThread(companyId, projectId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-threads', companyId, projectId] });
     },
   });
 }
@@ -287,8 +341,8 @@ export function useCreateThreadItem(companyId: string, projectId: string, thread
     mutationFn: (data: api.CreateThreadItemInput) =>
       api.createThreadItem(companyId, projectId, threadId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId, threadId] });
-      qc.invalidateQueries({ queryKey: ["project-threads", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-thread', companyId, projectId, threadId] });
+      qc.invalidateQueries({ queryKey: ['project-threads', companyId, projectId] });
     },
   });
 }
@@ -296,15 +350,10 @@ export function useCreateThreadItem(companyId: string, projectId: string, thread
 export function useUpdateThreadItem(companyId: string, projectId: string, threadId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      itemId,
-      data,
-    }: {
-      itemId: string;
-      data: api.UpdateThreadItemInput;
-    }) => api.updateThreadItem(companyId, projectId, threadId, itemId, data),
+    mutationFn: ({ itemId, data }: { itemId: string; data: api.UpdateThreadItemInput }) =>
+      api.updateThreadItem(companyId, projectId, threadId, itemId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-thread", companyId, projectId, threadId] });
+      qc.invalidateQueries({ queryKey: ['project-thread', companyId, projectId, threadId] });
     },
   });
 }
@@ -313,7 +362,7 @@ export function useUpdateThreadItem(companyId: string, projectId: string, thread
 
 export function useMentionSearch(companyId: string | undefined, query: string) {
   return useQuery({
-    queryKey: ["mention-search", companyId, query],
+    queryKey: ['mention-search', companyId, query],
     queryFn: async () =>
       unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, query)),
     enabled: !!companyId,
@@ -348,9 +397,8 @@ export function useSearch(
   const enabled = !!companyId && trimmed.length >= 2;
 
   return useQuery({
-    queryKey: ["search", companyId, trimmed, filters ?? {}],
-    queryFn: async () =>
-      api.searchCompany(companyId!, trimmed, filters),
+    queryKey: ['search', companyId, trimmed, filters ?? {}],
+    queryFn: async () => api.searchCompany(companyId!, trimmed, filters),
     enabled,
     staleTime: 15_000,
     placeholderData: (prev) => prev,
@@ -366,12 +414,11 @@ export function useSearch(
  */
 export function useSearchAuthors(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["search-authors", companyId],
-    queryFn: async () =>
-      unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, "")),
+    queryKey: ['search-authors', companyId],
+    queryFn: async () => unwrap<api.MentionableEntity[]>(await api.searchMentions(companyId!, '')),
     enabled: !!companyId,
     staleTime: 60_000,
-    select: (entities) => entities.filter((e) => e.entityType === "user"),
+    select: (entities) => entities.filter((e) => e.entityType === 'user'),
   });
 }
 
@@ -383,7 +430,7 @@ export function useProjectPlans(
   filters?: api.ProjectPlanFilters,
 ) {
   return useQuery({
-    queryKey: ["project-plans", companyId, projectId, filters],
+    queryKey: ['project-plans', companyId, projectId, filters],
     queryFn: async () =>
       unwrap<api.ProjectPlan[]>(await api.getProjectPlans(companyId!, projectId!, filters)),
     enabled: !!companyId && !!projectId,
@@ -396,11 +443,9 @@ export function useProjectPlan(
   planId: string | undefined,
 ) {
   return useQuery({
-    queryKey: ["project-plan", companyId, projectId, planId],
+    queryKey: ['project-plan', companyId, projectId, planId],
     queryFn: async () =>
-      unwrap<api.ProjectPlanDetail>(
-        await api.getProjectPlan(companyId!, projectId!, planId!),
-      ),
+      unwrap<api.ProjectPlanDetail>(await api.getProjectPlan(companyId!, projectId!, planId!)),
     enabled: !!companyId && !!projectId && !!planId,
   });
 }
@@ -419,11 +464,9 @@ export function usePlansWithSteps(
   const planIds = plans.data?.map((p) => p.id) ?? [];
   const queries = useQueries({
     queries: planIds.map((id) => ({
-      queryKey: ["project-plan", companyId, projectId, id],
+      queryKey: ['project-plan', companyId, projectId, id],
       queryFn: async () =>
-        unwrap<api.ProjectPlanDetail>(
-          await api.getProjectPlan(companyId!, projectId!, id),
-        ),
+        unwrap<api.ProjectPlanDetail>(await api.getProjectPlan(companyId!, projectId!, id)),
       enabled: !!companyId && !!projectId,
     })),
   });
@@ -432,9 +475,7 @@ export function usePlansWithSteps(
   const data = queries
     .map((q) => q.data)
     .filter((d): d is api.ProjectPlanDetail => !!d)
-    .sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   return { data, isLoading, isError };
 }
 
@@ -444,7 +485,7 @@ export function useCreateProjectPlan(companyId: string, projectId: string) {
     mutationFn: (data: api.CreateProjectPlanInput) =>
       api.createProjectPlan(companyId, projectId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
     },
   });
 }
@@ -452,16 +493,11 @@ export function useCreateProjectPlan(companyId: string, projectId: string) {
 export function useUpdateProjectPlan(companyId: string, projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      planId,
-      data,
-    }: {
-      planId: string;
-      data: api.UpdateProjectPlanInput;
-    }) => api.updateProjectPlan(companyId, projectId, planId, data),
+    mutationFn: ({ planId, data }: { planId: string; data: api.UpdateProjectPlanInput }) =>
+      api.updateProjectPlan(companyId, projectId, planId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
-      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+      qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-plan', companyId, projectId, vars.planId] });
     },
   });
 }
@@ -469,16 +505,11 @@ export function useUpdateProjectPlan(companyId: string, projectId: string) {
 export function useCreatePlanStep(companyId: string, projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      planId,
-      data,
-    }: {
-      planId: string;
-      data: api.CreatePlanStepInput;
-    }) => api.createPlanStep(companyId, projectId, planId, data),
+    mutationFn: ({ planId, data }: { planId: string; data: api.CreatePlanStepInput }) =>
+      api.createPlanStep(companyId, projectId, planId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
-      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+      qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-plan', companyId, projectId, vars.planId] });
     },
   });
 }
@@ -496,8 +527,8 @@ export function useUpdatePlanStep(companyId: string, projectId: string) {
       data: api.UpdatePlanStepInput;
     }) => api.updatePlanStep(companyId, projectId, planId, stepId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
-      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+      qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-plan', companyId, projectId, vars.planId] });
     },
   });
 }
@@ -508,8 +539,8 @@ export function useAdvancePlanGate(companyId: string, projectId: string) {
     mutationFn: ({ planId, stepId }: { planId: string; stepId: string }) =>
       api.advancePlanGate(companyId, projectId, planId, stepId),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["project-plans", companyId, projectId] });
-      qc.invalidateQueries({ queryKey: ["project-plan", companyId, projectId, vars.planId] });
+      qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-plan', companyId, projectId, vars.planId] });
     },
   });
 }
@@ -522,11 +553,9 @@ export function useProjectDecisions(
   filters?: api.ProjectDecisionFilters,
 ) {
   return useQuery({
-    queryKey: ["project-decisions", companyId, projectId, filters],
+    queryKey: ['project-decisions', companyId, projectId, filters],
     queryFn: async () =>
-      unwrap<api.ProjectDecision[]>(
-        await api.getProjectDecisions(companyId!, projectId!, filters),
-      ),
+      unwrap<api.ProjectDecision[]>(await api.getProjectDecisions(companyId!, projectId!, filters)),
     enabled: !!companyId && !!projectId,
   });
 }
@@ -537,7 +566,7 @@ export function useCreateProjectDecision(companyId: string, projectId: string) {
     mutationFn: (data: api.CreateProjectDecisionInput) =>
       api.createProjectDecision(companyId, projectId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-decisions", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-decisions', companyId, projectId] });
     },
   });
 }
@@ -553,7 +582,7 @@ export function useUpdateProjectDecision(companyId: string, projectId: string) {
       data: api.UpdateProjectDecisionInput;
     }) => api.updateProjectDecision(companyId, projectId, decisionId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-decisions", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-decisions', companyId, projectId] });
     },
   });
 }
@@ -566,11 +595,9 @@ export function useProjectOutcomes(
   filters?: api.ProjectOutcomeFilters,
 ) {
   return useQuery({
-    queryKey: ["project-outcomes", companyId, projectId, filters],
+    queryKey: ['project-outcomes', companyId, projectId, filters],
     queryFn: async () =>
-      unwrap<api.ProjectOutcome[]>(
-        await api.getProjectOutcomes(companyId!, projectId!, filters),
-      ),
+      unwrap<api.ProjectOutcome[]>(await api.getProjectOutcomes(companyId!, projectId!, filters)),
     enabled: !!companyId && !!projectId,
   });
 }
@@ -581,7 +608,7 @@ export function useCreateProjectOutcome(companyId: string, projectId: string) {
     mutationFn: (data: api.CreateProjectOutcomeInput) =>
       api.createProjectOutcome(companyId, projectId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-outcomes", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-outcomes', companyId, projectId] });
     },
   });
 }
@@ -589,27 +616,19 @@ export function useCreateProjectOutcome(companyId: string, projectId: string) {
 export function useUpdateProjectOutcome(companyId: string, projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      outcomeId,
-      data,
-    }: {
-      outcomeId: string;
-      data: api.UpdateProjectOutcomeInput;
-    }) => api.updateProjectOutcome(companyId, projectId, outcomeId, data),
+    mutationFn: ({ outcomeId, data }: { outcomeId: string; data: api.UpdateProjectOutcomeInput }) =>
+      api.updateProjectOutcome(companyId, projectId, outcomeId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-outcomes", companyId, projectId] });
+      qc.invalidateQueries({ queryKey: ['project-outcomes', companyId, projectId] });
     },
   });
 }
 
 // ── Project Work (composed endpoint) ──────────────────────────────────────
 
-export function useProjectWork(
-  companyId: string | undefined,
-  projectId: string | undefined,
-) {
+export function useProjectWork(companyId: string | undefined, projectId: string | undefined) {
   return useQuery({
-    queryKey: ["project-work", companyId, projectId],
+    queryKey: ['project-work', companyId, projectId],
     queryFn: async () =>
       unwrap<api.ProjectWorkSummary>(await api.getProjectWork(companyId!, projectId!)),
     enabled: !!companyId && !!projectId,
@@ -620,7 +639,7 @@ export function useProjectWork(
 
 export function useAgents(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["agents", companyId],
+    queryKey: ['agents', companyId],
     queryFn: async () => unwrap<api.Agent[]>(await api.getAgents(companyId!)),
     enabled: !!companyId,
   });
@@ -628,7 +647,7 @@ export function useAgents(companyId: string | undefined) {
 
 export function useAgent(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["agents", companyId, agentId],
+    queryKey: ['agents', companyId, agentId],
     queryFn: async () => unwrap<api.Agent>(await api.getAgent(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
   });
@@ -637,11 +656,10 @@ export function useAgent(companyId: string | undefined, agentId: string | undefi
 export function useCreateAgent(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.createAgent>[1]) =>
-      api.createAgent(companyId, data),
+    mutationFn: (data: Parameters<typeof api.createAgent>[1]) => api.createAgent(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["agents", companyId] });
-      qc.invalidateQueries({ queryKey: ["dashboard", companyId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId] });
+      qc.invalidateQueries({ queryKey: ['dashboard', companyId] });
     },
   });
 }
@@ -657,8 +675,8 @@ export function useUpdateAgent(companyId: string) {
       data: Parameters<typeof api.updateAgent>[2];
     }) => api.updateAgent(companyId, agentId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["agents", companyId] });
-      qc.invalidateQueries({ queryKey: ["agents", companyId, vars.agentId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId, vars.agentId] });
     },
   });
 }
@@ -667,7 +685,7 @@ export function useUpdateAgent(companyId: string) {
 
 export function useTasks(companyId: string | undefined, filters?: TaskFilters) {
   return useQuery({
-    queryKey: ["tasks", companyId, filters],
+    queryKey: ['tasks', companyId, filters],
     queryFn: async () => unwrap<api.Task[]>(await api.getTasks(companyId!, filters)),
     enabled: !!companyId,
   });
@@ -675,7 +693,7 @@ export function useTasks(companyId: string | undefined, filters?: TaskFilters) {
 
 export function useTask(companyId: string | undefined, taskId: string | undefined) {
   return useQuery({
-    queryKey: ["tasks", companyId, taskId],
+    queryKey: ['tasks', companyId, taskId],
     queryFn: async () => unwrap<api.Task>(await api.getTask(companyId!, taskId!)),
     enabled: !!companyId && !!taskId,
   });
@@ -683,9 +701,8 @@ export function useTask(companyId: string | undefined, taskId: string | undefine
 
 export function useTaskThread(companyId: string | undefined, taskId: string | undefined) {
   return useQuery({
-    queryKey: ["tasks", companyId, taskId, "thread"],
-    queryFn: async () =>
-      unwrap<api.TaskThreadItem[]>(await api.getTaskThread(companyId!, taskId!)),
+    queryKey: ['tasks', companyId, taskId, 'thread'],
+    queryFn: async () => unwrap<api.TaskThreadItem[]>(await api.getTaskThread(companyId!, taskId!)),
     enabled: !!companyId && !!taskId,
     refetchInterval: 10_000,
   });
@@ -697,7 +714,7 @@ export function useTaskThread(companyId: string | undefined, taskId: string | un
  */
 export function useTaskMeetings(companyId: string | undefined, taskId: string | undefined) {
   return useQuery({
-    queryKey: ["tasks", companyId, taskId, "meetings"],
+    queryKey: ['tasks', companyId, taskId, 'meetings'],
     queryFn: async () => unwrap<api.Meeting[]>(await api.getTaskMeetings(companyId!, taskId!)),
     enabled: !!companyId && !!taskId,
   });
@@ -706,11 +723,10 @@ export function useTaskMeetings(companyId: string | undefined, taskId: string | 
 export function useCreateTask(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.createTask>[1]) =>
-      api.createTask(companyId, data),
+    mutationFn: (data: Parameters<typeof api.createTask>[1]) => api.createTask(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
-      qc.invalidateQueries({ queryKey: ["dashboard", companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId] });
+      qc.invalidateQueries({ queryKey: ['dashboard', companyId] });
     },
   });
 }
@@ -722,18 +738,16 @@ export function useAddTaskComment(companyId: string) {
       const created = unwrap<api.TaskThreadItem>(
         await api.addTaskComment(companyId, args.taskId, args.content, args.idempotencyKey),
       );
-      const thread = unwrap<api.TaskThreadItem[]>(
-        await api.getTaskThread(companyId, args.taskId),
-      );
+      const thread = unwrap<api.TaskThreadItem[]>(await api.getTaskThread(companyId, args.taskId));
       if (thread.filter((item) => item.id === created.id).length !== 1) {
         throw new Error(
-          "Comment reached the server but could not be confirmed. Your draft is still here; retry after reloading the thread.",
+          'Comment reached the server but could not be confirmed. Your draft is still here; retry after reloading the thread.',
         );
       }
       return thread;
     },
     onSuccess: (thread, args) => {
-      qc.setQueryData(["tasks", companyId, args.taskId, "thread"], thread);
+      qc.setQueryData(['tasks', companyId, args.taskId, 'thread'], thread);
     },
   });
 }
@@ -744,21 +758,18 @@ export function useRespondTaskInteraction(companyId: string) {
     mutationFn: (args: {
       taskId: string;
       interactionId: string;
-      action: "accept" | "reject" | "answer";
+      action: 'accept' | 'reject' | 'answer';
       note?: string;
       answers?: Record<string, unknown>;
     }) =>
-      api.respondTaskInteraction(
-        companyId,
-        args.taskId,
-        args.interactionId,
-        args.action,
-        { note: args.note, answers: args.answers },
-      ),
+      api.respondTaskInteraction(companyId, args.taskId, args.interactionId, args.action, {
+        note: args.note,
+        answers: args.answers,
+      }),
     onSuccess: (_data, args) => {
-      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId, "thread"] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId, args.taskId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId, args.taskId, 'thread'] });
     },
   });
 }
@@ -769,21 +780,21 @@ export function useTaskSubtreeControls(companyId: string) {
   return useMutation({
     mutationFn: (args: {
       taskId: string;
-      action: "pause" | "cancel" | "restore";
+      action: 'pause' | 'cancel' | 'restore';
       reason?: string;
     }) => {
-      if (args.action === "restore") {
+      if (args.action === 'restore') {
         return api.restoreTaskSubtree(companyId, args.taskId);
       }
-      if (args.action === "pause") {
+      if (args.action === 'pause') {
         return api.pauseTaskSubtree(companyId, args.taskId, args.reason);
       }
       return api.cancelTaskSubtree(companyId, args.taskId, args.reason);
     },
     onSuccess: (_data, args) => {
-      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId, args.taskId, "thread"] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId, args.taskId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId, args.taskId, 'thread'] });
     },
   });
 }
@@ -799,9 +810,9 @@ export function useUpdateTask(companyId: string) {
       data: Parameters<typeof api.updateTask>[2];
     }) => api.updateTask(companyId, taskId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId, vars.taskId] });
-      qc.invalidateQueries({ queryKey: ["dashboard", companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId, vars.taskId] });
+      qc.invalidateQueries({ queryKey: ['dashboard', companyId] });
     },
   });
 }
@@ -810,7 +821,7 @@ export function useUpdateTask(companyId: string) {
 
 export function useGoals(companyId: string | undefined, filters?: GoalFilters) {
   return useQuery({
-    queryKey: ["goals", companyId, filters],
+    queryKey: ['goals', companyId, filters],
     queryFn: async () => unwrap<api.Goal[]>(await api.getGoals(companyId!, filters)),
     enabled: !!companyId,
   });
@@ -826,7 +837,7 @@ export function useCreateGoal(companyId: string) {
     mutationFn: async (data: api.CreateGoalInput) =>
       unwrap<api.Goal>(await api.createGoal(companyId, data)),
     onSuccess: (goal) => {
-      qc.invalidateQueries({ queryKey: ["goals", companyId] });
+      qc.invalidateQueries({ queryKey: ['goals', companyId] });
     },
   });
 }
@@ -837,7 +848,7 @@ export function useUpdateGoal(companyId: string) {
     mutationFn: async ({ goalId, data }: { goalId: string; data: api.UpdateGoalInput }) =>
       unwrap<api.Goal>(await api.updateGoal(companyId, goalId, data)),
     onSuccess: (goal) => {
-      qc.invalidateQueries({ queryKey: ["goals", companyId] });
+      qc.invalidateQueries({ queryKey: ['goals', companyId] });
     },
   });
 }
@@ -846,7 +857,7 @@ export function useUpdateGoal(companyId: string) {
 
 export function useMessages(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["messages", companyId],
+    queryKey: ['messages', companyId],
     queryFn: async () => unwrap<api.Message[]>(await api.getMessages(companyId!)),
     enabled: !!companyId,
   });
@@ -859,10 +870,9 @@ export function useThreads(companyId: string | undefined) {
 export function useSendMessage(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.sendMessage>[1]) =>
-      api.sendMessage(companyId, data),
+    mutationFn: (data: Parameters<typeof api.sendMessage>[1]) => api.sendMessage(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["messages", companyId] });
+      qc.invalidateQueries({ queryKey: ['messages', companyId] });
     },
   });
 }
@@ -879,8 +889,9 @@ export function useCostSummary(companyId: string | undefined) {
 
 export function useAnalyticsOverview(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["analytics", companyId, "overview"],
-    queryFn: async () => unwrap<Record<string, unknown>>(await api.getAnalyticsOverview(companyId!)),
+    queryKey: ['analytics', companyId, 'overview'],
+    queryFn: async () =>
+      unwrap<Record<string, unknown>>(await api.getAnalyticsOverview(companyId!)),
     enabled: !!companyId,
     staleTime: 60_000,
   });
@@ -888,7 +899,7 @@ export function useAnalyticsOverview(companyId: string | undefined) {
 
 export function useAnalyticsCosts(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["analytics", companyId, "costs"],
+    queryKey: ['analytics', companyId, 'costs'],
     queryFn: async () => unwrap<Record<string, unknown>>(await api.getAnalyticsCosts(companyId!)),
     enabled: !!companyId,
     staleTime: 60_000,
@@ -899,7 +910,7 @@ export function useAnalyticsCosts(companyId: string | undefined) {
 
 export function useActivity(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["activity", companyId],
+    queryKey: ['activity', companyId],
     queryFn: async () => unwrap<api.Activity[]>(await api.getActivity(companyId!)),
     enabled: !!companyId,
     refetchInterval: 15_000,
@@ -913,7 +924,7 @@ export function useProjectActivity(
   offset: number,
 ) {
   return useQuery({
-    queryKey: ["activity", companyId, "project", projectId, limit, offset],
+    queryKey: ['activity', companyId, 'project', projectId, limit, offset],
     queryFn: () => api.getProjectActivity(companyId!, projectId!, limit, offset),
     enabled: !!companyId && !!projectId,
     refetchInterval: 15_000,
@@ -924,9 +935,8 @@ export function useProjectActivity(
 
 export function useOrgChart(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["org-chart", companyId],
-    queryFn: async () =>
-      unwrap<api.OrgChartNode[]>(await api.getOrgChart(companyId!)),
+    queryKey: ['org-chart', companyId],
+    queryFn: async () => unwrap<api.OrgChartNode[]>(await api.getOrgChart(companyId!)),
     enabled: !!companyId,
   });
 }
@@ -935,7 +945,7 @@ export function useOrgChart(companyId: string | undefined) {
 
 export function useSecrets(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["secrets", companyId],
+    queryKey: ['secrets', companyId],
     queryFn: async () => unwrap<api.Secret[]>(await api.getSecrets(companyId!)),
     enabled: !!companyId,
   });
@@ -944,10 +954,9 @@ export function useSecrets(companyId: string | undefined) {
 export function useCreateSecret(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.createSecret>[1]) =>
-      api.createSecret(companyId, data),
+    mutationFn: (data: Parameters<typeof api.createSecret>[1]) => api.createSecret(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["secrets", companyId] });
+      qc.invalidateQueries({ queryKey: ['secrets', companyId] });
     },
   });
 }
@@ -957,23 +966,18 @@ export function useDeleteSecret(companyId: string) {
   return useMutation({
     mutationFn: (secretId: string) => api.deleteSecret(companyId, secretId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["secrets", companyId] });
+      qc.invalidateQueries({ queryKey: ['secrets', companyId] });
     },
   });
 }
 
 // ── Agent Instructions ──────────────────────────────────────────────────
 
-export function useAgentInstructions(
-  companyId: string | undefined,
-  agentId: string | undefined,
-) {
+export function useAgentInstructions(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["agent-instructions", companyId, agentId],
+    queryKey: ['agent-instructions', companyId, agentId],
     queryFn: async () =>
-      unwrap<{ instructions: string }>(
-        await api.getAgentInstructions(companyId!, agentId!),
-      ),
+      unwrap<{ instructions: string }>(await api.getAgentInstructions(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
   });
 }
@@ -981,16 +985,11 @@ export function useAgentInstructions(
 export function useUpdateAgentInstructions(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      agentId,
-      instructions,
-    }: {
-      agentId: string;
-      instructions: string;
-    }) => api.updateAgentInstructions(companyId, agentId, instructions),
+    mutationFn: ({ agentId, instructions }: { agentId: string; instructions: string }) =>
+      api.updateAgentInstructions(companyId, agentId, instructions),
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({
-        queryKey: ["agent-instructions", companyId, vars.agentId],
+        queryKey: ['agent-instructions', companyId, vars.agentId],
       });
     },
   });
@@ -998,16 +997,11 @@ export function useUpdateAgentInstructions(companyId: string) {
 
 // ── Agent Config Revisions ──────────────────────────────────────────────
 
-export function useAgentRevisions(
-  companyId: string | undefined,
-  agentId: string | undefined,
-) {
+export function useAgentRevisions(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["agent-revisions", companyId, agentId],
+    queryKey: ['agent-revisions', companyId, agentId],
     queryFn: async () =>
-      unwrap<api.ConfigRevision[]>(
-        await api.getAgentRevisions(companyId!, agentId!),
-      ),
+      unwrap<api.ConfigRevision[]>(await api.getAgentRevisions(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
   });
 }
@@ -1016,22 +1010,17 @@ export function useAgentRevisions(
 
 export function useChatThreads(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["chat-threads", companyId],
-    queryFn: async () =>
-      unwrap<api.ChatThread[]>(await api.getChatThreads(companyId!)),
+    queryKey: ['chat-threads', companyId],
+    queryFn: async () => unwrap<api.ChatThread[]>(await api.getChatThreads(companyId!)),
     enabled: !!companyId,
     refetchInterval: 10_000,
   });
 }
 
-export function useChatThread(
-  companyId: string | undefined,
-  threadId: string | undefined,
-) {
+export function useChatThread(companyId: string | undefined, threadId: string | undefined) {
   return useQuery({
-    queryKey: ["chat-thread", companyId, threadId],
-    queryFn: async () =>
-      unwrap<api.ChatMessage[]>(await api.getChatThread(companyId!, threadId!)),
+    queryKey: ['chat-thread', companyId, threadId],
+    queryFn: async () => unwrap<api.ChatMessage[]>(await api.getChatThread(companyId!, threadId!)),
     enabled: !!companyId && !!threadId,
     refetchInterval: 5_000,
   });
@@ -1044,12 +1033,17 @@ export function useSendChatMessage(companyId: string) {
       content: string;
       targetAgentId?: string;
       threadId?: string;
-      mentions?: Array<{ entityType: "agent" | "user" | "artifact"; entityId: string; label: string; artifactType?: string }>;
+      mentions?: Array<{
+        entityType: 'agent' | 'user' | 'artifact';
+        entityId: string;
+        label: string;
+        artifactType?: string;
+      }>;
     }) => api.sendChatMessage(companyId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["chat-threads", companyId] });
+      qc.invalidateQueries({ queryKey: ['chat-threads', companyId] });
       if (vars.threadId) {
-        qc.invalidateQueries({ queryKey: ["chat-thread", companyId, vars.threadId] });
+        qc.invalidateQueries({ queryKey: ['chat-thread', companyId, vars.threadId] });
       }
     },
   });
@@ -1057,16 +1051,11 @@ export function useSendChatMessage(companyId: string) {
 
 // ── Agent Executions ────────────────────────────────────────────────────
 
-export function useAgentExecutions(
-  companyId: string | undefined,
-  agentId: string | undefined,
-) {
+export function useAgentExecutions(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["agent-executions", companyId, agentId],
+    queryKey: ['agent-executions', companyId, agentId],
     queryFn: async () =>
-      unwrap<api.Execution[]>(
-        await api.getAgentExecutions(companyId!, agentId!),
-      ),
+      unwrap<api.Execution[]>(await api.getAgentExecutions(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
     refetchInterval: 10_000,
   });
@@ -1076,7 +1065,7 @@ export function useAgentExecutions(
 
 export function useWebhooks(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["webhooks", companyId],
+    queryKey: ['webhooks', companyId],
     queryFn: async () => unwrap<api.Webhook[]>(await api.getWebhooks(companyId!)),
     enabled: !!companyId,
   });
@@ -1088,7 +1077,7 @@ export function useCreateWebhook(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createWebhook>[1]) =>
       api.createWebhook(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["webhooks", companyId] });
+      qc.invalidateQueries({ queryKey: ['webhooks', companyId] });
     },
   });
 }
@@ -1104,7 +1093,7 @@ export function useUpdateWebhook(companyId: string) {
       data: Parameters<typeof api.updateWebhook>[2];
     }) => api.updateWebhook(companyId, webhookId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["webhooks", companyId] });
+      qc.invalidateQueries({ queryKey: ['webhooks', companyId] });
     },
   });
 }
@@ -1114,29 +1103,24 @@ export function useDeleteWebhook(companyId: string) {
   return useMutation({
     mutationFn: (webhookId: string) => api.deleteWebhook(companyId, webhookId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["webhooks", companyId] });
+      qc.invalidateQueries({ queryKey: ['webhooks', companyId] });
     },
   });
 }
 
 // ── Agent Files ──────────────────────────────────────────────────────────
 
-export function useFiles(
-  companyId: string | undefined,
-  agentId?: string,
-  filters?: FileFilters,
-) {
+export function useFiles(companyId: string | undefined, agentId?: string, filters?: FileFilters) {
   return useQuery({
-    queryKey: ["files", companyId, agentId ?? null, filters ?? null],
-    queryFn: async () =>
-      unwrap<api.AgentFile[]>(await api.getFiles(companyId!, agentId, filters)),
+    queryKey: ['files', companyId, agentId ?? null, filters ?? null],
+    queryFn: async () => unwrap<api.AgentFile[]>(await api.getFiles(companyId!, agentId, filters)),
     enabled: !!companyId,
   });
 }
 
 export function useFile(companyId: string | undefined, fileId: string | undefined) {
   return useQuery({
-    queryKey: ["files", companyId, "detail", fileId],
+    queryKey: ['files', companyId, 'detail', fileId],
     queryFn: async () => unwrap<api.AgentFile>(await api.getFile(companyId!, fileId!)),
     enabled: !!companyId && !!fileId,
   });
@@ -1145,10 +1129,9 @@ export function useFile(companyId: string | undefined, fileId: string | undefine
 export function useCreateFile(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.createFile>[1]) =>
-      api.createFile(companyId, data),
+    mutationFn: (data: Parameters<typeof api.createFile>[1]) => api.createFile(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["files", companyId] });
+      qc.invalidateQueries({ queryKey: ['files', companyId] });
     },
   });
 }
@@ -1164,8 +1147,8 @@ export function useUpdateFile(companyId: string) {
       data: Parameters<typeof api.updateFile>[2];
     }) => api.updateFile(companyId, fileId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["files", companyId] });
-      qc.invalidateQueries({ queryKey: ["files", companyId, "detail", vars.fileId] });
+      qc.invalidateQueries({ queryKey: ['files', companyId] });
+      qc.invalidateQueries({ queryKey: ['files', companyId, 'detail', vars.fileId] });
     },
   });
 }
@@ -1175,7 +1158,7 @@ export function useDeleteFile(companyId: string) {
   return useMutation({
     mutationFn: (fileId: string) => api.deleteFile(companyId, fileId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["files", companyId] });
+      qc.invalidateQueries({ queryKey: ['files', companyId] });
     },
   });
 }
@@ -1184,11 +1167,11 @@ export function useDeleteFile(companyId: string) {
 
 export function useIntegrations(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["integrations", companyId],
+    queryKey: ['integrations', companyId],
     queryFn: async () => {
       const res = await api.getIntegrations(companyId!);
       // Server wraps in { data, catalog } at top level
-      if (res && typeof res === "object" && "data" in res) {
+      if (res && typeof res === 'object' && 'data' in res) {
         return res as api.IntegrationsResponse;
       }
       return { data: [], catalog: [] } as api.IntegrationsResponse;
@@ -1203,7 +1186,7 @@ export function useCreateIntegration(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createIntegration>[1]) =>
       api.createIntegration(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["integrations", companyId] });
+      qc.invalidateQueries({ queryKey: ['integrations', companyId] });
     },
   });
 }
@@ -1219,7 +1202,7 @@ export function useUpdateIntegration(companyId: string) {
       data: Parameters<typeof api.updateIntegration>[2];
     }) => api.updateIntegration(companyId, integrationId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["integrations", companyId] });
+      qc.invalidateQueries({ queryKey: ['integrations', companyId] });
     },
   });
 }
@@ -1229,7 +1212,7 @@ export function useDeleteIntegration(companyId: string) {
   return useMutation({
     mutationFn: (integrationId: string) => api.deleteIntegration(companyId, integrationId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["integrations", companyId] });
+      qc.invalidateQueries({ queryKey: ['integrations', companyId] });
     },
   });
 }
@@ -1238,13 +1221,11 @@ export function useTestIntegration(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (integrationId: string) =>
-      unwrap<api.TestIntegrationResult>(
-        await api.testIntegration(companyId, integrationId),
-      ),
+      unwrap<api.TestIntegrationResult>(await api.testIntegration(companyId, integrationId)),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["integrations", companyId] });
-      qc.invalidateQueries({ queryKey: ["unified-health", companyId] });
-      qc.invalidateQueries({ queryKey: ["project-home", companyId] });
+      qc.invalidateQueries({ queryKey: ['integrations', companyId] });
+      qc.invalidateQueries({ queryKey: ['unified-health', companyId] });
+      qc.invalidateQueries({ queryKey: ['project-home', companyId] });
     },
   });
 }
@@ -1256,7 +1237,7 @@ export function useAutomationRuns(
   filters?: api.AutomationRunFilters,
 ) {
   return useQuery({
-    queryKey: ["automation-runs", companyId, filters],
+    queryKey: ['automation-runs', companyId, filters],
     queryFn: async () =>
       unwrap<api.AutomationRun[]>(await api.getAutomationRuns(companyId!, filters)),
     enabled: !!companyId,
@@ -1265,16 +1246,11 @@ export function useAutomationRuns(
 
 // ── Unified Health Surface ─────────────────────────────────────────────
 
-export function useUnifiedHealth(
-  companyId: string | undefined,
-  projectId?: string,
-) {
+export function useUnifiedHealth(companyId: string | undefined, projectId?: string) {
   return useQuery({
-    queryKey: ["unified-health", companyId, projectId ?? null],
+    queryKey: ['unified-health', companyId, projectId ?? null],
     queryFn: async () =>
-      unwrap<api.UnifiedHealthEntry[]>(
-        await api.getUnifiedHealth(companyId!, projectId),
-      ),
+      unwrap<api.UnifiedHealthEntry[]>(await api.getUnifiedHealth(companyId!, projectId)),
     enabled: !!companyId,
   });
 }
@@ -1283,7 +1259,7 @@ export function useUnifiedHealth(
 
 export function useKnowledgeDocs(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["knowledge", companyId],
+    queryKey: ['knowledge', companyId],
     queryFn: async () => unwrap<api.KnowledgeDocument[]>(await api.getKnowledgeDocs(companyId!)),
     enabled: !!companyId,
   });
@@ -1295,7 +1271,7 @@ export function useAddKnowledgeDoc(companyId: string) {
     mutationFn: (data: { title: string; content: string; tags?: string[] }) =>
       api.addKnowledgeDoc(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["knowledge", companyId] });
+      qc.invalidateQueries({ queryKey: ['knowledge', companyId] });
     },
   });
 }
@@ -1305,7 +1281,7 @@ export function useDeleteKnowledgeDoc(companyId: string) {
   return useMutation({
     mutationFn: (docId: string) => api.deleteKnowledgeDoc(companyId, docId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["knowledge", companyId] });
+      qc.invalidateQueries({ queryKey: ['knowledge', companyId] });
     },
   });
 }
@@ -1318,16 +1294,11 @@ export function useSearchKnowledge(companyId: string) {
 
 // ── Agent Memories ────────────────────────────────────────────────────
 
-export function useAgentMemories(
-  companyId: string | undefined,
-  agentId: string | undefined,
-) {
+export function useAgentMemories(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["agent-memories", companyId, agentId],
+    queryKey: ['agent-memories', companyId, agentId],
     queryFn: async () =>
-      unwrap<api.AgentMemory[]>(
-        await api.getAgentMemories(companyId!, agentId!),
-      ),
+      unwrap<api.AgentMemory[]>(await api.getAgentMemories(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
   });
 }
@@ -1343,7 +1314,7 @@ export function useCreateAgentMemory(companyId: string, agentId: string) {
     }) => api.createAgentMemory(companyId, agentId, data),
     onSuccess: () => {
       qc.invalidateQueries({
-        queryKey: ["agent-memories", companyId, agentId],
+        queryKey: ['agent-memories', companyId, agentId],
       });
     },
   });
@@ -1352,11 +1323,10 @@ export function useCreateAgentMemory(companyId: string, agentId: string) {
 export function useDeleteAgentMemory(companyId: string, agentId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (memoryId: string) =>
-      api.deleteAgentMemory(companyId, agentId, memoryId),
+    mutationFn: (memoryId: string) => api.deleteAgentMemory(companyId, agentId, memoryId),
     onSuccess: () => {
       qc.invalidateQueries({
-        queryKey: ["agent-memories", companyId, agentId],
+        queryKey: ['agent-memories', companyId, agentId],
       });
     },
   });
@@ -1368,7 +1338,7 @@ export function useClearAgentMemories(companyId: string, agentId: string) {
     mutationFn: () => api.clearAgentMemories(companyId, agentId),
     onSuccess: () => {
       qc.invalidateQueries({
-        queryKey: ["agent-memories", companyId, agentId],
+        queryKey: ['agent-memories', companyId, agentId],
       });
     },
   });
@@ -1376,16 +1346,11 @@ export function useClearAgentMemories(companyId: string, agentId: string) {
 
 // ── Prompt Templates ──────────────────────────────────────────────────
 
-export function usePromptTemplates(
-  companyId: string | undefined,
-  category?: string,
-) {
+export function usePromptTemplates(companyId: string | undefined, category?: string) {
   return useQuery({
-    queryKey: ["prompt-templates", companyId, category],
+    queryKey: ['prompt-templates', companyId, category],
     queryFn: async () =>
-      unwrap<api.PromptTemplate[]>(
-        await api.getPromptTemplates(companyId!, category),
-      ),
+      unwrap<api.PromptTemplate[]>(await api.getPromptTemplates(companyId!, category)),
     enabled: !!companyId,
   });
 }
@@ -1396,7 +1361,7 @@ export function useCreatePromptTemplate(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createPromptTemplate>[1]) =>
       api.createPromptTemplate(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["prompt-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['prompt-templates', companyId] });
     },
   });
 }
@@ -1412,7 +1377,7 @@ export function useUpdatePromptTemplate(companyId: string) {
       data: Parameters<typeof api.updatePromptTemplate>[2];
     }) => api.updatePromptTemplate(companyId, templateId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["prompt-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['prompt-templates', companyId] });
     },
   });
 }
@@ -1420,24 +1385,18 @@ export function useUpdatePromptTemplate(companyId: string) {
 export function useDeletePromptTemplate(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (templateId: string) =>
-      api.deletePromptTemplate(companyId, templateId),
+    mutationFn: (templateId: string) => api.deletePromptTemplate(companyId, templateId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["prompt-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['prompt-templates', companyId] });
     },
   });
 }
 
-export function usePromptVersions(
-  companyId: string | undefined,
-  templateId: string | undefined,
-) {
+export function usePromptVersions(companyId: string | undefined, templateId: string | undefined) {
   return useQuery({
-    queryKey: ["prompt-versions", companyId, templateId],
+    queryKey: ['prompt-versions', companyId, templateId],
     queryFn: async () =>
-      unwrap<api.PromptVersion[]>(
-        await api.getPromptVersions(companyId!, templateId!),
-      ),
+      unwrap<api.PromptVersion[]>(await api.getPromptVersions(companyId!, templateId!)),
     enabled: !!companyId && !!templateId,
   });
 }
@@ -1455,7 +1414,7 @@ export function useApplyPromptToAgent(companyId: string) {
       variables?: Record<string, string>;
     }) => api.applyPromptToAgent(companyId, templateId, agentId, variables),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["agents", companyId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId] });
     },
   });
 }
@@ -1464,50 +1423,34 @@ export function useApplyPromptToAgent(companyId: string) {
 
 export function useCompanyEvaluations(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["evaluations", companyId],
-    queryFn: async () =>
-      unwrap<api.AgentEvaluation[]>(
-        await api.getCompanyEvaluations(companyId!),
-      ),
+    queryKey: ['evaluations', companyId],
+    queryFn: async () => unwrap<api.AgentEvaluation[]>(await api.getCompanyEvaluations(companyId!)),
     enabled: !!companyId,
   });
 }
 
 export function useCompanyRankings(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["evaluations", companyId, "rankings"],
-    queryFn: async () =>
-      unwrap<api.AgentRanking[]>(
-        await api.getCompanyRankings(companyId!),
-      ),
+    queryKey: ['evaluations', companyId, 'rankings'],
+    queryFn: async () => unwrap<api.AgentRanking[]>(await api.getCompanyRankings(companyId!)),
     enabled: !!companyId,
   });
 }
 
-export function useAgentEvaluations(
-  companyId: string | undefined,
-  agentId: string | undefined,
-) {
+export function useAgentEvaluations(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["evaluations", companyId, "agent", agentId],
+    queryKey: ['evaluations', companyId, 'agent', agentId],
     queryFn: async () =>
-      unwrap<api.AgentEvaluation[]>(
-        await api.getAgentEvaluations(companyId!, agentId!),
-      ),
+      unwrap<api.AgentEvaluation[]>(await api.getAgentEvaluations(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
   });
 }
 
-export function useAgentPerformance(
-  companyId: string | undefined,
-  agentId: string | undefined,
-) {
+export function useAgentPerformance(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["evaluations", companyId, "agent", agentId, "performance"],
+    queryKey: ['evaluations', companyId, 'agent', agentId, 'performance'],
     queryFn: async () =>
-      unwrap<api.AgentPerformance>(
-        await api.getAgentPerformance(companyId!, agentId!),
-      ),
+      unwrap<api.AgentPerformance>(await api.getAgentPerformance(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
   });
 }
@@ -1528,12 +1471,12 @@ export function useCreateManualEvaluation(companyId: string) {
       };
     }) => api.createManualEvaluation(companyId, agentId, data),
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["evaluations", companyId] });
+      qc.invalidateQueries({ queryKey: ['evaluations', companyId] });
       qc.invalidateQueries({
-        queryKey: ["evaluations", companyId, "agent", vars.agentId],
+        queryKey: ['evaluations', companyId, 'agent', vars.agentId],
       });
       qc.invalidateQueries({
-        queryKey: ["evaluations", companyId, "agent", vars.agentId, "performance"],
+        queryKey: ['evaluations', companyId, 'agent', vars.agentId, 'performance'],
       });
     },
   });
@@ -1543,9 +1486,8 @@ export function useCreateManualEvaluation(companyId: string) {
 
 export function useMCPServers(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["mcp-servers", companyId],
-    queryFn: async () =>
-      unwrap<api.MCPServer[]>(await api.getMCPServers(companyId!)),
+    queryKey: ['mcp-servers', companyId],
+    queryFn: async () => unwrap<api.MCPServer[]>(await api.getMCPServers(companyId!)),
     enabled: !!companyId,
   });
 }
@@ -1553,11 +1495,10 @@ export function useMCPServers(companyId: string | undefined) {
 export function useAddMCPServer(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.addMCPServer>[1]) =>
-      api.addMCPServer(companyId, data),
+    mutationFn: (data: Parameters<typeof api.addMCPServer>[1]) => api.addMCPServer(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["mcp-servers", companyId] });
-      qc.invalidateQueries({ queryKey: ["mcp-tools", companyId] });
+      qc.invalidateQueries({ queryKey: ['mcp-servers', companyId] });
+      qc.invalidateQueries({ queryKey: ['mcp-tools', companyId] });
     },
   });
 }
@@ -1567,17 +1508,16 @@ export function useDeleteMCPServer(companyId: string) {
   return useMutation({
     mutationFn: (serverId: string) => api.deleteMCPServer(companyId, serverId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["mcp-servers", companyId] });
-      qc.invalidateQueries({ queryKey: ["mcp-tools", companyId] });
+      qc.invalidateQueries({ queryKey: ['mcp-servers', companyId] });
+      qc.invalidateQueries({ queryKey: ['mcp-tools', companyId] });
     },
   });
 }
 
 export function useMCPTools(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["mcp-tools", companyId],
-    queryFn: async () =>
-      unwrap<api.MCPToolWithServer[]>(await api.getMCPTools(companyId!)),
+    queryKey: ['mcp-tools', companyId],
+    queryFn: async () => unwrap<api.MCPToolWithServer[]>(await api.getMCPTools(companyId!)),
     enabled: !!companyId,
   });
 }
@@ -1586,9 +1526,8 @@ export function useMCPTools(companyId: string | undefined) {
 
 export function useRuntimeAdapters() {
   return useQuery({
-    queryKey: ["runtime-adapters"],
-    queryFn: async () =>
-      unwrap<api.RuntimeAdapterDescriptor[]>(await api.getRuntimeAdapters()),
+    queryKey: ['runtime-adapters'],
+    queryFn: async () => unwrap<api.RuntimeAdapterDescriptor[]>(await api.getRuntimeAdapters()),
     staleTime: 5 * 60_000,
   });
 }
@@ -1596,9 +1535,7 @@ export function useRuntimeAdapters() {
 export function useRefreshAgentModels(companyId: string, agentId: string) {
   return useMutation({
     mutationFn: async () => ({
-      ...unwrap<api.AdapterModelDiscoveryResult>(
-        await api.refreshAgentModels(companyId, agentId),
-      ),
+      ...unwrap<api.AdapterModelDiscoveryResult>(await api.refreshAgentModels(companyId, agentId)),
       agentId,
     }),
   });
@@ -1606,9 +1543,8 @@ export function useRefreshAgentModels(companyId: string, agentId: string) {
 
 export function useRuntimeSessions(companyId: string | undefined, enabled = true) {
   return useQuery({
-    queryKey: ["runtime-sessions", companyId],
-    queryFn: async () =>
-      unwrap<api.RuntimeSession[]>(await api.getRuntimeSessions(companyId!)),
+    queryKey: ['runtime-sessions', companyId],
+    queryFn: async () => unwrap<api.RuntimeSession[]>(await api.getRuntimeSessions(companyId!)),
     enabled: enabled && !!companyId,
     refetchInterval: 10_000,
   });
@@ -1620,8 +1556,8 @@ export function useCreateRuntimeSession(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createRuntimeSession>[1]) =>
       api.createRuntimeSession(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
-      qc.invalidateQueries({ queryKey: ["agents", companyId] });
+      qc.invalidateQueries({ queryKey: ['runtime-sessions', companyId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId] });
     },
   });
 }
@@ -1629,9 +1565,7 @@ export function useCreateRuntimeSession(companyId: string) {
 export function useTestRuntimeSession(companyId: string) {
   return useMutation({
     mutationFn: async (sessionId: string) =>
-      unwrap<api.RuntimeAdapterDiagnostic>(
-        await api.testRuntimeSession(companyId, sessionId),
-      ),
+      unwrap<api.RuntimeAdapterDiagnostic>(await api.testRuntimeSession(companyId, sessionId)),
   });
 }
 
@@ -1643,9 +1577,9 @@ export function useRunRuntimeSession(companyId: string) {
         await api.runRuntimeSession(companyId, args.sessionId, args.prompt),
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
-      qc.invalidateQueries({ queryKey: ["agents", companyId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
+      qc.invalidateQueries({ queryKey: ['runtime-sessions', companyId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId] });
     },
   });
 }
@@ -1656,7 +1590,7 @@ export function useCancelRuntimeSession(companyId: string) {
     mutationFn: (args: { sessionId: string; reason?: string }) =>
       api.cancelRuntimeSession(companyId, args.sessionId, args.reason),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+      qc.invalidateQueries({ queryKey: ['runtime-sessions', companyId] });
     },
   });
 }
@@ -1664,10 +1598,9 @@ export function useCancelRuntimeSession(companyId: string) {
 export function useFinalizeRuntimeSession(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (sessionId: string) =>
-      api.finalizeRuntimeSession(companyId, sessionId),
+    mutationFn: (sessionId: string) => api.finalizeRuntimeSession(companyId, sessionId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
+      qc.invalidateQueries({ queryKey: ['runtime-sessions', companyId] });
     },
   });
 }
@@ -1677,18 +1610,17 @@ export function useWakeAgent(companyId: string) {
   return useMutation({
     mutationFn: (agentId: string) => api.wakeAgent(companyId, agentId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["agents", companyId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
-      qc.invalidateQueries({ queryKey: ["dashboard", companyId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId] });
+      qc.invalidateQueries({ queryKey: ['dashboard', companyId] });
     },
   });
 }
 
 export function useCompanySkills(companyId: string | undefined, enabled = true) {
   return useQuery({
-    queryKey: ["company-skills", companyId],
-    queryFn: async () =>
-      unwrap<api.CompanySkill[]>(await api.getCompanySkills(companyId!)),
+    queryKey: ['company-skills', companyId],
+    queryFn: async () => unwrap<api.CompanySkill[]>(await api.getCompanySkills(companyId!)),
     enabled: enabled && !!companyId,
   });
 }
@@ -1699,17 +1631,16 @@ export function useInstallCompanySkill(companyId: string) {
     mutationFn: (data: Parameters<typeof api.installCompanySkill>[1]) =>
       api.installCompanySkill(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["company-skills", companyId] });
-      qc.invalidateQueries({ queryKey: ["agents", companyId] });
+      qc.invalidateQueries({ queryKey: ['company-skills', companyId] });
+      qc.invalidateQueries({ queryKey: ['agents', companyId] });
     },
   });
 }
 
 export function useJarvisRoutines(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["jarvis-routines", companyId],
-    queryFn: async () =>
-      unwrap<api.JarvisRoutine[]>(await api.getJarvisRoutines(companyId!)),
+    queryKey: ['jarvis-routines', companyId],
+    queryFn: async () => unwrap<api.JarvisRoutine[]>(await api.getJarvisRoutines(companyId!)),
     enabled: !!companyId,
   });
 }
@@ -1720,7 +1651,7 @@ export function useCreateJarvisRoutine(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createJarvisRoutine>[1]) =>
       api.createJarvisRoutine(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jarvis-routines", companyId] });
+      qc.invalidateQueries({ queryKey: ['jarvis-routines', companyId] });
     },
   });
 }
@@ -1729,14 +1660,12 @@ export function useTriggerJarvisRoutine(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (routineId: string) =>
-      unwrap<api.JarvisRoutineTriggerResult>(
-        await api.triggerJarvisRoutine(companyId, routineId),
-      ),
+      unwrap<api.JarvisRoutineTriggerResult>(await api.triggerJarvisRoutine(companyId, routineId)),
     onSuccess: (result) => {
-      qc.invalidateQueries({ queryKey: ["jarvis-routines", companyId] });
-      qc.invalidateQueries({ queryKey: ["runtime-sessions", companyId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId] });
-      qc.invalidateQueries({ queryKey: ["tasks", companyId, result.task.id, "thread"] });
+      qc.invalidateQueries({ queryKey: ['jarvis-routines', companyId] });
+      qc.invalidateQueries({ queryKey: ['runtime-sessions', companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId] });
+      qc.invalidateQueries({ queryKey: ['tasks', companyId, result.task.id, 'thread'] });
     },
   });
 }
@@ -1745,26 +1674,18 @@ export function useTriggerJarvisRoutine(companyId: string) {
 
 export function useCollaborations(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["collaborations", companyId],
-    queryFn: async () =>
-      unwrap<api.AgentCollaboration[]>(
-        await api.getCollaborations(companyId!),
-      ),
+    queryKey: ['collaborations', companyId],
+    queryFn: async () => unwrap<api.AgentCollaboration[]>(await api.getCollaborations(companyId!)),
     enabled: !!companyId,
     refetchInterval: 10_000,
   });
 }
 
-export function useAgentCollaborations(
-  companyId: string | undefined,
-  agentId: string | undefined,
-) {
+export function useAgentCollaborations(companyId: string | undefined, agentId: string | undefined) {
   return useQuery({
-    queryKey: ["collaborations", companyId, "agent", agentId],
+    queryKey: ['collaborations', companyId, 'agent', agentId],
     queryFn: async () =>
-      unwrap<api.AgentCollaboration[]>(
-        await api.getAgentCollaborations(companyId!, agentId!),
-      ),
+      unwrap<api.AgentCollaboration[]>(await api.getAgentCollaborations(companyId!, agentId!)),
     enabled: !!companyId && !!agentId,
   });
 }
@@ -1775,7 +1696,7 @@ export function useCreateCollaboration(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createCollaboration>[1]) =>
       api.createCollaboration(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["collaborations", companyId] });
+      qc.invalidateQueries({ queryKey: ['collaborations', companyId] });
     },
   });
 }
@@ -1786,7 +1707,7 @@ export function useRespondToCollaboration(companyId: string) {
     mutationFn: ({ id, responseContent }: { id: string; responseContent: string }) =>
       api.respondToCollaboration(companyId, id, responseContent),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["collaborations", companyId] });
+      qc.invalidateQueries({ queryKey: ['collaborations', companyId] });
     },
   });
 }
@@ -1795,17 +1716,15 @@ export function useRespondToCollaboration(companyId: string) {
 
 export function useTemplates(category?: string) {
   return useQuery({
-    queryKey: ["templates", category],
-    queryFn: async () =>
-      unwrap<api.CompanyTemplate[]>(await api.getTemplates(category)),
+    queryKey: ['templates', category],
+    queryFn: async () => unwrap<api.CompanyTemplate[]>(await api.getTemplates(category)),
   });
 }
 
 export function useTemplate(id: string | undefined) {
   return useQuery({
-    queryKey: ["templates", "detail", id],
-    queryFn: async () =>
-      unwrap<api.CompanyTemplate>(await api.getTemplate(id!)),
+    queryKey: ['templates', 'detail', id],
+    queryFn: async () => unwrap<api.CompanyTemplate>(await api.getTemplate(id!)),
     enabled: !!id,
   });
 }
@@ -1821,8 +1740,8 @@ export function useImportTemplate() {
       overrides?: { companyName?: string; budgetMultiplier?: number };
     }) => api.importTemplate(templateId, overrides),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["companies"] });
-      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ['companies'] });
+      qc.invalidateQueries({ queryKey: ['templates'] });
     },
   });
 }
@@ -1830,16 +1749,11 @@ export function useImportTemplate() {
 export function useUpdateTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: Parameters<typeof api.updateTemplate>[1];
-    }) => api.updateTemplate(id, data),
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.updateTemplate>[1] }) =>
+      api.updateTemplate(id, data),
     onSuccess: (_data, vars) => {
-      qc.invalidateQueries({ queryKey: ["templates"] });
-      qc.invalidateQueries({ queryKey: ["templates", "detail", vars.id] });
+      qc.invalidateQueries({ queryKey: ['templates'] });
+      qc.invalidateQueries({ queryKey: ['templates', 'detail', vars.id] });
     },
   });
 }
@@ -1849,7 +1763,7 @@ export function useDeleteTemplate() {
   return useMutation({
     mutationFn: (id: string) => api.deleteTemplate(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ['templates'] });
     },
   });
 }
@@ -1857,10 +1771,15 @@ export function useDeleteTemplate() {
 export function useExportCompany(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data?: { name?: string; description?: string; category?: string; tags?: string[]; version?: string }) =>
-      api.exportCompany(companyId, data),
+    mutationFn: (data?: {
+      name?: string;
+      description?: string;
+      category?: string;
+      tags?: string[];
+      version?: string;
+    }) => api.exportCompany(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ['templates'] });
     },
   });
 }
@@ -1876,8 +1795,8 @@ export function useUpdateTemplateFromCompany(companyId: string) {
       data?: Parameters<typeof api.updateTemplateFromCompany>[2];
     }) => api.updateTemplateFromCompany(companyId, templateId, data),
     onSuccess: (_data, vars) => {
-      qc.invalidateQueries({ queryKey: ["templates"] });
-      qc.invalidateQueries({ queryKey: ["templates", "detail", vars.templateId] });
+      qc.invalidateQueries({ queryKey: ['templates'] });
+      qc.invalidateQueries({ queryKey: ['templates', 'detail', vars.templateId] });
     },
   });
 }
@@ -1886,11 +1805,8 @@ export function useUpdateTemplateFromCompany(companyId: string) {
 
 export function useProjectTemplates(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["project-templates", companyId],
-    queryFn: async () =>
-      unwrap<api.ProjectTemplate[]>(
-        await api.listProjectTemplates(companyId!),
-      ),
+    queryKey: ['project-templates', companyId],
+    queryFn: async () => unwrap<api.ProjectTemplate[]>(await api.listProjectTemplates(companyId!)),
     enabled: !!companyId,
   });
 }
@@ -1901,7 +1817,7 @@ export function useSaveProjectTemplate(companyId: string) {
     mutationFn: (data: { projectId: string; name: string; description?: string | null }) =>
       api.saveProjectTemplate(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['project-templates', companyId] });
     },
   });
 }
@@ -1911,7 +1827,7 @@ export function useDeleteProjectTemplate(companyId: string) {
   return useMutation({
     mutationFn: (id: string) => api.deleteProjectTemplate(companyId, id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['project-templates', companyId] });
     },
   });
 }
@@ -1927,24 +1843,19 @@ export function useCreateProjectFromTemplate(companyId: string) {
       data: { name?: string; description?: string | null; idempotencyKey?: string };
     }) => api.createProjectFromTemplate(companyId, templateId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["projects", companyId] });
-      qc.invalidateQueries({ queryKey: ["project-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['projects', companyId] });
+      qc.invalidateQueries({ queryKey: ['project-templates', companyId] });
     },
   });
 }
 
 // ── Artifact Templates (M4) ─────────────────────────────────────────────
 
-export function useArtifactTemplates(
-  companyId: string | undefined,
-  type?: api.ArtifactType,
-) {
+export function useArtifactTemplates(companyId: string | undefined, type?: api.ArtifactType) {
   return useQuery({
-    queryKey: ["artifact-templates", companyId, type],
+    queryKey: ['artifact-templates', companyId, type],
     queryFn: async () =>
-      unwrap<api.ArtifactTemplate[]>(
-        await api.listArtifactTemplates(companyId!, type),
-      ),
+      unwrap<api.ArtifactTemplate[]>(await api.listArtifactTemplates(companyId!, type)),
     enabled: !!companyId,
   });
 }
@@ -1955,7 +1866,7 @@ export function useSaveArtifactTemplate(companyId: string) {
     mutationFn: (data: { artifactId: string; name: string; description?: string | null }) =>
       api.saveArtifactTemplate(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifact-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifact-templates', companyId] });
     },
   });
 }
@@ -1965,7 +1876,7 @@ export function useDeleteArtifactTemplate(companyId: string) {
   return useMutation({
     mutationFn: (id: string) => api.deleteArtifactTemplate(companyId, id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifact-templates", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifact-templates', companyId] });
     },
   });
 }
@@ -1981,7 +1892,7 @@ export function useCreateArtifactFromTemplate(companyId: string) {
       data: { projectId?: string | null; folderId?: string | null; title?: string };
     }) => api.createArtifactFromTemplate(companyId, templateId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -1990,7 +1901,7 @@ export function useCreateArtifactFromTemplate(companyId: string) {
 
 export function useInbox(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["inbox", companyId],
+    queryKey: ['inbox', companyId],
     queryFn: async () => {
       const res = await api.listInbox(companyId!);
       // listInbox returns the full envelope {data, meta}; don't unwrap
@@ -2008,32 +1919,30 @@ export function useMarkInboxRead(companyId: string) {
     // Optimistically flip readAt so the UI stays responsive while the server
     // round-trips. On error we roll back from the cache snapshot.
     onMutate: async (itemIds: string[]) => {
-      await qc.cancelQueries({ queryKey: ["inbox", companyId] });
-      const prev = qc.getQueryData<api.InboxResponse>(["inbox", companyId]);
+      await qc.cancelQueries({ queryKey: ['inbox', companyId] });
+      const prev = qc.getQueryData<api.InboxResponse>(['inbox', companyId]);
       if (prev) {
         const now = new Date().toISOString();
         const ids = new Set(itemIds);
         const next: api.InboxResponse = {
           ...prev,
-          data: prev.data.map((i) =>
-            ids.has(i.id) ? { ...i, readAt: i.readAt ?? now } : i,
-          ),
+          data: prev.data.map((i) => (ids.has(i.id) ? { ...i, readAt: i.readAt ?? now } : i)),
           meta: {
             ...prev.meta,
-            unread: prev.data.filter(
-              (i) => !(ids.has(i.id) || i.readAt),
-            ).length,
+            unread: prev.data.filter((i) => !(ids.has(i.id) || i.readAt)).length,
           },
         };
-        qc.setQueryData(["inbox", companyId], next);
+        qc.setQueryData(['inbox', companyId], next);
       }
       return { prev };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) qc.setQueryData(["inbox", companyId], ctx.prev);
+      if (ctx?.prev) {
+        qc.setQueryData(['inbox', companyId], ctx.prev);
+      }
     },
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["inbox", companyId] });
+      qc.invalidateQueries({ queryKey: ['inbox', companyId] });
     },
   });
 }
@@ -2043,31 +1952,24 @@ export function useMarkInboxUnread(companyId: string) {
   return useMutation({
     mutationFn: (itemIds: string[]) => api.markInboxUnread(companyId, itemIds),
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["inbox", companyId] });
+      qc.invalidateQueries({ queryKey: ['inbox', companyId] });
     },
   });
 }
 
 // ── Approvals ───────────────────────────────────────────────────────────
 
-export function useApprovals(
-  companyId: string | undefined,
-  status?: api.ApprovalStatus,
-) {
+export function useApprovals(companyId: string | undefined, status?: api.ApprovalStatus) {
   return useQuery({
-    queryKey: ["approvals", companyId, status ?? "all"],
-    queryFn: async () =>
-      unwrap<api.Approval[]>(await api.listApprovals(companyId!, status)),
+    queryKey: ['approvals', companyId, status ?? 'all'],
+    queryFn: async () => unwrap<api.Approval[]>(await api.listApprovals(companyId!, status)),
     enabled: !!companyId,
   });
 }
 
-export function useApproval(
-  companyId: string | undefined,
-  id: string | undefined,
-) {
+export function useApproval(companyId: string | undefined, id: string | undefined) {
   return useQuery({
-    queryKey: ["approvals", companyId, "detail", id],
+    queryKey: ['approvals', companyId, 'detail', id],
     queryFn: async () =>
       unwrap<{ approval: api.Approval; comments: api.ApprovalComment[] }>(
         await api.getApproval(companyId!, id!),
@@ -2082,10 +1984,10 @@ export function useCreateApproval(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createApproval>[1]) =>
       api.createApproval(companyId, data),
     onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+      qc.invalidateQueries({ queryKey: ['approvals', companyId] });
       const approval = unwrap<api.Approval>(data);
       if (approval.taskId) {
-        qc.invalidateQueries({ queryKey: ["tasks", companyId, approval.taskId, "thread"] });
+        qc.invalidateQueries({ queryKey: ['tasks', companyId, approval.taskId, 'thread'] });
       }
     },
   });
@@ -2096,7 +1998,7 @@ export function useDecideApproval(companyId: string) {
   return useMutation({
     mutationFn: (args: {
       id: string;
-      decision: "approved" | "rejected";
+      decision: 'approved' | 'rejected';
       resolutionNote?: string;
     }) =>
       api.decideApproval(companyId, args.id, {
@@ -2104,10 +2006,10 @@ export function useDecideApproval(companyId: string) {
         resolutionNote: args.resolutionNote,
       }),
     onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+      qc.invalidateQueries({ queryKey: ['approvals', companyId] });
       const approval = unwrap<api.Approval>(data);
       if (approval.taskId) {
-        qc.invalidateQueries({ queryKey: ["tasks", companyId, approval.taskId, "thread"] });
+        qc.invalidateQueries({ queryKey: ['tasks', companyId, approval.taskId, 'thread'] });
       }
     },
   });
@@ -2119,7 +2021,7 @@ export function useCancelApproval(companyId: string) {
     mutationFn: (args: { id: string; resolutionNote?: string }) =>
       api.cancelApproval(companyId, args.id, args.resolutionNote),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["approvals", companyId] });
+      qc.invalidateQueries({ queryKey: ['approvals', companyId] });
     },
   });
 }
@@ -2131,7 +2033,7 @@ export function useAddApprovalComment(companyId: string) {
       api.addApprovalComment(companyId, args.id, args.content),
     onSuccess: (_data, args) => {
       qc.invalidateQueries({
-        queryKey: ["approvals", companyId, "detail", args.id],
+        queryKey: ['approvals', companyId, 'detail', args.id],
       });
     },
   });
@@ -2139,12 +2041,9 @@ export function useAddApprovalComment(companyId: string) {
 
 // ── Artifacts ────────────────────────────────────────────────────────────
 
-export function useArtifacts(
-  companyId: string | undefined,
-  params?: api.ArtifactListParams,
-) {
+export function useArtifacts(companyId: string | undefined, params?: api.ArtifactListParams) {
   return useQuery({
-    queryKey: ["artifacts", companyId, params ?? {}],
+    queryKey: ['artifacts', companyId, params ?? {}],
     queryFn: async () => {
       const res = await api.listArtifacts(companyId!, params);
       const body = res as unknown as { data: api.Artifact[]; meta: api.ArtifactListMeta };
@@ -2157,12 +2056,9 @@ export function useArtifacts(
   });
 }
 
-export function useProjectArtifacts(
-  companyId: string | undefined,
-  projectId: string | undefined,
-) {
+export function useProjectArtifacts(companyId: string | undefined, projectId: string | undefined) {
   return useQuery({
-    queryKey: ["artifacts", companyId, "project", projectId],
+    queryKey: ['artifacts', companyId, 'project', projectId],
     queryFn: async () => {
       const res = await api.listProjectArtifacts(companyId!, projectId!);
       const body = res as unknown as { data: api.Artifact[] };
@@ -2172,12 +2068,9 @@ export function useProjectArtifacts(
   });
 }
 
-export function useArtifact(
-  companyId: string | undefined,
-  id: string | undefined,
-) {
+export function useArtifact(companyId: string | undefined, id: string | undefined) {
   return useQuery({
-    queryKey: ["artifacts", companyId, id],
+    queryKey: ['artifacts', companyId, id],
     queryFn: async () => {
       const res = await api.getArtifact(companyId!, id!);
       return unwrap<api.Artifact>(res);
@@ -2192,7 +2085,7 @@ export function useCreateArtifact(companyId: string) {
     mutationFn: (data: Parameters<typeof api.createArtifact>[1]) =>
       api.createArtifact(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -2214,10 +2107,10 @@ export function useUpdateArtifact(companyId: string) {
         message: args.message,
       }),
     onSuccess: (_data, args) => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId, args.id] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId, args.id] });
       qc.invalidateQueries({
-        queryKey: ["artifacts", companyId, args.id, "revisions"],
+        queryKey: ['artifacts', companyId, args.id, 'revisions'],
       });
     },
   });
@@ -2228,7 +2121,7 @@ export function useDeleteArtifact(companyId: string) {
   return useMutation({
     mutationFn: (id: string) => api.deleteArtifact(companyId, id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -2238,7 +2131,7 @@ export function useArchiveArtifact(companyId: string) {
   return useMutation({
     mutationFn: (id: string) => api.archiveArtifact(companyId, id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -2248,17 +2141,14 @@ export function useRestoreArtifact(companyId: string) {
   return useMutation({
     mutationFn: (id: string) => api.restoreArtifact(companyId, id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
 
-export function useArtifactRevisions(
-  companyId: string | undefined,
-  id: string | undefined,
-) {
+export function useArtifactRevisions(companyId: string | undefined, id: string | undefined) {
   return useQuery({
-    queryKey: ["artifacts", companyId, id, "revisions"],
+    queryKey: ['artifacts', companyId, id, 'revisions'],
     queryFn: async () => {
       const res = await api.listRevisions(companyId!, id!);
       return unwrap<api.ArtifactRevision[]>(res);
@@ -2273,10 +2163,10 @@ export function useRestoreRevision(companyId: string) {
     mutationFn: (args: { id: string; version: number }) =>
       api.restoreRevision(companyId, args.id, args.version),
     onSuccess: (_data, args) => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId, args.id] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId, args.id] });
       qc.invalidateQueries({
-        queryKey: ["artifacts", companyId, args.id, "revisions"],
+        queryKey: ['artifacts', companyId, args.id, 'revisions'],
       });
     },
   });
@@ -2294,9 +2184,8 @@ export function useDiff(
   v2: number | undefined,
 ) {
   return useQuery({
-    queryKey: ["diff", companyId, artifactId, v1, v2],
-    queryFn: async () =>
-      api.getArtifactDiff(companyId!, artifactId!, v1!, v2!),
+    queryKey: ['diff', companyId, artifactId, v1, v2],
+    queryFn: async () => api.getArtifactDiff(companyId!, artifactId!, v1!, v2!),
     enabled: !!companyId && !!artifactId && v1 != null && v2 != null,
     retry: 1,
     staleTime: 5 * 60_000,
@@ -2309,12 +2198,9 @@ export function useDiff(
 // wrapper). Enabled when both companyId and artifactId are supplied. The
 // query key includes the artifactId so navigating to a different artifact
 // re-fetches automatically (VAL-LINK-039).
-export function useLinks(
-  companyId: string | undefined,
-  artifactId: string | undefined,
-) {
+export function useLinks(companyId: string | undefined, artifactId: string | undefined) {
   return useQuery({
-    queryKey: ["links", companyId, artifactId],
+    queryKey: ['links', companyId, artifactId],
     queryFn: async () => api.getLinks(companyId!, artifactId!),
     enabled: !!companyId && !!artifactId,
     staleTime: 30_000,
@@ -2332,12 +2218,9 @@ export function useRunCode(companyId: string) {
 
 // ── Artifact Folders (M4) ───────────────────────────────────────────────
 
-export function useFolders(
-  companyId: string | undefined,
-  projectId?: string | null,
-) {
+export function useFolders(companyId: string | undefined, projectId?: string | null) {
   return useQuery({
-    queryKey: ["folders", companyId, projectId ?? undefined],
+    queryKey: ['folders', companyId, projectId ?? undefined],
     queryFn: async () => {
       const res = await api.listFolders(companyId!, projectId);
       const body = res as unknown as { data: api.ArtifactFolder[] };
@@ -2350,10 +2233,9 @@ export function useFolders(
 export function useCreateFolder(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Parameters<typeof api.createFolder>[1]) =>
-      api.createFolder(companyId, data),
+    mutationFn: (data: Parameters<typeof api.createFolder>[1]) => api.createFolder(companyId, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+      qc.invalidateQueries({ queryKey: ['folders', companyId] });
     },
   });
 }
@@ -2361,13 +2243,10 @@ export function useCreateFolder(companyId: string) {
 export function useUpdateFolder(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: {
-      id: string;
-      name?: string;
-      parentId?: string | null;
-    }) => api.updateFolder(companyId, args.id, args),
+    mutationFn: (args: { id: string; name?: string; parentId?: string | null }) =>
+      api.updateFolder(companyId, args.id, args),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["folders", companyId] });
+      qc.invalidateQueries({ queryKey: ['folders', companyId] });
     },
   });
 }
@@ -2377,8 +2256,8 @@ export function useDeleteFolder(companyId: string) {
   return useMutation({
     mutationFn: (id: string) => api.deleteFolder(companyId, id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["folders", companyId] });
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ['folders', companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -2389,7 +2268,7 @@ export function useMoveArtifactToFolder(companyId: string) {
     mutationFn: (args: { artifactId: string; folderId: string | null }) =>
       api.moveArtifactToFolder(companyId, args.artifactId, args.folderId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -2404,38 +2283,47 @@ export function useMoveArtifactToFolder(companyId: string) {
 //  - useProjectPresence: aggregated presence across artifact types in a
 //    project (VAL-CROSS-014), also live-patched by WS events.
 
-export function useArtifactPresence(
-  companyId: string | undefined,
-  artifactId: string | undefined,
-) {
+export function useArtifactPresence(companyId: string | undefined, artifactId: string | undefined) {
   const qc = useQueryClient();
-  const queryKey = ["presence", companyId, artifactId];
+  const queryKey = ['presence', companyId, artifactId];
 
   // Live-patch the cached presence list from WS events.
-  useServerEvents(companyId, "presence.join", (event) => {
+  useServerEvents(companyId, 'presence.join', (event) => {
     const payload = event.payload as { artifactId?: string; userId?: string; name?: string };
-    if (!artifactId || payload?.artifactId !== artifactId) return;
+    if (!artifactId || payload?.artifactId !== artifactId) {
+      return;
+    }
     qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
       const next = old ?? [];
-      if (next.some((p) => p.userId === payload.userId)) return next;
+      if (next.some((p) => p.userId === payload.userId)) {
+        return next;
+      }
       return [...next, { userId: payload.userId!, name: payload.name!, typing: false }];
     });
   });
 
-  useServerEvents(companyId, "presence.leave", (event) => {
+  useServerEvents(companyId, 'presence.leave', (event) => {
     const payload = event.payload as { artifactId?: string; userId?: string };
-    if (!artifactId || payload?.artifactId !== artifactId) return;
+    if (!artifactId || payload?.artifactId !== artifactId) {
+      return;
+    }
     qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
-      if (!old) return old;
+      if (!old) {
+        return old;
+      }
       return old.filter((p) => p.userId !== payload.userId);
     });
   });
 
-  useServerEvents(companyId, "presence.typing", (event) => {
+  useServerEvents(companyId, 'presence.typing', (event) => {
     const payload = event.payload as { artifactId?: string; userId?: string; typing?: boolean };
-    if (!artifactId || payload?.artifactId !== artifactId) return;
+    if (!artifactId || payload?.artifactId !== artifactId) {
+      return;
+    }
     qc.setQueryData<api.PresenceEntry[]>(queryKey, (old) => {
-      if (!old) return old;
+      if (!old) {
+        return old;
+      }
       return old.map((p) =>
         p.userId === payload.userId ? { ...p, typing: payload.typing ?? false } : p,
       );
@@ -2455,21 +2343,20 @@ export function useArtifactPresence(
   });
 }
 
-export function useProjectPresence(
-  companyId: string | undefined,
-  projectId: string | undefined,
-) {
+export function useProjectPresence(companyId: string | undefined, projectId: string | undefined) {
   const qc = useQueryClient();
-  const queryKey = ["presence", "project", companyId, projectId];
+  const queryKey = ['presence', 'project', companyId, projectId];
 
   // Live-patch: any presence.join/leave re-invalidates the aggregated list so
   // the project-level indicator updates without reload.
   const invalidate = () => {
-    if (!projectId) return;
+    if (!projectId) {
+      return;
+    }
     qc.invalidateQueries({ queryKey });
   };
-  useServerEvents(companyId, "presence.join", invalidate);
-  useServerEvents(companyId, "presence.leave", invalidate);
+  useServerEvents(companyId, 'presence.join', invalidate);
+  useServerEvents(companyId, 'presence.leave', invalidate);
 
   return useQuery({
     queryKey,
@@ -2488,17 +2375,16 @@ export function useProjectPresence(
  * leave on unmount. `notifyTyping` debounces typing notifications and sends
  * a clear after a short idle window. Returns a cleanup function for unmount.
  */
-export function usePresenceActions(
-  companyId: string | undefined,
-  artifactId: string | undefined,
-) {
+export function usePresenceActions(companyId: string | undefined, artifactId: string | undefined) {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
   const [selfUserId, setSelfUserId] = useState<string | undefined>(undefined);
 
   const join = useCallback(async () => {
-    if (!companyId || !artifactId) return;
+    if (!companyId || !artifactId) {
+      return;
+    }
     try {
       const res = await api.joinPresence(companyId, artifactId);
       const body = res as unknown as { data: { userId: string } };
@@ -2507,7 +2393,9 @@ export function usePresenceActions(
       /* presence is best-effort */
     }
     // Heartbeat to keep the session alive (refreshes lastActiveAt).
-    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+    }
     heartbeatRef.current = setInterval(async () => {
       try {
         await api.joinPresence(companyId, artifactId);
@@ -2518,7 +2406,9 @@ export function usePresenceActions(
   }, [companyId, artifactId]);
 
   const leave = useCallback(async () => {
-    if (!companyId || !artifactId) return;
+    if (!companyId || !artifactId) {
+      return;
+    }
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
       heartbeatRef.current = null;
@@ -2537,9 +2427,13 @@ export function usePresenceActions(
 
   /** Notify that the user is typing. Debounced; auto-clears after idle. */
   const notifyTyping = useCallback(async () => {
-    if (!companyId || !artifactId) return;
+    if (!companyId || !artifactId) {
+      return;
+    }
     // Reset the idle-clear timer on each keystroke.
-    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current);
+    }
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       try {
@@ -2565,7 +2459,7 @@ export function usePresenceActions(
 
 export function useTeams(companyId: string | undefined) {
   return useQuery({
-    queryKey: ["teams", companyId],
+    queryKey: ['teams', companyId],
     queryFn: async () => unwrap<api.Team[]>(await api.getTeams(companyId!)),
     enabled: !!companyId,
   });
@@ -2575,7 +2469,7 @@ export function useCreateTeam(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (name: string) => unwrap<api.Team>(await api.createTeam(companyId, name)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teams", companyId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['teams', companyId] }),
   });
 }
 
@@ -2583,13 +2477,13 @@ export function useDeleteTeam(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (teamId: string) => api.deleteTeam(companyId, teamId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teams", companyId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['teams', companyId] }),
   });
 }
 
 export function useTeamMembers(companyId: string | undefined, teamId: string | undefined) {
   return useQuery({
-    queryKey: ["teams", companyId, teamId, "members"],
+    queryKey: ['teams', companyId, teamId, 'members'],
     queryFn: async () => unwrap<api.TeamMember[]>(await api.getTeamMembers(companyId!, teamId!)),
     enabled: !!companyId && !!teamId,
   });
@@ -2598,10 +2492,11 @@ export function useTeamMembers(companyId: string | undefined, teamId: string | u
 export function useAddTeamMember(companyId: string, teamId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (userId: string) => unwrap<api.TeamMember>(await api.addTeamMember(companyId, teamId, userId)),
+    mutationFn: async (userId: string) =>
+      unwrap<api.TeamMember>(await api.addTeamMember(companyId, teamId, userId)),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["teams", companyId, teamId, "members"] });
-      qc.invalidateQueries({ queryKey: ["teams", companyId] });
+      qc.invalidateQueries({ queryKey: ['teams', companyId, teamId, 'members'] });
+      qc.invalidateQueries({ queryKey: ['teams', companyId] });
     },
   });
 }
@@ -2611,8 +2506,8 @@ export function useRemoveTeamMember(companyId: string, teamId: string) {
   return useMutation({
     mutationFn: async (userId: string) => api.removeTeamMember(companyId, teamId, userId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["teams", companyId, teamId, "members"] });
-      qc.invalidateQueries({ queryKey: ["teams", companyId] });
+      qc.invalidateQueries({ queryKey: ['teams', companyId, teamId, 'members'] });
+      qc.invalidateQueries({ queryKey: ['teams', companyId] });
     },
   });
 }
@@ -2623,8 +2518,11 @@ export function usePermissions(
   resourceId: string | undefined,
 ) {
   return useQuery({
-    queryKey: ["permissions", companyId, resourceType, resourceId],
-    queryFn: async () => unwrap<api.PermissionRecord[]>(await api.getPermissions(companyId!, resourceType!, resourceId!)),
+    queryKey: ['permissions', companyId, resourceType, resourceId],
+    queryFn: async () =>
+      unwrap<api.PermissionRecord[]>(
+        await api.getPermissions(companyId!, resourceType!, resourceId!),
+      ),
     enabled: !!companyId && !!resourceType && !!resourceId,
   });
 }
@@ -2640,8 +2538,10 @@ export function useGrantPermission(companyId: string) {
       accessLevel: api.AccessLevel;
     }) => unwrap<api.PermissionRecord>(await api.grantPermission(companyId, data)),
     onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: ["permissions", companyId, variables.resourceType, variables.resourceId] });
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({
+        queryKey: ['permissions', companyId, variables.resourceType, variables.resourceId],
+      });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -2657,8 +2557,10 @@ export function useRevokePermission(companyId: string) {
       accessLevel: api.AccessLevel;
     }) => api.revokePermission(companyId, data),
     onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: ["permissions", companyId, variables.resourceType, variables.resourceId] });
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+      qc.invalidateQueries({
+        queryKey: ['permissions', companyId, variables.resourceType, variables.resourceId],
+      });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
     },
   });
 }
@@ -2669,8 +2571,11 @@ export function useResolvePermission(
   resourceId: string | undefined,
 ) {
   return useQuery({
-    queryKey: ["permissions", companyId, "resolve", resourceType, resourceId],
-    queryFn: async () => unwrap<{ accessLevel: api.AccessLevel | null }>(await api.resolvePermission(companyId!, resourceType!, resourceId!)),
+    queryKey: ['permissions', companyId, 'resolve', resourceType, resourceId],
+    queryFn: async () =>
+      unwrap<{ accessLevel: api.AccessLevel | null }>(
+        await api.resolvePermission(companyId!, resourceType!, resourceId!),
+      ),
     enabled: !!companyId && !!resourceType && !!resourceId,
   });
 }
