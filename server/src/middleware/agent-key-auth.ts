@@ -4,6 +4,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { AppError } from './error-handler.js';
 import logger from '../utils/logger.js';
 import type { DbInstance } from '../types.js';
+import { hashServiceToken, type ScopedServiceToken } from './service-tokens.js';
 
 /**
  * Agent API key prefix. All agent API keys start with this string.
@@ -22,6 +23,21 @@ export function hashAgentKey(token: string): string {
 }
 
 /**
+ * Dependencies for creating the agent API key middleware.
+ */
+export interface AgentKeyMiddlewareDeps {
+  db: DbInstance;
+  /**
+   * Configured service tokens. If a Bearer token starting with `eid_live_`
+   * matches one of these service tokens (by SHA-256 hash), it is skipped so
+   * the service-token middleware can handle it. This preserves backward
+   * compatibility for legacy service tokens that happen to use the
+   * `eid_live_` prefix.
+   */
+  serviceTokens?: ScopedServiceToken[];
+}
+
+/**
  * Create the agent API key authentication middleware.
  *
  * `tryAgentKeyAuth` is mounted before company-scoped routes. It intercepts
@@ -33,12 +49,24 @@ export function hashAgentKey(token: string): string {
  * `eid_live_`, the middleware calls `next()` immediately so the request
  * falls through to service-token or session-based auth.
  *
- * If a token DOES start with `eid_live_` but is not found, expired, or
- * revoked, the middleware rejects with 401 — it does NOT fall through.
+ * If a token DOES start with `eid_live_` but matches a configured service
+ * token (by hash), the middleware calls `next()` so the service-token
+ * middleware can handle it. This ensures legacy service tokens that use the
+ * `eid_live_` prefix are not incorrectly rejected as unknown agent keys.
+ *
+ * If a token starts with `eid_live_`, does NOT match a service token, and
+ * is not found, expired, or revoked in `agent_api_keys`, the middleware
+ * rejects with 401 — it does NOT fall through.
  */
-export function createAgentKeyMiddleware(db: DbInstance): {
+export function createAgentKeyMiddleware(deps: AgentKeyMiddlewareDeps): {
   tryAgentKeyAuth: RequestHandler;
 } {
+  const { db, serviceTokens = [] } = deps;
+
+  // Pre-compute service token hashes for O(1) lookup so that legacy
+  // service tokens using the eid_live_ prefix are not intercepted.
+  const serviceTokenHashes = new Set(serviceTokens.map((t) => t.tokenHash));
+
   async function tryAgentKeyAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
     const bearerToken = req.get('authorization')?.replace(/^Bearer\s+/i, '');
     if (!bearerToken) {
@@ -48,6 +76,14 @@ export function createAgentKeyMiddleware(db: DbInstance): {
     // Only treat tokens with the eid_live_ prefix as agent API keys.
     // Other bearer tokens fall through to service-token or session auth.
     if (!bearerToken.startsWith(AGENT_KEY_PREFIX)) {
+      return next();
+    }
+
+    // If this token is actually a configured service token (even though it
+    // starts with eid_live_), skip agent key auth so the service-token
+    // middleware can handle it. This preserves backward compatibility for
+    // legacy service tokens that use the eid_live_ prefix.
+    if (serviceTokenHashes.size > 0 && serviceTokenHashes.has(hashServiceToken(bearerToken))) {
       return next();
     }
 

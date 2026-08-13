@@ -53,6 +53,10 @@ const RAW_LASTUSED_KEY = PFX + 'lastused_key_stu901';
 // Service token (legacy) for compatibility test
 const RAW_SERVICE_READ_TOKEN = 'service-read-secret';
 const RAW_SERVICE_WRITE_TOKEN = 'service-write-secret';
+// Legacy service token that uses the eid_live_ prefix — must still be
+// handled by the service-token middleware, NOT rejected as an unknown
+// agent key by tryAgentKeyAuth.
+const RAW_LEGACY_EID_LIVE_SERVICE_TOKEN = PFX + 'legacy_service_token';
 
 async function seedCompany(companyId: string) {
   await db.drizzle
@@ -113,7 +117,7 @@ function buildApp(opts?: { serviceTokens?: ScopedServiceToken[] }) {
     authMode: 'local_trusted',
     db,
   });
-  const { tryAgentKeyAuth } = createAgentKeyMiddleware(db);
+  const { tryAgentKeyAuth } = createAgentKeyMiddleware({ db, serviceTokens: opts?.serviceTokens });
   const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
     requireAuth,
     requireOrgMember,
@@ -198,6 +202,12 @@ const serviceTokens: ScopedServiceToken[] = [
     companyId: COMPANY_A,
     tokenHash: hashServiceToken(RAW_SERVICE_WRITE_TOKEN),
     scopes: ['prompts:write'],
+  },
+  {
+    name: 'legacy-eid-live-reader',
+    companyId: COMPANY_A,
+    tokenHash: hashServiceToken(RAW_LEGACY_EID_LIVE_SERVICE_TOKEN),
+    scopes: ['prompts:read'],
   },
 ];
 
@@ -573,9 +583,45 @@ describe('Agent API Key Authentication', () => {
         organizationId: COMPANY_A,
       });
     });
-  });
 
-  // VAL-CROSS-007: Agent key inherits member permissions
+    // CRITICAL: legacy service tokens that happen to use the eid_live_
+    // prefix must be handled by the service-token middleware, not rejected
+    // as unknown agent keys by tryAgentKeyAuth. This is the core regression
+    // test for the middleware ordering fix.
+    it('legacy eid_live_-prefixed service token authenticates for prompts', async () => {
+      const res = await request(buildApp({ serviceTokens }))
+        .get(`/companies/${COMPANY_A}/prompts`)
+        .set('authorization', `Bearer ${RAW_LEGACY_EID_LIVE_SERVICE_TOKEN}`)
+        .expect(200);
+
+      expect(res.body.principal).toEqual({
+        name: 'legacy-eid-live-reader',
+        companyId: COMPANY_A,
+        scopes: ['prompts:read'],
+      });
+      // Must NOT have been treated as an agent key (no membership set)
+      expect(res.body.membership).toBeNull();
+    });
+
+    it('legacy eid_live_ service token is rejected on prompt mutations (scope)', async () => {
+      const res = await request(buildApp({ serviceTokens }))
+        .post(`/companies/${COMPANY_A}/prompts`)
+        .set('authorization', `Bearer ${RAW_LEGACY_EID_LIVE_SERVICE_TOKEN}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('SERVICE_TOKEN_SCOPE_REQUIRED');
+    });
+
+    it('legacy eid_live_ service token does not interfere with agent key auth', async () => {
+      // Agent key still works alongside the legacy service token
+      const res = await request(buildApp({ serviceTokens }))
+        .get(`/companies/${COMPANY_A}/view`)
+        .set('authorization', `Bearer ${RAW_MEMBER_KEY}`)
+        .expect(200);
+
+      expect(res.body.membership.role).toBe('member');
+    });
+  });
   describe('VAL-CROSS-007: agent key inherits member permissions', () => {
     it('member key is usable as bearer credential for member-level endpoints', async () => {
       const res = await request(buildApp())

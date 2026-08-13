@@ -7,7 +7,7 @@ import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createAgentKeyMiddleware } from './middleware/agent-key-auth.js';
-import { createServiceTokenMiddleware } from './middleware/service-tokens.js';
+import { createServiceTokenMiddleware, parseServiceTokens } from './middleware/service-tokens.js';
 import { apiRateLimit, authSensitiveRateLimit } from './middleware/rate-limit.js';
 import { originCsrf } from './middleware/csrf.js';
 import healthRouter from './routes/health.js';
@@ -75,10 +75,15 @@ export function createApp(db: DbInstance): express.Express {
   initializeErrorTracking();
   const { requireAuth, requireOrgMember, requirePermission, requirePermissionByMethod } =
     createAuthMiddleware({ db });
-  const { tryAgentKeyAuth } = createAgentKeyMiddleware(db);
+  // Parse service tokens once and share with both agent-key and service-token
+  // middleware so that legacy service tokens using the eid_live_ prefix are
+  // not intercepted as unknown agent keys.
+  const serviceTokens = parseServiceTokens();
+  const { tryAgentKeyAuth } = createAgentKeyMiddleware({ db, serviceTokens });
   const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
     requireAuth,
     requireOrgMember,
+    tokens: serviceTokens,
   });
 
   // Vercel overwrites forwarded IP headers before invoking the function.
@@ -199,7 +204,9 @@ export function createApp(db: DbInstance): express.Express {
   // before any company-scoped route. If an agent key matches, it sets
   // req.user and req.organizationMembership so downstream requireAuth skips
   // normal auth and requirePermission reuses the pre-set membership.
-  // Must be mounted before the prompts route and all company routes.
+  // Mounted before all company routes. Service tokens (including legacy
+  // tokens that use the eid_live_ prefix) are skipped via a hash check so
+  // they fall through to the service-token middleware on the prompts route.
   app.use('/api/companies/:companyId', tryAgentKeyAuth);
 
   // Prompt service auth must run before the broad company-session gate.
