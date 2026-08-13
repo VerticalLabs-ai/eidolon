@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PageTransition } from "@/components/ui/PageTransition";
 import { useAgents, useGoalTree } from "@/lib/hooks";
+import { usePermission } from "@/lib/permissions";
 import type { Goal } from "@/lib/api";
 
 const statusVariant: Record<string, "default" | "success" | "error" | "info"> = {
@@ -69,6 +70,7 @@ function GoalNode({
   ownerNames,
   ownersLoading,
   ownersUnavailable,
+  canEdit,
 }: {
   depth?: number;
   node: GoalTreeNode;
@@ -77,6 +79,7 @@ function GoalNode({
   ownerNames: Map<string, string>;
   ownersLoading: boolean;
   ownersUnavailable: boolean;
+  canEdit: boolean;
 }) {
   const [expanded, setExpanded] = useState(depth < 2);
   const hasChildren = node.children.length > 0;
@@ -136,7 +139,7 @@ function GoalNode({
             </div>
 
             <div className="flex shrink-0 flex-wrap items-center gap-1">
-              {goal.level !== "individual" && (
+              {canEdit && goal.level !== "individual" && (
                 <Button
                   type="button"
                   size="sm"
@@ -147,15 +150,17 @@ function GoalNode({
                   Add child
                 </Button>
               )}
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                icon={<Pencil className="h-3.5 w-3.5" />}
-                onClick={() => onEdit(goal)}
-              >
-                Edit
-              </Button>
+              {canEdit && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  icon={<Pencil className="h-3.5 w-3.5" />}
+                  onClick={() => onEdit(goal)}
+                >
+                  Edit
+                </Button>
+              )}
             </div>
           </div>
 
@@ -199,6 +204,7 @@ function GoalNode({
               ownerNames={ownerNames}
               ownersLoading={ownersLoading}
               ownersUnavailable={ownersUnavailable}
+              canEdit={canEdit}
             />
           ))}
         </div>
@@ -221,6 +227,8 @@ export function GoalTree() {
     isError: agentsFailed,
     isLoading: agentsLoading,
   } = useAgents(companyId);
+  const { hasPermission } = usePermission(companyId);
+  const canCreateGoal = hasPermission("content.create");
   const [editor, setEditor] = useState<GoalEditorState | null>(null);
   const tree = buildTree(goals ?? []);
   const ownerNames = new Map((agents ?? []).map((agent) => [agent.id, agent.name]));
@@ -237,13 +245,15 @@ export function GoalTree() {
               Company objectives and key results
             </p>
           </div>
-          <Button
-            type="button"
-            icon={<Plus className="h-4 w-4" />}
-            onClick={() => setEditor({})}
-          >
-            New Goal
-          </Button>
+          {canCreateGoal && (
+            <Button
+              type="button"
+              icon={<Plus className="h-4 w-4" />}
+              onClick={() => setEditor({})}
+            >
+              New Goal
+            </Button>
+          )}
         </div>
 
         {agentsFailed && !goalsFailed && (
@@ -267,7 +277,7 @@ export function GoalTree() {
             icon={<Target className="h-6 w-6" />}
             title="No goals defined"
             description="Create a company goal, then add child goals to define ownership and progress."
-            action={(
+            action={canCreateGoal ? (
               <Button
                 type="button"
                 icon={<Plus className="h-4 w-4" />}
@@ -275,7 +285,7 @@ export function GoalTree() {
               >
                 Create Goal
               </Button>
-            )}
+            ) : undefined}
           />
         ) : (
           <div className="space-y-3 rounded-xl glass p-4 grid-bg sm:p-6">
@@ -288,6 +298,7 @@ export function GoalTree() {
                 ownerNames={ownerNames}
                 ownersLoading={agentsLoading}
                 ownersUnavailable={agentsFailed}
+                canEdit={canCreateGoal}
               />
             ))}
           </div>

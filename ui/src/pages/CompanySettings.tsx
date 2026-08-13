@@ -18,10 +18,12 @@ import {
 import {
   useCompany,
   useUpdateCompany,
+  useDeleteCompany,
   useSecrets,
   useCreateSecret,
   useDeleteSecret,
 } from '@/lib/hooks';
+import { usePermission } from '@/lib/permissions';
 import { Input, Textarea, Select } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -33,6 +35,9 @@ export function CompanySettings() {
   const { companyId } = useParams();
   const { data: company } = useCompany(companyId);
   const updateCompany = useUpdateCompany();
+  const deleteCompany = useDeleteCompany();
+  const { hasPermission } = usePermission(companyId);
+  const canDeleteCompany = hasPermission('company.delete');
   const { data: secrets } = useSecrets(companyId);
   const createSecret = useCreateSecret(companyId!);
   const deleteSecret = useDeleteSecret(companyId!);
@@ -502,7 +507,44 @@ export function CompanySettings() {
               </Button>
             </div>
           </div>
-        </div>
+
+            {/* Delete Company — owner only (VAL-UI-018: hidden for admins) */}
+            {canDeleteCompany && (
+              <>
+                <div className="border-t border-error/10" />
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">
+                      Delete Company
+                    </p>
+                    <p className="text-xs text-text-secondary mt-0.5">
+                      Permanently delete this company and all associated data.
+                      This action cannot be undone.
+                    </p>
+                  </div>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    icon={<Trash2 className="h-3.5 w-3.5" />}
+                    loading={deleteCompany.isPending}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Permanently delete "${company?.name}"? This cannot be undone.`,
+                        )
+                      ) {
+                        deleteCompany.mutate({ id: companyId!, hard: true });
+                      }
+                    }}
+                    data-action="delete-company"
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
       </div>
     </PageTransition>
   );

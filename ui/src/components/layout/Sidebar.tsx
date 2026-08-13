@@ -1,6 +1,8 @@
 import { StatusIndicator } from "@/components/ui/StatusIndicator";
 import { useProjectCreation } from "@/components/projects/ProjectCreationProvider";
 import { useCompanies, useInbox, useProjects } from "@/lib/hooks";
+import { usePermission } from "@/lib/permissions";
+import type { Role } from "@/lib/api";
 import { useWebSocket } from "@/lib/ws";
 import { clsx } from "clsx";
 import { motion } from "framer-motion";
@@ -29,6 +31,41 @@ import {
 } from "lucide-react";
 import { NavLink, useNavigate, useParams } from "react-router-dom";
 
+// ── Role badge styles (matches CompanyMembers.tsx) ──────────────────────
+
+const ROLE_BADGE_STYLES: Record<
+  Role,
+  { backgroundColor: string; color: string; borderColor: string }
+> = {
+  owner: {
+    backgroundColor: "rgba(255, 215, 0, 0.12)",
+    color: "#FFD700",
+    borderColor: "rgba(255, 215, 0, 0.25)",
+  },
+  admin: {
+    backgroundColor: "rgba(59, 130, 246, 0.12)",
+    color: "#3B82F6",
+    borderColor: "rgba(59, 130, 246, 0.25)",
+  },
+  member: {
+    backgroundColor: "rgba(16, 185, 129, 0.12)",
+    color: "#10B981",
+    borderColor: "rgba(16, 185, 129, 0.25)",
+  },
+  viewer: {
+    backgroundColor: "rgba(107, 114, 128, 0.12)",
+    color: "#9CA3AF",
+    borderColor: "rgba(107, 114, 128, 0.25)",
+  },
+};
+
+const ROLE_LABELS: Record<Role, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  member: "Member",
+  viewer: "Viewer",
+};
+
 // ── Types ───────────────────────────────────────────────────────────────
 
 interface SidebarProps {
@@ -44,6 +81,9 @@ interface NavItem {
   end?: boolean;
   /** Optional key that lets an ambient badge count attach to this item. */
   badgeKey?: "inbox";
+  /** Optional permission required to see this nav item. If the user's role
+   * does not grant this permission, the item is hidden from the sidebar. */
+  requiresPermission?: import("@/lib/permissions").Permission;
 }
 
 interface NavSection {
@@ -93,7 +133,13 @@ const navSections: NavSection[] = [
       { to: "/integrations", icon: Plug, label: "Integrations" },
       { to: "/teams", icon: Users, label: "Teams" },
       { to: "/security", icon: ShieldCheck, label: "Security" },
-      { to: "/settings", icon: Settings, label: "Settings" },
+      { to: "/members", icon: Users, label: "Members & Roles" },
+      {
+        to: "/settings",
+        icon: Settings,
+        label: "Settings",
+        requiresPermission: "company.settings.update",
+      },
     ],
   },
 ];
@@ -187,7 +233,15 @@ function CompanyIconRail() {
 
 // ── Projects Section ────────────────────────────────────────────────────
 
-function ProjectsSection({ base, onClose }: { base: string; onClose: () => void }) {
+function ProjectsSection({
+  base,
+  onClose,
+  canCreate,
+}: {
+  base: string;
+  onClose: () => void;
+  canCreate: boolean;
+}) {
   const { companyId } = useParams();
   const { data: projects } = useProjects(companyId);
   const { openProjectCreation } = useProjectCreation();
@@ -198,18 +252,20 @@ function ProjectsSection({ base, onClose }: { base: string; onClose: () => void 
         <p className="text-[10px] font-medium uppercase tracking-wider text-text-secondary font-display">
           Projects
         </p>
-        <button
-          type="button"
-          onClick={(event) => {
-            openProjectCreation(event.currentTarget);
-            onClose();
-          }}
-          className="flex min-h-11 items-center gap-1 rounded px-2 py-1 text-[10px] font-medium text-text-secondary transition-colors hover:bg-accent/[0.05] hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-8"
-          title="New project"
-        >
-          <Plus className="h-3 w-3" />
-          <span>New</span>
-        </button>
+        {canCreate && (
+          <button
+            type="button"
+            onClick={(event) => {
+              openProjectCreation(event.currentTarget);
+              onClose();
+            }}
+            className="flex min-h-11 items-center gap-1 rounded px-2 py-1 text-[10px] font-medium text-text-secondary transition-colors hover:bg-accent/[0.05] hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-8"
+            title="New project"
+          >
+            <Plus className="h-3 w-3" />
+            <span>New</span>
+          </button>
+        )}
       </div>
       <div className="space-y-0.5">
         {projects?.map((project) => (
@@ -262,10 +318,24 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
   const { companyId } = useParams();
   const base = `/company/${companyId}`;
   const { status } = useWebSocket(companyId);
+  const { role, hasPermission } = usePermission(companyId);
   const inboxUnread = useInboxUnreadCount(companyId);
   const badges: Record<NonNullable<NavItem["badgeKey"]>, number> = {
     inbox: inboxUnread,
   };
+
+  // Filter nav items based on the current user's role. Items without a
+  // requiresPermission are always visible.
+  const visibleSections = navSections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter(
+        (item) => !item.requiresPermission || hasPermission(item.requiresPermission),
+      ),
+    }))
+    .filter((section) => section.items.length > 0);
+
+  const canCreateProject = hasPermission("project.create");
 
   useEffect(() => {
     if (!open) return;
@@ -335,7 +405,7 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
           {/* Scrollable navigation */}
           <nav className="flex-1 overflow-y-auto p-3 space-y-4">
             {/* Main + Inbox section */}
-            {navSections.slice(0, 1).map((section) => (
+            {visibleSections.slice(0, 1).map((section) => (
               <NavSectionGroup
                 key={section.label}
                 section={section}
@@ -346,10 +416,10 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
             ))}
 
             {/* Projects section (dynamic) */}
-            <ProjectsSection base={base} onClose={onClose} />
+            <ProjectsSection base={base} onClose={onClose} canCreate={canCreateProject} />
 
             {/* Remaining sections */}
-            {navSections.slice(1).map((section) => (
+            {visibleSections.slice(1).map((section) => (
               <NavSectionGroup
                 key={section.label}
                 section={section}
@@ -362,6 +432,19 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
 
           {/* Footer */}
           <div className="border-t border-white/[0.06] p-3">
+            {/* Role badge (VAL-UI-015) */}
+            {role && (
+              <div className="mb-2 flex items-center justify-center">
+                <span
+                  className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium leading-tight border"
+                  style={ROLE_BADGE_STYLES[role]}
+                  data-role={role}
+                  aria-label={`Your role: ${ROLE_LABELS[role]}`}
+                >
+                  {ROLE_LABELS[role]}
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5">
               <p className="text-[10px] font-medium uppercase tracking-wider text-text-secondary font-display">
                 Eidolon v{import.meta.env.VITE_APP_VERSION}
