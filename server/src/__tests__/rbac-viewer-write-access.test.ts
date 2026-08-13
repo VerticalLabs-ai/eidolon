@@ -217,6 +217,14 @@ describe('RBAC viewer write-access fix', () => {
       expect(res.body.code).toBe('INSUFFICIENT_PERMISSION');
     });
 
+    it('viewer can POST knowledge search (200)', async () => {
+      await request(app)
+        .post(url('/knowledge/search'))
+        .set(roleHeader('viewer'))
+        .send({ query: 'viewer search' })
+        .expect(200);
+    });
+
     it('viewer cannot POST memories (403)', async () => {
       const res = await request(app)
         .post(url('/agents/test-agent/memories'))
@@ -224,6 +232,14 @@ describe('RBAC viewer write-access fix', () => {
         .send({ content: 'viewer memory' })
         .expect(403);
       expect(res.body.code).toBe('INSUFFICIENT_PERMISSION');
+    });
+
+    it('viewer can POST memory recall (200)', async () => {
+      await request(app)
+        .post(url('/agents/test-agent/memories/recall'))
+        .set(roleHeader('viewer'))
+        .send({ context: 'viewer recall' })
+        .expect(200);
     });
   });
 
@@ -257,6 +273,29 @@ describe('RBAC viewer write-access fix', () => {
       const res = await request(app).get(url(path)).set(roleHeader('viewer'));
       expect(res.status).not.toBe(401);
       expect(res.status).not.toBe(403);
+    });
+  });
+
+  describe('inbox read-state permissions', () => {
+    it('viewer cannot POST inbox read (403)', async () => {
+      const res = await request(app)
+        .post(url('/inbox/read'))
+        .set(roleHeader('viewer'))
+        .send({ itemIds: ['activity:test'] })
+        .expect(403);
+      expect(res.body.code).toBe('INSUFFICIENT_PERMISSION');
+    });
+
+    it('viewer can GET inbox (200)', async () => {
+      await request(app).get(url('/inbox')).set(roleHeader('viewer')).expect(200);
+    });
+
+    it('member can POST inbox read (200)', async () => {
+      await request(app)
+        .post(url('/inbox/read'))
+        .set(roleHeader('member'))
+        .send({ itemIds: ['activity:test'] })
+        .expect(200);
     });
   });
 

@@ -23,10 +23,10 @@ import { activityRouter } from './routes/activity.js';
 import { secretsRouter } from './routes/secrets.js';
 import { chatRouter } from './routes/chat.js';
 import { webhookManagementRouter, webhookTriggerRouter } from './routes/webhooks.js';
-import { knowledgeRouter } from './routes/knowledge.js';
+import { knowledgeRouter, knowledgeSearchRouter } from './routes/knowledge.js';
 import { filesRouter, agentFilesRouter } from './routes/files.js';
 import { integrationsRouter } from './routes/integrations.js';
-import { memoriesRouter } from './routes/memories.js';
+import { memoriesRecallRouter, memoriesRouter } from './routes/memories.js';
 import { globalPromptsRouter, companyPromptsRouter } from './routes/prompts.js';
 import { mcpRouter } from './routes/mcp.js';
 import { evaluationsRouter } from './routes/evaluations.js';
@@ -239,6 +239,14 @@ export function createApp(db: DbInstance): express.Express {
   // may enforce additional role checks internally (e.g. teams router checks
   // requireAdminRole for team creation/deletion).
 
+  // Agent memory recall accepts a POST body but is read-only.
+  // Mount before the broader agents route so its read permission wins.
+  app.use(
+    '/api/companies/:companyId/agents/:agentId/memories/recall',
+    requireAuth,
+    requirePermission('company.view'),
+    memoriesRecallRouter(db),
+  );
   app.use(
     '/api/companies/:companyId/agents',
     requireAuth,
@@ -378,6 +386,12 @@ export function createApp(db: DbInstance): express.Express {
 
   // Knowledge base
   app.use(
+    '/api/companies/:companyId/knowledge/search',
+    requireAuth,
+    requirePermission('company.view'),
+    knowledgeSearchRouter(db),
+  );
+  app.use(
     '/api/companies/:companyId/knowledge',
     requireAuth,
     requirePermissionByMethod({
@@ -512,7 +526,7 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/inbox',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({ read: 'company.view', write: 'content.update' }),
     inboxRouter(db),
   );
 

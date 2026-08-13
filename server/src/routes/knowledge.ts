@@ -147,8 +147,21 @@ export function knowledgeRouter(db: DbInstance): Router {
     res.json({ data: { id, deleted: true } });
   });
 
+  registerSearchRoute(router, knowledgeService);
+
+  return router;
+}
+
+/** Router for the read-only POST search endpoint. */
+export function knowledgeSearchRouter(db: DbInstance): Router {
+  const router = Router({ mergeParams: true });
+  registerSearchRoute(router, new KnowledgeService(db));
+  return router;
+}
+
+function registerSearchRoute(router: Router, knowledgeService: KnowledgeService): void {
   // POST /api/companies/:companyId/knowledge/search - search knowledge base
-  router.post('/search', validate(SearchBody), async (req, res) => {
+  router.post('/', validate(SearchBody), async (req, res) => {
     const body = req.body as z.infer<typeof SearchBody>;
     const results = await knowledgeService.searchCompanyKnowledge(
       routeParams(req).companyId,
@@ -158,6 +171,4 @@ export function knowledgeRouter(db: DbInstance): Router {
 
     res.json({ data: results });
   });
-
-  return router;
 }
