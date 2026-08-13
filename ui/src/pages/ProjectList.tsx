@@ -1,24 +1,27 @@
-import { useParams, Link } from "react-router-dom";
-import { FolderKanban, Plus } from "lucide-react";
-import { useProjects } from "@/lib/hooks";
-import { Card } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { useProjectCreation } from "@/components/projects/ProjectCreationProvider";
+import { useParams, Link } from 'react-router-dom';
+import { FolderKanban, Plus } from 'lucide-react';
+import { useProjects } from '@/lib/hooks';
+import { Card } from '@/components/ui/Card';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { useProjectCreation } from '@/components/projects/ProjectCreationProvider';
+import { usePermission } from '@/lib/permissions';
 
-const statusVariant: Record<string, "default" | "success" | "warning" | "info" | "error"> = {
-  active: "success",
-  planning: "info",
-  paused: "warning",
-  completed: "success",
-  archived: "default",
+const statusVariant: Record<string, 'default' | 'success' | 'warning' | 'info' | 'error'> = {
+  active: 'success',
+  planning: 'info',
+  paused: 'warning',
+  completed: 'success',
+  archived: 'default',
 };
 
 export function ProjectList() {
   const { companyId } = useParams();
   const { data: projects, isLoading } = useProjects(companyId);
   const { openProjectCreation } = useProjectCreation();
+  const { hasPermission } = usePermission(companyId);
+  const canCreateProject = hasPermission('project.create');
 
   return (
     <div className="p-6 lg:p-8 space-y-6">
@@ -32,15 +35,17 @@ export function ProjectList() {
             Projects
           </h1>
           <p className="mt-1 text-sm text-text-secondary">
-            {projects?.length ?? 0} project{(projects?.length ?? 0) !== 1 ? "s" : ""}
+            {projects?.length ?? 0} project{(projects?.length ?? 0) !== 1 ? 's' : ''}
           </p>
         </div>
-        <Button
-          onClick={(event) => openProjectCreation(event.currentTarget)}
-          icon={<Plus className="h-3.5 w-3.5" />}
-        >
-          New Project
-        </Button>
+        {canCreateProject && (
+          <Button
+            onClick={(event) => openProjectCreation(event.currentTarget)}
+            icon={<Plus className="h-3.5 w-3.5" />}
+          >
+            New Project
+          </Button>
+        )}
       </div>
 
       {/* Content */}
@@ -56,12 +61,14 @@ export function ProjectList() {
           title="No projects yet"
           description="Create your first project to organize tasks and goals."
           action={
-            <Button
-              onClick={(event) => openProjectCreation(event.currentTarget)}
-              icon={<Plus className="h-3.5 w-3.5" />}
-            >
-              New Project
-            </Button>
+            canCreateProject ? (
+              <Button
+                onClick={(event) => openProjectCreation(event.currentTarget)}
+                icon={<Plus className="h-3.5 w-3.5" />}
+              >
+                New Project
+              </Button>
+            ) : undefined
           }
         />
       ) : (
@@ -77,7 +84,7 @@ export function ProjectList() {
                   <h3 className="text-sm font-semibold text-text-primary font-display truncate">
                     {project.name}
                   </h3>
-                  <Badge variant={statusVariant[project.status] ?? "default"}>
+                  <Badge variant={statusVariant[project.status] ?? 'default'}>
                     {project.status}
                   </Badge>
                 </div>
@@ -88,11 +95,11 @@ export function ProjectList() {
                 )}
                 <div className="mt-4 pt-3 border-t border-white/[0.06] flex items-center text-[10px] text-text-secondary font-display">
                   <span>
-                    Created{" "}
-                    {new Date(project.createdAt).toLocaleDateString("en-US", {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
+                    Created{' '}
+                    {new Date(project.createdAt).toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
                     })}
                   </span>
                 </div>

@@ -1,13 +1,13 @@
-import { StatusIndicator } from "@/components/ui/StatusIndicator";
-import { useProjectCreation } from "@/components/projects/ProjectCreationProvider";
-import { useCompanies, useInbox, useProjects } from "@/lib/hooks";
-import { usePermission } from "@/lib/permissions";
-import type { Role } from "@/lib/api";
-import { useWebSocket } from "@/lib/ws";
-import { clsx } from "clsx";
-import { motion } from "framer-motion";
-import type { LucideIcon } from "lucide-react";
-import { useEffect } from "react";
+import { StatusIndicator } from '@/components/ui/StatusIndicator';
+import { useProjectCreation } from '@/components/projects/ProjectCreationProvider';
+import { useCompanies, useInbox, useProjects } from '@/lib/hooks';
+import { usePermission } from '@/lib/permissions';
+import type { Role } from '@/lib/api';
+import { useWebSocket } from '@/lib/ws';
+import { clsx } from 'clsx';
+import { motion } from 'framer-motion';
+import type { LucideIcon } from 'lucide-react';
+import { useEffect } from 'react';
 import {
   BarChart3,
   BookOpen,
@@ -28,8 +28,8 @@ import {
   Users,
   X,
   Zap,
-} from "lucide-react";
-import { NavLink, useNavigate, useParams } from "react-router-dom";
+} from 'lucide-react';
+import { NavLink, useNavigate, useParams } from 'react-router-dom';
 
 // ── Role badge styles (matches CompanyMembers.tsx) ──────────────────────
 
@@ -38,32 +38,32 @@ const ROLE_BADGE_STYLES: Record<
   { backgroundColor: string; color: string; borderColor: string }
 > = {
   owner: {
-    backgroundColor: "rgba(255, 215, 0, 0.12)",
-    color: "#FFD700",
-    borderColor: "rgba(255, 215, 0, 0.25)",
+    backgroundColor: 'rgba(255, 215, 0, 0.12)',
+    color: '#FFD700',
+    borderColor: 'rgba(255, 215, 0, 0.25)',
   },
   admin: {
-    backgroundColor: "rgba(59, 130, 246, 0.12)",
-    color: "#3B82F6",
-    borderColor: "rgba(59, 130, 246, 0.25)",
+    backgroundColor: 'rgba(59, 130, 246, 0.12)',
+    color: '#3B82F6',
+    borderColor: 'rgba(59, 130, 246, 0.25)',
   },
   member: {
-    backgroundColor: "rgba(16, 185, 129, 0.12)",
-    color: "#10B981",
-    borderColor: "rgba(16, 185, 129, 0.25)",
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    color: '#10B981',
+    borderColor: 'rgba(16, 185, 129, 0.25)',
   },
   viewer: {
-    backgroundColor: "rgba(107, 114, 128, 0.12)",
-    color: "#9CA3AF",
-    borderColor: "rgba(107, 114, 128, 0.25)",
+    backgroundColor: 'rgba(107, 114, 128, 0.12)',
+    color: '#9CA3AF',
+    borderColor: 'rgba(107, 114, 128, 0.25)',
   },
 };
 
 const ROLE_LABELS: Record<Role, string> = {
-  owner: "Owner",
-  admin: "Admin",
-  member: "Member",
-  viewer: "Viewer",
+  owner: 'Owner',
+  admin: 'Admin',
+  member: 'Member',
+  viewer: 'Viewer',
 };
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -80,10 +80,10 @@ interface NavItem {
   label: string;
   end?: boolean;
   /** Optional key that lets an ambient badge count attach to this item. */
-  badgeKey?: "inbox";
+  badgeKey?: 'inbox';
   /** Optional permission required to see this nav item. If the user's role
    * does not grant this permission, the item is hidden from the sidebar. */
-  requiresPermission?: import("@/lib/permissions").Permission;
+  requiresPermission?: import('@/lib/permissions').Permission;
 }
 
 interface NavSection {
@@ -95,50 +95,50 @@ interface NavSection {
 
 const navSections: NavSection[] = [
   {
-    label: "Main",
+    label: 'Main',
     items: [
-      { to: "", icon: LayoutDashboard, label: "Dashboard", end: true },
-      { to: "/inbox", icon: Inbox, label: "Inbox", badgeKey: "inbox" },
+      { to: '', icon: LayoutDashboard, label: 'Dashboard', end: true },
+      { to: '/inbox', icon: Inbox, label: 'Inbox', badgeKey: 'inbox' },
     ],
   },
   {
-    label: "Work",
+    label: 'Work',
     items: [
-      { to: "/issues", icon: ListTodo, label: "Issues" },
-      { to: "/goals", icon: Target, label: "Goals" },
+      { to: '/issues', icon: ListTodo, label: 'Issues' },
+      { to: '/goals', icon: Target, label: 'Goals' },
     ],
   },
   {
-    label: "Agents",
+    label: 'Agents',
     items: [
-      { to: "/agents", icon: Bot, label: "Agent Directory" },
-      { to: "/jarvis", icon: BrainCircuit, label: "Jarvis Runtime" },
-      { to: "/org-chart", icon: Network, label: "Org Chart" },
-      { to: "/workspace", icon: Globe, label: "Workspace" },
+      { to: '/agents', icon: Bot, label: 'Agent Directory' },
+      { to: '/jarvis', icon: BrainCircuit, label: 'Jarvis Runtime' },
+      { to: '/org-chart', icon: Network, label: 'Org Chart' },
+      { to: '/workspace', icon: Globe, label: 'Workspace' },
     ],
   },
   {
-    label: "Knowledge",
+    label: 'Knowledge',
     items: [
-      { to: "/documents", icon: BookOpen, label: "Documents" },
-      { to: "/artifacts", icon: FolderKanban, label: "Artifacts" },
-      { to: "/prompts", icon: FileText, label: "Prompt Studio" },
+      { to: '/documents', icon: BookOpen, label: 'Documents' },
+      { to: '/artifacts', icon: FolderKanban, label: 'Artifacts' },
+      { to: '/prompts', icon: FileText, label: 'Prompt Studio' },
     ],
   },
   {
-    label: "Operations",
+    label: 'Operations',
     items: [
-      { to: "/analytics", icon: BarChart3, label: "Analytics" },
-      { to: "/approvals", icon: ShieldCheck, label: "Approvals" },
-      { to: "/integrations", icon: Plug, label: "Integrations" },
-      { to: "/teams", icon: Users, label: "Teams" },
-      { to: "/security", icon: ShieldCheck, label: "Security" },
-      { to: "/members", icon: Users, label: "Members & Roles" },
+      { to: '/analytics', icon: BarChart3, label: 'Analytics' },
+      { to: '/approvals', icon: ShieldCheck, label: 'Approvals' },
+      { to: '/integrations', icon: Plug, label: 'Integrations' },
+      { to: '/teams', icon: Users, label: 'Teams' },
+      { to: '/security', icon: ShieldCheck, label: 'Security' },
+      { to: '/settings/members', icon: Users, label: 'Members & Roles' },
       {
-        to: "/settings",
+        to: '/settings',
         icon: Settings,
-        label: "Settings",
-        requiresPermission: "company.settings.update",
+        label: 'Settings',
+        requiresPermission: 'company.settings.update',
       },
     ],
   },
@@ -152,14 +152,14 @@ function CompanyIconRail() {
   const { data: companies } = useCompanies();
 
   const defaultColors = [
-    "#F0B429",
-    "#4C51BF",
-    "#38B2AC",
-    "#ED64A6",
-    "#ED8936",
-    "#48BB78",
-    "#667EEA",
-    "#FC8181",
+    '#F0B429',
+    '#4C51BF',
+    '#38B2AC',
+    '#ED64A6',
+    '#ED8936',
+    '#48BB78',
+    '#667EEA',
+    '#FC8181',
   ];
 
   function getColor(company: { brandColor: string | null }, index: number) {
@@ -178,7 +178,7 @@ function CompanyIconRail() {
       {/* Eidolon logo at top */}
       <button
         type="button"
-        onClick={() => navigate(companyId ? `/company/${companyId}` : "/")}
+        onClick={() => navigate(companyId ? `/company/${companyId}` : '/')}
         className="mb-2 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 transition-colors hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:h-9 lg:w-9"
         aria-label="Eidolon home"
         title="Eidolon home"
@@ -201,10 +201,10 @@ function CompanyIconRail() {
               title={company.name}
               aria-label={`Switch to ${company.name}`}
               className={clsx(
-                "relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-sm font-bold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:h-9 lg:w-9",
+                'relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-sm font-bold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:h-9 lg:w-9',
                 isActive
-                  ? "ring-2 ring-accent ring-offset-2 ring-offset-surface scale-105"
-                  : "hover:scale-105 hover:brightness-125",
+                  ? 'ring-2 ring-accent ring-offset-2 ring-offset-surface scale-105'
+                  : 'hover:scale-105 hover:brightness-125',
               )}
               style={{
                 backgroundColor: `${color}20`,
@@ -220,7 +220,7 @@ function CompanyIconRail() {
       {/* Add company button */}
       <button
         type="button"
-        onClick={() => navigate("/")}
+        onClick={() => navigate('/')}
         title="Add new company"
         aria-label="Add new company"
         className="mt-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-dashed border-white/[0.12] text-text-secondary transition-colors hover:border-accent/40 hover:bg-accent/[0.05] hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:h-9 lg:w-9"
@@ -275,10 +275,10 @@ function ProjectsSection({
             onClick={onClose}
             className={({ isActive }) =>
               clsx(
-                "group relative flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-0",
+                'group relative flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-0',
                 isActive
-                  ? "text-accent bg-accent/[0.08]"
-                  : "text-text-secondary hover:text-text-primary hover:bg-white/[0.04]",
+                  ? 'text-accent bg-accent/[0.08]'
+                  : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.04]',
               )
             }
           >
@@ -294,9 +294,7 @@ function ProjectsSection({
           </NavLink>
         ))}
         {(!projects || projects.length === 0) && (
-          <p className="px-3 py-1.5 text-[11px] text-text-secondary/60 italic">
-            No projects yet
-          </p>
+          <p className="px-3 py-1.5 text-[11px] text-text-secondary/60 italic">No projects yet</p>
         )}
       </div>
     </div>
@@ -320,7 +318,7 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
   const { status } = useWebSocket(companyId);
   const { role, hasPermission } = usePermission(companyId);
   const inboxUnread = useInboxUnreadCount(companyId);
-  const badges: Record<NonNullable<NavItem["badgeKey"]>, number> = {
+  const badges: Record<NonNullable<NavItem['badgeKey']>, number> = {
     inbox: inboxUnread,
   };
 
@@ -335,27 +333,27 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
     }))
     .filter((section) => section.items.length > 0);
 
-  const canCreateProject = hasPermission("project.create");
+  const canCreateProject = hasPermission('project.create');
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {return;}
 
-    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const desktopQuery = window.matchMedia('(min-width: 1024px)');
     const previousOverflow = document.body.style.overflow;
     const syncScrollLock = () => {
-      document.body.style.overflow = desktopQuery.matches ? previousOverflow : "hidden";
+      document.body.style.overflow = desktopQuery.matches ? previousOverflow : 'hidden';
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !desktopQuery.matches) onClose();
+      if (event.key === 'Escape' && !desktopQuery.matches) {onClose();}
     };
 
     syncScrollLock();
-    desktopQuery.addEventListener("change", syncScrollLock);
-    document.addEventListener("keydown", handleKeyDown);
+    desktopQuery.addEventListener('change', syncScrollLock);
+    document.addEventListener('keydown', handleKeyDown);
 
     return () => {
-      desktopQuery.removeEventListener("change", syncScrollLock);
-      document.removeEventListener("keydown", handleKeyDown);
+      desktopQuery.removeEventListener('change', syncScrollLock);
+      document.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = previousOverflow;
     };
   }, [onClose, open]);
@@ -375,20 +373,23 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
       <div
         id="app-sidebar"
         className={clsx(
-          "fixed inset-y-0 left-0 z-50 flex shadow-2xl shadow-black/60 transition-transform duration-200 motion-reduce:transition-none lg:static lg:translate-x-0 lg:shadow-none",
-          open ? "translate-x-0" : "-translate-x-full",
+          'fixed inset-y-0 left-0 z-50 flex shadow-2xl shadow-black/60 transition-transform duration-200 motion-reduce:transition-none lg:static lg:translate-x-0 lg:shadow-none',
+          open ? 'translate-x-0' : '-translate-x-full',
         )}
       >
         {/* Company icon rail */}
         <CompanyIconRail />
 
         {/* Main navigation panel */}
-        <aside aria-label="Primary navigation" className="glass flex w-[212px] flex-col border-r border-white/[0.06]">
+        <aside
+          aria-label="Primary navigation"
+          className="glass flex w-[212px] flex-col border-r border-white/[0.06]"
+        >
           {/* Header */}
           <div className="flex h-14 items-center justify-between border-b border-white/[0.06] px-4">
             <div className="min-w-0">
               <p className="truncate text-sm font-bold text-text-primary font-display tracking-wide">
-                {companyName || "EIDOLON"}
+                {companyName || 'EIDOLON'}
               </p>
               <p className="text-[10px] text-text-secondary">AI Company Runtime</p>
             </div>
@@ -451,11 +452,11 @@ export function Sidebar({ companyName, open, onClose }: SidebarProps) {
               </p>
               <StatusIndicator
                 status={
-                  status === "connected"
-                    ? "connected"
-                    : status === "disabled"
-                      ? "idle"
-                      : "disconnected"
+                  status === 'connected'
+                    ? 'connected'
+                    : status === 'disabled'
+                      ? 'idle'
+                      : 'disconnected'
                 }
                 size="sm"
               />
@@ -481,7 +482,7 @@ const navItemVariants = {
   visible: {
     opacity: 1,
     x: 0,
-    transition: { duration: 0.2, ease: "easeOut" as const },
+    transition: { duration: 0.2, ease: 'easeOut' as const },
   },
 };
 
@@ -494,7 +495,7 @@ function NavSectionGroup({
   section: NavSection;
   base: string;
   onClose: () => void;
-  badges?: Record<NonNullable<NavItem["badgeKey"]>, number>;
+  badges?: Record<NonNullable<NavItem['badgeKey']>, number>;
 }) {
   return (
     <div>
@@ -508,7 +509,7 @@ function NavSectionGroup({
         animate="visible"
       >
         {section.items.map((item) => {
-          const count = item.badgeKey ? badges?.[item.badgeKey] ?? 0 : 0;
+          const count = item.badgeKey ? (badges?.[item.badgeKey] ?? 0) : 0;
           return (
             <motion.div key={item.to} variants={navItemVariants}>
               <NavLink
@@ -517,10 +518,10 @@ function NavSectionGroup({
                 onClick={onClose}
                 className={({ isActive }) =>
                   clsx(
-                    "group relative flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-0",
+                    'group relative flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 lg:min-h-0',
                     isActive
-                      ? "text-accent bg-accent/[0.08]"
-                      : "text-text-secondary hover:text-text-primary hover:bg-white/[0.04]",
+                      ? 'text-accent bg-accent/[0.08]'
+                      : 'text-text-secondary hover:text-text-primary hover:bg-white/[0.04]',
                   )
                 }
               >
@@ -531,8 +532,8 @@ function NavSectionGroup({
                     )}
                     <item.icon
                       className={clsx(
-                        "h-4 w-4 shrink-0 transition-colors duration-200",
-                        isActive && "text-accent",
+                        'h-4 w-4 shrink-0 transition-colors duration-200',
+                        isActive && 'text-accent',
                       )}
                     />
                     <span className="flex-1">{item.label}</span>
@@ -541,7 +542,7 @@ function NavSectionGroup({
                         className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-accent/90 px-1 text-[10px] font-semibold text-surface"
                         aria-label={`${count} unread`}
                       >
-                        {count > 99 ? "99+" : count}
+                        {count > 99 ? '99+' : count}
                       </span>
                     )}
                   </>

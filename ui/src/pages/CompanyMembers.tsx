@@ -93,15 +93,15 @@ export function CompanyMembers() {
   const { companyId } = useParams();
   const { data: company } = useCompany(companyId);
   const { data: members, isLoading } = useMembers(companyId);
-  const { role, isLoading: roleLoading } = usePermission(companyId);
+  const { isLoading: roleLoading, hasPermission } = usePermission(companyId);
   const updateRoleMutation = useUpdateMemberRole(companyId!);
   const removeMemberMutation = useRemoveMember(companyId!);
   const session = useSession();
   const currentUserId = session.data?.user?.id ?? null;
 
-  const canPromote = role === 'owner';
-  const canRemove = role === 'owner' || role === 'admin';
-  const canInvite = role === 'owner' || role === 'admin';
+  const canPromote = hasPermission('member.promote');
+  const canRemove = hasPermission('member.remove');
+  const canInvite = hasPermission('member.invite');
   const [inviteOpen, setInviteOpen] = useState(false);
   const { data: invitations = [], isLoading: invitationsLoading } = useInvitations(
     companyId,
@@ -430,7 +430,7 @@ function MemberRow({
       {/* Actions */}
       <div className="flex items-center gap-2 shrink-0">
         {/* Promote/demote dropdown — owner only */}
-        {canPromote && (
+        {canPromote && !isSelf && (
           <div className="relative" ref={dropdownRef}>
             <button
               type="button"
