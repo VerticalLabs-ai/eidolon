@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
+import { createAgentKeyMiddleware } from './middleware/agent-key-auth.js';
 import { createServiceTokenMiddleware } from './middleware/service-tokens.js';
 import { apiRateLimit, authSensitiveRateLimit } from './middleware/rate-limit.js';
 import { originCsrf } from './middleware/csrf.js';
@@ -74,6 +75,7 @@ export function createApp(db: DbInstance): express.Express {
   initializeErrorTracking();
   const { requireAuth, requireOrgMember, requirePermission, requirePermissionByMethod } =
     createAuthMiddleware({ db });
+  const { tryAgentKeyAuth } = createAgentKeyMiddleware(db);
   const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
     requireAuth,
     requireOrgMember,
@@ -192,6 +194,13 @@ export function createApp(db: DbInstance): express.Express {
   // ---------------------------------------------------------------------------
   // Authenticated routes
   // ---------------------------------------------------------------------------
+
+  // Agent API key auth — intercepts Bearer tokens starting with `eid_live_`
+  // before any company-scoped route. If an agent key matches, it sets
+  // req.user and req.organizationMembership so downstream requireAuth skips
+  // normal auth and requirePermission reuses the pre-set membership.
+  // Must be mounted before the prompts route and all company routes.
+  app.use('/api/companies/:companyId', tryAgentKeyAuth);
 
   // Prompt service auth must run before the broad company-session gate.
   app.use(

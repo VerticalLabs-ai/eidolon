@@ -117,6 +117,12 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
   }
 
   async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
+    // If agent API key auth already set req.user, skip normal auth.
+    // This allows agent keys to authenticate without a Clerk session.
+    if (req.user) {
+      return next();
+    }
+
     if (isLocalTrusted) {
       req.user = DEV_USER;
       req.session = DEV_SESSION;
@@ -312,6 +318,31 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
         return next(new AppError(401, 'UNAUTHORIZED', 'Authentication required'));
       }
 
+      // If agent API key auth already set membership for a different
+      // company, deny cross-company access immediately.
+      if (req.organizationMembership && req.organizationMembership.organizationId !== companyId) {
+        return next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
+      }
+
+      // If agent API key auth already set membership for this company,
+      // reuse it (avoids DB query and preserves the agent's role).
+      if (req.organizationMembership && req.organizationMembership.organizationId === companyId) {
+        if (minimumRole) {
+          const userLevel = ROLE_HIERARCHY[req.organizationMembership.role] ?? 0;
+          const requiredLevel = ROLE_HIERARCHY[minimumRole] ?? 0;
+          if (userLevel < requiredLevel) {
+            return next(
+              new AppError(
+                403,
+                'INSUFFICIENT_ROLE',
+                `This action requires at least '${minimumRole}' role`,
+              ),
+            );
+          }
+        }
+        return next();
+      }
+
       // Platform admin bypass (audit-logged). Only applies in authenticated
       // (Clerk) mode — in local_trusted, DEV_USER.role is 'admin' which
       // would always trigger the bypass and prevent header impersonation
@@ -390,6 +421,12 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
       // (Clerk) mode — see requireOrgMember for rationale.
       if (!isLocalTrusted && applyAdminBypass(req, companyId)) {
         return next();
+      }
+
+      // If agent API key auth already set membership for a different
+      // company, deny cross-company access immediately.
+      if (req.organizationMembership && req.organizationMembership.organizationId !== companyId) {
+        return next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
       }
 
       // If a preceding middleware (e.g. requireOrgMember) already resolved
