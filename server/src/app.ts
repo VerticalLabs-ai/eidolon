@@ -65,6 +65,7 @@ import {
 import { securityAdminRouter } from './routes/security-admin.js';
 import { membersRouter } from './routes/members.js';
 import { invitationsRouter } from './routes/invitations.js';
+import { agentApiKeysRouter } from './routes/agent-api-keys.js';
 import { clerkWebhookRouter } from './routes/clerk-webhook.js';
 import {
   metricsRouter,
@@ -653,6 +654,18 @@ export function createApp(db: DbInstance): express.Express {
     '/api/companies/:companyId/invitations',
     requireAuth,
     invitationsRouter(db, requirePermission),
+  );
+
+  // Agent API key management (M2): create, list, revoke.
+  // Each endpoint applies requirePermission('apikeys.manage') inside the
+  // router (owner + admin only).
+  //   POST   /                → apikeys.manage  (create key, returns raw key once)
+  //   GET    /                → apikeys.manage  (list keys, metadata only)
+  //   DELETE /:keyId          → apikeys.manage  (revoke key)
+  app.use(
+    '/api/companies/:companyId/agent-api-keys',
+    requireAuth,
+    agentApiKeysRouter(db, requirePermission),
   );
 
   // Clerk webhook handler (M2): public endpoint (no auth middleware).
