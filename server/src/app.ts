@@ -253,31 +253,56 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/projects/:projectId/threads',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectThreadsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/meetings',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     meetingsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/plans',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectPlansRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/decisions',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectDecisionsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/outcomes',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectOutcomesRouter(db),
   );
   app.use(
@@ -289,13 +314,23 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/goals',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     goalsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/messages',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     messagesRouter(db),
   );
   app.use(
@@ -307,7 +342,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/workflows',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     workflowsRouter(db),
   );
   app.use(
@@ -333,7 +373,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/knowledge',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
     knowledgeRouter(db),
   );
 
@@ -341,13 +386,23 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/files',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
     filesRouter(db),
   );
   app.use(
     '/api/companies/:companyId/agents/:agentId/files',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
     agentFilesRouter(db),
   );
 
@@ -363,7 +418,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/agents/:agentId/memories',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
     memoriesRouter(db),
   );
 
@@ -371,7 +431,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/evaluations',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     evaluationsRouter(db),
   );
 
@@ -395,13 +460,23 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/collaborations',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     collaborationsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/agents/:agentId/collaborations',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     agentCollaborationsRouter(db),
   );
 
@@ -417,7 +492,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/approvals',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     approvalsRouter(db),
   );
 
@@ -447,11 +527,11 @@ export function createApp(db: DbInstance): express.Express {
     searchRouter(db),
   );
 
-  // Company runtime snapshot
+  // Company runtime snapshot (writes require agent.manage)
   app.use(
     '/api/companies/:companyId/runtime',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({ read: 'company.view', write: 'agent.manage' }),
     runtimeRouter(db),
   );
 
@@ -471,7 +551,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/routines',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     routinesRouter(db),
   );
 
@@ -479,7 +564,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/automations',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     automationsRouter(db),
   );
 
@@ -489,7 +579,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/meetings',
     requireAuth,
-    requirePermission('company.view'),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     meetingItemRouter(db),
   );
 
@@ -530,23 +625,100 @@ export function createApp(db: DbInstance): express.Express {
   // ordering where securityMembersRouter was the final bare mount.
   // ---------------------------------------------------------------------------
   const companyScopedRouter = express.Router({ mergeParams: true });
-  companyScopedRouter.use(budgetsRouter(db));
+
+  // Budgets: method-aware permission — reads for all roles, writes for
+  // owner+admin+member only (content.* permissions).
+  const budgetsScoped = express.Router({ mergeParams: true });
+  budgetsScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  budgetsScoped.use(budgetsRouter(db));
+  companyScopedRouter.use(budgetsScoped);
+
   // Artifacts: method-aware permission — reads (company.view) for all roles
-  // including viewer, writes (artifact.create) for owner+admin+member only.
-  // artifact.create, artifact.update, and artifact.delete all map to the
-  // same role set (owner+admin+member), so a single write permission
-  // suffices for all write methods.
+  // including viewer, writes (artifact.create/update/delete) for
+  // owner+admin+member only.
   const artifactsScoped = express.Router({ mergeParams: true });
   artifactsScoped.use(
-    requirePermissionByMethod({ read: 'company.view', write: 'artifact.create' }),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
   );
   artifactsScoped.use(artifactsRouter(db));
   companyScopedRouter.use(artifactsScoped);
-  companyScopedRouter.use(foldersRouter(db));
-  companyScopedRouter.use(workspaceTemplatesRouter(db));
-  companyScopedRouter.use(teamsRouter(db));
-  companyScopedRouter.use(permissionsRouter(db));
-  companyScopedRouter.use(presenceRouter(db));
+
+  // Folders: method-aware permission (content.* for writes).
+  const foldersScoped = express.Router({ mergeParams: true });
+  foldersScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  foldersScoped.use(foldersRouter(db));
+  companyScopedRouter.use(foldersScoped);
+
+  // Workspace templates: method-aware permission (content.* for writes).
+  const workspaceTemplatesScoped = express.Router({ mergeParams: true });
+  workspaceTemplatesScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  workspaceTemplatesScoped.use(workspaceTemplatesRouter(db));
+  companyScopedRouter.use(workspaceTemplatesScoped);
+
+  // Teams: method-aware permission (content.* for writes).
+  const teamsScoped = express.Router({ mergeParams: true });
+  teamsScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  teamsScoped.use(teamsRouter(db));
+  companyScopedRouter.use(teamsScoped);
+
+  // Permissions: method-aware permission (content.* for writes).
+  const permissionsScoped = express.Router({ mergeParams: true });
+  permissionsScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  permissionsScoped.use(permissionsRouter(db));
+  companyScopedRouter.use(permissionsScoped);
+
+  // Presence: method-aware permission (content.* for writes).
+  const presenceScoped = express.Router({ mergeParams: true });
+  presenceScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  presenceScoped.use(presenceRouter(db));
+  companyScopedRouter.use(presenceScoped);
   // Company member role/removal is admin/owner only (member.remove
   // permission). The handler also enforces requireAdminOrOwner internally
   // (defense in depth); the mount-level guard here rejects non-admins

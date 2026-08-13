@@ -9,7 +9,7 @@ import {
 
 describe('RBAC permission matrix', () => {
   it('contains the complete permission set', () => {
-    expect(Object.keys(PERMISSION_MATRIX)).toHaveLength(26);
+    expect(Object.keys(PERMISSION_MATRIX)).toHaveLength(29);
     expect(PERMISSION_MATRIX['company.view']).toEqual(['owner', 'admin', 'member', 'viewer']);
     expect(PERMISSION_MATRIX['member.promote']).toEqual(['owner']);
   });

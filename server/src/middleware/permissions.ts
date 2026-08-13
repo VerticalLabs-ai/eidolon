@@ -12,6 +12,9 @@ export type Permission =
   | 'project.update'
   | 'agent.manage'
   | 'chat.participate'
+  | 'content.create'
+  | 'content.update'
+  | 'content.delete'
   | 'member.invite'
   | 'member.promote'
   | 'member.remove'
@@ -44,6 +47,9 @@ export const PERMISSION_MATRIX: Record<Permission, Role[]> = {
   'project.update': CONTRIBUTOR_ROLES,
   'agent.manage': CONTRIBUTOR_ROLES,
   'chat.participate': CONTRIBUTOR_ROLES,
+  'content.create': CONTRIBUTOR_ROLES,
+  'content.update': CONTRIBUTOR_ROLES,
+  'content.delete': CONTRIBUTOR_ROLES,
   'member.invite': ADMIN_ROLES,
   'member.promote': ['owner'],
   'member.remove': ADMIN_ROLES,

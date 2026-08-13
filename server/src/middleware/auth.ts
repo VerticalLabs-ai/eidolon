@@ -492,20 +492,64 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps = {}) {
    * - GET /artifacts     → company.view    (all roles including viewer)
    * - POST /artifacts    → artifact.create  (owner+admin+member, NOT viewer)
    *
+   * For fine-grained per-method control, supply `create`, `update`, and/or
+   * `delete` in addition to (or instead of) `write`. When both a method-
+   * specific permission and the generic `write` are supplied, the method-
+   * specific one takes precedence for its HTTP method:
+   *
+   *   requirePermissionByMethod({
+   *     read: 'company.view',
+   *     create: 'content.create',
+   *     update: 'content.update',
+   *     delete: 'content.delete',
+   *   })
+   *
+   * - GET    → company.view    (read)
+   * - POST   → content.create  (create)
+   * - PATCH  → content.update  (update)
+   * - DELETE → content.delete  (delete)
+   *
+   * If only `write` is supplied, all non-read methods use `write` (backward
+   * compatible with the original signature).
+   *
    * When a preceding middleware has already resolved membership for the same
    * company, the inner `requirePermission` calls reuse `req.organizationMembership`
    * and skip a duplicate DB query.
    */
-  function requirePermissionByMethod(perms: { read: Permission; write: Permission }) {
+  function requirePermissionByMethod(perms: {
+    read: Permission;
+    write?: Permission;
+    create?: Permission;
+    update?: Permission;
+    delete?: Permission;
+  }) {
     const readMiddleware = requirePermission(perms.read);
-    const writeMiddleware = requirePermission(perms.write);
+    const createMiddleware = perms.create ? requirePermission(perms.create) : null;
+    const updateMiddleware = perms.update ? requirePermission(perms.update) : null;
+    const deleteMiddleware = perms.delete ? requirePermission(perms.delete) : null;
+    const writeMiddleware = perms.write ? requirePermission(perms.write) : null;
     return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
       const method = req.method.toUpperCase();
-      const isRead = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
-      if (isRead) {
+      if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
         return readMiddleware(req, _res, next);
       }
-      return writeMiddleware(req, _res, next);
+      if (method === 'POST' && createMiddleware) {
+        return createMiddleware(req, _res, next);
+      }
+      if ((method === 'PATCH' || method === 'PUT') && updateMiddleware) {
+        return updateMiddleware(req, _res, next);
+      }
+      if (method === 'DELETE' && deleteMiddleware) {
+        return deleteMiddleware(req, _res, next);
+      }
+      if (writeMiddleware) {
+        return writeMiddleware(req, _res, next);
+      }
+      // No write permission configured — deny by default (safety)
+      _res.status(403).json({
+        code: 'INSUFFICIENT_PERMISSION',
+        message: 'Write operations are not permitted on this resource',
+      });
     };
   }
 
