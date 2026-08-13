@@ -313,7 +313,7 @@ export function companiesRouter(db: DbInstance): Router {
       throw new AppError(403, 'NOT_MEMBER', 'You are not a member of this company');
     }
 
-    res.json({ data: { role: memberRow.role } });
+    res.json({ role: memberRow.role });
   });
 
   // PATCH /api/companies/:id - update (requires company.settings.update permission)

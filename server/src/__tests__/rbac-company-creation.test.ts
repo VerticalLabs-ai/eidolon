@@ -112,7 +112,8 @@ describe('RBAC company creation and list', () => {
       // The creator's role is owner
       const roleRes = await request(app).get(`/api/companies/${companyId}/my-role`).expect(200);
 
-      expect(roleRes.body.data.role).toBe('owner');
+      expect(roleRes.body.role).toBe('owner');
+      expect(roleRes.body).not.toHaveProperty('data');
 
       // The creator can access company-scoped endpoints (behind requireOrgMember)
       const agentsRes = await request(app).get(`/api/companies/${companyId}/agents`).expect(200);
@@ -190,7 +191,8 @@ describe('RBAC company creation and list', () => {
 
       const res = await request(app).get('/api/companies/co-role-owner/my-role').expect(200);
 
-      expect(res.body.data.role).toBe('owner');
+      expect(res.body.role).toBe('owner');
+      expect(res.body).toEqual({ role: 'owner' });
     });
 
     it('returns 200 with correct role for admin membership (VAL-RBAC-010)', async () => {
@@ -198,7 +200,7 @@ describe('RBAC company creation and list', () => {
 
       const res = await request(app).get('/api/companies/co-role-admin/my-role').expect(200);
 
-      expect(res.body.data.role).toBe('admin');
+      expect(res.body.role).toBe('admin');
     });
 
     it('returns 200 with correct role for member membership (VAL-RBAC-010)', async () => {
@@ -206,7 +208,7 @@ describe('RBAC company creation and list', () => {
 
       const res = await request(app).get('/api/companies/co-role-member/my-role').expect(200);
 
-      expect(res.body.data.role).toBe('member');
+      expect(res.body.role).toBe('member');
     });
 
     it('returns 200 with correct role for viewer membership (VAL-RBAC-010)', async () => {
@@ -214,7 +216,7 @@ describe('RBAC company creation and list', () => {
 
       const res = await request(app).get('/api/companies/co-role-viewer/my-role').expect(200);
 
-      expect(res.body.data.role).toBe('viewer');
+      expect(res.body.role).toBe('viewer');
     });
 
     it('returns 403 for non-members (VAL-RBAC-011)', async () => {
@@ -243,14 +245,14 @@ describe('RBAC company creation and list', () => {
 
       // dev-user-000 sees owner
       const res1 = await request(app).get('/api/companies/co-multi-user/my-role').expect(200);
-      expect(res1.body.data.role).toBe('owner');
+      expect(res1.body.role).toBe('owner');
 
       // other-user-001 sees viewer
       const res2 = await request(app)
         .get('/api/companies/co-multi-user/my-role')
         .set('X-Eidolon-Test-User-Id', 'other-user-001')
         .expect(200);
-      expect(res2.body.data.role).toBe('viewer');
+      expect(res2.body.role).toBe('viewer');
     });
   });
 
@@ -285,7 +287,7 @@ describe('RBAC company creation and list', () => {
         .set('X-Eidolon-Test-User-Id', newUserId)
         .expect(200);
 
-      expect(roleRes.body.data.role).toBe('owner');
+      expect(roleRes.body.role).toBe('owner');
 
       // Step 4: The new company appears in the user's company list
       const listRes = await request(app)
