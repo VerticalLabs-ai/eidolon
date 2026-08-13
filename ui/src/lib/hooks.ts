@@ -93,6 +93,38 @@ export function useRevokeInvitation(companyId: string) {
   });
 }
 
+// ── RBAC: Agent API Keys ─────────────────────────────────────────────────
+
+export function useAgentApiKeys(companyId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['agent-api-keys', companyId],
+    queryFn: async () => unwrap<api.AgentApiKey[]>(await api.getAgentApiKeys(companyId!)),
+    enabled: !!companyId && enabled,
+  });
+}
+
+export function useCreateAgentApiKey(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: api.CreateAgentApiKeyInput) =>
+      unwrap<api.CreatedAgentApiKey>(await api.createAgentApiKey(companyId, data)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agent-api-keys', companyId] });
+    },
+  });
+}
+
+export function useRevokeAgentApiKey(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (keyId: string) =>
+      unwrap<{ id: string; revokedAt: string }>(await api.revokeAgentApiKey(companyId, keyId)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agent-api-keys', companyId] });
+    },
+  });
+}
+
 // ── Companies ────────────────────────────────────────────────────────────
 
 export function useCompanies() {

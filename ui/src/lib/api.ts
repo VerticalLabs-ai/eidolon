@@ -303,6 +303,43 @@ export const revokeInvitation = (companyId: string, invitationId: string) =>
     { method: 'DELETE' },
   );
 
+// ── RBAC: Agent API Keys ─────────────────────────────────────────────────
+
+export interface AgentApiKey {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  role: Role;
+  agentId: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export interface CreatedAgentApiKey extends AgentApiKey {
+  rawKey: string;
+}
+
+export interface CreateAgentApiKeyInput {
+  name: string;
+  role?: Role;
+  agentId?: string;
+}
+
+export const getAgentApiKeys = (companyId: string) =>
+  request<AgentApiKey[]>(`/companies/${companyId}/agent-api-keys`);
+
+export const createAgentApiKey = (companyId: string, data: CreateAgentApiKeyInput) =>
+  request<CreatedAgentApiKey>(`/companies/${companyId}/agent-api-keys`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const revokeAgentApiKey = (companyId: string, keyId: string) =>
+  request<{ id: string; revokedAt: string }>(`/companies/${companyId}/agent-api-keys/${keyId}`, {
+    method: 'DELETE',
+  });
+
 // ── Companies ────────────────────────────────────────────────────────────
 
 export const getCompanies = () => request<Company[]>('/companies');

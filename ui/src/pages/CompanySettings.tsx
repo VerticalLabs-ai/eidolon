@@ -30,6 +30,7 @@ import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { PageTransition } from '@/components/ui/PageTransition';
 import { SECRET_PROVIDER_OPTIONS } from '@/lib/ai-catalog';
+import { AgentApiKeys } from '@/components/settings/AgentApiKeys';
 
 export function CompanySettings() {
   const { companyId } = useParams();
@@ -74,7 +75,9 @@ export function CompanySettings() {
 
   const handleSaveGeneral = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId) {return;}
+    if (!companyId) {
+      return;
+    }
     updateCompany.mutate(
       {
         id: companyId,
@@ -90,7 +93,9 @@ export function CompanySettings() {
   };
 
   const handleSaveBudget = () => {
-    if (!companyId) {return;}
+    if (!companyId) {
+      return;
+    }
     updateCompany.mutate(
       {
         id: companyId,
@@ -139,7 +144,9 @@ export function CompanySettings() {
   };
 
   const handleStatusChange = (status: 'active' | 'paused' | 'archived') => {
-    if (!companyId) {return;}
+    if (!companyId) {
+      return;
+    }
     const confirmMsg =
       status === 'archived'
         ? 'Are you sure you want to archive this company? This action cannot be easily undone.'
@@ -451,6 +458,9 @@ export function CompanySettings() {
           </div>
         </div>
 
+        {/* Agent API Keys — admin/owner only (VAL-UI-019, VAL-UI-020) */}
+        {companyId && <AgentApiKeys companyId={companyId} />}
+
         {/* Danger Zone */}
         <div
           className="rounded-xl overflow-hidden border border-error/20"
@@ -508,43 +518,41 @@ export function CompanySettings() {
             </div>
           </div>
 
-            {/* Delete Company — owner only (VAL-UI-018: hidden for admins) */}
-            {canDeleteCompany && (
-              <>
-                <div className="border-t border-error/10" />
+          {/* Delete Company — owner only (VAL-UI-018: hidden for admins) */}
+          {canDeleteCompany && (
+            <>
+              <div className="border-t border-error/10" />
 
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-medium text-text-primary">
-                      Delete Company
-                    </p>
-                    <p className="text-xs text-text-secondary mt-0.5">
-                      Permanently delete this company and all associated data.
-                      This action cannot be undone.
-                    </p>
-                  </div>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    icon={<Trash2 className="h-3.5 w-3.5" />}
-                    loading={deleteCompany.isPending}
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Permanently delete "${company?.name}"? This cannot be undone.`,
-                        )
-                      ) {
-                        deleteCompany.mutate({ id: companyId!, hard: true });
-                      }
-                    }}
-                    data-action="delete-company"
-                  >
-                    Delete
-                  </Button>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Delete Company</p>
+                  <p className="text-xs text-text-secondary mt-0.5">
+                    Permanently delete this company and all associated data. This action cannot be
+                    undone.
+                  </p>
                 </div>
-              </>
-            )}
-          </div>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  icon={<Trash2 className="h-3.5 w-3.5" />}
+                  loading={deleteCompany.isPending}
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        `Permanently delete "${company?.name}"? This cannot be undone.`,
+                      )
+                    ) {
+                      deleteCompany.mutate({ id: companyId!, hard: true });
+                    }
+                  }}
+                  data-action="delete-company"
+                >
+                  Delete
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </PageTransition>
   );
