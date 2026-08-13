@@ -72,7 +72,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function createApp(db: DbInstance): express.Express {
   const app = express();
   initializeErrorTracking();
-  const { requireAuth, requireOrgMember } = createAuthMiddleware({ db });
+  const { requireAuth, requireOrgMember, requirePermission } = createAuthMiddleware({ db });
   const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
     requireAuth,
     requireOrgMember,
@@ -80,7 +80,9 @@ export function createApp(db: DbInstance): express.Express {
 
   // Vercel overwrites forwarded IP headers before invoking the function.
   // Trust only that single proxy hop; direct/self-hosted deployments stay untrusted.
-  if (process.env.VERCEL === '1') {app.set('trust proxy', 1);}
+  if (process.env.VERCEL === '1') {
+    app.set('trust proxy', 1);
+  }
 
   // ---------------------------------------------------------------------------
   // CORS (must come before everything so preflight OPTIONS work)
