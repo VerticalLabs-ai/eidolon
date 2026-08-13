@@ -158,7 +158,7 @@ async function processInvitations(
           and(
             eq(companyInvitations.id, invitation.id),
             eq(companyInvitations.status, 'pending'),
-            sql`${companyInvitations.expiresAt} > ${now}`,
+            sql`${companyInvitations.expiresAt} > ${now.toISOString()}`,
           ),
         )
         .returning({ id: companyInvitations.id });
