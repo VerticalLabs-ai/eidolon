@@ -69,6 +69,48 @@ export function companiesRouter(db: DbInstance): Router {
   }
 
   /**
+   * Verify an agent-API-key authenticated request. Agent keys are scoped to
+   * a single company, so the requested company must exactly match the key's
+   * companyId. Returns a result indicating whether the request is allowed,
+   * denied, or not an agent-key request (fall through to normal resolution).
+   */
+  type AgentKeyCheckResult =
+    { kind: 'not-agent' } | { kind: 'allowed' } | { kind: 'denied'; error: AppError };
+
+  function checkAgentKeyIsolation(
+    req: Request,
+    companyId: string,
+    permission: Permission,
+  ): AgentKeyCheckResult {
+    if (!req.user?.id?.startsWith('agent:')) {
+      return { kind: 'not-agent' };
+    }
+    if (!req.organizationMembership) {
+      return {
+        kind: 'denied',
+        error: new AppError(401, 'UNAUTHORIZED', 'Authentication required'),
+      };
+    }
+    if (req.organizationMembership.organizationId !== companyId) {
+      return {
+        kind: 'denied',
+        error: new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'),
+      };
+    }
+    if (!hasPermission(req.organizationMembership.role as Role, permission)) {
+      return {
+        kind: 'denied',
+        error: new AppError(
+          403,
+          'INSUFFICIENT_PERMISSION',
+          `This action requires '${permission}' permission`,
+        ),
+      };
+    }
+    return { kind: 'allowed' };
+  }
+
+  /**
    * Permission middleware for company-level operations that use `:id` as
    * the route parameter (not `:companyId`). This is needed because the
    * companies router is mounted at `/api/companies` with `requireAuth`
@@ -79,12 +121,31 @@ export function companiesRouter(db: DbInstance): Router {
    * impersonation/default) and checks `hasPermission` against the
    * permission matrix. Sets `req.organizationMembership` for downstream
    * handlers.
+   *
+   * Agent API key isolation: when `req.user.id` starts with `agent:`, the
+   * requested `:id` must exactly match the agent key's scoped companyId
+   * (`req.organizationMembership.organizationId`). This prevents an agent
+   * key issued for company A from reading or mutating company B via the
+   * companiesRouter endpoints.
    */
   function checkCompanyPermission(permission: Permission) {
     return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
       const companyId = String(req.params.id ?? '');
       if (!companyId) {
         return next(new AppError(400, 'BAD_REQUEST', 'Company ID is required'));
+      }
+
+      // Agent API keys are scoped to a single company. Reject any request
+      // where the synthetic agent user's scoped company does not match the
+      // requested company, before any local_trusted default-owner fallback
+      // could accidentally grant access.
+      const agentCheck = checkAgentKeyIsolation(req, companyId, permission);
+      if (agentCheck.kind === 'denied') {
+        return next(agentCheck.error);
+      }
+      if (agentCheck.kind === 'allowed') {
+        // Reuse the membership already established by agent-key auth.
+        return next();
       }
 
       // Platform admin bypass (authenticated mode only)
@@ -222,8 +283,8 @@ export function companiesRouter(db: DbInstance): Router {
     res.status(201).json({ data: row });
   });
 
-  // GET /api/companies/:id - get by id
-  router.get('/:id', async (req, res) => {
+  // GET /api/companies/:id - get by id (requires company.view permission)
+  router.get('/:id', checkCompanyPermission('company.view'), async (req, res) => {
     const [row] = await db.drizzle
       .select()
       .from(companies)
@@ -463,8 +524,8 @@ export function companiesRouter(db: DbInstance): Router {
     }
   });
 
-  // GET /api/companies/:id/dashboard - aggregated dashboard
-  router.get('/:id/dashboard', async (req, res) => {
+  // GET /api/companies/:id/dashboard - aggregated dashboard (requires company.view permission)
+  router.get('/:id/dashboard', checkCompanyPermission('company.view'), async (req, res) => {
     const companyId = routeParams(req).id;
 
     const [company] = await db.drizzle

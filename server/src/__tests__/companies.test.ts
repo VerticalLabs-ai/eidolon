@@ -3,6 +3,7 @@ import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { createTestDb, createTestServer } from '../test-utils.js';
 import { setupActivityLogger } from '../routes/activity.js';
+import { hashAgentKey, AGENT_KEY_PREFIX } from '../middleware/agent-key-auth.js';
 
 describe('Companies API', () => {
   let app: Awaited<ReturnType<typeof createTestServer>>;
@@ -15,14 +16,33 @@ describe('Companies API', () => {
    */
   async function grantCompanyDeleteStepUp(): Promise<string> {
     await request(app).post('/api/auth/mfa/enroll').send({ label: 'test' }).expect(201);
-    const codeRes = await request(app)
-      .post('/api/auth/mfa/generate-valid-code')
-      .expect(200);
+    const codeRes = await request(app).post('/api/auth/mfa/generate-valid-code').expect(200);
     const stepUp = await request(app)
       .post('/api/auth/step-up')
       .send({ code: codeRes.body.data.code, scope: 'company_delete' })
       .expect(201);
     return stepUp.body.data.stepUpToken as string;
+  }
+
+  /**
+   * Helper: seed an agent API key for a company. The raw key is used in
+   * Authorization: Bearer headers; only its SHA-256 hash is persisted.
+   */
+  async function seedAgentKey(
+    companyId: string,
+    keyId: string,
+    rawKey: string,
+    role: 'owner' | 'admin' | 'member' | 'viewer' = 'member',
+  ) {
+    await db.drizzle.insert(db.schema.agentApiKeys).values({
+      id: keyId,
+      companyId,
+      name: 'Isolation Test Key',
+      keyHash: hashAgentKey(rawKey),
+      keyPrefix: rawKey.slice(0, 10),
+      role,
+      createdByUserId: 'test-user',
+    });
   }
 
   beforeEach(async () => {
@@ -36,10 +56,7 @@ describe('Companies API', () => {
 
   describe('POST /api/companies', () => {
     it('should create a company with minimal fields', async () => {
-      const res = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Test Corp' })
-        .expect(201);
+      const res = await request(app).post('/api/companies').send({ name: 'Test Corp' }).expect(201);
 
       expect(res.body.data).toBeDefined();
       expect(res.body.data.id).toBeDefined();
@@ -75,19 +92,13 @@ describe('Companies API', () => {
     });
 
     it('should reject empty name', async () => {
-      const res = await request(app)
-        .post('/api/companies')
-        .send({ name: '' })
-        .expect(400);
+      const res = await request(app).post('/api/companies').send({ name: '' }).expect(400);
 
       expect(res.body.code).toBe('VALIDATION_ERROR');
     });
 
     it('should reject missing name', async () => {
-      const res = await request(app)
-        .post('/api/companies')
-        .send({})
-        .expect(400);
+      const res = await request(app).post('/api/companies').send({}).expect(400);
 
       expect(res.body.code).toBe('VALIDATION_ERROR');
     });
@@ -143,9 +154,7 @@ describe('Companies API', () => {
 
   describe('GET /api/companies/:id', () => {
     it('should get a company by id', async () => {
-      const created = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Lookup Corp' });
+      const created = await request(app).post('/api/companies').send({ name: 'Lookup Corp' });
       const id = created.body.data.id;
 
       const res = await request(app).get(`/api/companies/${id}`).expect(200);
@@ -169,9 +178,7 @@ describe('Companies API', () => {
 
   describe('PATCH /api/companies/:id', () => {
     it('should update a company name', async () => {
-      const created = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Old Name' });
+      const created = await request(app).post('/api/companies').send({ name: 'Old Name' });
       const id = created.body.data.id;
 
       const res = await request(app)
@@ -197,9 +204,7 @@ describe('Companies API', () => {
     });
 
     it('should update status', async () => {
-      const created = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Pause Corp' });
+      const created = await request(app).post('/api/companies').send({ name: 'Pause Corp' });
       const id = created.body.data.id;
 
       const res = await request(app)
@@ -218,9 +223,7 @@ describe('Companies API', () => {
     });
 
     it('should reject invalid status', async () => {
-      const created = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Invalid Status' });
+      const created = await request(app).post('/api/companies').send({ name: 'Invalid Status' });
       const id = created.body.data.id;
 
       await request(app)
@@ -236,37 +239,27 @@ describe('Companies API', () => {
 
   describe('DELETE /api/companies/:id', () => {
     it('should archive a company (soft delete)', async () => {
-      const created = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Delete Me' });
+      const created = await request(app).post('/api/companies').send({ name: 'Delete Me' });
       const id = created.body.data.id;
 
-      const res = await request(app)
-        .delete(`/api/companies/${id}`)
-        .expect(200);
+      const res = await request(app).delete(`/api/companies/${id}`).expect(200);
 
       expect(res.body.data.status).toBe('archived');
       expect(res.body.data.id).toBe(id);
     });
 
     it('should still be retrievable after archiving', async () => {
-      const created = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Archive Me' });
+      const created = await request(app).post('/api/companies').send({ name: 'Archive Me' });
       const id = created.body.data.id;
 
       await request(app).delete(`/api/companies/${id}`).expect(200);
 
-      const getRes = await request(app)
-        .get(`/api/companies/${id}`)
-        .expect(200);
+      const getRes = await request(app).get(`/api/companies/${id}`).expect(200);
       expect(getRes.body.data.status).toBe('archived');
     });
 
     it('should 404 for non-existent company', async () => {
-      await request(app)
-        .delete('/api/companies/00000000-0000-0000-0000-000000000000')
-        .expect(404);
+      await request(app).delete('/api/companies/00000000-0000-0000-0000-000000000000').expect(404);
     });
 
     it('should hard-delete a company and its dependent rows', async () => {
@@ -297,18 +290,12 @@ describe('Companies API', () => {
         .expect(204);
 
       const [company, remainingAgent, remainingTask, remainingProject] = await Promise.all([
-        db.drizzle
-          .select()
-          .from(db.schema.companies)
-          .where(eq(db.schema.companies.id, companyId)),
+        db.drizzle.select().from(db.schema.companies).where(eq(db.schema.companies.id, companyId)),
         db.drizzle
           .select()
           .from(db.schema.agents)
           .where(eq(db.schema.agents.id, agent.body.data.id)),
-        db.drizzle
-          .select()
-          .from(db.schema.tasks)
-          .where(eq(db.schema.tasks.id, task.body.data.id)),
+        db.drizzle.select().from(db.schema.tasks).where(eq(db.schema.tasks.id, task.body.data.id)),
         db.drizzle
           .select()
           .from(db.schema.projects)
@@ -375,9 +362,7 @@ describe('Companies API', () => {
         .send({ name: 'Dash Corp', budgetMonthlyCents: 50000 });
       const id = created.body.data.id;
 
-      const res = await request(app)
-        .get(`/api/companies/${id}/dashboard`)
-        .expect(200);
+      const res = await request(app).get(`/api/companies/${id}/dashboard`).expect(200);
 
       expect(res.body.data.company).toBeDefined();
       expect(res.body.data.company.name).toBe('Dash Corp');
@@ -396,9 +381,7 @@ describe('Companies API', () => {
     });
 
     it('should aggregate agent and task counts', async () => {
-      const created = await request(app)
-        .post('/api/companies')
-        .send({ name: 'Stats Corp' });
+      const created = await request(app).post('/api/companies').send({ name: 'Stats Corp' });
       const companyId = created.body.data.id;
 
       // Create agents
@@ -410,16 +393,12 @@ describe('Companies API', () => {
         .send({ name: 'Agent 2', role: 'designer', status: 'working' });
 
       // Create tasks
-      await request(app)
-        .post(`/api/companies/${companyId}/tasks`)
-        .send({ title: 'Task 1' });
+      await request(app).post(`/api/companies/${companyId}/tasks`).send({ title: 'Task 1' });
       await request(app)
         .post(`/api/companies/${companyId}/tasks`)
         .send({ title: 'Task 2', status: 'todo' });
 
-      const res = await request(app)
-        .get(`/api/companies/${companyId}/dashboard`)
-        .expect(200);
+      const res = await request(app).get(`/api/companies/${companyId}/dashboard`).expect(200);
 
       expect(res.body.data.agents.total).toBe(2);
       expect(res.body.data.tasks.total).toBe(2);
@@ -429,6 +408,171 @@ describe('Companies API', () => {
       await request(app)
         .get('/api/companies/00000000-0000-0000-0000-000000000000/dashboard')
         .expect(404);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Agent API key isolation on companiesRouter :id endpoints
+  // ---------------------------------------------------------------------------
+
+  describe('Agent key isolation on companiesRouter :id endpoints', () => {
+    const rawKey = `${AGENT_KEY_PREFIX}companies_isolation_test_key`;
+
+    it('agent key for company A cannot GET company B details', async () => {
+      const companyA = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company A', settings: { testFixture: true } })
+        .expect(201);
+      const companyB = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company B', settings: { testFixture: true } })
+        .expect(201);
+      await seedAgentKey(companyA.body.data.id, 'key-isolation-get', rawKey, 'member');
+
+      const res = await request(app)
+        .get(`/api/companies/${companyB.body.data.id}`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('NOT_MEMBER');
+    });
+
+    it('agent key for company A cannot GET company B dashboard', async () => {
+      const companyA = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company A', settings: { testFixture: true } })
+        .expect(201);
+      const companyB = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company B', settings: { testFixture: true } })
+        .expect(201);
+      await seedAgentKey(companyA.body.data.id, 'key-isolation-dash', rawKey, 'member');
+
+      const res = await request(app)
+        .get(`/api/companies/${companyB.body.data.id}/dashboard`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('NOT_MEMBER');
+    });
+
+    it('agent key for company A cannot PATCH company B', async () => {
+      const companyA = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company A', settings: { testFixture: true } })
+        .expect(201);
+      const companyB = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company B', settings: { testFixture: true } })
+        .expect(201);
+      await seedAgentKey(companyA.body.data.id, 'key-isolation-patch', rawKey, 'member');
+
+      const res = await request(app)
+        .patch(`/api/companies/${companyB.body.data.id}`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .send({ name: 'Hacked' })
+        .expect(403);
+
+      expect(res.body.code).toBe('NOT_MEMBER');
+
+      // Verify company B was not mutated
+      const unchanged = await db.drizzle
+        .select({ name: db.schema.companies.name })
+        .from(db.schema.companies)
+        .where(eq(db.schema.companies.id, companyB.body.data.id));
+      expect(unchanged[0].name).toBe('__mtest__ Company B');
+    });
+
+    it('agent key for company A cannot DELETE company B', async () => {
+      const companyA = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company A', settings: { testFixture: true } })
+        .expect(201);
+      const companyB = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company B', settings: { testFixture: true } })
+        .expect(201);
+      await seedAgentKey(companyA.body.data.id, 'key-isolation-delete', rawKey, 'admin');
+
+      const res = await request(app)
+        .delete(`/api/companies/${companyB.body.data.id}`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('NOT_MEMBER');
+
+      // Verify company B was not archived or deleted
+      const unchanged = await db.drizzle
+        .select({ status: db.schema.companies.status })
+        .from(db.schema.companies)
+        .where(eq(db.schema.companies.id, companyB.body.data.id));
+      expect(unchanged[0].status).toBe('active');
+    });
+
+    it('agent key for company A can still access its own company endpoints', async () => {
+      const companyA = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company A', settings: { testFixture: true } })
+        .expect(201);
+      const companyB = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Company B', settings: { testFixture: true } })
+        .expect(201);
+      await seedAgentKey(companyA.body.data.id, 'key-isolation-own', rawKey, 'owner');
+
+      // Read own company
+      const getRes = await request(app)
+        .get(`/api/companies/${companyA.body.data.id}`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .expect(200);
+      expect(getRes.body.data.id).toBe(companyA.body.data.id);
+
+      // Read own dashboard
+      await request(app)
+        .get(`/api/companies/${companyA.body.data.id}/dashboard`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .expect(200);
+
+      // Mutate own company (owner permission)
+      const patchRes = await request(app)
+        .patch(`/api/companies/${companyA.body.data.id}`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .send({ name: '__mtest__ Company A Updated' })
+        .expect(200);
+      expect(patchRes.body.data.name).toBe('__mtest__ Company A Updated');
+
+      // Soft-delete own company (owner permission)
+      await request(app)
+        .delete(`/api/companies/${companyA.body.data.id}`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .expect(200);
+
+      // Cross-company access still fails after own-company operations
+      const crossRes = await request(app)
+        .get(`/api/companies/${companyB.body.data.id}`)
+        .set('authorization', `Bearer ${rawKey}`)
+        .expect(403);
+      expect(crossRes.body.code).toBe('NOT_MEMBER');
+    });
+
+    it('normal user auth still works for all companiesRouter :id endpoints', async () => {
+      const company = await request(app)
+        .post('/api/companies')
+        .send({ name: '__mtest__ Normal User Corp', settings: { testFixture: true } })
+        .expect(201);
+      const id = company.body.data.id;
+
+      await request(app).get(`/api/companies/${id}`).expect(200);
+      await request(app).get(`/api/companies/${id}/dashboard`).expect(200);
+
+      const patchRes = await request(app)
+        .patch(`/api/companies/${id}`)
+        .send({ name: '__mtest__ Normal User Corp Updated' })
+        .expect(200);
+      expect(patchRes.body.data.name).toBe('__mtest__ Normal User Corp Updated');
+
+      const deleteRes = await request(app).delete(`/api/companies/${id}`).expect(200);
+      expect(deleteRes.body.data.status).toBe('archived');
     });
   });
 });
