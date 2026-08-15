@@ -6,37 +6,38 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 
 ## Features
 
-| Feature | Description |
-|---|---|
-| **Multi-provider agents** | Hire from Anthropic, OpenAI, Google, or local models (Ollama). Unified interface with per-adapter capability flags (streaming, tools, vision, reasoning) surfaced at `GET /api/adapters`. |
-| **Org chart & hierarchy** | Agents have roles, titles, and `reports_to` lines. Delegation flows naturally. |
-| **Task board** | Kanban-style task management with atomic checkout, priority ordering, and concurrency-safe assignment. |
-| **Goal alignment** | OKR-style goal hierarchy. Every task traces back to the company mission. |
-| **Budget control** | Per-agent monthly budgets with real-time cost tracking and hard-stop enforcement. |
-| **Workflow engine** | DAG-based workflows with task dependencies and automatic orchestration. |
-| **Unified inbox** | Approvals, collaborations, and high-signal activity in one feed with j/k/a/o keyboard nav. |
-| **Approvals governance** | First-class approvals table for budget changes, agent terminations, custom reviews — with decision audit + comment threads. |
-| **Agentic loop runtime** | Observe → Think → Act → Reflect loop with per-step streaming transcript visible on each agent. |
-| **Hybrid runtime sessions** | Durable run/session records with adapter metadata, workspace leases, cancellation, finalization, and first-class local Codex/Claude CLI execution. |
-| **Skills + routines foundation** | Company skill install/assignment and scheduled/continuous Jarvis routines for daily briefing, monitoring, research, and follow-up workflows. |
-| **Knowledge base + RAG** | Company-scoped documents with chunked semantic retrieval plugged into the agentic loop. |
-| **Agent memories** | Per-agent long-term memory synthesized from completed tasks. |
-| **MCP client + server** | Connect agents to real MCP tool servers over stdio, SSE, or Streamable HTTP, and expose Eidolon itself as an MCP server (`@eidolon/mcp-server`) so Claude Desktop / Cursor can drive the platform. |
-| **Real-time dashboard** | WebSocket-powered live updates. Monitor everything from your phone. |
-| **Multi-tenancy** | Run multiple autonomous companies from one deployment, isolated by org membership. |
-| **Activity audit log** | Every action tracked with actor, entity, and timestamp. |
-| **Project workspace** | Per-project shell with four deep-linkable tabs — Home (composed summary of counts, active work, needs-attention, goals, recent activity and files), Work (scoped task board), Drive (project-scoped file tree), and Activity (work-state header + event timeline). Tabs are URL-routed via `?tab=home|work|drive|activity`. |
-| **Consolidated automation contracts** | Canonical automation and run-history contracts across routines, workflows, and webhooks, with project scoping and linked work. |
-| **Truthful integration health** | Real connectivity checks with SSRF protections, persisted health status, and unified integration/MCP health visibility. |
-| **Collaborative artifacts** | Typed artifacts (Document, Sheet, Board, Slides, Timeline, Gallery, Dashboard, App, Code) with Drizzle `artifacts` + `artifact_revisions` tables, Zod content schemas, CRUD API with optimistic concurrency (409 on stale `revisionVersion`), and append-only revision history. |
-| **Agent-authored artifacts** | Agents create and edit artifacts through built-in tools. Edits record `editSource=agent` and `editedByAgentId`, and the same revision history backs human and agent authoring. |
-| **@-mention collaboration** | `MentionService` resolves user/agent mentions inside artifact and thread content, fires inbox notifications, and emits realtime WS events. A mention picker is available in editors and the thread composer. |
-| **Real-time presence & co-editing** | Online/away/offline presence with cursor tracking; server-authoritative op-based co-editing for Documents, Sheets, and Boards (`CoEditSession`, typed WS op protocol, live cursors, agent merge, reconnect reconciliation). `COEDITABLE_TYPES` gates which artifact types participate (currently `document`, `sheet`, `board`). |
-| **Folders, templates, teams/RBAC** | Self-referential folder tree for artifact organization; project + artifact templates with cloning; teams with per-resource RBAC (view/edit/manage, inheritance, override, role hierarchy) and `requireAdminRole` on privilege-affecting routes. |
-| **Gallery, Dashboard, App** | Gallery (grid + caption image artifacts), Dashboard (data sources + widgets with live data resolution), and App (file list + sandboxed iframe preview) surfaces. |
-| **Code artifact + sandboxed runtime** | Code artifact type with syntax-highlighting editor, plus a sandboxed JS runtime (`code-sandbox-shim.cjs` preload) and Python runtime (`code-sandbox-python.py` preload). Blocks host fs/secrets/subprocess/network egress with bounded timeout + memory limit; shim blocklists are kept at parity between JS and Python. |
-| **Meetings pipeline** | `meetings` + `meeting_tasks` tables, Anthropic-grounded transcript summarization, action items extracted as real tasks with bidirectional meeting↔task linkage, and a Meetings tab UI. |
-| **Enterprise security** | TOTP MFA enrollment + step-up re-auth (5-min bounded, scope-isolated window); session invalidation on role downgrade/removal; AES-256-GCM encryption-at-rest for artifact content + secrets vault with key rotation without data loss; audit logging for security-relevant actions; rate limiting on auth-sensitive endpoints. See [`SECURITY.md`](SECURITY.md). |
+| Feature                               | Description                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Multi-provider agents**             | Hire from Anthropic, OpenAI, Google, or local models (Ollama). Unified interface with per-adapter capability flags (streaming, tools, vision, reasoning) surfaced at `GET /api/adapters`.                                                                                                                                                                        |
+| **Org chart & hierarchy**             | Agents have roles, titles, and `reports_to` lines. Delegation flows naturally.                                                                                                                                                                                                                                                                                   |
+| **Task board**                        | Kanban-style task management with atomic checkout, priority ordering, and concurrency-safe assignment.                                                                                                                                                                                                                                                           |
+| **Goal alignment**                    | OKR-style goal hierarchy. Every task traces back to the company mission.                                                                                                                                                                                                                                                                                         |
+| **Budget control**                    | Per-agent monthly budgets with real-time cost tracking and hard-stop enforcement.                                                                                                                                                                                                                                                                                |
+| **Workflow engine**                   | DAG-based workflows with task dependencies and automatic orchestration.                                                                                                                                                                                                                                                                                          |
+| **Unified inbox**                     | Approvals, collaborations, and high-signal activity in one feed with j/k/a/o keyboard nav.                                                                                                                                                                                                                                                                       |
+| **Approvals governance**              | First-class approvals table for budget changes, agent terminations, custom reviews — with decision audit + comment threads.                                                                                                                                                                                                                                      |
+| **Agentic loop runtime**              | Observe → Think → Act → Reflect loop with per-step streaming transcript visible on each agent.                                                                                                                                                                                                                                                                   |
+| **Hybrid runtime sessions**           | Durable run/session records with adapter metadata, workspace leases, cancellation, finalization, and first-class local Codex/Claude CLI execution.                                                                                                                                                                                                               |
+| **Skills + routines foundation**      | Company skill install/assignment and scheduled/continuous Jarvis routines for daily briefing, monitoring, research, and follow-up workflows.                                                                                                                                                                                                                     |
+| **Knowledge base + RAG**              | Company-scoped documents with chunked semantic retrieval plugged into the agentic loop.                                                                                                                                                                                                                                                                          |
+| **Agent memories**                    | Per-agent long-term memory synthesized from completed tasks.                                                                                                                                                                                                                                                                                                     |
+| **MCP client + server**               | Connect agents to real MCP tool servers over stdio, SSE, or Streamable HTTP, and expose Eidolon itself as an MCP server (`@eidolon/mcp-server`) so Claude Desktop / Cursor can drive the platform.                                                                                                                                                               |
+| **Real-time dashboard**               | WebSocket-powered live updates. Monitor everything from your phone.                                                                                                                                                                                                                                                                                              |
+| **Multi-tenancy**                     | Run multiple autonomous companies from one deployment, isolated by org membership.                                                                                                                                                                                                                                                                               |
+| **Activity audit log**                | Every action tracked with actor, entity, and timestamp.                                                                                                                                                                                                                                                                                                          |
+| **Project workspace**                 | Per-project shell with four deep-linkable tabs — Home (composed summary of counts, active work, needs-attention, goals, recent activity and files), Work (scoped task board), Drive (project-scoped file tree), and Activity (work-state header + event timeline). Tabs are URL-routed via `?tab=home                                                            | work | drive | activity`. |
+| **Consolidated automation contracts** | Canonical automation and run-history contracts across routines, workflows, and webhooks, with project scoping and linked work.                                                                                                                                                                                                                                   |
+| **Truthful integration health**       | Real connectivity checks with SSRF protections, persisted health status, and unified integration/MCP health visibility.                                                                                                                                                                                                                                          |
+| **Collaborative artifacts**           | Typed artifacts (Document, Sheet, Board, Slides, Timeline, Gallery, Dashboard, App, Code) with Drizzle `artifacts` + `artifact_revisions` tables, Zod content schemas, CRUD API with optimistic concurrency (409 on stale `revisionVersion`), and append-only revision history.                                                                                  |
+| **Agent-authored artifacts**          | Agents create and edit artifacts through built-in tools. Edits record `editSource=agent` and `editedByAgentId`, and the same revision history backs human and agent authoring.                                                                                                                                                                                   |
+| **@-mention collaboration**           | `MentionService` resolves user/agent mentions inside artifact and thread content, fires inbox notifications, and emits realtime WS events. A mention picker is available in editors and the thread composer.                                                                                                                                                     |
+| **Real-time presence & co-editing**   | Online/away/offline presence with cursor tracking; server-authoritative op-based co-editing for Documents, Sheets, and Boards (`CoEditSession`, typed WS op protocol, live cursors, agent merge, reconnect reconciliation). `COEDITABLE_TYPES` gates which artifact types participate (currently `document`, `sheet`, `board`).                                  |
+| **Folders, templates, teams/RBAC**    | Self-referential folder tree for artifact organization; project + artifact templates with cloning; teams with per-resource RBAC (view/edit/manage, inheritance, override, role hierarchy) and `requireAdminRole` on privilege-affecting routes.                                                                                                                  |
+| **Gallery, Dashboard, App**           | Gallery (grid + caption image artifacts), Dashboard (data sources + widgets with live data resolution), and App (file list + sandboxed iframe preview) surfaces.                                                                                                                                                                                                 |
+| **Code artifact + sandboxed runtime** | Code artifact type with syntax-highlighting editor, plus a sandboxed JS runtime (`code-sandbox-shim.cjs` preload) and Python runtime (`code-sandbox-python.py` preload). Blocks host fs/secrets/subprocess/network egress with bounded timeout + memory limit; shim blocklists are kept at parity between JS and Python.                                         |
+| **Meetings pipeline**                 | `meetings` + `meeting_tasks` tables, Anthropic-grounded transcript summarization, action items extracted as real tasks with bidirectional meeting↔task linkage, and a Meetings tab UI.                                                                                                                                                                           |
+| **Enterprise security**               | TOTP MFA enrollment + step-up re-auth (5-min bounded, scope-isolated window); session invalidation on role downgrade/removal; AES-256-GCM encryption-at-rest for artifact content + secrets vault with key rotation without data loss; audit logging for security-relevant actions; rate limiting on auth-sensitive endpoints. See [`SECURITY.md`](SECURITY.md). |
+| **Company-scoped RBAC**               | Four roles (Owner, Admin, Member, Viewer) with a 29-permission matrix enforced at middleware level. Company-scoped data isolation, invitation-based onboarding, and agent API keys for machine-to-machine auth.                                                                                                                                                  |
 
 ### Project work surfaces (VER-514)
 
@@ -87,6 +88,17 @@ Eidolon ships an enterprise security layer documented in [`SECURITY.md`](SECURIT
 - **Audit logging** — Security-relevant actions (auth, MFA, role changes, key rotation, secret access) are written to the audit log with actor, entity, and timestamp.
 - **Rate limiting on auth-sensitive endpoints** — Auth-sensitive endpoints are rate-limited to blunt brute-force and credential-stuffing attempts.
 
+## Role-Based Access Control
+
+Eidolon ships a company-scoped RBAC system that governs every company-scoped route and surface.
+
+- **Four roles** — **Owner** (full access, including company deletion and owner management), **Admin** (most permissions except company deletion/owner management), **Member** (read/write within the company, no member management), and **Viewer** (read-only).
+- **29 permissions** enforced via middleware (`requirePermission`, `requirePermissionByMethod`) across all company-scoped routes. The permission matrix in `server/src/middleware/permissions.ts` maps each role to its allowed permissions.
+- **Membership table** — Authorization decisions use the `company_members` table rather than Clerk org membership. Clerk is now auth-only; all role/permission checks resolve against `company_members`.
+- **Invitation system** — Owners and admins invite users by email with a chosen role. Invitations expire after 7 days. The Clerk webhook (`/api/webhooks/clerk`) auto-activates pending invitations when the invited user signs up.
+- **Agent API keys** — SHA-256 hashed keys with an `eid_live_` prefix provide machine-to-machine authentication. Keys are scoped to a company with a configurable role (default Member) and support soft-revoke.
+- **UI** — The Members & Roles page (`/company/:id/settings/members`) shows role badges, promote/demote, remove, invitation management, and agent API key CRUD. Permission-based UI visibility is applied across all pages so viewers cannot see create/settings controls.
+
 ## Quickstart
 
 ```bash
@@ -113,14 +125,14 @@ eidolon/
 │   ├── db/          # Drizzle ORM, Postgres, migrations
 │   └── mcp-server/  # @eidolon/mcp-server — MCP wrapper over the REST API
 ├── server/          # Express API + WebSocket server
-│   ├── routes/      # REST endpoints (agents, tasks, approvals, inbox, artifacts, meetings, mcp…)
+│   ├── routes/      # REST endpoints (agents, tasks, approvals, inbox, artifacts, meetings, mcp, members, invitations, agent-api-keys, clerk-webhook…)
 │   ├── services/    # Agentic loop, scheduler, knowledge, memory, budgets,
 │   │                # coedit-session (op-based co-editing), mentions, presence,
 │   │                # background-work (deterministic background-write testing),
 │   │                # artifact templates, folders, teams/RBAC, MFA, encryption, audit,
 │   │                # code-sandbox-shim.cjs (JS) + code-sandbox-python.py (Python) preloads
 │   ├── providers/   # ServerAdapter impls (anthropic, openai, google, ollama)
-│   ├── middleware/  # Auth, rate-limit, validation, error handling, requireAdminRole
+│   ├── middleware/  # Auth, rate-limit, validation, error handling, requireAdminRole, requirePermission, agent-key-auth
 │   └── realtime/    # WebSocket event bus + co-edit op protocol
 └── ui/              # React + Vite + Tailwind dashboard
     ├── pages/       # Dashboard, TaskBoard, OrgChart, Inbox, Approvals, …
@@ -137,7 +149,7 @@ eidolon/
 - **Real-time:** WebSocket (`ws`) with typed events and an in-process event bus
 - **Validation:** Zod schemas shared between client and server
 - **MCP:** `@modelcontextprotocol/sdk` for both the client (agent side) and the standalone server package
-- **Quality bar:** 1794 tests, 0 typecheck errors, 0 lint errors across the workspace
+- **Quality bar:** 2402 tests, 0 typecheck errors, 0 lint errors across the workspace
 
 ## Development
 
@@ -235,40 +247,51 @@ Project ownership is canonical across context and execution: migrations 0011 and
 
 All endpoints under `/api`. See the per-route source for full schemas.
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/companies` | List companies |
-| `POST /api/companies` | Create company |
-| `GET /api/adapters` | Provider adapter manifest with capability flags |
-| `GET /api/runtime/adapters` | Provider, process, HTTP, OpenClaw, MCP, and OpenJarvis-local runtime descriptors |
-| `GET /api/companies/:id/agents` | List agents |
-| `POST /api/companies/:id/agents` | Hire agent |
-| `POST /api/companies/:id/agents/:agentId/wake` | Wake an idle agent for immediate task assignment |
-| `GET /api/companies/:id/agents/:agentId/executions` | Execution history with transcripts |
-| `POST /api/companies/:id/agents/:agentId/execute` | Run agent on a task (supports `?mode=loop`) |
-| `POST /api/companies/:id/sessions` | Create a durable runtime session |
-| `POST /api/companies/:id/sessions/:sessionId/run` | Run a prompt through a configured local process, HTTP, or OpenClaw runtime |
-| `POST /api/companies/:id/sessions/:sessionId/test` | Validate a configured process, HTTP, or OpenClaw runtime |
-| `POST /api/companies/:id/sessions/:sessionId/cancel` | Cancel a runtime session |
-| `POST /api/companies/:id/sessions/:sessionId/finalize` | Finalize a runtime session and release its workspace |
-| `POST /api/companies/:id/skills/install` | Install/update a company skill and optionally assign it to agents |
-| `POST /api/companies/:id/routines` | Create a scheduled, continuous, or on-demand Jarvis routine |
-| `GET /api/companies/:id/automations` | List routines, workflows, and webhooks in one canonical automation list |
-| `GET /api/companies/:id/automations/runs` | List cross-automation run history with type, status, and project filters |
-| `GET /api/companies/:id/automations/:type/:id/runs` | List runs for one routine, workflow, or webhook |
-| `GET /api/companies/:id/integrations/health` | Aggregate integration and MCP server health |
-| `POST /api/companies/:id/mcp/servers/:id/health` | Re-check health for an MCP server |
-| `GET /api/companies/:id/tasks` | List tasks |
-| `POST /api/companies/:id/tasks` | Create task |
-| `POST /api/companies/:id/tasks/:taskId/checkout` | Atomically check out a task for an agent execution |
-| `GET /api/companies/:id/goals` | Goal tree |
-| `GET /api/companies/:id/projects/:projectId/home` | Composed project-home summary (counts, task breakdown, active/needs-attention/failed work, recent activity, recent files, goal progress) |
-| `GET /api/companies/:id/files?project=:projectId` | List files scoped to a project (nullable projectId on agent_files) |
-| `GET /api/companies/:id/approvals` | List approvals |
-| `POST /api/companies/:id/approvals/:id/decide` | Approve / reject |
-| `GET /api/companies/:id/inbox` | Unified feed |
-| `GET /api/companies/:id/analytics/*` | Analytics endpoints |
-| `WS /ws` | Real-time events |
+| Endpoint                                               | Description                                                                                                                              |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/companies`                                   | List companies                                                                                                                           |
+| `POST /api/companies`                                  | Create company                                                                                                                           |
+| `GET /api/adapters`                                    | Provider adapter manifest with capability flags                                                                                          |
+| `GET /api/runtime/adapters`                            | Provider, process, HTTP, OpenClaw, MCP, and OpenJarvis-local runtime descriptors                                                         |
+| `GET /api/companies/:id/agents`                        | List agents                                                                                                                              |
+| `POST /api/companies/:id/agents`                       | Hire agent                                                                                                                               |
+| `POST /api/companies/:id/agents/:agentId/wake`         | Wake an idle agent for immediate task assignment                                                                                         |
+| `GET /api/companies/:id/agents/:agentId/executions`    | Execution history with transcripts                                                                                                       |
+| `POST /api/companies/:id/agents/:agentId/execute`      | Run agent on a task (supports `?mode=loop`)                                                                                              |
+| `POST /api/companies/:id/sessions`                     | Create a durable runtime session                                                                                                         |
+| `POST /api/companies/:id/sessions/:sessionId/run`      | Run a prompt through a configured local process, HTTP, or OpenClaw runtime                                                               |
+| `POST /api/companies/:id/sessions/:sessionId/test`     | Validate a configured process, HTTP, or OpenClaw runtime                                                                                 |
+| `POST /api/companies/:id/sessions/:sessionId/cancel`   | Cancel a runtime session                                                                                                                 |
+| `POST /api/companies/:id/sessions/:sessionId/finalize` | Finalize a runtime session and release its workspace                                                                                     |
+| `POST /api/companies/:id/skills/install`               | Install/update a company skill and optionally assign it to agents                                                                        |
+| `POST /api/companies/:id/routines`                     | Create a scheduled, continuous, or on-demand Jarvis routine                                                                              |
+| `GET /api/companies/:id/automations`                   | List routines, workflows, and webhooks in one canonical automation list                                                                  |
+| `GET /api/companies/:id/automations/runs`              | List cross-automation run history with type, status, and project filters                                                                 |
+| `GET /api/companies/:id/automations/:type/:id/runs`    | List runs for one routine, workflow, or webhook                                                                                          |
+| `GET /api/companies/:id/integrations/health`           | Aggregate integration and MCP server health                                                                                              |
+| `POST /api/companies/:id/mcp/servers/:id/health`       | Re-check health for an MCP server                                                                                                        |
+| `GET /api/companies/:id/tasks`                         | List tasks                                                                                                                               |
+| `POST /api/companies/:id/tasks`                        | Create task                                                                                                                              |
+| `POST /api/companies/:id/tasks/:taskId/checkout`       | Atomically check out a task for an agent execution                                                                                       |
+| `GET /api/companies/:id/goals`                         | Goal tree                                                                                                                                |
+| `GET /api/companies/:id/projects/:projectId/home`      | Composed project-home summary (counts, task breakdown, active/needs-attention/failed work, recent activity, recent files, goal progress) |
+| `GET /api/companies/:id/files?project=:projectId`      | List files scoped to a project (nullable projectId on agent_files)                                                                       |
+| `GET /api/companies/:id/approvals`                     | List approvals                                                                                                                           |
+| `POST /api/companies/:id/approvals/:id/decide`         | Approve / reject                                                                                                                         |
+| `GET /api/companies/:id/inbox`                         | Unified feed                                                                                                                             |
+| `GET /api/companies/:id/analytics/*`                   | Analytics endpoints                                                                                                                      |
+| `GET /api/companies/:id/my-role`                       | Get current user's role in company                                                                                                       |
+| `GET /api/companies/:id/members`                       | List company members                                                                                                                     |
+| `PATCH /api/companies/:id/members/:memberId`           | Change member role (owner/admin only)                                                                                                    |
+| `DELETE /api/companies/:id/members/:memberId`          | Remove member (owner/admin only)                                                                                                         |
+| `GET /api/companies/:id/invitations`                   | List invitations                                                                                                                         |
+| `POST /api/companies/:id/invitations`                  | Create invitation                                                                                                                        |
+| `DELETE /api/companies/:id/invitations/:id`            | Revoke invitation                                                                                                                        |
+| `GET /api/companies/:id/agent-api-keys`                | List agent API keys                                                                                                                      |
+| `POST /api/companies/:id/agent-api-keys`               | Create agent API key                                                                                                                     |
+| `DELETE /api/companies/:id/agent-api-keys/:id`         | Revoke agent API key                                                                                                                     |
+| `POST /api/webhooks/clerk`                             | Clerk webhook for invitation activation                                                                                                  |
+| `WS /ws`                                               | Real-time events                                                                                                                         |
 
 ## Deployment
 
@@ -285,6 +308,8 @@ Set `NODEJS_HELPERS=0` for Vercel Production, Preview, and Development. Eidolon 
 Set `CORS_ORIGIN=https://eidolon.verticallabs.ai` for Vercel Production. Production CSRF enforcement uses the same allowlist, so omitting the canonical host rejects every authenticated browser mutation even though read-only routes remain healthy.
 
 Rate-limiting is opt-in via `RATE_LIMIT_ENABLED=1` (or automatic when `NODE_ENV=production`).
+
+Set `CLERK_WEBHOOK_SECRET` to the signing secret from your Clerk dashboard so the `/api/webhooks/clerk` endpoint can verify Clerk webhook signatures before activating invitations.
 
 ## Releases
 
