@@ -49,7 +49,7 @@ interface ArtifactListProps {
   onFiltersChange: (filters: ArtifactListFilters) => void;
   onPageChange: (offset: number) => void;
   onSelect: (artifact: Artifact) => void;
-  onCreate: () => void;
+  onCreate?: () => void;
   isLoading?: boolean;
   isError?: boolean;
   onRetry?: () => void;
@@ -214,14 +214,16 @@ export function ArtifactList({
           className="w-auto min-w-[120px]"
         />
         <div className="ml-auto pb-1.5">
-          <Button
-            variant="primary"
-            size="md"
-            icon={<Plus className="h-3.5 w-3.5" />}
-            onClick={onCreate}
-          >
-            Create
-          </Button>
+          {onCreate && (
+            <Button
+              variant="primary"
+              size="md"
+              icon={<Plus className="h-3.5 w-3.5" />}
+              onClick={onCreate}
+            >
+              Create
+            </Button>
+          )}
         </div>
       </div>
 
@@ -231,7 +233,7 @@ export function ArtifactList({
           icon={<FileText className="h-6 w-6" />}
           title="No artifacts yet"
           description="Create a document, sheet, or board to get started."
-          action={
+          action={onCreate ? (
             <Button
               variant="primary"
               icon={<Plus className="h-3.5 w-3.5" />}
@@ -239,7 +241,7 @@ export function ArtifactList({
             >
               Create Artifact
             </Button>
-          }
+          ) : undefined}
         />
       ) : (
         <>

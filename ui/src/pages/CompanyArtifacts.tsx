@@ -7,6 +7,7 @@ import {
   useProjects,
   useFolders,
 } from "@/lib/hooks";
+import { usePermission } from "@/lib/permissions";
 import { useServerEvents } from "@/lib/ws";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactList, type ArtifactListFilters } from "@/components/artifacts/ArtifactList";
@@ -121,6 +122,8 @@ export function CompanyArtifacts() {
   }, [data?.meta.total]);
   const createMutation = useCreateArtifact(companyId!);
   const createFromTemplateMutation = useCreateArtifactFromTemplate(companyId!);
+  const { hasPermission } = usePermission(companyId);
+  const canCreateArtifact = hasPermission("artifact.create");
 
   useServerEvents(companyId, "artifact.created", () => {
     qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
@@ -274,7 +277,7 @@ export function CompanyArtifacts() {
             onFiltersChange={setFilters}
             onPageChange={setOffset}
             onSelect={(a) => setSelectedId(a.id)}
-            onCreate={() => setPickerOpen(true)}
+            onCreate={canCreateArtifact ? () => setPickerOpen(true) : undefined}
             isLoading={isLoading}
             isError={isError}
             onRetry={() => void refetch()}

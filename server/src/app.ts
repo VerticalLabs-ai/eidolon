@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import logger from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
-import { createServiceTokenMiddleware } from './middleware/service-tokens.js';
+import { createAgentKeyMiddleware } from './middleware/agent-key-auth.js';
+import { createServiceTokenMiddleware, parseServiceTokens } from './middleware/service-tokens.js';
 import { apiRateLimit, authSensitiveRateLimit } from './middleware/rate-limit.js';
 import { originCsrf } from './middleware/csrf.js';
 import healthRouter from './routes/health.js';
@@ -22,10 +23,10 @@ import { activityRouter } from './routes/activity.js';
 import { secretsRouter } from './routes/secrets.js';
 import { chatRouter } from './routes/chat.js';
 import { webhookManagementRouter, webhookTriggerRouter } from './routes/webhooks.js';
-import { knowledgeRouter } from './routes/knowledge.js';
+import { knowledgeRouter, knowledgeSearchRouter } from './routes/knowledge.js';
 import { filesRouter, agentFilesRouter } from './routes/files.js';
 import { integrationsRouter } from './routes/integrations.js';
-import { memoriesRouter } from './routes/memories.js';
+import { memoriesRecallRouter, memoriesRouter } from './routes/memories.js';
 import { globalPromptsRouter, companyPromptsRouter } from './routes/prompts.js';
 import { mcpRouter } from './routes/mcp.js';
 import { evaluationsRouter } from './routes/evaluations.js';
@@ -57,8 +58,11 @@ import { mentionsRouter } from './routes/mentions.js';
 import { searchRouter } from './routes/search.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
 import { mfaRouter, stepUpRouter } from './routes/mfa.js';
-import { securityMembersRouter } from './routes/security-members.js';
 import { securityAdminRouter } from './routes/security-admin.js';
+import { membersRouter } from './routes/members.js';
+import { invitationsRouter } from './routes/invitations.js';
+import { agentApiKeysRouter } from './routes/agent-api-keys.js';
+import { clerkWebhookRouter } from './routes/clerk-webhook.js';
 import {
   metricsRouter,
   requestIdMiddleware,
@@ -72,15 +76,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function createApp(db: DbInstance): express.Express {
   const app = express();
   initializeErrorTracking();
-  const { requireAuth, requireOrgMember } = createAuthMiddleware({ db });
+  const { requireAuth, requireOrgMember, requirePermission, requirePermissionByMethod } =
+    createAuthMiddleware({ db });
+  // Parse service tokens once and share with both agent-key and service-token
+  // middleware so that legacy service tokens using the eid_live_ prefix are
+  // not intercepted as unknown agent keys.
+  const serviceTokens = parseServiceTokens();
+  const { tryAgentKeyAuth } = createAgentKeyMiddleware({ db, serviceTokens });
   const { requireServiceOrOrgMember, requireServiceScope } = createServiceTokenMiddleware({
     requireAuth,
     requireOrgMember,
+    tokens: serviceTokens,
   });
 
   // Vercel overwrites forwarded IP headers before invoking the function.
   // Trust only that single proxy hop; direct/self-hosted deployments stay untrusted.
-  if (process.env.VERCEL === '1') {app.set('trust proxy', 1);}
+  if (process.env.VERCEL === '1') {
+    app.set('trust proxy', 1);
+  }
 
   // ---------------------------------------------------------------------------
   // CORS (must come before everything so preflight OPTIONS work)
@@ -102,8 +115,20 @@ export function createApp(db: DbInstance): express.Express {
   // Global middleware (auth sessions are Clerk cookies; no handshake to mount)
   // ---------------------------------------------------------------------------
 
-  // Parse JSON bodies (Express 5 built-in)
-  app.use(express.json({ limit: '2mb' }));
+  // Parse JSON bodies (Express 5 built-in).
+  // The verify callback captures the raw body for Clerk webhook signature
+  // verification — verifyWebhook needs the original bytes, not re-serialized
+  // JSON. Only stored for the /api/webhooks/clerk path to limit overhead.
+  app.use(
+    express.json({
+      limit: '2mb',
+      verify: (req, _res, buf) => {
+        if ((req as any).originalUrl?.startsWith('/api/webhooks/clerk')) {
+          (req as any).rawBody = buf.toString('utf8');
+        }
+      },
+    }),
+  );
 
   // Correlate responses and metrics with a bounded request identifier.
   app.use(requestIdMiddleware);
@@ -190,6 +215,15 @@ export function createApp(db: DbInstance): express.Express {
   // Authenticated routes
   // ---------------------------------------------------------------------------
 
+  // Agent API key auth — intercepts Bearer tokens starting with `eid_live_`
+  // before any company-scoped route. If an agent key matches, it sets
+  // req.user and req.organizationMembership so downstream requireAuth skips
+  // normal auth and requirePermission reuses the pre-set membership.
+  // Mounted before all company routes. Service tokens (including legacy
+  // tokens that use the eid_live_ prefix) are skipped via a hash check so
+  // they fall through to the service-token middleware on the prompts route.
+  app.use('/api/companies/:companyId', tryAgentKeyAuth);
+
   // Prompt service auth must run before the broad company-session gate.
   app.use(
     '/api/companies/:companyId/prompts',
@@ -200,105 +234,219 @@ export function createApp(db: DbInstance): express.Express {
   app.use('/api/companies', requireAuth, companiesRouter(db));
 
   // Company-scoped routes (require auth + org membership)
-  app.use('/api/companies/:companyId/agents', requireAuth, requireOrgMember(), agentsRouter(db));
+  // Company-scoped routes (require auth + permission-based access control)
+  //
+  // Route migration: all company-scoped route mounts have been migrated from
+  // requireOrgMember('admin'/'member') to requirePermission('specific.permission')
+  // per the RBAC permission matrix in architecture.md.
+  //
+  // Admin-level routes (secrets, integrations, mcp, webhooks mgmt, export,
+  // sessions, skills, environments, security members) use their corresponding
+  // *.manage permission (owner+admin only).
+  //
+  // Member-level routes with specific write permissions (agents, projects,
+  // tasks, chat, artifacts) use requirePermissionByMethod: company.view for
+  // reads (all roles including viewer) and the resource-specific permission
+  // for writes (owner+admin+member, not viewer).
+  //
+  // Member-level routes without specific write permissions use
+  // requirePermission('company.view') for all methods. Individual handlers
+  // may enforce additional role checks internally (e.g. teams router checks
+  // requireAdminRole for team creation/deletion).
+
+  // Agent memory recall accepts a POST body but is read-only.
+  // Mount before the broader agents route so its read permission wins.
+  app.use(
+    '/api/companies/:companyId/agents/:agentId/memories/recall',
+    requireAuth,
+    requirePermission('company.view'),
+    memoriesRecallRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/agents',
+    requireAuth,
+    requirePermissionByMethod({ read: 'company.view', write: 'agent.manage' }),
+    agentsRouter(db),
+  );
   app.use(
     '/api/companies/:companyId/org-chart',
     requireAuth,
-    requireOrgMember(),
+    requirePermission('company.view'),
     orgChartRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({ read: 'company.view', write: 'project.create' }),
     projectsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/threads',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectThreadsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/meetings',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     meetingsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/plans',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectPlansRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/decisions',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectDecisionsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/projects/:projectId/outcomes',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     projectOutcomesRouter(db),
   );
-  app.use('/api/companies/:companyId/tasks', requireAuth, requireOrgMember(), tasksRouter(db));
-  app.use('/api/companies/:companyId/goals', requireAuth, requireOrgMember(), goalsRouter(db));
+  app.use(
+    '/api/companies/:companyId/tasks',
+    requireAuth,
+    requirePermissionByMethod({ read: 'company.view', write: 'task.create' }),
+    tasksRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/goals',
+    requireAuth,
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+    goalsRouter(db),
+  );
   app.use(
     '/api/companies/:companyId/messages',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     messagesRouter(db),
   );
   app.use(
     '/api/companies/:companyId/analytics',
     requireAuth,
-    requireOrgMember(),
+    requirePermission('company.view'),
     analyticsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/workflows',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     workflowsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/activity',
     requireAuth,
-    requireOrgMember(),
+    requirePermission('company.view'),
     activityRouter(db),
   );
   app.use(
     '/api/companies/:companyId/secrets',
     requireAuth,
-    requireOrgMember('admin'),
+    requirePermission('secrets.manage'),
     secretsRouter(db),
   );
-  app.use('/api/companies/:companyId/chat', requireAuth, requireOrgMember(), chatRouter(db));
+  app.use(
+    '/api/companies/:companyId/chat',
+    requireAuth,
+    requirePermissionByMethod({ read: 'company.view', write: 'chat.participate' }),
+    chatRouter(db),
+  );
 
   // Knowledge base
   app.use(
+    '/api/companies/:companyId/knowledge/search',
+    requireAuth,
+    requirePermission('company.view'),
+    knowledgeSearchRouter(db),
+  );
+  app.use(
     '/api/companies/:companyId/knowledge',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
     knowledgeRouter(db),
   );
 
   // File manager
-  app.use('/api/companies/:companyId/files', requireAuth, requireOrgMember(), filesRouter(db));
+  app.use(
+    '/api/companies/:companyId/files',
+    requireAuth,
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
+    filesRouter(db),
+  );
   app.use(
     '/api/companies/:companyId/agents/:agentId/files',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
     agentFilesRouter(db),
   );
 
-  // Integrations
+  // Integrations (admin only)
   app.use(
     '/api/companies/:companyId/integrations',
     requireAuth,
-    requireOrgMember('admin'),
+    requirePermission('integrations.manage'),
     integrationsRouter(db),
   );
 
@@ -306,7 +454,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/agents/:agentId/memories',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
     memoriesRouter(db),
   );
 
@@ -314,18 +467,28 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/evaluations',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     evaluationsRouter(db),
   );
 
-  // MCP (Model Context Protocol) servers and tools
-  app.use('/api/companies/:companyId/mcp', requireAuth, requireOrgMember('admin'), mcpRouter(db));
+  // MCP (Model Context Protocol) servers and tools (admin only)
+  app.use(
+    '/api/companies/:companyId/mcp',
+    requireAuth,
+    requirePermission('mcp.manage'),
+    mcpRouter(db),
+  );
 
   // Webhook management (admin only)
   app.use(
     '/api/companies/:companyId/webhooks',
     requireAuth,
-    requireOrgMember('admin'),
+    requirePermission('webhooks.manage'),
     webhookManagementRouter(db),
   );
 
@@ -333,13 +496,23 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/collaborations',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     collaborationsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/agents/:agentId/collaborations',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     agentCollaborationsRouter(db),
   );
 
@@ -347,7 +520,7 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/export',
     requireAuth,
-    requireOrgMember('admin'),
+    requirePermission('company.export'),
     companyExportRouter(db),
   );
 
@@ -355,46 +528,71 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/approvals',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     approvalsRouter(db),
   );
 
   // Unified inbox feed
-  app.use('/api/companies/:companyId/inbox', requireAuth, requireOrgMember(), inboxRouter(db));
+  app.use(
+    '/api/companies/:companyId/inbox',
+    requireAuth,
+    requirePermissionByMethod({ read: 'company.view', write: 'content.update' }),
+    inboxRouter(db),
+  );
 
   // Mention search (company-scoped agents + teammates for the picker)
   app.use(
     '/api/companies/:companyId/mentions',
     requireAuth,
-    requireOrgMember(),
+    requirePermission('company.view'),
     mentionsRouter(db),
   );
 
   // Cross-artifact search (M1): FTS over artifacts + ILIKE on thread items +
   // tasks. Company-scoped. Mounted before the bare-path composite so the
   // /search path is intercepted here, not by the artifacts sub-router.
-  app.use('/api/companies/:companyId/search', requireAuth, requireOrgMember(), searchRouter(db));
+  app.use(
+    '/api/companies/:companyId/search',
+    requireAuth,
+    requirePermission('company.view'),
+    searchRouter(db),
+  );
 
-  // Company runtime snapshot
-  app.use('/api/companies/:companyId/runtime', requireAuth, requireOrgMember(), runtimeRouter(db));
+  // Company runtime snapshot (writes require agent.manage)
+  app.use(
+    '/api/companies/:companyId/runtime',
+    requireAuth,
+    requirePermissionByMethod({ read: 'company.view', write: 'agent.manage' }),
+    runtimeRouter(db),
+  );
 
   // Durable runtime sessions, skills, and routines
   app.use(
     '/api/companies/:companyId/sessions',
     requireAuth,
-    requireOrgMember('admin'),
+    requirePermission('sessions.manage'),
     sessionsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/skills',
     requireAuth,
-    requireOrgMember('admin'),
+    requirePermission('skills.manage'),
     skillsRouter(db),
   );
   app.use(
     '/api/companies/:companyId/routines',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     routinesRouter(db),
   );
 
@@ -402,7 +600,12 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/automations',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     automationsRouter(db),
   );
 
@@ -412,17 +615,60 @@ export function createApp(db: DbInstance): express.Express {
   app.use(
     '/api/companies/:companyId/meetings',
     requireAuth,
-    requireOrgMember(),
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
     meetingItemRouter(db),
   );
 
-  // Local execution environments
+  // Local execution environments (admin only)
   app.use(
     '/api/companies/:companyId/environments',
     requireAuth,
-    requireOrgMember('admin'),
+    requirePermission('environments.manage'),
     environmentsRouter(db),
   );
+
+  // Member management (M2): list, promote/demote, remove.
+  // Each endpoint applies its own requirePermission inside the router:
+  //   GET    /              → member.list   (all roles)
+  //   PATCH  /:memberId/role → member.promote (owner only)
+  //   POST   /:memberId/role → member.promote (owner only, backward compat)
+  //   DELETE /:memberId      → member.remove   (owner + admin)
+  app.use('/api/companies/:companyId/members', requireAuth, membersRouter(db, requirePermission));
+
+  // Invitation management (M2): create, list, revoke.
+  // Each endpoint applies requirePermission('member.invite') inside the
+  // router (owner + admin only).
+  //   POST   /                → member.invite  (create invitation)
+  //   GET    /                → member.invite  (list invitations)
+  //   DELETE /:invitationId   → member.invite  (revoke invitation)
+  app.use(
+    '/api/companies/:companyId/invitations',
+    requireAuth,
+    invitationsRouter(db, requirePermission),
+  );
+
+  // Agent API key management (M2): create, list, revoke.
+  // Each endpoint applies requirePermission('apikeys.manage') inside the
+  // router (owner + admin only).
+  //   POST   /                → apikeys.manage  (create key, returns raw key once)
+  //   GET    /                → apikeys.manage  (list keys, metadata only)
+  //   DELETE /:keyId          → apikeys.manage  (revoke key)
+  app.use(
+    '/api/companies/:companyId/agent-api-keys',
+    requireAuth,
+    agentApiKeysRouter(db, requirePermission),
+  );
+
+  // Clerk webhook handler (M2): public endpoint (no auth middleware).
+  // Verifies the Clerk webhook signature in production mode; bypasses
+  // verification in local_trusted mode for testing.
+  //   POST /api/webhooks/clerk → handle user.created events
+  app.use('/api/webhooks/clerk', clerkWebhookRouter(db));
 
   // ---------------------------------------------------------------------------
   // Company-scoped bare-path routers (MOUNTED LAST among company routes).
@@ -453,21 +699,106 @@ export function createApp(db: DbInstance): express.Express {
   // ordering where securityMembersRouter was the final bare mount.
   // ---------------------------------------------------------------------------
   const companyScopedRouter = express.Router({ mergeParams: true });
-  companyScopedRouter.use(budgetsRouter(db));
-  companyScopedRouter.use(artifactsRouter(db));
-  companyScopedRouter.use(foldersRouter(db));
-  companyScopedRouter.use(workspaceTemplatesRouter(db));
-  companyScopedRouter.use(teamsRouter(db));
-  companyScopedRouter.use(permissionsRouter(db));
-  companyScopedRouter.use(presenceRouter(db));
-  // Company member role/removal is admin/owner only. The handler also
-  // enforces requireAdminOrOwner internally (defense in depth); the
-  // mount-level guard here rejects non-admins before the handler runs,
-  // matching the prior `requireOrgMember('admin')` mount behavior. Because
-  // the composite is the last company mount, this guard only runs for
-  // requests that did not match any more-specific company route.
-  companyScopedRouter.use(requireOrgMember('admin'), securityMembersRouter(db));
-  app.use('/api/companies/:companyId', requireAuth, requireOrgMember(), companyScopedRouter);
+
+  // Budgets: method-aware permission — reads for all roles, writes for
+  // owner+admin+member only (content.* permissions).
+  const budgetsScoped = express.Router({ mergeParams: true });
+  budgetsScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  budgetsScoped.use(budgetsRouter(db));
+  companyScopedRouter.use(budgetsScoped);
+
+  // Artifacts: method-aware permission — reads (company.view) for all roles
+  // including viewer, writes (artifact.create/update/delete) for
+  // owner+admin+member only.
+  const artifactsScoped = express.Router({ mergeParams: true });
+  artifactsScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'artifact.create',
+      update: 'artifact.update',
+      delete: 'artifact.delete',
+    }),
+  );
+  artifactsScoped.use(artifactsRouter(db));
+  companyScopedRouter.use(artifactsScoped);
+
+  // Folders: method-aware permission (content.* for writes).
+  const foldersScoped = express.Router({ mergeParams: true });
+  foldersScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  foldersScoped.use(foldersRouter(db));
+  companyScopedRouter.use(foldersScoped);
+
+  // Workspace templates: method-aware permission (content.* for writes).
+  const workspaceTemplatesScoped = express.Router({ mergeParams: true });
+  workspaceTemplatesScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  workspaceTemplatesScoped.use(workspaceTemplatesRouter(db));
+  companyScopedRouter.use(workspaceTemplatesScoped);
+
+  // Teams: method-aware permission (content.* for writes).
+  const teamsScoped = express.Router({ mergeParams: true });
+  teamsScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  teamsScoped.use(teamsRouter(db));
+  companyScopedRouter.use(teamsScoped);
+
+  // Permissions: method-aware permission (content.* for writes).
+  const permissionsScoped = express.Router({ mergeParams: true });
+  permissionsScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  permissionsScoped.use(permissionsRouter(db));
+  companyScopedRouter.use(permissionsScoped);
+
+  // Presence: method-aware permission (content.* for writes).
+  const presenceScoped = express.Router({ mergeParams: true });
+  presenceScoped.use(
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+  );
+  presenceScoped.use(presenceRouter(db));
+  companyScopedRouter.use(presenceScoped);
+  app.use(
+    '/api/companies/:companyId',
+    requireAuth,
+    requirePermission('company.view'),
+    companyScopedRouter,
+  );
 
   // ---------------------------------------------------------------------------
   // Static file serving for production UI (legacy single-host deploys).

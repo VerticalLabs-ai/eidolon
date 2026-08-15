@@ -1,11 +1,13 @@
 import { Router } from 'express';
-import { eq, sql } from 'drizzle-orm';
+import type { Request, Response, NextFunction } from 'express';
+import { eq, sql, inArray, and } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
 import { clearCompanyPresence } from '../realtime/presence-store.js';
 import { requireStepUp } from '../services/stepup-service.js';
+import { hasPermission, type Permission, type Role } from '../middleware/permissions.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
 
@@ -40,34 +42,247 @@ const UpdateCompanyBody = z.object({
 
 export function companiesRouter(db: DbInstance): Router {
   const router = Router();
-  const { companies, agents, tasks } = db.schema;
+  const { companies, agents, tasks, companyMembers } = db.schema;
 
-  // GET /api/companies - list all
-  router.get('/', async (_req, res) => {
-    const rows = await db.drizzle.select().from(companies);
+  // Capture auth mode at creation time (same pattern as createAuthMiddleware).
+  // process.env.AUTH_MODE is set during createApp() and may be restored
+  // afterward, so we must not read it at request time.
+  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+
+  /**
+   * Resolve the effective user id for the current request.
+   *
+   * In local_trusted mode, `requireAuth` injects `dev-user-000` and does
+   * not process impersonation headers.  The `X-Eidolon-Test-User-Id`
+   * header lets tests simulate different users (same pattern as
+   * `resolveMembership` in auth.ts).  In authenticated (Clerk) mode the
+   * header is ignored and the real Clerk user id is used.
+   */
+  function resolveUserId(req: Request): string {
+    if (isLocalTrusted) {
+      const testUserId = req.get('X-Eidolon-Test-User-Id');
+      if (testUserId) {
+        return testUserId;
+      }
+    }
+    return req.user?.id ?? 'dev-user-000';
+  }
+
+  /**
+   * Verify an agent-API-key authenticated request. Agent keys are scoped to
+   * a single company, so the requested company must exactly match the key's
+   * companyId. Returns a result indicating whether the request is allowed,
+   * denied, or not an agent-key request (fall through to normal resolution).
+   */
+  type AgentKeyCheckResult =
+    { kind: 'not-agent' } | { kind: 'allowed' } | { kind: 'denied'; error: AppError };
+
+  function checkAgentKeyIsolation(
+    req: Request,
+    companyId: string,
+    permission: Permission,
+  ): AgentKeyCheckResult {
+    if (!req.user?.id?.startsWith('agent:')) {
+      return { kind: 'not-agent' };
+    }
+    if (!req.organizationMembership) {
+      return {
+        kind: 'denied',
+        error: new AppError(401, 'UNAUTHORIZED', 'Authentication required'),
+      };
+    }
+    if (req.organizationMembership.organizationId !== companyId) {
+      return {
+        kind: 'denied',
+        error: new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'),
+      };
+    }
+    if (!hasPermission(req.organizationMembership.role as Role, permission)) {
+      return {
+        kind: 'denied',
+        error: new AppError(
+          403,
+          'INSUFFICIENT_PERMISSION',
+          `This action requires '${permission}' permission`,
+        ),
+      };
+    }
+    return { kind: 'allowed' };
+  }
+
+  /**
+   * Permission middleware for company-level operations that use `:id` as
+   * the route parameter (not `:companyId`). This is needed because the
+   * companies router is mounted at `/api/companies` with `requireAuth`
+   * only — the `requirePermission` middleware in auth.ts reads
+   * `req.params.companyId`, which is not set for `/:id` routes.
+   *
+   * Resolves the user's role from `company_members` (or local_trusted
+   * impersonation/default) and checks `hasPermission` against the
+   * permission matrix. Sets `req.organizationMembership` for downstream
+   * handlers.
+   *
+   * Agent API key isolation: when `req.user.id` starts with `agent:`, the
+   * requested `:id` must exactly match the agent key's scoped companyId
+   * (`req.organizationMembership.organizationId`). This prevents an agent
+   * key issued for company A from reading or mutating company B via the
+   * companiesRouter endpoints.
+   */
+  function checkCompanyPermission(permission: Permission) {
+    return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+      const companyId = String(req.params.id ?? '');
+      if (!companyId) {
+        return next(new AppError(400, 'BAD_REQUEST', 'Company ID is required'));
+      }
+
+      // Agent API keys are scoped to a single company. Reject any request
+      // where the synthetic agent user's scoped company does not match the
+      // requested company, before any local_trusted default-owner fallback
+      // could accidentally grant access.
+      const agentCheck = checkAgentKeyIsolation(req, companyId, permission);
+      if (agentCheck.kind === 'denied') {
+        return next(agentCheck.error);
+      }
+      if (agentCheck.kind === 'allowed') {
+        // Reuse the membership already established by agent-key auth.
+        return next();
+      }
+
+      // Platform admin bypass (authenticated mode only)
+      if (!isLocalTrusted && req.user?.role === 'admin') {
+        req.organizationMembership = {
+          id: 'admin-bypass',
+          role: 'owner',
+          organizationId: companyId,
+          userId: req.user.id,
+        };
+        return next();
+      }
+
+      let role: string;
+      if (isLocalTrusted) {
+        const testRole = req.get('X-Eidolon-Test-Org-Role');
+        const validRoles = ['owner', 'admin', 'member', 'viewer'];
+        if (testRole && validRoles.includes(testRole)) {
+          role = testRole;
+        } else {
+          const userId = resolveUserId(req);
+          try {
+            const [memberRow] = await db.drizzle
+              .select()
+              .from(companyMembers)
+              .where(
+                and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, userId)),
+              )
+              .limit(1);
+            if (memberRow) {
+              role = memberRow.role;
+            } else if (userId === 'dev-user-000') {
+              role = 'owner';
+            } else {
+              const [anyMembership] = await db.drizzle
+                .select({ id: companyMembers.id })
+                .from(companyMembers)
+                .where(eq(companyMembers.userId, userId))
+                .limit(1);
+              role = anyMembership ? 'none' : 'owner';
+            }
+          } catch {
+            role = userId === 'dev-user-000' ? 'owner' : 'none';
+          }
+        }
+      } else {
+        if (!req.user) {
+          return next(new AppError(401, 'UNAUTHORIZED', 'Authentication required'));
+        }
+        try {
+          const [memberRow] = await db.drizzle
+            .select()
+            .from(companyMembers)
+            .where(
+              and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, req.user.id)),
+            )
+            .limit(1);
+          if (!memberRow) {
+            return next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
+          }
+          role = memberRow.role;
+        } catch {
+          return next(new AppError(403, 'NOT_MEMBER', 'You are not a member of this company'));
+        }
+      }
+
+      if (!hasPermission(role as Role, permission)) {
+        return next(
+          new AppError(
+            403,
+            'INSUFFICIENT_PERMISSION',
+            `This action requires '${permission}' permission`,
+          ),
+        );
+      }
+
+      req.organizationMembership = {
+        id: 'local',
+        role,
+        organizationId: companyId,
+        userId: resolveUserId(req),
+      };
+      next();
+    };
+  }
+
+  // GET /api/companies - list companies where the user has a company_members row
+  router.get('/', async (req, res) => {
+    const userId = resolveUserId(req);
+    const memberCompanyIds = db.drizzle
+      .select({ companyId: companyMembers.companyId })
+      .from(companyMembers)
+      .where(eq(companyMembers.userId, userId));
+
+    const rows = await db.drizzle
+      .select()
+      .from(companies)
+      .where(inArray(companies.id, memberCompanyIds));
+
     res.json({ data: rows });
   });
 
   // POST /api/companies - create
   router.post('/', validate(CreateCompanyBody), async (req, res) => {
     const body = req.body as z.infer<typeof CreateCompanyBody>;
+    const userId = resolveUserId(req);
     const now = new Date();
-    const [row] = await db.drizzle
-      .insert(companies)
-      .values({
-        name: body.name,
-        description: body.description ?? null,
-        mission: body.mission ?? null,
-        status: body.status,
-        budgetMonthlyCents: body.budgetMonthlyCents,
-        spentMonthlyCents: 0,
-        settings: body.settings,
-        brandColor: body.brandColor ?? null,
-        logoUrl: body.logoUrl ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+
+    // Insert company and owner membership atomically so the creator is
+    // always recorded as the owner of their new company (VAL-RBAC-012).
+    const [row] = await db.drizzle.transaction(async (tx) => {
+      const [company] = await tx
+        .insert(companies)
+        .values({
+          name: body.name,
+          description: body.description ?? null,
+          mission: body.mission ?? null,
+          status: body.status,
+          budgetMonthlyCents: body.budgetMonthlyCents,
+          spentMonthlyCents: 0,
+          settings: body.settings,
+          brandColor: body.brandColor ?? null,
+          logoUrl: body.logoUrl ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      await tx.insert(companyMembers).values({
+        companyId: company.id,
+        userId,
+        role: 'owner',
+        createdByUserId: userId,
+      });
+
+      return [company];
+    });
 
     eventBus.emitEvent({
       type: 'company.created',
@@ -79,8 +294,8 @@ export function companiesRouter(db: DbInstance): Router {
     res.status(201).json({ data: row });
   });
 
-  // GET /api/companies/:id - get by id
-  router.get('/:id', async (req, res) => {
+  // GET /api/companies/:id - get by id (requires company.view permission)
+  router.get('/:id', checkCompanyPermission('company.view'), async (req, res) => {
     const [row] = await db.drizzle
       .select()
       .from(companies)
@@ -93,38 +308,63 @@ export function companiesRouter(db: DbInstance): Router {
     res.json({ data: row });
   });
 
-  // PATCH /api/companies/:id - update
-  router.patch('/:id', validate(UpdateCompanyBody), async (req, res) => {
-    const body = req.body as z.infer<typeof UpdateCompanyBody>;
+  // GET /api/companies/:id/my-role - current user's role in this company
+  // Permission: company.view (all members can view; non-members get 403)
+  router.get('/:id/my-role', async (req, res) => {
+    const companyId = routeParams(req).id;
+    const userId = resolveUserId(req);
 
-    const [existing] = await db.drizzle
-      .select()
-      .from(companies)
-      .where(eq(companies.id, routeParams(req).id))
+    const [memberRow] = await db.drizzle
+      .select({ role: companyMembers.role })
+      .from(companyMembers)
+      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, userId)))
       .limit(1);
 
-    if (!existing) {
-      throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${routeParams(req).id} not found`);
+    if (!memberRow) {
+      throw new AppError(403, 'NOT_MEMBER', 'You are not a member of this company');
     }
 
-    const [updated] = await db.drizzle
-      .update(companies)
-      .set({ ...body, updatedAt: new Date() })
-      .where(eq(companies.id, routeParams(req).id))
-      .returning();
-
-    eventBus.emitEvent({
-      type: 'company.updated',
-      companyId: updated.id,
-      payload: { company: updated, changes: Object.keys(body) },
-      timestamp: new Date().toISOString(),
-    });
-
-    res.json({ data: updated });
+    res.json({ role: memberRow.role });
   });
 
+  // PATCH /api/companies/:id - update (requires company.settings.update permission)
+  router.patch(
+    '/:id',
+    checkCompanyPermission('company.settings.update'),
+    validate(UpdateCompanyBody),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof UpdateCompanyBody>;
+
+      const [existing] = await db.drizzle
+        .select()
+        .from(companies)
+        .where(eq(companies.id, routeParams(req).id))
+        .limit(1);
+
+      if (!existing) {
+        throw new AppError(404, 'COMPANY_NOT_FOUND', `Company ${routeParams(req).id} not found`);
+      }
+
+      const [updated] = await db.drizzle
+        .update(companies)
+        .set({ ...body, updatedAt: new Date() })
+        .where(eq(companies.id, routeParams(req).id))
+        .returning();
+
+      eventBus.emitEvent({
+        type: 'company.updated',
+        companyId: updated.id,
+        payload: { company: updated, changes: Object.keys(body) },
+        timestamp: new Date().toISOString(),
+      });
+
+      res.json({ data: updated });
+    },
+  );
+
   // DELETE /api/companies/:id - soft delete (archive) or hard delete with ?hard=true
-  router.delete('/:id', async (req, res) => {
+  // (requires company.delete permission — owner only)
+  router.delete('/:id', checkCompanyPermission('company.delete'), async (req, res) => {
     const companyId = routeParams(req).id;
     const hard = req.query.hard === 'true';
 
@@ -146,9 +386,7 @@ export function companiesRouter(db: DbInstance): Router {
       // or expired → 403 MFA_STEP_UP_REQUIRED and NO mutation occurs.
       const actingUserId = req.user?.id ?? 'dev-user-000';
       const stepUpToken =
-        (req.query.stepUpToken as string | undefined) ??
-        req.get('X-Eidolon-Step-Up-Token') ??
-        null;
+        (req.query.stepUpToken as string | undefined) ?? req.get('X-Eidolon-Step-Up-Token') ?? null;
       await requireStepUp(db, actingUserId, 'company_delete', stepUpToken);
 
       const deletedCompanyName = existing.name;
@@ -166,14 +404,18 @@ export function companiesRouter(db: DbInstance): Router {
           .from(db.schema.knowledgeDocuments)
           .where(eq(db.schema.knowledgeDocuments.companyId, companyId));
         for (const doc of docs) {
-          await tx.delete(db.schema.knowledgeChunks).where(eq(db.schema.knowledgeChunks.documentId, doc.id));
+          await tx
+            .delete(db.schema.knowledgeChunks)
+            .where(eq(db.schema.knowledgeChunks.documentId, doc.id));
         }
         const templates = await tx
           .select({ id: db.schema.promptTemplates.id })
           .from(db.schema.promptTemplates)
           .where(eq(db.schema.promptTemplates.companyId, companyId));
         for (const template of templates) {
-          await tx.delete(db.schema.promptVersions).where(eq(db.schema.promptVersions.templateId, template.id));
+          await tx
+            .delete(db.schema.promptVersions)
+            .where(eq(db.schema.promptVersions.templateId, template.id));
         }
         // Chunks also carry a denormalized company_id and may exist even when
         // their document has already been removed.
@@ -183,7 +425,9 @@ export function companiesRouter(db: DbInstance): Router {
           .from(db.schema.approvals)
           .where(eq(db.schema.approvals.companyId, companyId));
         for (const approval of approvals) {
-          await tx.delete(db.schema.approvalComments).where(eq(db.schema.approvalComments.approvalId, approval.id));
+          await tx
+            .delete(db.schema.approvalComments)
+            .where(eq(db.schema.approvalComments.approvalId, approval.id));
         }
 
         // Audit and join rows reference agents, tasks, executions, approvals,
@@ -291,8 +535,8 @@ export function companiesRouter(db: DbInstance): Router {
     }
   });
 
-  // GET /api/companies/:id/dashboard - aggregated dashboard
-  router.get('/:id/dashboard', async (req, res) => {
+  // GET /api/companies/:id/dashboard - aggregated dashboard (requires company.view permission)
+  router.get('/:id/dashboard', checkCompanyPermission('company.view'), async (req, res) => {
     const companyId = routeParams(req).id;
 
     const [company] = await db.drizzle

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { Plus, Bot, Filter } from "lucide-react";
 import { useAgents } from "@/lib/hooks";
+import { usePermission } from "@/lib/permissions";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -30,6 +31,8 @@ const statusOptions = [
 export function AgentList() {
   const { companyId } = useParams();
   const { data: agents, isLoading } = useAgents(companyId);
+  const { hasPermission } = usePermission(companyId);
+  const canCreateAgent = hasPermission("agent.manage");
   const [modalOpen, setModalOpen] = useState(false);
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -52,13 +55,15 @@ export function AgentList() {
             Manage your AI workforce
           </p>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
-        >
-          <Plus className="h-4 w-4" />
-          Hire Agent
-        </button>
+        {canCreateAgent && (
+          <button
+            onClick={() => setModalOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
+          >
+            <Plus className="h-4 w-4" />
+            Hire Agent
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -107,7 +112,7 @@ export function AgentList() {
               : "Hire your first AI agent to get started."
           }
           action={
-            !roleFilter && !statusFilter ? (
+            !roleFilter && !statusFilter && canCreateAgent ? (
               <button
                 onClick={() => setModalOpen(true)}
                 className="inline-flex items-center gap-1.5 rounded-md h-8 px-3 text-xs font-medium text-surface bg-accent transition-all duration-200 hover:brightness-110 active:scale-[0.97]"

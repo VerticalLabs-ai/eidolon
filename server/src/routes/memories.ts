@@ -61,14 +61,7 @@ export function memoriesRouter(db: DbInstance): Router {
     res.status(201).json({ data: memory });
   });
 
-  // POST /api/companies/:companyId/agents/:agentId/memories/recall
-  router.post('/recall', validate(RecallBody), async (req, res) => {
-    const { agentId } = routeParams(req);
-    const body = req.body as z.infer<typeof RecallBody>;
-
-    const memories = await memoryService.recall(agentId, body.context, body.limit);
-    res.json({ data: memories });
-  });
+  registerRecallRoute(router, memoryService);
 
   // DELETE /api/companies/:companyId/agents/:agentId/memories/:memoryId
   router.delete('/:memoryId', async (req, res) => {
@@ -87,4 +80,22 @@ export function memoriesRouter(db: DbInstance): Router {
   });
 
   return router;
+}
+
+/** Router for the read-only POST recall endpoint. */
+export function memoriesRecallRouter(db: DbInstance): Router {
+  const router = Router({ mergeParams: true });
+  registerRecallRoute(router, new MemoryService(db));
+  return router;
+}
+
+function registerRecallRoute(router: Router, memoryService: MemoryService): void {
+  // POST /api/companies/:companyId/agents/:agentId/memories/recall
+  router.post('/', validate(RecallBody), async (req, res) => {
+    const { agentId } = routeParams(req);
+    const body = req.body as z.infer<typeof RecallBody>;
+
+    const memories = await memoryService.recall(agentId, body.context, body.limit);
+    res.json({ data: memories });
+  });
 }

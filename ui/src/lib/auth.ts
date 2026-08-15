@@ -1,20 +1,22 @@
-import { useAuth, useUser } from "@clerk/clerk-react";
+import { useAuth, useUser } from '@clerk/clerk-react';
 
-const ADMIN_EMAILS = new Set(["matt@verticallabs.ai"]);
+const ADMIN_EMAILS = new Set(['matt@verticallabs.ai']);
 const LOCAL_TRUSTED_USER = {
-  id: "local-dev-user",
-  name: "Local Operator",
-  email: "local@eidolon.dev",
-  image: "",
-  role: "admin",
+  // Keep this in sync with the server's local_trusted DEV_USER id. The
+  // members page uses it to hide self-management controls.
+  id: 'dev-user-000',
+  name: 'Local Operator',
+  email: 'local@eidolon.dev',
+  image: '',
+  role: 'admin',
 };
 
 function normalizeEmail(email: string | null | undefined): string {
-  return email?.trim().toLowerCase() ?? "";
+  return email?.trim().toLowerCase() ?? '';
 }
 
 function resolveUserRole(email: string, metadataRole: string | null): string | null {
-  if (ADMIN_EMAILS.has(email)) return "admin";
+  if (ADMIN_EMAILS.has(email)) {return 'admin';}
   return metadataRole;
 }
 
@@ -30,10 +32,10 @@ export function useSession() {
       data: {
         user: LOCAL_TRUSTED_USER,
         session: {
-          id: "local-dev-session",
+          id: 'local-dev-session',
           userId: LOCAL_TRUSTED_USER.id,
           activeOrganizationId: null,
-          activeOrganizationRole: "admin",
+          activeOrganizationRole: 'admin',
         },
       },
     };
@@ -49,8 +51,7 @@ export function useSession() {
   }
 
   const email = normalizeEmail(user.primaryEmailAddress?.emailAddress);
-  const metadataRole =
-    (user.publicMetadata as { role?: string } | null)?.role ?? null;
+  const metadataRole = (user.publicMetadata as { role?: string } | null)?.role ?? null;
 
   return {
     isPending: false,
@@ -58,7 +59,7 @@ export function useSession() {
       user: {
         id: user.id,
         name:
-          [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+          [user.firstName, user.lastName].filter(Boolean).join(' ') ||
           user.username ||
           email ||
           user.id,
@@ -77,8 +78,8 @@ export function useSession() {
 }
 
 export const CLERK_PUBLISHABLE_KEY =
-  (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? "";
+  (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? '';
 
 export function isLocalTrustedAuth(): boolean {
-  return import.meta.env.VITE_AUTH_MODE === "local_trusted";
+  return import.meta.env.VITE_AUTH_MODE === 'local_trusted';
 }

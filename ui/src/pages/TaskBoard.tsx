@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { Plus, Filter } from "lucide-react";
 import { useTasks, useUpdateTask } from "@/lib/hooks";
+import { usePermission } from "@/lib/permissions";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { TaskCard } from "@/components/tasks/TaskCard";
@@ -35,6 +36,8 @@ export function TaskBoard({ title }: { title: string }) {
     projectId ? { projectId } : undefined,
   );
   const updateTask = useUpdateTask(companyId!);
+  const { hasPermission } = usePermission(companyId);
+  const canCreateTask = hasPermission("task.create");
   const [modalOpen, setModalOpen] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState("");
 
@@ -80,13 +83,15 @@ export function TaskBoard({ title }: { title: string }) {
               />
             </div>
           </div>
-          <Button
-            size="md"
-            onClick={() => setModalOpen(true)}
-            icon={<Plus className="h-4 w-4" />}
-          >
-            New Task
-          </Button>
+          {canCreateTask && (
+            <Button
+              size="md"
+              onClick={() => setModalOpen(true)}
+              icon={<Plus className="h-4 w-4" />}
+            >
+              New Task
+            </Button>
+          )}
         </div>
       </div>
 
@@ -113,7 +118,7 @@ export function TaskBoard({ title }: { title: string }) {
           icon={<ListTodo className="h-6 w-6" />}
           title="No tasks yet"
           description="Create your first task to get started."
-          action={
+          action={canCreateTask ? (
             <Button
               size="md"
               onClick={() => setModalOpen(true)}
@@ -121,7 +126,7 @@ export function TaskBoard({ title }: { title: string }) {
             >
               New Task
             </Button>
-          }
+          ) : undefined}
         />
       ) : (
         <div className="flex gap-6 overflow-x-auto flex-1 pb-4">

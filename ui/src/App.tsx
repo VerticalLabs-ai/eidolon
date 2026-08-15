@@ -1,44 +1,42 @@
-import { Component, type ReactNode } from "react";
+import { Component, type ReactNode } from 'react';
 import {
   createBrowserRouter,
   createRoutesFromElements,
   Route,
   RouterProvider,
-} from "react-router-dom";
-import { AppShell } from "@/components/layout/AppShell";
-import { AuthGuard } from "@/components/auth/AuthGuard";
-import { Login } from "@/pages/Login";
-import { Register } from "@/pages/Register";
-import { CompanyList } from "@/pages/CompanyList";
-import { CompanyDashboard } from "@/pages/CompanyDashboard";
-import { Inbox } from "@/pages/Inbox";
-import { ProjectList } from "@/pages/ProjectList";
-import { ProjectDetail } from "@/pages/ProjectDetail";
-import { TaskBoard } from "@/pages/TaskBoard";
-import { TaskDetail } from "@/pages/TaskDetail";
-import { GoalTree } from "@/pages/GoalTree";
-import { AgentList } from "@/pages/AgentList";
-import { AgentDetail } from "@/pages/AgentDetail";
-import { JarvisRuntime } from "@/pages/JarvisRuntime";
-import { OrgChart } from "@/pages/OrgChart";
-import { VirtualWorkspace } from "@/pages/VirtualWorkspace";
-import { Documents } from "@/pages/Documents";
-import { PromptStudio } from "@/pages/PromptStudio";
-import { Analytics } from "@/pages/Analytics";
-import { Integrations } from "@/pages/Integrations";
-import { CompanySettings } from "@/pages/CompanySettings";
-import { Templates } from "@/pages/Templates";
-import { Approvals } from "@/pages/Approvals";
-import { CompanyArtifacts } from "@/pages/CompanyArtifacts";
-import { SearchResults } from "@/pages/SearchResults";
-import { MeetingDetail } from "@/pages/MeetingDetail";
-import { TeamsPage } from "@/pages/TeamsPage";
-import { SecuritySettings } from "@/pages/SecuritySettings";
+} from 'react-router-dom';
+import { AppShell } from '@/components/layout/AppShell';
+import { AuthGuard } from '@/components/auth/AuthGuard';
+import { Login } from '@/pages/Login';
+import { Register } from '@/pages/Register';
+import { CompanyList } from '@/pages/CompanyList';
+import { CompanyDashboard } from '@/pages/CompanyDashboard';
+import { Inbox } from '@/pages/Inbox';
+import { ProjectList } from '@/pages/ProjectList';
+import { ProjectDetail } from '@/pages/ProjectDetail';
+import { TaskBoard } from '@/pages/TaskBoard';
+import { TaskDetail } from '@/pages/TaskDetail';
+import { GoalTree } from '@/pages/GoalTree';
+import { AgentList } from '@/pages/AgentList';
+import { AgentDetail } from '@/pages/AgentDetail';
+import { JarvisRuntime } from '@/pages/JarvisRuntime';
+import { OrgChart } from '@/pages/OrgChart';
+import { VirtualWorkspace } from '@/pages/VirtualWorkspace';
+import { Documents } from '@/pages/Documents';
+import { PromptStudio } from '@/pages/PromptStudio';
+import { Analytics } from '@/pages/Analytics';
+import { Integrations } from '@/pages/Integrations';
+import { CompanySettings } from '@/pages/CompanySettings';
+import { Templates } from '@/pages/Templates';
+import { Approvals } from '@/pages/Approvals';
+import { CompanyArtifacts } from '@/pages/CompanyArtifacts';
+import { SearchResults } from '@/pages/SearchResults';
+import { MeetingDetail } from '@/pages/MeetingDetail';
+import { TeamsPage } from '@/pages/TeamsPage';
+import { SecuritySettings } from '@/pages/SecuritySettings';
+import { CompanyMembers } from '@/pages/CompanyMembers';
 
-class ErrorBoundary extends Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
 
   static getDerivedStateFromError(error: Error) {
@@ -48,20 +46,18 @@ class ErrorBoundary extends Component<
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: 40, color: "#ef4444", fontFamily: "monospace" }}>
+        <div style={{ padding: 40, color: '#ef4444', fontFamily: 'monospace' }}>
           <h1>Render Error</h1>
-          <pre style={{ whiteSpace: "pre-wrap" }}>
-            {this.state.error.message}
-          </pre>
-          <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "#999" }}>
+          <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.error.message}</pre>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#999' }}>
             {this.state.error.stack}
           </pre>
           <button
             onClick={() => {
               this.setState({ error: null });
-              window.location.href = "/";
+              window.location.href = '/';
             }}
-            style={{ marginTop: 20, padding: "8px 16px", cursor: "pointer" }}
+            style={{ marginTop: 20, padding: '8px 16px', cursor: 'pointer' }}
           >
             Go Home
           </button>
@@ -132,6 +128,7 @@ const router = createBrowserRouter(
         <Route path="teams" element={<TeamsPage />} />
         <Route path="security" element={<SecuritySettings />} />
         <Route path="settings" element={<CompanySettings />} />
+        <Route path="settings/members" element={<CompanyMembers />} />
       </Route>
     </>,
   ),

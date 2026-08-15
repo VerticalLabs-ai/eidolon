@@ -22,8 +22,10 @@ import type { DbInstance } from '../types.js';
 // session token refresh propagates the change; these routes are the
 // local_trusted validation surface and audit the privilege change either way.
 //
-// Both routes require admin/owner org role (enforced via requireOrgMember
-// on mount + an explicit check), and write an audit-log entry.
+// The role-change router is mounted with `member.promote` (owner only).
+// The removal router is mounted with `member.remove` (admin+owner).
+// Both routers also write an audit-log entry and update `company_members`
+// so the change is reflected in the RBAC membership table.
 // ---------------------------------------------------------------------------
 
 const UpdateRoleBody = z.object({
@@ -40,55 +42,54 @@ const ROLE_HIERARCHY: Record<string, number> = {
 function requireAdminOrOwner(req: any): void {
   const role = req.organizationMembership?.role ?? 'member';
   if (role !== 'admin' && role !== 'owner') {
-    throw new AppError(
-      403,
-      'INSUFFICIENT_ROLE',
-      'This action requires admin or owner role',
-    );
+    throw new AppError(403, 'INSUFFICIENT_ROLE', 'This action requires admin or owner role');
   }
 }
 
-export function securityMembersRouter(db: DbInstance): Router {
+function requireOwner(req: any): void {
+  const role = req.organizationMembership?.role ?? 'member';
+  if (role !== 'owner') {
+    throw new AppError(403, 'INSUFFICIENT_ROLE', 'This action requires owner role');
+  }
+}
+
+/**
+ * Router for member role changes (promote/demote).
+ * Mounted at `/members/:userId/role` with `requirePermission('member.promote')` — owner only.
+ *
+ * POST /api/companies/:companyId/members/:userId/role
+ */
+export function securityMemberRoleRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
   const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
 
-  // POST /api/companies/:companyId/members/:userId/role
+  // POST / (mounted at /members/:userId/role)
   // Change a member's org role (downgrade or upgrade). In local_trusted mode
   // this updates the member's local_trusted_sessions row, so their existing
   // session token immediately reflects the new role. A downgrade revokes any
-  // step-up sessions the member held.
-  router.post(
-    '/members/:userId/role',
-    validate(UpdateRoleBody),
-    async (req, res) => {
-      requireAdminOrOwner(req);
-      const { companyId, userId: targetUserId } = routeParams(req);
-      const body = (req as any).validated.body;
-      const actingUserId = req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000';
+  // step-up sessions the member held. Also updates `company_members` so the
+  // RBAC membership table reflects the new role.
+  router.post('/', validate(UpdateRoleBody), async (req, res) => {
+    requireOwner(req);
+    const { companyId, userId: targetUserId } = routeParams(req);
+    const body = (req as any).validated.body;
+    const actingUserId = req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000';
 
-      if (isLocalTrusted) {
-        const { localTrustedSessions } = db.schema;
-        const [existing] = await db.drizzle
-          .select()
-          .from(localTrustedSessions)
-          .where(
-            and(
-              eq(localTrustedSessions.companyId, companyId),
-              eq(localTrustedSessions.userId, targetUserId),
-            ),
-          )
-          .limit(1);
+    if (isLocalTrusted) {
+      const { localTrustedSessions } = db.schema;
+      const [existing] = await db.drizzle
+        .select()
+        .from(localTrustedSessions)
+        .where(
+          and(
+            eq(localTrustedSessions.companyId, companyId),
+            eq(localTrustedSessions.userId, targetUserId),
+          ),
+        )
+        .limit(1);
 
-        if (!existing) {
-          throw new AppError(
-            404,
-            'MEMBER_NOT_FOUND',
-            'No session found for that user in this company',
-          );
-        }
-
-        const isDowngrade =
-          ROLE_HIERARCHY[body.role] < ROLE_HIERARCHY[existing.role];
+      if (existing) {
+        const isDowngrade = ROLE_HIERARCHY[body.role] < ROLE_HIERARCHY[existing.role];
 
         await db.drizzle
           .update(localTrustedSessions)
@@ -101,32 +102,61 @@ export function securityMembersRouter(db: DbInstance): Router {
           await revokeUserStepUps(db, targetUserId);
         }
       }
+    }
 
-      // Audit: privilege change is security-relevant (VAL-SEC-007/011).
-      await db.drizzle.insert(db.schema.activityLog).values({
-        companyId,
-        actorType: 'user',
-        actorId: actingUserId,
-        action: 'member.role_changed',
-        entityType: 'company_member',
-        entityId: targetUserId,
-        description: `Changed member role to ${body.role}`,
-        metadata: { targetUserId, newRole: body.role },
-        createdAt: new Date(),
-      });
+    // Update company_members so the RBAC table reflects the new role.
+    const { companyMembers } = db.schema;
+    const [memberRow] = await db.drizzle
+      .select()
+      .from(companyMembers)
+      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, targetUserId)))
+      .limit(1);
 
-      res.json({
-        data: { companyId, userId: targetUserId, role: body.role },
-      });
-    },
-  );
+    if (memberRow) {
+      await db.drizzle
+        .update(companyMembers)
+        .set({ role: body.role, updatedAt: new Date() })
+        .where(eq(companyMembers.id, memberRow.id));
+    }
 
-  // DELETE /api/companies/:companyId/members/:userId
+    // Audit: privilege change is security-relevant (VAL-SEC-007/011).
+    await db.drizzle.insert(db.schema.activityLog).values({
+      companyId,
+      actorType: 'user',
+      actorId: actingUserId,
+      action: 'member.role_changed',
+      entityType: 'company_member',
+      entityId: targetUserId,
+      description: `Changed member role to ${body.role}`,
+      metadata: { targetUserId, newRole: body.role },
+      createdAt: new Date(),
+    });
+
+    res.json({
+      data: { companyId, userId: targetUserId, role: body.role },
+    });
+  });
+
+  return router;
+}
+
+/**
+ * Router for member removal.
+ * Mounted at `/members/:userId` with `requirePermission('member.remove')` — admin+owner.
+ *
+ * DELETE /api/companies/:companyId/members/:userId
+ */
+export function securityMemberRemovalRouter(db: DbInstance): Router {
+  const router = Router({ mergeParams: true });
+  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+
+  // DELETE / (mounted at /members/:userId)
   // Remove a user from the company. In local_trusted mode this deactivates
   // their session row (active=false) so their existing session token is
   // rejected with 401 on the next request — modeling session invalidation
   // on company removal (VAL-SEC-011). Step-up sessions are revoked.
-  router.delete('/members/:userId', async (req, res) => {
+  // Also deletes the `company_members` row so RBAC membership is revoked.
+  router.delete('/', async (req, res) => {
     requireAdminOrOwner(req);
     const { companyId, userId: targetUserId } = routeParams(req);
     const actingUserId = req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000';
@@ -145,6 +175,12 @@ export function securityMembersRouter(db: DbInstance): Router {
       await revokeUserStepUps(db, targetUserId);
     }
 
+    // Delete the company_members row so the removed user loses RBAC access.
+    const { companyMembers } = db.schema;
+    await db.drizzle
+      .delete(companyMembers)
+      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, targetUserId)));
+
     await db.drizzle.insert(db.schema.activityLog).values({
       companyId,
       actorType: 'user',
@@ -160,5 +196,20 @@ export function securityMembersRouter(db: DbInstance): Router {
     res.json({ data: { companyId, userId: targetUserId, removed: true } });
   });
 
+  return router;
+}
+
+/**
+ * Legacy combined router — delegates to both role and removal routers.
+ * Kept for backward compatibility with any code that imports
+ * `securityMembersRouter`. New mounts should use the separate routers
+ * with the appropriate permission. The role router is mounted at
+ * `/members/:userId/role` and the removal router at `/members/:userId`
+ * within this combined router.
+ */
+export function securityMembersRouter(db: DbInstance): Router {
+  const router = Router({ mergeParams: true });
+  router.use('/members/:userId/role', securityMemberRoleRouter(db));
+  router.use('/members/:userId', securityMemberRemovalRouter(db));
   return router;
 }

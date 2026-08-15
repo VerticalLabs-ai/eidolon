@@ -10,17 +10,42 @@ import type { AuthSession } from '../auth.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a mock DB that returns the given rows for any company_members
+ * query. The drizzle query chain (select().from().where().limit()) is
+ * stubbed to return the pre-set rows. Each test controls the rows so the
+ * first element is the membership that resolveMembership destructures.
+ */
+function createMockDb(
+  rows: Array<{ id: string; companyId: string; userId: string; role: string }>,
+) {
+  const chain = {
+    from: () => chain,
+    where: () => chain,
+    limit: () => Promise.resolve(rows),
+  };
+  return {
+    drizzle: { select: () => chain },
+    schema: {
+      companyMembers: { companyId: 'company_id', userId: 'user_id' },
+      localTrustedSessions: { id: 'id' },
+    },
+  };
+}
+
 function buildTestApp(
   verify: (req: Request) => Promise<AuthSession | null>,
   opts: {
     authMode?: 'local_trusted' | 'authenticated';
     requireRole?: 'owner' | 'admin' | 'member' | 'viewer';
+    db?: ReturnType<typeof createMockDb>;
   } = {},
 ) {
   const app = express();
   const { requireAuth, requireOrgMember } = createAuthMiddleware({
     verify,
     authMode: opts.authMode ?? 'authenticated',
+    db: opts.db,
   });
 
   app.get('/me', requireAuth, (req: Request, res: Response) => {
@@ -122,36 +147,54 @@ describe('auth middleware', () => {
       expect(verify).not.toHaveBeenCalled();
     });
 
-    it('returns 403 when the user has no active organization', async () => {
-      const app = buildTestApp(async () => ({
-        user: mockUser({ role: 'user' }),
-        session: mockSession({ activeOrganizationId: null }),
-      }));
+    it('returns 403 NOT_MEMBER when the user has no company_members row', async () => {
+      const app = buildTestApp(
+        async () => ({
+          user: mockUser({ role: 'user' }),
+          session: mockSession({ activeOrganizationId: null }),
+        }),
+        {
+          db: createMockDb([]), // no membership rows
+        },
+      );
 
       const res = await request(app).get('/companies/co-1/ping').expect(403);
-      expect(res.body.code).toBe('FORBIDDEN');
+      expect(res.body.code).toBe('NOT_MEMBER');
     });
 
-    it('returns 403 when activeOrganizationId does not match the route', async () => {
-      const app = buildTestApp(async () => ({
-        user: mockUser({ role: 'user' }),
-        session: mockSession({ activeOrganizationId: 'co-OTHER', activeOrganizationRole: 'member' }),
-      }));
-
-      const res = await request(app).get('/companies/co-1/ping').expect(403);
-      expect(res.body.code).toBe('FORBIDDEN');
-    });
-
-    it('allows matching org members with sufficient role', async () => {
+    it('returns 403 NOT_MEMBER when the user has a Clerk org membership but no company_members row', async () => {
+      // Clerk activeOrganizationId is no longer used for membership resolution.
+      // A Clerk org membership alone (without a company_members row) grants no access.
       const app = buildTestApp(
         async () => ({
           user: mockUser({ role: 'user' }),
           session: mockSession({
-            activeOrganizationId: 'co-1',
+            activeOrganizationId: 'co-OTHER',
             activeOrganizationRole: 'member',
           }),
         }),
-        { requireRole: 'member' },
+        {
+          db: createMockDb([]), // no company_members rows
+        },
+      );
+
+      const res = await request(app).get('/companies/co-1/ping').expect(403);
+      expect(res.body.code).toBe('NOT_MEMBER');
+    });
+
+    it('allows members with sufficient role from company_members', async () => {
+      const app = buildTestApp(
+        async () => ({
+          user: mockUser({ role: 'user' }),
+          session: mockSession({
+            activeOrganizationId: null, // Clerk org id irrelevant now
+            activeOrganizationRole: null,
+          }),
+        }),
+        {
+          requireRole: 'member',
+          db: createMockDb([{ id: 'm1', companyId: 'co-1', userId: 'user-1', role: 'member' }]),
+        },
       );
 
       const res = await request(app).get('/companies/co-1/ping').expect(200);
@@ -164,11 +207,14 @@ describe('auth middleware', () => {
         async () => ({
           user: mockUser({ role: 'user' }),
           session: mockSession({
-            activeOrganizationId: 'co-1',
-            activeOrganizationRole: 'viewer',
+            activeOrganizationId: null,
+            activeOrganizationRole: null,
           }),
         }),
-        { requireRole: 'admin' },
+        {
+          requireRole: 'admin',
+          db: createMockDb([{ id: 'm1', companyId: 'co-1', userId: 'user-1', role: 'viewer' }]),
+        },
       );
 
       const res = await request(app).get('/companies/co-1/ping').expect(403);
