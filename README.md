@@ -37,6 +37,7 @@ Eidolon lets you define a business goal, hire AI agents from any provider (Anthr
 | **Code artifact + sandboxed runtime** | Code artifact type with syntax-highlighting editor, plus a sandboxed JS runtime (`code-sandbox-shim.cjs` preload) and Python runtime (`code-sandbox-python.py` preload). Blocks host fs/secrets/subprocess/network egress with bounded timeout + memory limit; shim blocklists are kept at parity between JS and Python.                                         |
 | **Meetings pipeline**                 | `meetings` + `meeting_tasks` tables, Anthropic-grounded transcript summarization, action items extracted as real tasks with bidirectional meeting↔task linkage, and a Meetings tab UI.                                                                                                                                                                           |
 | **Enterprise security**               | TOTP MFA enrollment + step-up re-auth (5-min bounded, scope-isolated window); session invalidation on role downgrade/removal; AES-256-GCM encryption-at-rest for artifact content + secrets vault with key rotation without data loss; audit logging for security-relevant actions; rate limiting on auth-sensitive endpoints. See [`SECURITY.md`](SECURITY.md). |
+| **Company-scoped RBAC**               | Four roles (Owner, Admin, Member, Viewer) with a 29-permission matrix enforced at middleware level. Company-scoped data isolation, invitation-based onboarding, and agent API keys for machine-to-machine auth.                                                                                                                                                  |
 
 ### Project work surfaces (VER-514)
 
@@ -87,6 +88,17 @@ Eidolon ships an enterprise security layer documented in [`SECURITY.md`](SECURIT
 - **Audit logging** — Security-relevant actions (auth, MFA, role changes, key rotation, secret access) are written to the audit log with actor, entity, and timestamp.
 - **Rate limiting on auth-sensitive endpoints** — Auth-sensitive endpoints are rate-limited to blunt brute-force and credential-stuffing attempts.
 
+## Role-Based Access Control
+
+Eidolon ships a company-scoped RBAC system that governs every company-scoped route and surface.
+
+- **Four roles** — **Owner** (full access, including company deletion and owner management), **Admin** (most permissions except company deletion/owner management), **Member** (read/write within the company, no member management), and **Viewer** (read-only).
+- **29 permissions** enforced via middleware (`requirePermission`, `requirePermissionByMethod`) across all company-scoped routes. The permission matrix in `server/src/middleware/permissions.ts` maps each role to its allowed permissions.
+- **Membership table** — Authorization decisions use the `company_members` table rather than Clerk org membership. Clerk is now auth-only; all role/permission checks resolve against `company_members`.
+- **Invitation system** — Owners and admins invite users by email with a chosen role. Invitations expire after 7 days. The Clerk webhook (`/api/webhooks/clerk`) auto-activates pending invitations when the invited user signs up.
+- **Agent API keys** — SHA-256 hashed keys with an `eid_live_` prefix provide machine-to-machine authentication. Keys are scoped to a company with a configurable role (default Member) and support soft-revoke.
+- **UI** — The Members & Roles page (`/company/:id/settings/members`) shows role badges, promote/demote, remove, invitation management, and agent API key CRUD. Permission-based UI visibility is applied across all pages so viewers cannot see create/settings controls.
+
 ## Quickstart
 
 ```bash
@@ -115,14 +127,14 @@ eidolon/
 │   ├── db/          # Drizzle ORM, Postgres, migrations
 │   └── mcp-server/  # @eidolon/mcp-server — MCP wrapper over the REST API
 ├── server/          # Express API + WebSocket server
-│   ├── routes/      # REST endpoints (agents, tasks, approvals, inbox, artifacts, meetings, mcp…)
+│   ├── routes/      # REST endpoints (agents, tasks, approvals, inbox, artifacts, meetings, mcp, members, invitations, agent-api-keys, clerk-webhook…)
 │   ├── services/    # Agentic loop, scheduler, knowledge, memory, budgets,
 │   │                # coedit-session (op-based co-editing), mentions, presence,
 │   │                # background-work (deterministic background-write testing),
 │   │                # artifact templates, folders, teams/RBAC, MFA, encryption, audit,
 │   │                # code-sandbox-shim.cjs (JS) + code-sandbox-python.py (Python) preloads
 │   ├── providers/   # ServerAdapter impls (anthropic, openai, google, ollama)
-│   ├── middleware/  # Auth, rate-limit, validation, error handling, requireAdminRole
+│   ├── middleware/  # Auth, rate-limit, validation, error handling, requireAdminRole, requirePermission, agent-key-auth
 │   └── realtime/    # WebSocket event bus + co-edit op protocol
 └── ui/              # React + Vite + Tailwind dashboard
     ├── pages/       # Dashboard, TaskBoard, OrgChart, Inbox, Approvals, …
@@ -139,7 +151,7 @@ eidolon/
 - **Real-time:** WebSocket (`ws`) with typed events and an in-process event bus
 - **Validation:** Zod schemas shared between client and server
 - **MCP:** `@modelcontextprotocol/sdk` for both the client (agent side) and the standalone server package
-- **Quality bar:** 1794 tests, 0 typecheck errors, 0 lint errors across the workspace
+- **Quality bar:** 2402 tests, 0 typecheck errors, 0 lint errors across the workspace
 
 ## Development
 
@@ -309,6 +321,17 @@ All endpoints under `/api`. See the per-route source for full schemas.
 | `POST /api/companies/:id/approvals/:id/decide`         | Approve / reject                                                                                                                         |
 | `GET /api/companies/:id/inbox`                         | Unified feed                                                                                                                             |
 | `GET /api/companies/:id/analytics/*`                   | Analytics endpoints                                                                                                                      |
+| `GET /api/companies/:id/my-role`                       | Get current user's role in company                                                                                                       |
+| `GET /api/companies/:id/members`                       | List company members                                                                                                                     |
+| `PATCH /api/companies/:id/members/:memberId`           | Change member role (owner/admin only)                                                                                                    |
+| `DELETE /api/companies/:id/members/:memberId`          | Remove member (owner/admin only)                                                                                                         |
+| `GET /api/companies/:id/invitations`                   | List invitations                                                                                                                         |
+| `POST /api/companies/:id/invitations`                  | Create invitation                                                                                                                        |
+| `DELETE /api/companies/:id/invitations/:id`            | Revoke invitation                                                                                                                        |
+| `GET /api/companies/:id/agent-api-keys`                | List agent API keys                                                                                                                      |
+| `POST /api/companies/:id/agent-api-keys`               | Create agent API key                                                                                                                     |
+| `DELETE /api/companies/:id/agent-api-keys/:id`         | Revoke agent API key                                                                                                                     |
+| `POST /api/webhooks/clerk`                             | Clerk webhook for invitation activation                                                                                                  |
 | `WS /ws`                                               | Real-time events                                                                                                                         |
 
 ## Deployment
@@ -347,6 +370,8 @@ Feature flags are configured as a JSON environment variable. Each flag has an `e
 ```
 
 Set via `EIDOLON_FEATURE_FLAGS` (default `{}`). Flags are evaluated at runtime; an unset variable means all flags are disabled.
+
+Set `CLERK_WEBHOOK_SECRET` to the signing secret from your Clerk dashboard so the `/api/webhooks/clerk` endpoint can verify Clerk webhook signatures before activating invitations.
 
 ## Releases
 
