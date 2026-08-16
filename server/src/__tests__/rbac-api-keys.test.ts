@@ -842,5 +842,90 @@ describe('RBAC Agent API Key CRUD', () => {
         .expect(403);
       expect(writeRes.body.code).toBe('INSUFFICIENT_PERMISSION');
     });
+
+    it('paginates keys in descending deterministic order and follows cursors', async () => {
+      const createdAt = [
+        new Date('2025-01-01T00:00:00.000Z'),
+        new Date('2025-01-02T00:00:00.000Z'),
+        new Date('2025-01-03T00:00:00.000Z'),
+      ];
+      await db.drizzle.insert(db.schema.agentApiKeys).values(
+        createdAt.map((date, index) => ({
+          companyId,
+          name: `Page ${index}`,
+          keyHash: hashAgentKey(`${AGENT_KEY_PREFIX}page_${index}`),
+          keyPrefix: `${AGENT_KEY_PREFIX}p${index}`,
+          role: 'member' as const,
+          createdByUserId: 'dev-user-000',
+          createdAt: date,
+          updatedAt: date,
+        })),
+      );
+
+      const first = await request(app)
+        .get(url('/agent-api-keys?limit=2'))
+        .set(roleHeader('owner'))
+        .expect(200);
+      expect(first.body.data.map((key: { name: string }) => key.name)).toEqual([
+        'Page 2',
+        'Page 1',
+      ]);
+      expect(first.body.hasMore).toBe(true);
+      expect(first.body.nextCursor).toEqual(expect.any(String));
+
+      const second = await request(app)
+        .get(url(`/agent-api-keys?limit=2&cursor=${encodeURIComponent(first.body.nextCursor)}`))
+        .set(roleHeader('owner'))
+        .expect(200);
+      expect(second.body.data.map((key: { name: string }) => key.name)).toEqual(['Page 0']);
+      expect(second.body.hasMore).toBe(false);
+      expect(second.body.nextCursor).toBeNull();
+    });
+
+    it('filters keys by name or key prefix and rejects invalid pagination values', async () => {
+      await db.drizzle.insert(db.schema.agentApiKeys).values({
+        companyId,
+        name: 'Production Key',
+        keyHash: hashAgentKey(`${AGENT_KEY_PREFIX}search_name`),
+        keyPrefix: `${AGENT_KEY_PREFIX}one`,
+        role: 'member',
+        createdByUserId: 'dev-user-000',
+      });
+      await db.drizzle.insert(db.schema.agentApiKeys).values({
+        companyId,
+        name: 'Other Key',
+        keyHash: hashAgentKey(`${AGENT_KEY_PREFIX}search_prefix`),
+        keyPrefix: `${AGENT_KEY_PREFIX}EID`,
+        role: 'member',
+        createdByUserId: 'dev-user-000',
+      });
+
+      const search = await request(app)
+        .get(url('/agent-api-keys?search=prod'))
+        .set(roleHeader('owner'))
+        .expect(200);
+      expect(search.body.data).toHaveLength(1);
+      expect(search.body.data[0].name).toBe('Production Key');
+
+      const prefixSearch = await request(app)
+        .get(url('/agent-api-keys?search=eid'))
+        .set(roleHeader('owner'))
+        .expect(200);
+      expect(prefixSearch.body.data.map((key: { name: string }) => key.name)).toContain(
+        'Other Key',
+      );
+      expect(
+        prefixSearch.body.data.every((key: { keyPrefix: string }) =>
+          key.keyPrefix.toLowerCase().includes('eid'),
+        ),
+      ).toBe(true);
+
+      await request(app).get(url('/agent-api-keys?limit=0')).set(roleHeader('owner')).expect(400);
+      await request(app).get(url('/agent-api-keys?limit=-1')).set(roleHeader('owner')).expect(400);
+      await request(app)
+        .get(url('/agent-api-keys?cursor=not-valid'))
+        .set(roleHeader('owner'))
+        .expect(400);
+    });
   });
 });
