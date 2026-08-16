@@ -96,7 +96,9 @@ function setupPermission(canManage = true) {
     isLoading: false,
     isError: false,
     hasPermission: (perm: string) => {
-      if (perm === 'apikeys.manage') {return canManage;}
+      if (perm === 'apikeys.manage') {
+        return canManage;
+      }
       return false;
     },
   });

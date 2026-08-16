@@ -85,7 +85,7 @@ Eidolon ships an enterprise security layer documented in [`SECURITY.md`](SECURIT
 - **TOTP MFA + step-up re-auth** — Users enroll a TOTP authenticator. Privilege-affecting actions require step-up re-authentication inside a 5-minute bounded, scope-isolated window.
 - **Session invalidation on role change** — Role downgrade or removal invalidates active sessions so access is revoked immediately.
 - **Encryption-at-rest** — Artifact content and the secrets vault are encrypted with AES-256-GCM. Key rotation re-encrypts content in place without data loss.
-- **Audit logging** — Security-relevant actions (auth, MFA, role changes, key rotation, secret access) are written to the audit log with actor, entity, and timestamp.
+- **Audit logging** — Security-relevant actions (auth, MFA, role changes, ownership transfers, invitation creation/revocation/acceptance, key rotation, secret access, agent API key creation/revocation) are written to the audit log with actor, entity, and timestamp.
 - **Rate limiting on auth-sensitive endpoints** — Auth-sensitive endpoints are rate-limited to blunt brute-force and credential-stuffing attempts.
 
 ## Role-Based Access Control
@@ -95,9 +95,10 @@ Eidolon ships a company-scoped RBAC system that governs every company-scoped rou
 - **Four roles** — **Owner** (full access, including company deletion and owner management), **Admin** (most permissions except company deletion/owner management), **Member** (read/write within the company, no member management), and **Viewer** (read-only).
 - **29 permissions** enforced via middleware (`requirePermission`, `requirePermissionByMethod`) across all company-scoped routes. The permission matrix in `server/src/middleware/permissions.ts` maps each role to its allowed permissions.
 - **Membership table** — Authorization decisions use the `company_members` table rather than Clerk org membership. Clerk is now auth-only; all role/permission checks resolve against `company_members`.
-- **Invitation system** — Owners and admins invite users by email with a chosen role. Invitations expire after 7 days. The Clerk webhook (`/api/webhooks/clerk`) auto-activates pending invitations when the invited user signs up.
-- **Agent API keys** — SHA-256 hashed keys with an `eid_live_` prefix provide machine-to-machine authentication. Keys are scoped to a company with a configurable role (default Member) and support soft-revoke.
-- **UI** — The Members & Roles page (`/company/:id/settings/members`) shows role badges, promote/demote, remove, invitation management, and agent API key CRUD. Permission-based UI visibility is applied across all pages so viewers cannot see create/settings controls.
+- **Invitation system** — Owners and admins invite users by email with a chosen role. Invitations expire after 7 days. The Clerk webhook (`/api/webhooks/clerk`) auto-activates pending invitations when the invited user signs up, and logs an `invitation.accepted` audit entry.
+- **Ownership transfer** — An owner can transfer ownership to another company member via `POST /api/companies/:id/transfer-ownership`. This atomically promotes the target to owner and demotes the current owner to admin in a single transaction, with step-up session revocation and an `ownership.transferred` audit entry.
+- **Agent API keys** — SHA-256 hashed keys with an `eid_live_` prefix provide machine-to-machine authentication. Keys are scoped to a company with a configurable role (default Member) and support soft-revoke. The list endpoint supports cursor-based pagination (default 50, max 200) with optional case-insensitive search by name or key prefix.
+- **UI** — The Members & Roles page (`/company/:id/settings/members`) shows role badges, promote/demote, remove, transfer ownership, invitation management, and agent API key CRUD with paginated search. Permission-based UI visibility is applied across all pages so viewers cannot see create/settings controls.
 
 ## Quickstart
 
@@ -282,12 +283,13 @@ All endpoints under `/api`. See the per-route source for full schemas.
 | `GET /api/companies/:id/analytics/*`                   | Analytics endpoints                                                                                                                      |
 | `GET /api/companies/:id/my-role`                       | Get current user's role in company                                                                                                       |
 | `GET /api/companies/:id/members`                       | List company members                                                                                                                     |
-| `PATCH /api/companies/:id/members/:memberId`           | Change member role (owner/admin only)                                                                                                    |
+| `PATCH /api/companies/:id/members/:memberId`           | Change member role (owner only)                                                                                                          |
+| `POST /api/companies/:id/transfer-ownership`           | Transfer ownership to another member (owner only, atomic)                                                                                |
 | `DELETE /api/companies/:id/members/:memberId`          | Remove member (owner/admin only)                                                                                                         |
 | `GET /api/companies/:id/invitations`                   | List invitations                                                                                                                         |
 | `POST /api/companies/:id/invitations`                  | Create invitation                                                                                                                        |
 | `DELETE /api/companies/:id/invitations/:id`            | Revoke invitation                                                                                                                        |
-| `GET /api/companies/:id/agent-api-keys`                | List agent API keys                                                                                                                      |
+| `GET /api/companies/:id/agent-api-keys`                | List agent API keys (cursor pagination, search)                                                                                          |
 | `POST /api/companies/:id/agent-api-keys`               | Create agent API key                                                                                                                     |
 | `DELETE /api/companies/:id/agent-api-keys/:id`         | Revoke agent API key                                                                                                                     |
 | `POST /api/webhooks/clerk`                             | Clerk webhook for invitation activation                                                                                                  |
