@@ -15,6 +15,20 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres@localhost:5432/eidolon_test
     outputs:
       tag: ${{ steps.calver.outputs.tag }}
       skip: ${{ steps.calver.outputs.skip }}
@@ -28,7 +42,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: '24'
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --filter '!@eidolon/desktop'
@@ -41,6 +55,9 @@ jobs:
         run: echo "VITE_APP_VERSION=${{ steps.calver.outputs.tag }}" >> "$GITHUB_ENV"
 
       - run: pnpm run typecheck
+
+      - name: Create test management database
+        run: psql postgres://postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE eidolon_test'
 
       - run: pnpm run test:run
 
@@ -107,7 +124,7 @@ jobs:
       - if: steps.signing-inputs.outputs.enabled == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: '24'
           cache: pnpm
 
       - name: Import Developer ID certificate
@@ -124,7 +141,7 @@ jobs:
         if: steps.signing-inputs.outputs.enabled == 'true'
         env:
           EIDOLON_DESKTOP_APP_URL: https://eidolon.verticallabs.ai
-          EIDOLON_REQUIRE_MAC_SIGNING: "1"
+          EIDOLON_REQUIRE_MAC_SIGNING: '1'
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
