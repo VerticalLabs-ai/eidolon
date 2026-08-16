@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -34,6 +34,78 @@ const CreateKeyBody = z.object({
   role: z.enum(['viewer', 'member', 'admin']).default('member'),
   agentId: z.string().optional(),
 });
+
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 200;
+
+type ApiKeyCursor = {
+  createdAt: string;
+  id: string;
+};
+
+function parsePageSize(value: unknown): number {
+  if (value === undefined) {
+    return DEFAULT_PAGE_SIZE;
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw new AppError(400, 'INVALID_LIMIT', 'limit must be a positive integer');
+  }
+
+  const parsed = Number(value);
+  if (parsed < 1) {
+    throw new AppError(400, 'INVALID_LIMIT', 'limit must be at least 1');
+  }
+  return Math.min(parsed, MAX_PAGE_SIZE);
+}
+
+function parseCursor(value: unknown): ApiKeyCursor | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new AppError(400, 'INVALID_CURSOR', 'cursor must be a Base64-encoded JSON value');
+  }
+
+  try {
+    // Node's base64 decoder silently ignores invalid characters, so validate
+    // the complete standard Base64 representation before decoding.
+    if (
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(value) ||
+      value.length % 4 !== 0 ||
+      (value.includes('=') && !/={1,2}$/.test(value))
+    ) {
+      throw new Error('invalid Base64');
+    }
+
+    const decoded = Buffer.from(value, 'base64').toString('utf8');
+    const parsed: unknown = JSON.parse(decoded);
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>).createdAt !== 'string' ||
+      typeof (parsed as Record<string, unknown>).id !== 'string' ||
+      !(parsed as Record<string, string>).id
+    ) {
+      throw new Error('missing cursor fields');
+    }
+
+    const createdAt = new Date((parsed as Record<string, string>).createdAt);
+    if (Number.isNaN(createdAt.getTime())) {
+      throw new Error('invalid cursor date');
+    }
+
+    return {
+      createdAt: createdAt.toISOString(),
+      id: (parsed as Record<string, string>).id,
+    };
+  } catch {
+    throw new AppError(400, 'INVALID_CURSOR', 'cursor must be valid Base64-encoded JSON');
+  }
+}
+
+function encodeCursor(cursor: ApiKeyCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64');
+}
 
 type RequirePermissionFn = (
   permission: Permission,
@@ -136,6 +208,21 @@ export function agentApiKeysRouter(db: DbInstance, requirePermission: RequirePer
 
   router.get('/', requirePermission('apikeys.manage'), async (req, res) => {
     const { companyId } = routeParams(req);
+    const limit = parsePageSize(req.query.limit);
+    const cursor = parseCursor(req.query.cursor);
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+
+    const conditions = [eq(agentApiKeys.companyId, companyId)];
+    if (search) {
+      conditions.push(
+        or(ilike(agentApiKeys.name, `%${search}%`), ilike(agentApiKeys.keyPrefix, `%${search}%`))!,
+      );
+    }
+    if (cursor) {
+      conditions.push(
+        sql`(${agentApiKeys.createdAt}, ${agentApiKeys.id}) < (${cursor.createdAt}::timestamp, ${cursor.id})`,
+      );
+    }
 
     const keys = await db.drizzle
       .select({
@@ -149,10 +236,19 @@ export function agentApiKeysRouter(db: DbInstance, requirePermission: RequirePer
         revokedAt: agentApiKeys.revokedAt,
       })
       .from(agentApiKeys)
-      .where(eq(agentApiKeys.companyId, companyId))
-      .orderBy(asc(agentApiKeys.createdAt));
+      .where(and(...conditions))
+      .orderBy(desc(agentApiKeys.createdAt), desc(agentApiKeys.id))
+      .limit(limit + 1);
 
-    res.json({ data: keys });
+    const hasMore = keys.length > limit;
+    const data = hasMore ? keys.slice(0, limit) : keys;
+    const lastKey = data[data.length - 1];
+    const nextCursor =
+      hasMore && lastKey
+        ? encodeCursor({ createdAt: lastKey.createdAt.toISOString(), id: lastKey.id })
+        : null;
+
+    res.json({ data, nextCursor, hasMore });
   });
 
   // -------------------------------------------------------------------------

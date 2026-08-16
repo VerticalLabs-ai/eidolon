@@ -1,11 +1,12 @@
 import { useParams, Link } from 'react-router-dom';
-import { Users, ChevronDown, Trash2, ArrowLeft, Mail, X } from 'lucide-react';
+import { Users, ChevronDown, Trash2, ArrowLeft, Mail, X, Crown } from 'lucide-react';
 import { toast } from 'sonner';
 import { useState, useRef, useEffect } from 'react';
 import {
   useCompany,
   useMembers,
   useUpdateMemberRole,
+  useTransferOwnership,
   useRemoveMember,
   useInvitations,
   useCreateInvitation,
@@ -15,8 +16,9 @@ import { usePermission } from '@/lib/permissions';
 import { useSession } from '@/lib/auth';
 import { PageTransition } from '@/components/ui/PageTransition';
 import { Button } from '@/components/ui/Button';
+import { Modal } from '@/components/ui/Modal';
 import { Input, Select } from '@/components/ui/Input';
-import type { CompanyInvitation, Role } from '@/lib/api';
+import { ApiError, type CompanyInvitation, type Role } from '@/lib/api';
 
 const ROLE_BADGE_STYLES: Record<
   Role,
@@ -95,6 +97,7 @@ export function CompanyMembers() {
   const { data: members, isLoading } = useMembers(companyId);
   const { isLoading: roleLoading, hasPermission } = usePermission(companyId);
   const updateRoleMutation = useUpdateMemberRole(companyId!);
+  const transferOwnershipMutation = useTransferOwnership(companyId!);
   const removeMemberMutation = useRemoveMember(companyId!);
   const session = useSession();
   const currentUserId = session.data?.user?.id ?? null;
@@ -103,6 +106,11 @@ export function CompanyMembers() {
   const canRemove = hasPermission('member.remove');
   const canInvite = hasPermission('member.invite');
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<{
+    id: string;
+    userId: string;
+  } | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
   const { data: invitations = [], isLoading: invitationsLoading } = useInvitations(
     companyId,
     canInvite,
@@ -198,7 +206,12 @@ export function CompanyMembers() {
                   member={member}
                   canPromote={canPromote}
                   canRemove={canRemove}
+                  canTransfer={canPromote && !isSelfMember(member, currentUserId)}
                   currentUserId={currentUserId}
+                  onTransfer={() => {
+                    setTransferError(null);
+                    setTransferTarget(member);
+                  }}
                   onUpdateRole={(newRole) =>
                     updateRoleMutation.mutate(
                       { memberId: member.id, role: newRole },
@@ -228,6 +241,86 @@ export function CompanyMembers() {
           )}
         </div>
 
+        <Modal
+          open={transferTarget !== null}
+          onClose={() => {
+            if (!transferOwnershipMutation.isPending) {
+              setTransferError(null);
+              setTransferTarget(null);
+            }
+          }}
+          title="Transfer ownership"
+          dismissible={!transferOwnershipMutation.isPending}
+        >
+          {transferTarget && (
+            <div className="space-y-5">
+              <p className="text-sm text-text-secondary">
+                Transfer ownership to{' '}
+                <span className="font-medium text-text-primary">
+                  {displayName(transferTarget.userId)}
+                </span>
+                ? You will be demoted to admin.
+              </p>
+              <p className="text-xs text-amber-300">
+                This gives the selected member full owner permissions.
+              </p>
+              {transferError && (
+                <p
+                  className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"
+                  role="alert"
+                  data-testid="transfer-error"
+                >
+                  {transferError}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    setTransferError(null);
+                    setTransferTarget(null);
+                  }}
+                  disabled={transferOwnershipMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="danger"
+                  loading={transferOwnershipMutation.isPending}
+                  onClick={() => {
+                    transferOwnershipMutation.mutate(transferTarget.id, {
+                      onSuccess: () => {
+                        toast.success('Ownership transferred successfully');
+                        setTransferError(null);
+                        setTransferTarget(null);
+                      },
+                      onError: (error) => {
+                        // VAL-OWNER-015: show an in-modal error message as a
+                        // secondary indicator. The hook's onError handler
+                        // already fires the toast.
+                        const apiError = error instanceof ApiError ? error : null;
+                        const body = apiError?.body as { code?: string } | undefined;
+                        const code = body?.code;
+                        setTransferError(
+                          code
+                            ? `Ownership transfer failed (${code})`
+                            : error instanceof Error
+                              ? error.message
+                              : 'Ownership transfer failed',
+                        );
+                      },
+                    });
+                  }}
+                >
+                  Confirm transfer
+                </Button>
+              </div>
+            </div>
+          )}
+        </Modal>
+
         {canInvite && (
           <InvitationList
             invitations={invitations}
@@ -252,6 +345,10 @@ export function CompanyMembers() {
       </div>
     </PageTransition>
   );
+}
+
+function isSelfMember(member: { userId: string }, currentUserId: string | null): boolean {
+  return currentUserId === member.userId;
 }
 
 function InviteForm({
@@ -365,7 +462,9 @@ function MemberRow({
   member,
   canPromote,
   canRemove,
+  canTransfer,
   currentUserId,
+  onTransfer,
   onUpdateRole,
   onRemove,
   isUpdating,
@@ -379,7 +478,9 @@ function MemberRow({
   };
   canPromote: boolean;
   canRemove: boolean;
+  canTransfer: boolean;
   currentUserId: string | null;
+  onTransfer: () => void;
   onUpdateRole: (role: Role) => void;
   onRemove: () => void;
   isUpdating: boolean;
@@ -464,6 +565,20 @@ function MemberRow({
               </div>
             )}
           </div>
+        )}
+
+        {canTransfer && member.role !== 'owner' && (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            icon={<Crown className="h-3 w-3" />}
+            onClick={onTransfer}
+            disabled={isUpdating}
+            data-action="transfer-ownership"
+          >
+            Transfer Ownership
+          </Button>
         )}
 
         {/* Remove button — owner + admin */}

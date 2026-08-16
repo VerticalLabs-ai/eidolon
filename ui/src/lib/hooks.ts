@@ -1,7 +1,14 @@
 // Eidolon hooks — v2 with projects, delete, toasts
 import { useRef, useCallback, useState, useEffect } from 'react';
-import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  useQuery,
+  useInfiniteQuery,
+  useQueries,
+  useMutation,
+  useQueryClient,
+} from '@tanstack/react-query';
 import * as api from './api';
+import { toast } from 'sonner';
 import { useServerEvents } from './ws';
 import type { GoalFilters, TaskFilters, FileFilters } from './api';
 
@@ -55,6 +62,43 @@ export function useUpdateMemberRole(companyId: string) {
   });
 }
 
+export function useTransferOwnership(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (targetMemberId: string) =>
+      unwrap<api.TransferOwnershipResult>(await api.transferOwnership(companyId, targetMemberId)),
+    onSuccess: (result) => {
+      qc.setQueryData<api.CompanyMember[]>(['members', companyId], (members) =>
+        members?.map((member) => {
+          if (member.id === result.newOwner.id) {
+            return { ...member, role: 'owner' };
+          }
+          if (member.id === result.previousOwner.id) {
+            return { ...member, role: 'admin' };
+          }
+          return member;
+        }),
+      );
+      qc.invalidateQueries({ queryKey: ['members', companyId] });
+    },
+    onError: (error) => {
+      // VAL-OWNER-015: surface a visible error toast when the transfer API
+      // returns an error (404, 400, 403). Extract the structured error code
+      // from the ApiError body when available.
+      const apiError = error as api.ApiError;
+      const body = apiError?.body as { code?: string } | undefined;
+      const code = body?.code;
+      toast.error(
+        code
+          ? `Ownership transfer failed (${code})`
+          : error instanceof Error
+            ? error.message
+            : 'Ownership transfer failed',
+      );
+    },
+  });
+}
+
 export function useRemoveMember(companyId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -99,6 +143,30 @@ export function useAgentApiKeys(companyId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: ['agent-api-keys', companyId],
     queryFn: async () => unwrap<api.AgentApiKey[]>(await api.getAgentApiKeys(companyId!)),
+    enabled: !!companyId && enabled,
+  });
+}
+
+/**
+ * Cursor-based paginated fetch of agent API keys with optional search.
+ * Uses `useInfiniteQuery` so pages are accumulated — each page's `nextCursor`
+ * drives `fetchNextPage`. When `search` changes, the query key changes and
+ * TanStack Query resets to the first page automatically.
+ */
+export function useAgentApiKeysPaginated(
+  companyId: string | undefined,
+  search: string,
+  enabled = true,
+) {
+  return useInfiniteQuery({
+    queryKey: ['agent-api-keys', companyId, search],
+    queryFn: async ({ pageParam }) =>
+      api.getAgentApiKeysPage(companyId!, {
+        cursor: pageParam as string | undefined,
+        search: search || undefined,
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !!companyId && enabled,
   });
 }

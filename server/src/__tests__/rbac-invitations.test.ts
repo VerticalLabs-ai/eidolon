@@ -659,6 +659,88 @@ describe('RBAC Invitation System', () => {
     });
   });
 
+  describe('VAL-AUDIT-001: invitation acceptance audit logging', () => {
+    it('creates exactly one invitation.accepted activity entry with actor and metadata', async () => {
+      const inv = await seedInvitation('audit-accepted@test.com', 'admin');
+      const clerkUserId = 'user_audit_accepted';
+
+      await request(app)
+        .post('/api/webhooks/clerk')
+        .send(clerkUserCreatedPayload(clerkUserId, 'audit-accepted@test.com'))
+        .expect(200);
+
+      const entries = await db.drizzle
+        .select()
+        .from(db.schema.activityLog)
+        .where(
+          and(
+            eq(db.schema.activityLog.companyId, companyId),
+            eq(db.schema.activityLog.action, 'invitation.accepted'),
+            eq(db.schema.activityLog.entityId, inv.id),
+          ),
+        );
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        actorType: 'user',
+        actorId: clerkUserId,
+        action: 'invitation.accepted',
+        entityType: 'invitation',
+        entityId: inv.id,
+        companyId,
+        metadata: {
+          email: 'audit-accepted@test.com',
+          role: 'admin',
+          acceptedByUserId: clerkUserId,
+        },
+      });
+
+      const activityResponse = await request(app)
+        .get(url('/activity'))
+        .set(roleHeader('owner'))
+        .expect(200);
+      expect(
+        activityResponse.body.data.find(
+          (entry: { action: string; entityId: string }) =>
+            entry.action === 'invitation.accepted' && entry.entityId === inv.id,
+        ),
+      ).toMatchObject({
+        actorType: 'user',
+        actorId: clerkUserId,
+        entityType: 'invitation',
+        metadata: {
+          email: 'audit-accepted@test.com',
+          role: 'admin',
+          acceptedByUserId: clerkUserId,
+        },
+      });
+    });
+
+    it('does not create an entry when an invitation is expired', async () => {
+      const inv = await seedInvitation('audit-expired@test.com', 'member', {
+        expiresAt: new Date(Date.now() - 60_000),
+      });
+
+      await request(app)
+        .post('/api/webhooks/clerk')
+        .send(clerkUserCreatedPayload('user_audit_expired', 'audit-expired@test.com'))
+        .expect(200);
+
+      const entries = await db.drizzle
+        .select()
+        .from(db.schema.activityLog)
+        .where(
+          and(
+            eq(db.schema.activityLog.companyId, companyId),
+            eq(db.schema.activityLog.action, 'invitation.accepted'),
+            eq(db.schema.activityLog.entityId, inv.id),
+          ),
+        );
+
+      expect(entries).toHaveLength(0);
+    });
+  });
+
   // =========================================================================
   // VAL-INV-018: Signup accepts invitations across companies
   // =========================================================================

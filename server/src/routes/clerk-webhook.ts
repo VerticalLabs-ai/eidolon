@@ -30,8 +30,6 @@ import logger from '../utils/logger.js';
 export function clerkWebhookRouter(db: DbInstance): Router {
   const router = Router();
   const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
-  const { companyInvitations, companyMembers } = db.schema;
-
   router.post('/', async (req: Request, res: Response) => {
     let eventType: string;
     let eventData: any;
@@ -124,7 +122,7 @@ async function processInvitations(
   email: string,
   clerkUserId: string,
 ): Promise<void> {
-  const { companyInvitations, companyMembers } = db.schema;
+  const { companyInvitations, companyMembers, activityLog } = db.schema;
   const now = new Date();
 
   // Find all pending invitations for this email across all companies.
@@ -181,6 +179,22 @@ async function processInvitations(
           createdByUserId: invitation.invitedByUserId,
         })
         .onConflictDoNothing();
+
+      await tx.insert(activityLog).values({
+        companyId: invitation.companyId,
+        actorType: 'user',
+        actorId: clerkUserId,
+        action: 'invitation.accepted',
+        entityType: 'invitation',
+        entityId: invitation.id,
+        description: `Accepted invitation for ${email}`,
+        metadata: {
+          email,
+          role: invitation.role,
+          acceptedByUserId: clerkUserId,
+        },
+        createdAt: now,
+      });
     });
 
     logger.info(
