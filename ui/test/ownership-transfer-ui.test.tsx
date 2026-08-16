@@ -216,7 +216,7 @@ function setupMocks(
 
 describe('Ownership Transfer UI', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     setupMocks();
   });
 
@@ -531,6 +531,115 @@ describe('Ownership Transfer UI', () => {
       await waitFor(() => {
         expect(vi.mocked(toast.error)).toHaveBeenCalledWith('Network error');
       });
+    });
+
+    it('shows an in-modal error message on 404 API failure', async () => {
+      vi.mocked(transferOwnership).mockRejectedValue(
+        new ApiError(404, 'Member not found', { code: 'MEMBER_NOT_FOUND' }),
+      );
+
+      renderCompanyMembers();
+      await waitFor(() => {
+        expect(screen.getByText('Dev User 001')).toBeInTheDocument();
+      });
+
+      const adminRow = screen.getByText('Dev User 001').closest('li');
+      fireEvent.click(within(adminRow!).getByRole('button', { name: /transfer ownership/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Transfer ownership')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm transfer/i }));
+
+      // In-modal error message should appear with the error code
+      await waitFor(() => {
+        expect(screen.getByText(/MEMBER_NOT_FOUND/i)).toBeInTheDocument();
+      });
+
+      // Modal should still be open (not closed on error)
+      expect(screen.getByText('Transfer ownership')).toBeInTheDocument();
+
+      // Error toast should also fire from the hook's onError handler
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        'Ownership transfer failed (MEMBER_NOT_FOUND)',
+      );
+    });
+
+    it('shows an in-modal error message on 400 API failure', async () => {
+      vi.mocked(transferOwnership).mockRejectedValue(
+        new ApiError(400, 'Cannot transfer to self', { code: 'CANNOT_TRANSFER_TO_SELF' }),
+      );
+
+      renderCompanyMembers();
+      await waitFor(() => {
+        expect(screen.getByText('Dev User 001')).toBeInTheDocument();
+      });
+
+      const adminRow = screen.getByText('Dev User 001').closest('li');
+      fireEvent.click(within(adminRow!).getByRole('button', { name: /transfer ownership/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Transfer ownership')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm transfer/i }));
+
+      // In-modal error message should appear
+      await waitFor(() => {
+        expect(screen.getByText(/CANNOT_TRANSFER_TO_SELF/i)).toBeInTheDocument();
+      });
+
+      // Modal should still be open
+      expect(screen.getByText('Transfer ownership')).toBeInTheDocument();
+    });
+
+    it('clears the in-modal error when reopening the transfer modal', async () => {
+      // First call fails, second call succeeds
+      vi.mocked(transferOwnership)
+        .mockRejectedValueOnce(new ApiError(404, 'Member not found', { code: 'MEMBER_NOT_FOUND' }))
+        .mockResolvedValueOnce({
+          data: {
+            newOwner: { id: 'm-admin', userId: 'dev-user-001', role: 'owner' as const },
+            previousOwner: { id: 'm-owner', userId: 'dev-user-000', role: 'admin' as const },
+          },
+        });
+
+      renderCompanyMembers();
+      await waitFor(() => {
+        expect(screen.getByText('Dev User 001')).toBeInTheDocument();
+      });
+
+      // First attempt: click transfer and confirm → error
+      const adminRow = screen.getByText('Dev User 001').closest('li');
+      fireEvent.click(within(adminRow!).getByRole('button', { name: /transfer ownership/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Transfer ownership')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /confirm transfer/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/MEMBER_NOT_FOUND/i)).toBeInTheDocument();
+      });
+
+      // Close the modal via Cancel
+      fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+      await waitFor(() => {
+        expect(screen.queryByText('Transfer ownership')).not.toBeInTheDocument();
+      });
+
+      // Reopen the modal — error should be cleared
+      fireEvent.click(within(adminRow!).getByRole('button', { name: /transfer ownership/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Transfer ownership')).toBeInTheDocument();
+      });
+
+      // No error message should be visible
+      expect(screen.queryByText(/MEMBER_NOT_FOUND/i)).not.toBeInTheDocument();
     });
   });
 

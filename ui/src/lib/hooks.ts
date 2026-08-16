@@ -8,6 +8,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import * as api from './api';
+import { toast } from 'sonner';
 import { useServerEvents } from './ws';
 import type { GoalFilters, TaskFilters, FileFilters } from './api';
 
@@ -79,6 +80,21 @@ export function useTransferOwnership(companyId: string) {
         }),
       );
       qc.invalidateQueries({ queryKey: ['members', companyId] });
+    },
+    onError: (error) => {
+      // VAL-OWNER-015: surface a visible error toast when the transfer API
+      // returns an error (404, 400, 403). Extract the structured error code
+      // from the ApiError body when available.
+      const apiError = error as api.ApiError;
+      const body = apiError?.body as { code?: string } | undefined;
+      const code = body?.code;
+      toast.error(
+        code
+          ? `Ownership transfer failed (${code})`
+          : error instanceof Error
+            ? error.message
+            : 'Ownership transfer failed',
+      );
     },
   });
 }

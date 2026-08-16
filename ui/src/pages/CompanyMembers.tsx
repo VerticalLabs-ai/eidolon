@@ -110,6 +110,7 @@ export function CompanyMembers() {
     id: string;
     userId: string;
   } | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
   const { data: invitations = [], isLoading: invitationsLoading } = useInvitations(
     companyId,
     canInvite,
@@ -207,7 +208,10 @@ export function CompanyMembers() {
                   canRemove={canRemove}
                   canTransfer={canPromote && !isSelfMember(member, currentUserId)}
                   currentUserId={currentUserId}
-                  onTransfer={() => setTransferTarget(member)}
+                  onTransfer={() => {
+                    setTransferError(null);
+                    setTransferTarget(member);
+                  }}
                   onUpdateRole={(newRole) =>
                     updateRoleMutation.mutate(
                       { memberId: member.id, role: newRole },
@@ -240,7 +244,10 @@ export function CompanyMembers() {
         <Modal
           open={transferTarget !== null}
           onClose={() => {
-            if (!transferOwnershipMutation.isPending) {setTransferTarget(null);}
+            if (!transferOwnershipMutation.isPending) {
+              setTransferError(null);
+              setTransferTarget(null);
+            }
           }}
           title="Transfer ownership"
           dismissible={!transferOwnershipMutation.isPending}
@@ -257,11 +264,23 @@ export function CompanyMembers() {
               <p className="text-xs text-amber-300">
                 This gives the selected member full owner permissions.
               </p>
+              {transferError && (
+                <p
+                  className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"
+                  role="alert"
+                  data-testid="transfer-error"
+                >
+                  {transferError}
+                </p>
+              )}
               <div className="flex justify-end gap-2">
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => setTransferTarget(null)}
+                  onClick={() => {
+                    setTransferError(null);
+                    setTransferTarget(null);
+                  }}
                   disabled={transferOwnershipMutation.isPending}
                 >
                   Cancel
@@ -274,14 +293,17 @@ export function CompanyMembers() {
                     transferOwnershipMutation.mutate(transferTarget.id, {
                       onSuccess: () => {
                         toast.success('Ownership transferred successfully');
+                        setTransferError(null);
                         setTransferTarget(null);
                       },
                       onError: (error) => {
-                        const code =
-                          error instanceof ApiError
-                            ? (error.body as { code?: string } | undefined)?.code
-                            : undefined;
-                        toast.error(
+                        // VAL-OWNER-015: show an in-modal error message as a
+                        // secondary indicator. The hook's onError handler
+                        // already fires the toast.
+                        const apiError = error instanceof ApiError ? error : null;
+                        const body = apiError?.body as { code?: string } | undefined;
+                        const code = body?.code;
+                        setTransferError(
                           code
                             ? `Ownership transfer failed (${code})`
                             : error instanceof Error
