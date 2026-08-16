@@ -10,7 +10,7 @@ import type { Permission } from '../middleware/permissions.js';
 import type { DbInstance } from '../types.js';
 
 // ---------------------------------------------------------------------------
-// Member management (M2 — VAL-MEM-*)
+// Member management (M2 — VAL-MEM-*) + Ownership transfer (RBAC follow-up)
 // ---------------------------------------------------------------------------
 //
 // GET    /api/companies/:companyId/members
@@ -30,6 +30,12 @@ import type { DbInstance } from '../types.js';
 //        Removes a member. Admins cannot remove owners. Last-owner
 //        protection enforced.
 //
+// POST   /api/companies/:companyId/transfer-ownership
+//        Permission: member.promote (owner only)
+//        Atomically transfers ownership: promotes target to owner, demotes
+//        current owner to admin. Revokes step-up sessions for demoted owner.
+//        Audit logs ownership.transferred.
+//
 // The `:memberId` route param may be either the `company_members.id` (UUID)
 // or the `userId`. The lookup tries `id` first, then falls back to `userId`
 // for backward compatibility with existing tests and API consumers.
@@ -37,6 +43,10 @@ import type { DbInstance } from '../types.js';
 
 const UpdateRoleBody = z.object({
   role: z.enum(['owner', 'admin', 'member', 'viewer']),
+});
+
+const TransferOwnershipBody = z.object({
+  targetMemberId: z.string().min(1),
 });
 
 const ROLE_HIERARCHY: Record<string, number> = {
@@ -50,109 +60,135 @@ type RequirePermissionFn = (
   permission: Permission,
 ) => (req: Request, res: Response, next: NextFunction) => Promise<void>;
 
+type TransactionClient = Parameters<Parameters<DbInstance['drizzle']['transaction']>['0']>['0'];
+
+// -------------------------------------------------------------------------
+// Module-level helpers (shared by membersRouter and transferOwnershipRouter)
+// -------------------------------------------------------------------------
+
+/**
+ * Find a company_members row by `:memberId`. Tries `id` (UUID) first,
+ * then falls back to `userId` for backward compatibility.
+ *
+ * In local_trusted mode, if no `company_members` row exists, also checks
+ * `local_trusted_sessions` for a session matching `(companyId, userId)`.
+ * This preserves backward compatibility with the M8 security surface
+ * (mfa-stepup-security tests) which creates sessions without
+ * `company_members` rows. If a session is found, a synthetic member
+ * object is returned so the role-change/removal can proceed.
+ *
+ * The `fromCompanyMembers` flag indicates whether the member was found
+ * in the `company_members` table (true) or via session fallback (false).
+ * Last-owner protection only applies when `fromCompanyMembers` is true.
+ *
+ * Returns `null` if no row matches in either table.
+ */
+async function findMember(
+  db: DbInstance,
+  isLocalTrusted: boolean,
+  companyId: string,
+  memberId: string,
+): Promise<{
+  id: string;
+  userId: string;
+  role: string;
+  createdAt: Date;
+  fromCompanyMembers: boolean;
+} | null> {
+  const { companyMembers } = db.schema;
+
+  // Try by primary key (company_members.id)
+  const [byId] = await db.drizzle
+    .select()
+    .from(companyMembers)
+    .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.id, memberId)))
+    .limit(1);
+  if (byId) {
+    return { ...byId, fromCompanyMembers: true };
+  }
+
+  // Fall back to userId lookup
+  const [byUserId] = await db.drizzle
+    .select()
+    .from(companyMembers)
+    .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, memberId)))
+    .limit(1);
+  if (byUserId) {
+    return { ...byUserId, fromCompanyMembers: true };
+  }
+
+  // In local_trusted mode, fall back to local_trusted_sessions for
+  // backward compatibility with the M8 security surface.
+  if (isLocalTrusted) {
+    const { localTrustedSessions } = db.schema;
+    const [sessionRow] = await db.drizzle
+      .select()
+      .from(localTrustedSessions)
+      .where(
+        and(
+          eq(localTrustedSessions.companyId, companyId),
+          eq(localTrustedSessions.userId, memberId),
+        ),
+      )
+      .limit(1);
+    if (sessionRow) {
+      return {
+        id: sessionRow.id,
+        userId: sessionRow.userId,
+        role: sessionRow.role,
+        createdAt: sessionRow.createdAt,
+        fromCompanyMembers: false,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Lock all owner rows for the company within a transaction and return the
+ * count. The SELECT ... FOR UPDATE prevents concurrent transactions from
+ * changing the owner count between the check and the subsequent mutation.
+ * In READ COMMITTED isolation, a concurrent transaction that has modified
+ * an owner row will block this SELECT until it commits; once it commits,
+ * the row is re-evaluated against the updated values.
+ */
+async function countOwnersForUpdate(
+  db: DbInstance,
+  tx: TransactionClient,
+  companyId: string,
+): Promise<number> {
+  const { companyMembers } = db.schema;
+  const owners = await tx
+    .select({ id: companyMembers.id })
+    .from(companyMembers)
+    .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.role, 'owner')))
+    .for('update');
+  return owners.length;
+}
+
+/**
+ * Lock all owner rows for the company within a transaction and return the
+ * actual rows (not just the count). Used by the ownership transfer endpoint
+ * to verify the actor is the current owner after locking.
+ */
+async function getOwnersForUpdate(
+  db: DbInstance,
+  tx: TransactionClient,
+  companyId: string,
+): Promise<{ id: string; userId: string; role: string }[]> {
+  const { companyMembers } = db.schema;
+  return tx
+    .select({ id: companyMembers.id, userId: companyMembers.userId, role: companyMembers.role })
+    .from(companyMembers)
+    .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.role, 'owner')))
+    .for('update');
+}
+
 export function membersRouter(db: DbInstance, requirePermission: RequirePermissionFn): Router {
   const router = Router({ mergeParams: true });
   const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
   const { companyMembers } = db.schema;
-
-  // -------------------------------------------------------------------------
-  // Helpers
-  // -------------------------------------------------------------------------
-
-  /**
-   * Find a company_members row by `:memberId`. Tries `id` (UUID) first,
-   * then falls back to `userId` for backward compatibility.
-   *
-   * In local_trusted mode, if no `company_members` row exists, also checks
-   * `local_trusted_sessions` for a session matching `(companyId, userId)`.
-   * This preserves backward compatibility with the M8 security surface
-   * (mfa-stepup-security tests) which creates sessions without
-   * `company_members` rows. If a session is found, a synthetic member
-   * object is returned so the role-change/removal can proceed.
-   *
-   * The `fromCompanyMembers` flag indicates whether the member was found
-   * in the `company_members` table (true) or via session fallback (false).
-   * Last-owner protection only applies when `fromCompanyMembers` is true.
-   *
-   * Returns `null` if no row matches in either table.
-   */
-  async function findMember(
-    companyId: string,
-    memberId: string,
-  ): Promise<{
-    id: string;
-    userId: string;
-    role: string;
-    createdAt: Date;
-    fromCompanyMembers: boolean;
-  } | null> {
-    // Try by primary key (company_members.id)
-    const [byId] = await db.drizzle
-      .select()
-      .from(companyMembers)
-      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.id, memberId)))
-      .limit(1);
-    if (byId) {
-      return { ...byId, fromCompanyMembers: true };
-    }
-
-    // Fall back to userId lookup
-    const [byUserId] = await db.drizzle
-      .select()
-      .from(companyMembers)
-      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, memberId)))
-      .limit(1);
-    if (byUserId) {
-      return { ...byUserId, fromCompanyMembers: true };
-    }
-
-    // In local_trusted mode, fall back to local_trusted_sessions for
-    // backward compatibility with the M8 security surface.
-    if (isLocalTrusted) {
-      const { localTrustedSessions } = db.schema;
-      const [sessionRow] = await db.drizzle
-        .select()
-        .from(localTrustedSessions)
-        .where(
-          and(
-            eq(localTrustedSessions.companyId, companyId),
-            eq(localTrustedSessions.userId, memberId),
-          ),
-        )
-        .limit(1);
-      if (sessionRow) {
-        return {
-          id: sessionRow.id,
-          userId: sessionRow.userId,
-          role: sessionRow.role,
-          createdAt: sessionRow.createdAt,
-          fromCompanyMembers: false,
-        };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Lock all owner rows for the company within a transaction and return the
-   * count. The SELECT ... FOR UPDATE prevents concurrent transactions from
-   * changing the owner count between the check and the subsequent mutation.
-   * In READ COMMITTED isolation, a concurrent transaction that has modified
-   * an owner row will block this SELECT until it commits; once it commits,
-   * the row is re-evaluated against the updated values.
-   */
-  async function countOwnersForUpdate(
-    tx: Parameters<Parameters<typeof db.drizzle.transaction>[0]>[0],
-    companyId: string,
-  ): Promise<number> {
-    const owners = await tx
-      .select({ id: companyMembers.id })
-      .from(companyMembers)
-      .where(and(eq(companyMembers.companyId, companyId), eq(companyMembers.role, 'owner')))
-      .for('update');
-    return owners.length;
-  }
 
   // -------------------------------------------------------------------------
   // GET / — list members (permission: member.list)
@@ -192,7 +228,7 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
     }
 
     // Find the target member
-    const targetMember = await findMember(companyId, memberId);
+    const targetMember = await findMember(db, isLocalTrusted, companyId, memberId);
     if (!targetMember) {
       throw new AppError(404, 'MEMBER_NOT_FOUND', 'Member not found in this company');
     }
@@ -215,7 +251,7 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
       if (isOwnerBeingDemoted) {
         // Lock all owner rows so no concurrent transaction can change the
         // owner count between this check and the UPDATE below.
-        const ownerCount = await countOwnersForUpdate(tx, companyId);
+        const ownerCount = await countOwnersForUpdate(db, tx, companyId);
         if (ownerCount <= 1) {
           throw new AppError(
             400,
@@ -323,7 +359,7 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
     const actingUserId = req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000';
 
     // Find the target member
-    const targetMember = await findMember(companyId, memberId);
+    const targetMember = await findMember(db, isLocalTrusted, companyId, memberId);
     if (!targetMember) {
       throw new AppError(404, 'MEMBER_NOT_FOUND', 'Member not found in this company');
     }
@@ -350,7 +386,7 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
       if (isOwnerRemoval) {
         // Lock all owner rows so no concurrent transaction can change the
         // owner count between this check and the DELETE below.
-        const ownerCount = await countOwnersForUpdate(tx, companyId);
+        const ownerCount = await countOwnersForUpdate(db, tx, companyId);
         if (ownerCount <= 1) {
           throw new AppError(
             400,
@@ -410,6 +446,217 @@ export function membersRouter(db: DbInstance, requirePermission: RequirePermissi
       data: { companyId, userId: targetMember.userId, removed: true },
     });
   });
+
+  return router;
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/companies/:companyId/transfer-ownership
+//   Permission: member.promote (owner only)
+//   Atomically transfers ownership from the current owner to a target member.
+//   The target is promoted to owner and the current owner is demoted to admin
+//   within a single Drizzle transaction with SELECT ... FOR UPDATE locking.
+//   After the transaction, the demoted owner's step-up sessions are revoked.
+//   An ownership.transferred audit entry is inserted with both owner IDs.
+// ---------------------------------------------------------------------------
+
+export function transferOwnershipRouter(
+  db: DbInstance,
+  requirePermission: RequirePermissionFn,
+): Router {
+  const router = Router({ mergeParams: true });
+  const isLocalTrusted = process.env.AUTH_MODE === 'local_trusted';
+  const { companyMembers } = db.schema;
+
+  router.post(
+    '/',
+    requirePermission('member.promote'),
+    validate(TransferOwnershipBody),
+    async (req: Request, res: Response): Promise<void> => {
+      const { companyId } = routeParams(req);
+      const body = (req as any).validated.body as { targetMemberId: string };
+      const actorRole = req.organizationMembership?.role ?? 'member';
+      const actingUserId = req.organizationMembership?.userId ?? req.user?.id ?? 'dev-user-000';
+
+      // Defense-in-depth: requirePermission('member.promote') already
+      // enforces owner-only, but verify the actor's role explicitly.
+      if (actorRole !== 'owner') {
+        throw new AppError(403, 'INSUFFICIENT_ROLE', 'This action requires owner role');
+      }
+
+      // Variables populated inside the transaction for use after commit
+      let newOwnerMemberId = '';
+      let previousOwnerMemberId = '';
+      let previousOwnerUserId = actingUserId;
+      let newOwnerUserId = body.targetMemberId;
+
+      await db.drizzle.transaction(async (tx) => {
+        // (1) Lock all owner rows with SELECT ... FOR UPDATE
+        const owners = await getOwnersForUpdate(db, tx, companyId);
+
+        if (owners.length === 0) {
+          throw new AppError(403, 'INSUFFICIENT_ROLE', 'No owner found for this company');
+        }
+
+        // (2) Verify the actor is the current owner
+        const currentOwner = owners.find((o) => o.userId === actingUserId);
+        if (!currentOwner) {
+          throw new AppError(
+            403,
+            'INSUFFICIENT_ROLE',
+            'Only the current owner can transfer ownership',
+          );
+        }
+        previousOwnerMemberId = currentOwner.id;
+        previousOwnerUserId = currentOwner.userId;
+
+        // (3) Find the target member by ID/userId with local_trusted fallback
+        const targetMember = await findMember(db, isLocalTrusted, companyId, body.targetMemberId);
+
+        // (4) Validate target
+        if (!targetMember) {
+          throw new AppError(404, 'MEMBER_NOT_FOUND', 'Member not found in this company');
+        }
+
+        if (targetMember.userId === currentOwner.userId) {
+          throw new AppError(
+            400,
+            'CANNOT_TRANSFER_TO_SELF',
+            'Cannot transfer ownership to yourself',
+          );
+        }
+
+        if (targetMember.role === 'owner') {
+          throw new AppError(400, 'TARGET_ALREADY_OWNER', 'The target member is already an owner');
+        }
+
+        newOwnerUserId = targetMember.userId;
+        newOwnerMemberId = targetMember.fromCompanyMembers ? targetMember.id : '';
+
+        // (5) Promote target to owner, demote current to admin
+        // Update the target member's role to owner
+        if (targetMember.fromCompanyMembers) {
+          await tx
+            .update(companyMembers)
+            .set({ role: 'owner', updatedAt: new Date() })
+            .where(
+              and(
+                eq(companyMembers.companyId, companyId),
+                eq(companyMembers.userId, targetMember.userId),
+              ),
+            );
+        }
+
+        // Demote the current owner to admin
+        await tx
+          .update(companyMembers)
+          .set({ role: 'admin', updatedAt: new Date() })
+          .where(
+            and(
+              eq(companyMembers.companyId, companyId),
+              eq(companyMembers.userId, currentOwner.userId),
+            ),
+          );
+
+        // (6) Update local_trusted_sessions in local_trusted mode
+        if (isLocalTrusted) {
+          const { localTrustedSessions } = db.schema;
+
+          // Promote target's session to owner
+          const [targetSession] = await tx
+            .select()
+            .from(localTrustedSessions)
+            .where(
+              and(
+                eq(localTrustedSessions.companyId, companyId),
+                eq(localTrustedSessions.userId, targetMember.userId),
+              ),
+            )
+            .limit(1);
+
+          if (targetSession) {
+            await tx
+              .update(localTrustedSessions)
+              .set({ role: 'owner', updatedAt: new Date() })
+              .where(eq(localTrustedSessions.id, targetSession.id));
+          }
+
+          // Demote current owner's session to admin
+          const [ownerSession] = await tx
+            .select()
+            .from(localTrustedSessions)
+            .where(
+              and(
+                eq(localTrustedSessions.companyId, companyId),
+                eq(localTrustedSessions.userId, currentOwner.userId),
+              ),
+            )
+            .limit(1);
+
+          if (ownerSession) {
+            await tx
+              .update(localTrustedSessions)
+              .set({ role: 'admin', updatedAt: new Date() })
+              .where(eq(localTrustedSessions.id, ownerSession.id));
+          }
+        }
+
+        // (7) Transaction commits on return
+      });
+
+      // After transaction: revoke step-up sessions for the demoted owner
+      await revokeUserStepUps(db, previousOwnerUserId);
+
+      // Look up the new owner's company_members.id if not already set
+      // (e.g., when the target was found via local_trusted_sessions fallback)
+      if (!newOwnerMemberId) {
+        const [newOwnerRow] = await db.drizzle
+          .select({ id: companyMembers.id })
+          .from(companyMembers)
+          .where(
+            and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, newOwnerUserId)),
+          )
+          .limit(1);
+        if (newOwnerRow) {
+          newOwnerMemberId = newOwnerRow.id;
+        }
+      }
+
+      // Insert audit entry
+      await db.drizzle.insert(db.schema.activityLog).values({
+        companyId,
+        actorType: 'user',
+        actorId: actingUserId,
+        action: 'ownership.transferred',
+        entityType: 'company',
+        entityId: companyId,
+        description: 'Transferred company ownership',
+        metadata: {
+          previousOwnerUserId,
+          newOwnerUserId,
+          newOwnerMemberId,
+          previousOwnerMemberId,
+        },
+        createdAt: new Date(),
+      });
+
+      // Response
+      res.json({
+        data: {
+          newOwner: {
+            id: newOwnerMemberId,
+            userId: newOwnerUserId,
+            role: 'owner',
+          },
+          previousOwner: {
+            id: previousOwnerMemberId,
+            userId: previousOwnerUserId,
+            role: 'admin',
+          },
+        },
+      });
+    },
+  );
 
   return router;
 }

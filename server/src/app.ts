@@ -59,7 +59,7 @@ import { searchRouter } from './routes/search.js';
 import { localTrustedAuthRouter } from './routes/local-trusted-auth.js';
 import { mfaRouter, stepUpRouter } from './routes/mfa.js';
 import { securityAdminRouter } from './routes/security-admin.js';
-import { membersRouter } from './routes/members.js';
+import { membersRouter, transferOwnershipRouter } from './routes/members.js';
 import { invitationsRouter } from './routes/invitations.js';
 import { agentApiKeysRouter } from './routes/agent-api-keys.js';
 import { clerkWebhookRouter } from './routes/clerk-webhook.js';
@@ -639,6 +639,15 @@ export function createApp(db: DbInstance): express.Express {
   //   POST   /:memberId/role → member.promote (owner only, backward compat)
   //   DELETE /:memberId      → member.remove   (owner + admin)
   app.use('/api/companies/:companyId/members', requireAuth, membersRouter(db, requirePermission));
+
+  // Ownership transfer (RBAC follow-up): owner-only atomic transfer.
+  //   POST /api/companies/:companyId/transfer-ownership
+  //   Permission: member.promote (owner only) — applied inside the router.
+  app.use(
+    '/api/companies/:companyId/transfer-ownership',
+    requireAuth,
+    transferOwnershipRouter(db, requirePermission),
+  );
 
   // Invitation management (M2): create, list, revoke.
   // Each endpoint applies requirePermission('member.invite') inside the
