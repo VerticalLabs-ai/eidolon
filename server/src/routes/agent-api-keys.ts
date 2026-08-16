@@ -44,7 +44,9 @@ type ApiKeyCursor = {
 };
 
 function parsePageSize(value: unknown): number {
-  if (value === undefined) {return DEFAULT_PAGE_SIZE;}
+  if (value === undefined) {
+    return DEFAULT_PAGE_SIZE;
+  }
   if (typeof value !== 'string' || !/^\d+$/.test(value)) {
     throw new AppError(400, 'INVALID_LIMIT', 'limit must be a positive integer');
   }
@@ -57,12 +59,24 @@ function parsePageSize(value: unknown): number {
 }
 
 function parseCursor(value: unknown): ApiKeyCursor | undefined {
-  if (value === undefined) {return undefined;}
+  if (value === undefined) {
+    return undefined;
+  }
   if (typeof value !== 'string') {
     throw new AppError(400, 'INVALID_CURSOR', 'cursor must be a Base64-encoded JSON value');
   }
 
   try {
+    // Node's base64 decoder silently ignores invalid characters, so validate
+    // the complete standard Base64 representation before decoding.
+    if (
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(value) ||
+      value.length % 4 !== 0 ||
+      (value.includes('=') && !/={1,2}$/.test(value))
+    ) {
+      throw new Error('invalid Base64');
+    }
+
     const decoded = Buffer.from(value, 'base64').toString('utf8');
     const parsed: unknown = JSON.parse(decoded);
     if (
@@ -76,7 +90,9 @@ function parseCursor(value: unknown): ApiKeyCursor | undefined {
     }
 
     const createdAt = new Date((parsed as Record<string, string>).createdAt);
-    if (Number.isNaN(createdAt.getTime())) {throw new Error('invalid cursor date');}
+    if (Number.isNaN(createdAt.getTime())) {
+      throw new Error('invalid cursor date');
+    }
 
     return {
       createdAt: createdAt.toISOString(),

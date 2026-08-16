@@ -927,5 +927,63 @@ describe('RBAC Agent API Key CRUD', () => {
         .set(roleHeader('owner'))
         .expect(400);
     });
+
+    it('rejects cursors containing invalid Base64 characters', async () => {
+      const validCursor = Buffer.from(
+        JSON.stringify({ createdAt: '2025-01-01T00:00:00.000Z', id: 'cursor-key' }),
+        'utf8',
+      ).toString('base64');
+
+      for (const cursor of ['!!!', `${validCursor}!!!`]) {
+        const res = await request(app)
+          .get(url(`/agent-api-keys?cursor=${encodeURIComponent(cursor)}`))
+          .set(roleHeader('owner'))
+          .expect(400);
+        expect(res.body.code).toBe('INVALID_CURSOR');
+      }
+    });
+
+    it('rejects valid Base64 cursors with invalid JSON or missing fields', async () => {
+      const invalidJson = Buffer.from('not JSON', 'utf8').toString('base64');
+      const missingFields = Buffer.from(JSON.stringify({ id: 'cursor-key' }), 'utf8').toString(
+        'base64',
+      );
+
+      for (const cursor of [invalidJson, missingFields]) {
+        const res = await request(app)
+          .get(url(`/agent-api-keys?cursor=${encodeURIComponent(cursor)}`))
+          .set(roleHeader('owner'))
+          .expect(400);
+        expect(res.body.code).toBe('INVALID_CURSOR');
+      }
+    });
+
+    it('accepts a valid Base64 JSON cursor', async () => {
+      const [key] = await db.drizzle
+        .insert(db.schema.agentApiKeys)
+        .values({
+          companyId,
+          name: 'Cursor Target',
+          keyHash: hashAgentKey(`${AGENT_KEY_PREFIX}cursor_target`),
+          keyPrefix: `${AGENT_KEY_PREFIX}cursor`,
+          role: 'member',
+          createdByUserId: 'dev-user-000',
+          createdAt: new Date('2025-01-02T00:00:00.000Z'),
+          updatedAt: new Date('2025-01-02T00:00:00.000Z'),
+        })
+        .returning();
+      const cursor = Buffer.from(
+        JSON.stringify({ createdAt: key.createdAt.toISOString(), id: key.id }),
+        'utf8',
+      ).toString('base64');
+
+      const res = await request(app)
+        .get(url(`/agent-api-keys?limit=1&cursor=${encodeURIComponent(cursor)}`))
+        .set(roleHeader('owner'))
+        .expect(200);
+      expect(res.body.data).toEqual([]);
+      expect(res.body.hasMore).toBe(false);
+      expect(res.body.nextCursor).toBeNull();
+    });
   });
 });
