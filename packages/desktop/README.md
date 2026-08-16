@@ -8,7 +8,9 @@ Native macOS shell for Eidolon.
 pnpm desktop:dev
 ```
 
-By default the app opens the local single-host Eidolon server at `http://localhost:3100`. To point at another approved Eidolon host:
+Packaged builds open `https://eidolon.verticallabs.ai` by default. The development
+command opens the local single-host Eidolon server at `http://localhost:3100`.
+To point development at another approved Eidolon host:
 
 ```bash
 EIDOLON_DESKTOP_APP_URL=https://staging.eidolon.verticallabs.ai pnpm desktop:dev

@@ -1,7 +1,7 @@
-const path = require("node:path");
+const path = require('node:path');
 
-const APP_NAME = "Eidolon";
-const APP_BUNDLE_ID = "ai.verticallabs.eidolon";
+const APP_NAME = 'Eidolon';
+const APP_BUNDLE_ID = 'ai.verticallabs.eidolon';
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -12,18 +12,16 @@ function requireEnv(name) {
 }
 
 function buildMacSignConfig() {
-  const requireSigning = process.env.EIDOLON_REQUIRE_MAC_SIGNING === "1";
+  const requireSigning = process.env.EIDOLON_REQUIRE_MAC_SIGNING === '1';
   const identity = process.env.APPLE_SIGNING_IDENTITY?.trim();
-  const entitlements = path.resolve(__dirname, "entitlements.mac.plist");
+  const entitlements = path.resolve(__dirname, 'entitlements.mac.plist');
 
   if (requireSigning && !identity) {
-    throw new Error(
-      "APPLE_SIGNING_IDENTITY is required when EIDOLON_REQUIRE_MAC_SIGNING=1.",
-    );
+    throw new Error('APPLE_SIGNING_IDENTITY is required when EIDOLON_REQUIRE_MAC_SIGNING=1.');
   }
 
   return {
-    identity: identity || "-",
+    identity: identity || '-',
     identityValidation: Boolean(identity),
     hardenedRuntime: Boolean(identity),
     gatekeeperAssess: false,
@@ -35,7 +33,7 @@ function buildMacSignConfig() {
 }
 
 function buildMacNotarizeConfig() {
-  const requireSigning = process.env.EIDOLON_REQUIRE_MAC_SIGNING === "1";
+  const requireSigning = process.env.EIDOLON_REQUIRE_MAC_SIGNING === '1';
   const keychainProfile = process.env.APPLE_KEYCHAIN_PROFILE?.trim();
   if (keychainProfile) {
     return {
@@ -50,9 +48,9 @@ function buildMacNotarizeConfig() {
   if (apiKey || apiKeyId || apiIssuer) {
     if (requireSigning) {
       return {
-        appleApiKey: requireEnv("APPLE_API_KEY"),
-        appleApiKeyId: requireEnv("APPLE_API_KEY_ID"),
-        appleApiIssuer: requireEnv("APPLE_API_ISSUER"),
+        appleApiKey: requireEnv('APPLE_API_KEY'),
+        appleApiKeyId: requireEnv('APPLE_API_KEY_ID'),
+        appleApiIssuer: requireEnv('APPLE_API_ISSUER'),
       };
     }
 
@@ -71,9 +69,9 @@ function buildMacNotarizeConfig() {
   if (appleId || appleIdPassword || teamId) {
     if (requireSigning) {
       return {
-        appleId: requireEnv("APPLE_ID"),
-        appleIdPassword: requireEnv("APPLE_APP_SPECIFIC_PASSWORD"),
-        teamId: requireEnv("APPLE_TEAM_ID"),
+        appleId: requireEnv('APPLE_ID'),
+        appleIdPassword: requireEnv('APPLE_APP_SPECIFIC_PASSWORD'),
+        teamId: requireEnv('APPLE_TEAM_ID'),
       };
     }
 
@@ -84,9 +82,9 @@ function buildMacNotarizeConfig() {
 
   if (requireSigning) {
     throw new Error(
-      "Signed macOS desktop releases require notarization credentials. " +
-        "Set APPLE_KEYCHAIN_PROFILE, APPLE_API_KEY/APPLE_API_KEY_ID/APPLE_API_ISSUER, " +
-        "or APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID.",
+      'Signed macOS desktop releases require notarization credentials. ' +
+        'Set APPLE_KEYCHAIN_PROFILE, APPLE_API_KEY/APPLE_API_KEY_ID/APPLE_API_ISSUER, ' +
+        'or APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID.',
     );
   }
 
@@ -101,23 +99,20 @@ module.exports = {
     name: APP_NAME,
     executableName: APP_NAME,
     appBundleId: APP_BUNDLE_ID,
-    appCategoryType: "public.app-category.productivity",
+    appCategoryType: 'public.app-category.productivity',
     asar: true,
     prune: false,
-    ignore: [
-      /^\/node_modules($|\/)/,
-      /^\/out($|\/)/,
-    ],
+    ignore: [/^\/node_modules($|\/)/, /^\/out(?:$|[-/])/],
     ...(macSignConfig ? { osxSign: macSignConfig } : {}),
     ...(macNotarizeConfig ? { osxNotarize: macNotarizeConfig } : {}),
   },
   makers: [
     {
-      name: "@electron-forge/maker-dmg",
-      platforms: ["darwin"],
+      name: '@electron-forge/maker-dmg',
+      platforms: ['darwin'],
       config: {
         name: APP_NAME,
-        format: "ULFO",
+        format: 'ULFO',
         overwrite: true,
       },
     },

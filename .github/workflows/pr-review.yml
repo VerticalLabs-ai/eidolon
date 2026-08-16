@@ -12,6 +12,20 @@ jobs:
   review:
     name: Quality and risk review
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres@localhost:5432/eidolon_test
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,6 +42,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - name: Create test management database
+        run: psql postgres://postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE eidolon_test'
       - run: pnpm test:run
 
       - name: Post review summary

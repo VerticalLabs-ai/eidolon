@@ -57,11 +57,12 @@
   },
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
+    "overrides": {
+      "@electron/rebuild": "^4.2.0"
+    },
     "onlyBuiltDependencies": [
       "electron",
-      "esbuild",
-      "fs-xattr",
-      "macos-alias"
+      "esbuild"
     ]
   },
   "lint-staged": {

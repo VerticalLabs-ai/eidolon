@@ -1,4 +1,4 @@
-const DEFAULT_APP_URL = "http://localhost:3100";
+const DEFAULT_APP_URL = "https://eidolon.verticallabs.ai";
 const DEFAULT_ALLOWED_HOSTS = [
   "eidolon.verticallabs.ai",
   "staging.eidolon.verticallabs.ai",
@@ -12,7 +12,9 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function normalizeHost(value) {
   const trimmed = value.trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    return null;
+  }
 
   try {
     const url = trimmed.includes("://")
@@ -25,7 +27,9 @@ function normalizeHost(value) {
 }
 
 function parseHostList(value) {
-  if (!value) return [];
+  if (!value) {
+    return [];
+  }
   return value
     .split(",")
     .map(normalizeHost)
@@ -34,7 +38,9 @@ function parseHostList(value) {
 
 function normalizeOrigin(value) {
   const trimmed = value?.trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    return null;
+  }
 
   try {
     const url = trimmed.includes("://")
@@ -47,7 +53,9 @@ function normalizeOrigin(value) {
 }
 
 function parseOriginList(value) {
-  if (!value) return [];
+  if (!value) {
+    return [];
+  }
   return value
     .split(",")
     .map(normalizeOrigin)
@@ -78,7 +86,9 @@ function normalizeLoopbackOriginForAppHost(value, appUrl) {
 }
 
 function parseLoopbackOriginsForAppHost(value, appUrl) {
-  if (!value) return [];
+  if (!value) {
+    return [];
+  }
   return value
     .split(",")
     .map((entry) => normalizeLoopbackOriginForAppHost(entry, appUrl))

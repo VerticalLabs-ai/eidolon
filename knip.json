@@ -1,11 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "exclude": ["exports", "types", "duplicates"],
-  "ignoreBinaries": ["supabase", "psql"],
+  "ignoreBinaries": ["supabase", "psql", "electron-forge"],
   "ignoreFiles": [
     "api/**/*.js",
-    "packages/desktop/forge.config.cjs",
     "packages/desktop/src/preload.cjs",
+    "server/scripts/cleanup-test-fixtures.ts",
+    "server/src/services/code-sandbox-shim.cjs",
     "server/src/services/orchestrator.ts",
     "ui/src/components/dashboard/StatCard.tsx",
     "ui/src/components/ui/AnimatedList.tsx"
@@ -16,11 +17,11 @@
     "concurrently",
     "fs-xattr",
     "macos-alias",
-    "node-gyp",
     "pino-pretty",
     "uuid",
     "@types/express-serve-static-core",
     "@types/uuid",
+    "@electron-forge/cli",
     "@electron-forge/maker-dmg"
   ]
 }
