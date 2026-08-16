@@ -113,7 +113,7 @@ pnpm run dev           # Start server (:3100) + UI (:5173)
 
 The database starts empty — create your first company from the UI. There is no demo/mock data.
 
-> **One-command bootstrap:** `node scripts/setup.mjs` runs `pnpm install`, `db:start`, and `db:migrate` in sequence so you can jump straight to `pnpm run dev`.
+> **One-command bootstrap:** run `pnpm install`, then `pnpm db:start`, then `pnpm db:migrate` to set up the database.
 
 > **Mission dev server:** the mission API server runs on **port 3110** so it does not collide with the user's launchd-managed server on 3100. Use `AUTH_MODE=local_trusted` for dev; loopback requests are auto-authenticated. The verified E2E provider is **Anthropic `claude-sonnet-4-6`** — the configured OpenAI key may be invalid.
 
@@ -229,20 +229,6 @@ pnpm cleanup:fixtures -- --execute --stale-hours 24
 ```
 
 ### Backfilling the search index
-
-Artifacts store searchable text in app-maintained `search_text` columns backed by
-Postgres `tsvector` columns (`search_tsv`). If rows exist with `NULL` search text
-(for example, created before the search index was introduced), backfill them
-with:
-
-```bash
-pnpm --filter server exec tsx scripts/backfill-search-index.ts
-```
-
-Flags:
-
-- `--dry-run` — report how many rows would be updated without writing.
-- `--batch-size N` — process N rows per transaction (default 500).
 
 For agent-side MCP client connections, tenant-registered `stdio` transports are disabled by default because they spawn local processes on the Eidolon server. Operators can enable them for trusted deployments with `EIDOLON_ENABLE_TENANT_STDIO_MCP=true`; `EIDOLON_MCP_STDIO_COMMAND_ALLOWLIST` must list exact full argv presets such as `/usr/local/bin/node /opt/eidolon/mcp/echo-server.mjs`, not generic interpreters or package runners. Stdio env overrides are rejected unless each key is listed in `EIDOLON_MCP_STDIO_ENV_ALLOWLIST`; the spawned process never inherits the Eidolon server process env. Remote SSE/Streamable HTTP transports can use safe public IP literals by default; hostnames and trusted private hosts must be listed in `EIDOLON_MCP_REMOTE_HOST_ALLOWLIST` so operators own the DNS/network path. MCP connect, discovery, and tool calls are bounded by `EIDOLON_MCP_CONNECT_TIMEOUT_MS`, `EIDOLON_MCP_DISCOVERY_TIMEOUT_MS`, and `EIDOLON_MCP_TOOL_CALL_TIMEOUT_MS`.
 
