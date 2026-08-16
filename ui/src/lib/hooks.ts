@@ -55,6 +55,28 @@ export function useUpdateMemberRole(companyId: string) {
   });
 }
 
+export function useTransferOwnership(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (targetMemberId: string) =>
+      unwrap<api.TransferOwnershipResult>(await api.transferOwnership(companyId, targetMemberId)),
+    onSuccess: (result) => {
+      qc.setQueryData<api.CompanyMember[]>(['members', companyId], (members) =>
+        members?.map((member) => {
+          if (member.id === result.newOwner.id) {
+            return { ...member, role: 'owner' };
+          }
+          if (member.id === result.previousOwner.id) {
+            return { ...member, role: 'admin' };
+          }
+          return member;
+        }),
+      );
+      qc.invalidateQueries({ queryKey: ['members', companyId] });
+    },
+  });
+}
+
 export function useRemoveMember(companyId: string) {
   const qc = useQueryClient();
   return useMutation({

@@ -282,6 +282,17 @@ export const updateMemberRole = (companyId: string, memberId: string, role: Role
     { method: 'PATCH', body: JSON.stringify({ role }) },
   );
 
+export interface TransferOwnershipResult {
+  newOwner: { id: string; userId: string; role: 'owner' };
+  previousOwner: { id: string; userId: string; role: 'admin' };
+}
+
+export const transferOwnership = (companyId: string, targetMemberId: string) =>
+  request<{ data: TransferOwnershipResult }>(`/companies/${companyId}/transfer-ownership`, {
+    method: 'POST',
+    body: JSON.stringify({ targetMemberId }),
+  });
+
 export const removeMember = (companyId: string, memberId: string) =>
   request<{ companyId: string; userId: string; removed: boolean }>(
     `/companies/${companyId}/members/${memberId}`,
