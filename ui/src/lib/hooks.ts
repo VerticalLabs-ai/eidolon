@@ -1,6 +1,12 @@
 // Eidolon hooks — v2 with projects, delete, toasts
 import { useRef, useCallback, useState, useEffect } from 'react';
-import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  useQuery,
+  useInfiniteQuery,
+  useQueries,
+  useMutation,
+  useQueryClient,
+} from '@tanstack/react-query';
 import * as api from './api';
 import { useServerEvents } from './ws';
 import type { GoalFilters, TaskFilters, FileFilters } from './api';
@@ -121,6 +127,30 @@ export function useAgentApiKeys(companyId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: ['agent-api-keys', companyId],
     queryFn: async () => unwrap<api.AgentApiKey[]>(await api.getAgentApiKeys(companyId!)),
+    enabled: !!companyId && enabled,
+  });
+}
+
+/**
+ * Cursor-based paginated fetch of agent API keys with optional search.
+ * Uses `useInfiniteQuery` so pages are accumulated — each page's `nextCursor`
+ * drives `fetchNextPage`. When `search` changes, the query key changes and
+ * TanStack Query resets to the first page automatically.
+ */
+export function useAgentApiKeysPaginated(
+  companyId: string | undefined,
+  search: string,
+  enabled = true,
+) {
+  return useInfiniteQuery({
+    queryKey: ['agent-api-keys', companyId, search],
+    queryFn: async ({ pageParam }) =>
+      api.getAgentApiKeysPage(companyId!, {
+        cursor: pageParam as string | undefined,
+        search: search || undefined,
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !!companyId && enabled,
   });
 }

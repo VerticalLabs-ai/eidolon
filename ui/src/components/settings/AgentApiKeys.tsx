@@ -9,10 +9,10 @@
 //
 // Fulfills VAL-UI-019 through VAL-UI-024, VAL-CROSS-018.
 
-import { useState } from 'react';
-import { KeyRound, Plus, Trash2, Copy, Check, AlertTriangle, Clock } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { KeyRound, Plus, Trash2, Copy, Check, AlertTriangle, Clock, Search } from 'lucide-react';
 import { toast } from 'sonner';
-import { useAgentApiKeys, useCreateAgentApiKey, useRevokeAgentApiKey } from '@/lib/hooks';
+import { useAgentApiKeysPaginated, useCreateAgentApiKey, useRevokeAgentApiKey } from '@/lib/hooks';
 import { usePermission } from '@/lib/permissions';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
@@ -65,7 +65,29 @@ export function AgentApiKeys({ companyId }: { companyId: string }) {
   const { hasPermission } = usePermission(companyId);
   const canManage = hasPermission('apikeys.manage');
 
-  const { data: keys = [], isLoading } = useAgentApiKeys(companyId, canManage);
+  // Search input (debounced before triggering the API query)
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebouncedSearch(searchInput), 300);
+    return () => window.clearTimeout(handle);
+  }, [searchInput]);
+
+  const {
+    data: paginatedData,
+    isLoading,
+    hasNextPage,
+    fetchNextPage,
+    isFetchingNextPage,
+  } = useAgentApiKeysPaginated(companyId, debouncedSearch, canManage);
+
+  // Flatten all accumulated pages into a single key list
+  const keys: AgentApiKey[] = useMemo(
+    () => paginatedData?.pages.flatMap((page) => page.data) ?? [],
+    [paginatedData],
+  );
+
   const createKey = useCreateAgentApiKey(companyId);
   const revokeKey = useRevokeAgentApiKey(companyId);
 
@@ -138,6 +160,10 @@ export function AgentApiKeys({ companyId }: { companyId: string }) {
     }
   };
 
+  const handleLoadMore = () => {
+    fetchNextPage();
+  };
+
   const activeKeys = keys.filter((k) => !k.revokedAt);
   const revokedKeys = keys.filter((k) => k.revokedAt);
 
@@ -164,6 +190,20 @@ export function AgentApiKeys({ companyId }: { companyId: string }) {
         </div>
 
         <div className="p-6 space-y-4">
+          {/* Search input — debounced, triggers filtered query */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-secondary/40 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search keys by name or prefix…"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              className="w-full rounded-lg border border-white/[0.08] bg-surface/80 backdrop-blur-sm pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-secondary/40 outline-none transition-all duration-300 focus:border-neon-cyan/40 focus-visible:ring-2 focus-visible:ring-accent/40"
+              data-action="search-api-keys"
+              aria-label="Search API keys"
+            />
+          </div>
+
           {isLoading ? (
             <div className="flex h-24 items-center justify-center">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
@@ -171,9 +211,13 @@ export function AgentApiKeys({ companyId }: { companyId: string }) {
           ) : activeKeys.length === 0 && revokedKeys.length === 0 ? (
             <div className="py-8 text-center">
               <KeyRound className="h-8 w-8 text-text-secondary/30 mx-auto mb-3" />
-              <p className="text-sm text-text-secondary">No agent API keys yet.</p>
+              <p className="text-sm text-text-secondary">
+                {debouncedSearch ? 'No matching API keys found.' : 'No agent API keys yet.'}
+              </p>
               <p className="text-xs text-text-secondary/60 mt-1">
-                Create an API key to authenticate agents without a Clerk session.
+                {debouncedSearch
+                  ? 'Try a different search term.'
+                  : 'Create an API key to authenticate agents without a Clerk session.'}
               </p>
             </div>
           ) : (
@@ -197,6 +241,21 @@ export function AgentApiKeys({ companyId }: { companyId: string }) {
                     <KeyRow key={key.id} apiKey={key} isRevoking={false} onRevoke={() => {}} />
                   ))}
                 </>
+              )}
+
+              {/* Load More button — visible only when hasMore is true */}
+              {hasNextPage && (
+                <div className="pt-2 flex justify-center">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleLoadMore}
+                    loading={isFetchingNextPage}
+                    data-action="load-more-keys"
+                  >
+                    Load More
+                  </Button>
+                </div>
               )}
             </div>
           )}

@@ -340,6 +340,35 @@ export interface CreateAgentApiKeyInput {
 export const getAgentApiKeys = (companyId: string) =>
   request<AgentApiKey[]>(`/companies/${companyId}/agent-api-keys`);
 
+export interface AgentApiKeyPage {
+  data: AgentApiKey[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface AgentApiKeyPageParams {
+  cursor?: string;
+  limit?: number;
+  search?: string;
+}
+
+export const getAgentApiKeysPage = (companyId: string, params?: AgentApiKeyPageParams) => {
+  const qs = new URLSearchParams();
+  if (params?.cursor) {
+    qs.set('cursor', params.cursor);
+  }
+  if (params?.limit != null) {
+    qs.set('limit', String(params.limit));
+  }
+  if (params?.search) {
+    qs.set('search', params.search);
+  }
+  const query = qs.toString();
+  return request<AgentApiKeyPage>(
+    `/companies/${companyId}/agent-api-keys${query ? `?${query}` : ''}`,
+  );
+};
+
 export const createAgentApiKey = (companyId: string, data: CreateAgentApiKeyInput) =>
   request<CreatedAgentApiKey>(`/companies/${companyId}/agent-api-keys`, {
     method: 'POST',
