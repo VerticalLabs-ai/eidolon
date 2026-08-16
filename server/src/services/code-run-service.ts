@@ -26,7 +26,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CodeContentSchema, SUPPORTED_CODE_LANGUAGES, type CodeLanguage, formatArtifactValidationIssues, summarizeArtifactValidationIssues } from '@eidolon/shared';
+import {
+  CodeContentSchema,
+  SUPPORTED_CODE_LANGUAGES,
+  type CodeLanguage,
+  formatArtifactValidationIssues,
+  summarizeArtifactValidationIssues,
+} from '@eidolon/shared';
 import { getArtifact } from './artifact-service.js';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
@@ -82,11 +88,17 @@ function isSupportedLanguage(language: string): language is CodeLanguage {
 }
 
 /** Resolve which file to run for the artifact. */
-function resolveEntrypoint(content: { language: string; entrypoint?: string; files: { path: string; content: string }[] }): string {
+function resolveEntrypoint(content: {
+  language: string;
+  entrypoint?: string;
+  files: { path: string; content: string }[];
+}): string {
   const entry = content.entrypoint?.trim();
   if (entry) {
     const found = content.files.find((f) => f.path === entry);
-    if (found) return found.path;
+    if (found) {
+      return found.path;
+    }
   }
   // Fallback: first file.
   return content.files[0]?.path ?? '';
@@ -106,7 +118,9 @@ async function findExecutable(name: string): Promise<string | null> {
 function buildSanitizedEnv(sandboxRoot: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of SAFE_CHILD_ENV_KEYS) {
-    if (typeof process.env[key] === 'string') env[key] = process.env[key] as string;
+    if (typeof process.env[key] === 'string') {
+      env[key] = process.env[key] as string;
+    }
   }
   // Isolate HOME to the sandbox root so language runtimes do not read
   // host user config/credentials (e.g. ~/.npmrc, ~/.netrc, ~/.python_history).
@@ -122,7 +136,14 @@ function runChild(
   cwd: string,
   env: Record<string, string>,
   timeoutSec: number,
-): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; truncated: boolean; signal: NodeJS.Signals | null }> {
+): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  truncated: boolean;
+  signal: NodeJS.Signals | null;
+}> {
   return new Promise((resolve) => {
     let stdoutBuf = '';
     let stderrBuf = '';
@@ -134,10 +155,16 @@ function runChild(
     let settled = false;
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+      }
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
       resolve({ stdout: stdoutBuf, stderr: stderrBuf, exitCode, timedOut, truncated, signal });
     };
 
@@ -150,17 +177,28 @@ function runChild(
     });
 
     const appendChunk = (target: 'stdout' | 'stderr', chunk: Buffer) => {
+      if (truncated) {
+        return;
+      }
+
       outputBytes += chunk.length;
       if (outputBytes > MAX_OUTPUT_BYTES) {
         truncated = true;
-        // Stop reading; kill the child.
-        try { child.stdout?.pause(); child.stderr?.pause(); } catch { /* child already closed */ }
-        try { child.kill('SIGKILL'); } catch { /* child already exited */ }
+        // Keep draining both pipes after reaching the cap. Pausing them can
+        // prevent the child-process `close` event on Linux under heavy output.
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // Child already exited.
+        }
         return;
       }
       const text = chunk.toString('utf8');
-      if (target === 'stdout') stdoutBuf += text;
-      else stderrBuf += text;
+      if (target === 'stdout') {
+        stdoutBuf += text;
+      } else {
+        stderrBuf += text;
+      }
     };
 
     child.stdout?.on('data', (chunk: Buffer) => appendChunk('stdout', chunk));
@@ -177,9 +215,17 @@ function runChild(
     if (timeoutSec > 0) {
       timeoutTimer = setTimeout(() => {
         timedOut = true;
-        try { child.kill('SIGTERM'); } catch { /* child already exited */ }
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          /* child already exited */
+        }
         forceKillTimer = setTimeout(() => {
-          try { child.kill('SIGKILL'); } catch { /* child already exited */ }
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* child already exited */
+          }
         }, GRACE_SEC * 1000);
         forceKillTimer.unref?.();
       }, timeoutSec * 1000);
@@ -188,7 +234,11 @@ function runChild(
   });
 }
 
-async function runJavaScript(sandboxRoot: string, entryPath: string, timeoutSec: number): Promise<CodeRunResult> {
+async function runJavaScript(
+  sandboxRoot: string,
+  entryPath: string,
+  timeoutSec: number,
+): Promise<CodeRunResult> {
   const env = buildSanitizedEnv(sandboxRoot);
   // Load the sandbox shim before the user code so fs/env/spawn are locked
   // down. Enforce a heap cap so a runaway allocation cannot OOM the host
@@ -200,7 +250,10 @@ async function runJavaScript(sandboxRoot: string, entryPath: string, timeoutSec:
     artifactId: '',
     language: 'javascript',
     stdout: result.stdout,
-    stderr: result.timedOut && !result.stderr ? `Execution timed out after ${timeoutSec}s and was terminated.` : result.stderr,
+    stderr:
+      result.timedOut && !result.stderr
+        ? `Execution timed out after ${timeoutSec}s and was terminated.`
+        : result.stderr,
     exitCode: result.timedOut ? 124 : result.exitCode,
     timedOut: result.timedOut,
     durationMs: Date.now() - started,
@@ -208,7 +261,11 @@ async function runJavaScript(sandboxRoot: string, entryPath: string, timeoutSec:
   };
 }
 
-async function runTypeScript(sandboxRoot: string, entryPath: string, timeoutSec: number): Promise<CodeRunResult> {
+async function runTypeScript(
+  sandboxRoot: string,
+  entryPath: string,
+  timeoutSec: number,
+): Promise<CodeRunResult> {
   // Run TypeScript through tsx (esbuild-based loader) if available. tsx is the
   // dev server's transpiler — check node_modules/.bin/tsx (or the
   // EIDOLON_TSX_BIN_PATH override). When tsx is absent we do NOT fall back to a
@@ -219,7 +276,12 @@ async function runTypeScript(sandboxRoot: string, entryPath: string, timeoutSec:
     ? path.resolve(process.env.EIDOLON_TSX_BIN_PATH)
     : path.resolve(__dirname, '../../../node_modules/.bin/tsx');
   let tsxExists = false;
-  try { await fs.access(tsxBin); tsxExists = true; } catch { tsxExists = false; }
+  try {
+    await fs.access(tsxBin);
+    tsxExists = true;
+  } catch {
+    tsxExists = false;
+  }
 
   if (!tsxExists) {
     throw new AppError(
@@ -239,7 +301,10 @@ async function runTypeScript(sandboxRoot: string, entryPath: string, timeoutSec:
     artifactId: '',
     language: 'typescript',
     stdout: result.stdout,
-    stderr: result.timedOut && !result.stderr ? `Execution timed out after ${timeoutSec}s and was terminated.` : result.stderr,
+    stderr:
+      result.timedOut && !result.stderr
+        ? `Execution timed out after ${timeoutSec}s and was terminated.`
+        : result.stderr,
     exitCode: result.timedOut ? 124 : result.exitCode,
     timedOut: result.timedOut,
     durationMs: Date.now() - started,
@@ -247,10 +312,18 @@ async function runTypeScript(sandboxRoot: string, entryPath: string, timeoutSec:
   };
 }
 
-async function runPython(sandboxRoot: string, entryPath: string, timeoutSec: number): Promise<CodeRunResult> {
+async function runPython(
+  sandboxRoot: string,
+  entryPath: string,
+  timeoutSec: number,
+): Promise<CodeRunResult> {
   const pythonBin = (await findExecutable('python3')) ?? (await findExecutable('python'));
   if (!pythonBin) {
-    throw new AppError(422, 'RUNTIME_UNAVAILABLE', 'Python runtime (python3) is not available on the server.');
+    throw new AppError(
+      422,
+      'RUNTIME_UNAVAILABLE',
+      'Python runtime (python3) is not available on the server.',
+    );
   }
   const env = buildSanitizedEnv(sandboxRoot);
   // Python: isolate HOME (already set), and pass -S to skip site-packages
@@ -282,7 +355,10 @@ async function runPython(sandboxRoot: string, entryPath: string, timeoutSec: num
     artifactId: '',
     language: 'python',
     stdout: result.stdout,
-    stderr: result.timedOut && !result.stderr ? `Execution timed out after ${timeoutSec}s and was terminated.` : result.stderr,
+    stderr:
+      result.timedOut && !result.stderr
+        ? `Execution timed out after ${timeoutSec}s and was terminated.`
+        : result.stderr,
     exitCode: result.timedOut ? 124 : result.exitCode,
     timedOut: result.timedOut,
     durationMs: Date.now() - started,
@@ -300,7 +376,11 @@ export async function runCodeArtifact(
   db: DbInstance,
   companyId: string,
   artifactId: string,
-  editor: { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' },
+  editor: {
+    userId?: string | null;
+    agentId?: string | null;
+    editSource?: 'user' | 'agent' | 'system';
+  },
 ): Promise<CodeRunResult> {
   const artifact = await getArtifact(db, companyId, artifactId);
   if (artifact.type !== 'code') {
@@ -309,7 +389,12 @@ export async function runCodeArtifact(
   const parsed = CodeContentSchema.safeParse(artifact.content);
   if (!parsed.success) {
     const summary = summarizeArtifactValidationIssues(parsed.error);
-    throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Code content does not match the code schema${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
+    throw new AppError(
+      400,
+      'INVALID_ARTIFACT_CONTENT',
+      `Code content does not match the code schema${summary ? `: ${summary}` : ''}`,
+      formatArtifactValidationIssues(parsed.error),
+    );
   }
   const content = parsed.data;
   const language = content.language;
@@ -345,7 +430,11 @@ export async function runCodeArtifact(
         // Reject path traversal in file paths (the schema allows any path string).
         const rel = path.relative(sandboxRoot, target);
         if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
-          throw new AppError(400, 'INVALID_FILE_PATH', `File path "${file.path}" escapes the sandbox`);
+          throw new AppError(
+            400,
+            'INVALID_FILE_PATH',
+            `File path "${file.path}" escapes the sandbox`,
+          );
         }
         await fs.mkdir(targetDir, { recursive: true });
         await fs.writeFile(target, file.content, 'utf8');
@@ -386,6 +475,10 @@ export async function runCodeArtifact(
     return result;
   } finally {
     // Best-effort cleanup of the sandbox directory.
-    try { await fs.rm(sandboxRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      await fs.rm(sandboxRoot, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
 }

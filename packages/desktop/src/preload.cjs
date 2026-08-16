@@ -7,11 +7,13 @@ const TRUSTED_APP_HOSTS = new Set([
 const TRUSTED_APP_ORIGINS = new Set();
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const preloadEnv = globalThis.process?.env ?? {};
-const DEFAULT_APP_URL = "http://localhost:3100";
+const DEFAULT_APP_URL = "https://eidolon.verticallabs.ai";
 
 function normalizeHost(value) {
   const trimmed = value?.trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    return null;
+  }
 
   try {
     const url = trimmed.includes("://")
@@ -25,12 +27,16 @@ function normalizeHost(value) {
 
 function addTrustedHost(value) {
   const host = normalizeHost(value);
-  if (host) TRUSTED_APP_HOSTS.add(host);
+  if (host) {
+    TRUSTED_APP_HOSTS.add(host);
+  }
 }
 
 function normalizeOrigin(value) {
   const trimmed = value?.trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    return null;
+  }
 
   try {
     const url = trimmed.includes("://")
@@ -44,7 +50,9 @@ function normalizeOrigin(value) {
 
 function addTrustedOrigin(value) {
   const origin = normalizeOrigin(value);
-  if (origin) TRUSTED_APP_ORIGINS.add(origin);
+  if (origin) {
+    TRUSTED_APP_ORIGINS.add(origin);
+  }
 }
 
 function formatOriginHost(hostname) {
