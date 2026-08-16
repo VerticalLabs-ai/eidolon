@@ -510,8 +510,53 @@ export function transferOwnershipRouter(
         previousOwnerMemberId = currentOwner.id;
         previousOwnerUserId = currentOwner.userId;
 
-        // (3) Find the target member by ID/userId with local_trusted fallback
-        const targetMember = await findMember(db, isLocalTrusted, companyId, body.targetMemberId);
+        // (3) Find the target member INSIDE the transaction using tx.
+        // Only look in company_members — ownership transfer requires a
+        // persisted company_members row. Session-only targets (found in
+        // local_trusted_sessions but not company_members) are rejected
+        // with 404 MEMBER_NOT_FOUND (ISSUE 1 fix).
+        //
+        // The lookup is transaction-bound so that a concurrent target
+        // removal is visible to the subsequent promotion UPDATE within
+        // the same transaction (ISSUE 2a fix).
+        let targetMember: {
+          id: string;
+          userId: string;
+          role: string;
+          createdAt: Date;
+        } | null = null;
+
+        // Try by primary key (company_members.id)
+        const [byId] = await tx
+          .select()
+          .from(companyMembers)
+          .where(
+            and(
+              eq(companyMembers.companyId, companyId),
+              eq(companyMembers.id, body.targetMemberId),
+            ),
+          )
+          .limit(1);
+        if (byId) {
+          targetMember = byId;
+        }
+
+        // Fall back to userId lookup
+        if (!targetMember) {
+          const [byUserId] = await tx
+            .select()
+            .from(companyMembers)
+            .where(
+              and(
+                eq(companyMembers.companyId, companyId),
+                eq(companyMembers.userId, body.targetMemberId),
+              ),
+            )
+            .limit(1);
+          if (byUserId) {
+            targetMember = byUserId;
+          }
+        }
 
         // (4) Validate target
         if (!targetMember) {
@@ -531,20 +576,32 @@ export function transferOwnershipRouter(
         }
 
         newOwnerUserId = targetMember.userId;
-        newOwnerMemberId = targetMember.fromCompanyMembers ? targetMember.id : '';
+        newOwnerMemberId = targetMember.id;
 
         // (5) Promote target to owner, demote current to admin
-        // Update the target member's role to owner
-        if (targetMember.fromCompanyMembers) {
-          await tx
-            .update(companyMembers)
-            .set({ role: 'owner', updatedAt: new Date() })
-            .where(
-              and(
-                eq(companyMembers.companyId, companyId),
-                eq(companyMembers.userId, targetMember.userId),
-              ),
-            );
+        // Promote the target member's role to owner and verify at least
+        // one row was affected. If the target was concurrently removed
+        // (e.g., by a DELETE in another transaction that committed
+        // between the lookup and this UPDATE), the promotion is a no-op
+        // (0 rows). Throw inside the transaction to roll back — do NOT
+        // proceed with demoting the owner (ISSUE 2b fix).
+        const promoted = await tx
+          .update(companyMembers)
+          .set({ role: 'owner', updatedAt: new Date() })
+          .where(
+            and(
+              eq(companyMembers.companyId, companyId),
+              eq(companyMembers.userId, targetMember.userId),
+            ),
+          )
+          .returning({ id: companyMembers.id });
+
+        if (promoted.length === 0) {
+          throw new AppError(
+            404,
+            'MEMBER_NOT_FOUND',
+            'Target member was concurrently removed — transfer rolled back',
+          );
         }
 
         // Demote the current owner to admin
@@ -606,21 +663,6 @@ export function transferOwnershipRouter(
 
       // After transaction: revoke step-up sessions for the demoted owner
       await revokeUserStepUps(db, previousOwnerUserId);
-
-      // Look up the new owner's company_members.id if not already set
-      // (e.g., when the target was found via local_trusted_sessions fallback)
-      if (!newOwnerMemberId) {
-        const [newOwnerRow] = await db.drizzle
-          .select({ id: companyMembers.id })
-          .from(companyMembers)
-          .where(
-            and(eq(companyMembers.companyId, companyId), eq(companyMembers.userId, newOwnerUserId)),
-          )
-          .limit(1);
-        if (newOwnerRow) {
-          newOwnerMemberId = newOwnerRow.id;
-        }
-      }
 
       // Insert audit entry
       await db.drizzle.insert(db.schema.activityLog).values({

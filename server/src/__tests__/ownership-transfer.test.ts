@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import { createTestDb, createTestServer } from '../test-utils.js';
 import type { DbInstance } from '../types.js';
 
@@ -780,6 +780,137 @@ describe('Ownership Transfer', () => {
         .send({ role: 'member' })
         .expect(403);
       expect(prevOwnerAction.body.code).toBe('INSUFFICIENT_PERMISSION');
+    });
+  });
+
+  // =========================================================================
+  // ISSUE 1 FIX: Session-only targets (found in local_trusted_sessions but
+  // NOT in company_members) must be rejected with 404 MEMBER_NOT_FOUND.
+  // Ownership transfer requires a persisted company_members row.
+  // =========================================================================
+
+  describe('ISSUE 1: session-only target rejected', () => {
+    it('target found only in local_trusted_sessions gets 404 MEMBER_NOT_FOUND', async () => {
+      // Create a local_trusted session WITHOUT a company_members row
+      await db.drizzle.insert(db.schema.localTrustedSessions).values({
+        companyId,
+        userId: 'session-only-target',
+        role: 'member',
+      });
+
+      // Verify no company_members row exists for this user
+      const membership = await getMembership('session-only-target');
+      expect(membership).toBeNull();
+
+      // Transfer should be rejected with 404
+      const res = await request(app)
+        .post(url('/transfer-ownership'))
+        .set(roleHeader('owner'))
+        .send({ targetMemberId: 'session-only-target' })
+        .expect(404);
+
+      expect(res.body.code).toBe('MEMBER_NOT_FOUND');
+
+      // Owner remains owner — no demotion occurred
+      const owner = await getMembership('dev-user-000');
+      expect(owner?.role).toBe('owner');
+
+      // No audit entry was written
+      const auditCount = await countAuditEntries('ownership.transferred');
+      expect(auditCount).toBe(0);
+    });
+
+    it('session-only target by UUID (session id) gets 404 MEMBER_NOT_FOUND', async () => {
+      // Create a local_trusted session and use its id as targetMemberId
+      const sessionResult = await db.drizzle
+        .insert(db.schema.localTrustedSessions)
+        .values({
+          companyId,
+          userId: 'session-only-uuid-target',
+          role: 'member',
+        })
+        .returning({ id: db.schema.localTrustedSessions.id });
+
+      const sessionId = sessionResult[0].id;
+
+      // Verify no company_members row exists
+      const membership = await getMembership('session-only-uuid-target');
+      expect(membership).toBeNull();
+
+      // Transfer targeting the session id should be rejected
+      const res = await request(app)
+        .post(url('/transfer-ownership'))
+        .set(roleHeader('owner'))
+        .send({ targetMemberId: sessionId })
+        .expect(404);
+
+      expect(res.body.code).toBe('MEMBER_NOT_FOUND');
+
+      // Owner remains owner
+      const owner = await getMembership('dev-user-000');
+      expect(owner?.role).toBe('owner');
+    });
+  });
+
+  // =========================================================================
+  // ISSUE 2 FIX: Target lookup must be transaction-bound (using tx, not db),
+  // and the promotion update must verify at least one row was affected.
+  // If the target is concurrently removed (promotion affects 0 rows), the
+  // transaction must roll back — no demotion of the current owner.
+  // =========================================================================
+
+  describe('ISSUE 2: concurrent target removal causes rollback', () => {
+    it('if promotion affects 0 rows (target concurrently removed), owner is not demoted', async () => {
+      await seedMember('concurrent-remove-target', 'member');
+
+      // Create a BEFORE UPDATE trigger that returns NULL for the target's
+      // promotion, simulating a concurrent removal that makes the UPDATE
+      // a no-op (0 rows affected in .returning()).
+      await db.drizzle.execute(sql`
+        CREATE OR REPLACE FUNCTION test_skip_promotion() RETURNS trigger AS $$
+        BEGIN
+          RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql
+      `);
+      await db.drizzle.execute(sql`
+        CREATE TRIGGER test_skip_promotion_trigger
+        BEFORE UPDATE ON company_members
+        FOR EACH ROW
+        WHEN (NEW.role = 'owner' AND OLD.role != 'owner' AND NEW.user_id = 'concurrent-remove-target')
+        EXECUTE FUNCTION test_skip_promotion()
+      `);
+
+      try {
+        const res = await request(app)
+          .post(url('/transfer-ownership'))
+          .set(roleHeader('owner'))
+          .send({ targetMemberId: 'concurrent-remove-target' })
+          .expect(404);
+
+        expect(res.body.code).toBe('MEMBER_NOT_FOUND');
+
+        // Owner was NOT demoted — transaction rolled back
+        const owner = await getMembership('dev-user-000');
+        expect(owner?.role).toBe('owner');
+
+        // Target was NOT promoted — still member
+        const target = await getMembership('concurrent-remove-target');
+        expect(target?.role).toBe('member');
+
+        // Exactly one owner (the original)
+        const owners = await countOwners();
+        expect(owners).toBe(1);
+
+        // No audit entry was written
+        const auditCount = await countAuditEntries('ownership.transferred');
+        expect(auditCount).toBe(0);
+      } finally {
+        await db.drizzle.execute(
+          sql`DROP TRIGGER IF EXISTS test_skip_promotion_trigger ON company_members`,
+        );
+        await db.drizzle.execute(sql`DROP FUNCTION IF EXISTS test_skip_promotion()`);
+      }
     });
   });
 });
