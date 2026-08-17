@@ -17,6 +17,7 @@ tags:
   - name: Projects
   - name: Tasks
   - name: Goals
+  - name: Privacy
 security:
   - clerkCookie: []
 paths:
@@ -281,6 +282,91 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Goal'
+  /api/companies/{companyId}/privacy/subjects/{userId}/export:
+    parameters:
+      - $ref: '#/components/parameters/CompanyId'
+      - $ref: '#/components/parameters/SubjectUserId'
+    get:
+      tags: [Privacy]
+      summary: Export the personal data held for a subject
+      description: |
+        Owner only (`privacy.manage`). Returns every row in this company that
+        references the subject, table by table. Authentication material (MFA
+        factors and session rows) is deliberately excluded.
+
+        The subject must already be a member of the named company; any other
+        subject returns 404 so an owner cannot probe membership elsewhere.
+        Responses are sent with `Cache-Control: no-store`.
+      responses:
+        '200':
+          description: Subject data export
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SubjectExport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller is not an owner of this company
+        '404':
+          description: No such subject in this company
+  /api/companies/{companyId}/privacy/subjects/{userId}/erase:
+    parameters:
+      - $ref: '#/components/parameters/CompanyId'
+      - $ref: '#/components/parameters/SubjectUserId'
+    post:
+      tags: [Privacy]
+      summary: Erase the personal data held for a subject
+      description: |
+        Owner only (`privacy.manage`). Irreversible. Deletes rows that exist only
+        to describe the subject, nulls attribution on company work product, and
+        pseudonymises audit and NOT NULL references.
+
+        Check `remainingReferences` in the response: any non-zero value means the
+        erasure was incomplete. Identity itself lives in Clerk and must be deleted
+        there as well.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmSubject]
+              properties:
+                confirmSubject:
+                  type: string
+                  description: Must equal the `userId` path parameter.
+                email:
+                  type: string
+                  format: email
+                  description: |
+                    Only needed for a pending invitation, which is keyed by email
+                    and has no user id to match on.
+      responses:
+        '200':
+          description: Erasure report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ErasureReport'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller is not an owner of this company
+        '404':
+          description: No such subject in this company
+        '409':
+          description: An owner cannot erase their own subject data
 components:
   securitySchemes:
     clerkCookie:
@@ -295,6 +381,13 @@ components:
       schema:
         type: string
         format: uuid
+    SubjectUserId:
+      name: userId
+      in: path
+      required: true
+      description: External identity provider user id.
+      schema:
+        type: string
   responses:
     Unauthorized:
       description: Authentication is required
@@ -490,15 +583,80 @@ components:
           nullable: true
         status:
           type: string
+    SubjectExport:
+      type: object
+      required: [subject, companyId, generatedAt, tables, totalRows]
+      properties:
+        subject:
+          type: string
+        companyId:
+          type: string
+          format: uuid
+        generatedAt:
+          type: string
+          format: date-time
+        totalRows:
+          type: integer
+        tables:
+          type: array
+          items:
+            type: object
+            required: [table, column, rows]
+            properties:
+              table:
+                type: string
+              column:
+                type: string
+                description: The column in that table holding the subject id.
+              rows:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+    ErasureReport:
+      type: object
+      required: [companyId, pseudonym, erasedAt, actions, rowsAffected, remainingReferences]
+      properties:
+        companyId:
+          type: string
+          format: uuid
+        pseudonym:
+          type: string
+          description: Irreversible per-company identifier that replaced the subject id.
+        erasedAt:
+          type: string
+          format: date-time
+        rowsAffected:
+          type: integer
+        remainingReferences:
+          type: integer
+          description: |
+            Rows still referencing the subject after erasure, re-counted from the
+            database. Any value other than 0 means the erasure was incomplete.
+        actions:
+          type: array
+          items:
+            type: object
+            required: [table, column, strategy, rowsAffected]
+            properties:
+              table:
+                type: string
+              column:
+                type: string
+              strategy:
+                type: string
+                enum: [delete, 'null', pseudonymise]
+              rowsAffected:
+                type: integer
     ErrorResponse:
       type: object
-      required: [error]
+      required: [status, code, message]
       properties:
-        error:
-          type: object
-          required: [code, message]
-          properties:
-            code:
-              type: string
-            message:
-              type: string
+        status:
+          type: integer
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          description: Present for validation errors.

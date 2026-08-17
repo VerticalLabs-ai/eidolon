@@ -7,6 +7,11 @@ on:
         description: HTTPS URL for a disposable or staging deployment. Production is rejected.
         required: true
         type: string
+  schedule:
+    # Weekly, against the DAST_TARGET_URL repository variable. When that variable
+    # is unset the run skips with a notice instead of failing: an operator who has
+    # not chosen a scan target has not broken anything.
+    - cron: '33 5 * * 2'
 
 permissions:
   contents: read
@@ -16,28 +21,44 @@ jobs:
     name: OWASP ZAP baseline scan
     runs-on: ubuntu-latest
     steps:
-      - name: Validate target
-        env:
-          TARGET_URL: ${{ inputs.target_url }}
-        run: |
-          case "$TARGET_URL" in
-            https://*) ;;
-            *)
-              echo "::error::DAST target must use HTTPS"
-              exit 1
-              ;;
-          esac
+      - name: Checkout
+        uses: actions/checkout@v4
 
-          case "$TARGET_URL" in
-            https://eidolon.verticallabs.ai|https://eidolon.verticallabs.ai/*)
-              echo "::error::DAST refuses to scan the production hostname"
-              exit 1
-              ;;
-          esac
+      - name: Validate target
+        id: target
+        env:
+          TARGET_URL: ${{ inputs.target_url || vars.DAST_TARGET_URL }}
+        run: node scripts/validate-dast-target.mjs "$TARGET_URL"
 
       - name: OWASP ZAP baseline scan
+        if: steps.target.outputs.configured == 'true'
         uses: zaproxy/action-baseline@v0.14.0
         with:
-          target: ${{ inputs.target_url }}
+          target: ${{ steps.target.outputs.target }}
           fail_action: true
           allow_issue_writing: false
+
+      # Runs even when the scan fails, because a scan that found something is
+      # exactly the run whose report needs keeping.
+      - name: Upload ZAP report
+        if: always() && steps.target.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-baseline-report
+          path: |
+            report_html.html
+            report_md.md
+            report_json.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Note skipped scan
+        if: steps.target.outputs.configured != 'true'
+        run: |
+          {
+            echo '## DAST skipped'
+            echo
+            echo 'No scan target is configured. Set the `DAST_TARGET_URL` repository'
+            echo 'variable to a non-production HTTPS deployment to enable the scheduled'
+            echo 'scan, or run this workflow manually with a target.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -87,13 +87,15 @@ Eidolon ships an enterprise security layer documented in [`SECURITY.md`](SECURIT
 - **Encryption-at-rest** — Artifact content and the secrets vault are encrypted with AES-256-GCM. Key rotation re-encrypts content in place without data loss.
 - **Audit logging** — Security-relevant actions (auth, MFA, role changes, ownership transfers, invitation creation/revocation/acceptance, key rotation, secret access, agent API key creation/revocation) are written to the audit log with actor, entity, and timestamp.
 - **Rate limiting on auth-sensitive endpoints** — Auth-sensitive endpoints are rate-limited to blunt brute-force and credential-stuffing attempts.
+- **Subject access and erasure** — Owner-only endpoints export or erase the personal data held for one subject in one company. Erasure deletes rows that only describe the person, strips attribution from company work product, and pseudonymises audit references so the trail stays intact without naming anyone. The inventory of user-referencing columns is enforced by a test that re-derives it from the schema, so a new table cannot quietly escape erasure. See [`docs/security/data-handling.md`](docs/security/data-handling.md) and [`docs/runbooks/security.md`](docs/runbooks/security.md).
+- **Security scanning evidence** — CodeQL writes a readable severity summary to each run (plus a 30-day artifact) instead of leaving reviewers to read SARIF, and the weekly DAST run validates its target and refuses production, HTTP, or credential-bearing URLs before OWASP ZAP starts.
 
 ## Role-Based Access Control
 
 Eidolon ships a company-scoped RBAC system that governs every company-scoped route and surface.
 
 - **Four roles** — **Owner** (full access, including company deletion and owner management), **Admin** (most permissions except company deletion/owner management), **Member** (read/write within the company, no member management), and **Viewer** (read-only).
-- **29 permissions** enforced via middleware (`requirePermission`, `requirePermissionByMethod`) across all company-scoped routes. The permission matrix in `server/src/middleware/permissions.ts` maps each role to its allowed permissions.
+- **30 permissions** enforced via middleware (`requirePermission`, `requirePermissionByMethod`) across all company-scoped routes. The permission matrix in `server/src/middleware/permissions.ts` maps each role to its allowed permissions.
 - **Membership table** — Authorization decisions use the `company_members` table rather than Clerk org membership. Clerk is now auth-only; all role/permission checks resolve against `company_members`.
 - **Invitation system** — Owners and admins invite users by email with a chosen role. Invitations expire after 7 days. The Clerk webhook (`/api/webhooks/clerk`) auto-activates pending invitations when the invited user signs up, and logs an `invitation.accepted` audit entry.
 - **Ownership transfer** — An owner can transfer ownership to another company member via `POST /api/companies/:id/transfer-ownership`. This atomically promotes the target to owner and demotes the current owner to admin in a single transaction, with step-up session revocation and an `ownership.transferred` audit entry.
@@ -279,52 +281,54 @@ Project ownership is canonical across context and execution: migrations 0011 and
 
 All endpoints under `/api`. See the per-route source for full schemas.
 
-| Endpoint                                               | Description                                                                                                                              |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/companies`                                   | List companies                                                                                                                           |
-| `POST /api/companies`                                  | Create company                                                                                                                           |
-| `GET /api/adapters`                                    | Provider adapter manifest with capability flags                                                                                          |
-| `GET /api/runtime/adapters`                            | Provider, process, HTTP, OpenClaw, MCP, and OpenJarvis-local runtime descriptors                                                         |
-| `GET /api/companies/:id/agents`                        | List agents                                                                                                                              |
-| `POST /api/companies/:id/agents`                       | Hire agent                                                                                                                               |
-| `POST /api/companies/:id/agents/:agentId/wake`         | Wake an idle agent for immediate task assignment                                                                                         |
-| `GET /api/companies/:id/agents/:agentId/executions`    | Execution history with transcripts                                                                                                       |
-| `POST /api/companies/:id/agents/:agentId/execute`      | Run agent on a task (supports `?mode=loop`)                                                                                              |
-| `POST /api/companies/:id/sessions`                     | Create a durable runtime session                                                                                                         |
-| `POST /api/companies/:id/sessions/:sessionId/run`      | Run a prompt through a configured local process, HTTP, or OpenClaw runtime                                                               |
-| `POST /api/companies/:id/sessions/:sessionId/test`     | Validate a configured process, HTTP, or OpenClaw runtime                                                                                 |
-| `POST /api/companies/:id/sessions/:sessionId/cancel`   | Cancel a runtime session                                                                                                                 |
-| `POST /api/companies/:id/sessions/:sessionId/finalize` | Finalize a runtime session and release its workspace                                                                                     |
-| `POST /api/companies/:id/skills/install`               | Install/update a company skill and optionally assign it to agents                                                                        |
-| `POST /api/companies/:id/routines`                     | Create a scheduled, continuous, or on-demand Jarvis routine                                                                              |
-| `GET /api/companies/:id/automations`                   | List routines, workflows, and webhooks in one canonical automation list                                                                  |
-| `GET /api/companies/:id/automations/runs`              | List cross-automation run history with type, status, and project filters                                                                 |
-| `GET /api/companies/:id/automations/:type/:id/runs`    | List runs for one routine, workflow, or webhook                                                                                          |
-| `GET /api/companies/:id/integrations/health`           | Aggregate integration and MCP server health                                                                                              |
-| `POST /api/companies/:id/mcp/servers/:id/health`       | Re-check health for an MCP server                                                                                                        |
-| `GET /api/companies/:id/tasks`                         | List tasks                                                                                                                               |
-| `POST /api/companies/:id/tasks`                        | Create task                                                                                                                              |
-| `POST /api/companies/:id/tasks/:taskId/checkout`       | Atomically check out a task for an agent execution                                                                                       |
-| `GET /api/companies/:id/goals`                         | Goal tree                                                                                                                                |
-| `GET /api/companies/:id/projects/:projectId/home`      | Composed project-home summary (counts, task breakdown, active/needs-attention/failed work, recent activity, recent files, goal progress) |
-| `GET /api/companies/:id/files?project=:projectId`      | List files scoped to a project (nullable projectId on agent_files)                                                                       |
-| `GET /api/companies/:id/approvals`                     | List approvals                                                                                                                           |
-| `POST /api/companies/:id/approvals/:id/decide`         | Approve / reject                                                                                                                         |
-| `GET /api/companies/:id/inbox`                         | Unified feed                                                                                                                             |
-| `GET /api/companies/:id/analytics/*`                   | Analytics endpoints                                                                                                                      |
-| `GET /api/companies/:id/my-role`                       | Get current user's role in company                                                                                                       |
-| `GET /api/companies/:id/members`                       | List company members                                                                                                                     |
-| `PATCH /api/companies/:id/members/:memberId`           | Change member role (owner only)                                                                                                          |
-| `POST /api/companies/:id/transfer-ownership`           | Transfer ownership to another member (owner only, atomic)                                                                                |
-| `DELETE /api/companies/:id/members/:memberId`          | Remove member (owner/admin only)                                                                                                         |
-| `GET /api/companies/:id/invitations`                   | List invitations                                                                                                                         |
-| `POST /api/companies/:id/invitations`                  | Create invitation                                                                                                                        |
-| `DELETE /api/companies/:id/invitations/:id`            | Revoke invitation                                                                                                                        |
-| `GET /api/companies/:id/agent-api-keys`                | List agent API keys (cursor pagination, search)                                                                                          |
-| `POST /api/companies/:id/agent-api-keys`               | Create agent API key                                                                                                                     |
-| `DELETE /api/companies/:id/agent-api-keys/:id`         | Revoke agent API key                                                                                                                     |
-| `POST /api/webhooks/clerk`                             | Clerk webhook for invitation activation                                                                                                  |
-| `WS /ws`                                               | Real-time events                                                                                                                         |
+| Endpoint                                                 | Description                                                                                                                              |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/companies`                                     | List companies                                                                                                                           |
+| `POST /api/companies`                                    | Create company                                                                                                                           |
+| `GET /api/adapters`                                      | Provider adapter manifest with capability flags                                                                                          |
+| `GET /api/runtime/adapters`                              | Provider, process, HTTP, OpenClaw, MCP, and OpenJarvis-local runtime descriptors                                                         |
+| `GET /api/companies/:id/agents`                          | List agents                                                                                                                              |
+| `POST /api/companies/:id/agents`                         | Hire agent                                                                                                                               |
+| `POST /api/companies/:id/agents/:agentId/wake`           | Wake an idle agent for immediate task assignment                                                                                         |
+| `GET /api/companies/:id/agents/:agentId/executions`      | Execution history with transcripts                                                                                                       |
+| `POST /api/companies/:id/agents/:agentId/execute`        | Run agent on a task (supports `?mode=loop`)                                                                                              |
+| `POST /api/companies/:id/sessions`                       | Create a durable runtime session                                                                                                         |
+| `POST /api/companies/:id/sessions/:sessionId/run`        | Run a prompt through a configured local process, HTTP, or OpenClaw runtime                                                               |
+| `POST /api/companies/:id/sessions/:sessionId/test`       | Validate a configured process, HTTP, or OpenClaw runtime                                                                                 |
+| `POST /api/companies/:id/sessions/:sessionId/cancel`     | Cancel a runtime session                                                                                                                 |
+| `POST /api/companies/:id/sessions/:sessionId/finalize`   | Finalize a runtime session and release its workspace                                                                                     |
+| `POST /api/companies/:id/skills/install`                 | Install/update a company skill and optionally assign it to agents                                                                        |
+| `POST /api/companies/:id/routines`                       | Create a scheduled, continuous, or on-demand Jarvis routine                                                                              |
+| `GET /api/companies/:id/automations`                     | List routines, workflows, and webhooks in one canonical automation list                                                                  |
+| `GET /api/companies/:id/automations/runs`                | List cross-automation run history with type, status, and project filters                                                                 |
+| `GET /api/companies/:id/automations/:type/:id/runs`      | List runs for one routine, workflow, or webhook                                                                                          |
+| `GET /api/companies/:id/integrations/health`             | Aggregate integration and MCP server health                                                                                              |
+| `POST /api/companies/:id/mcp/servers/:id/health`         | Re-check health for an MCP server                                                                                                        |
+| `GET /api/companies/:id/tasks`                           | List tasks                                                                                                                               |
+| `POST /api/companies/:id/tasks`                          | Create task                                                                                                                              |
+| `POST /api/companies/:id/tasks/:taskId/checkout`         | Atomically check out a task for an agent execution                                                                                       |
+| `GET /api/companies/:id/goals`                           | Goal tree                                                                                                                                |
+| `GET /api/companies/:id/projects/:projectId/home`        | Composed project-home summary (counts, task breakdown, active/needs-attention/failed work, recent activity, recent files, goal progress) |
+| `GET /api/companies/:id/files?project=:projectId`        | List files scoped to a project (nullable projectId on agent_files)                                                                       |
+| `GET /api/companies/:id/approvals`                       | List approvals                                                                                                                           |
+| `POST /api/companies/:id/approvals/:id/decide`           | Approve / reject                                                                                                                         |
+| `GET /api/companies/:id/inbox`                           | Unified feed                                                                                                                             |
+| `GET /api/companies/:id/analytics/*`                     | Analytics endpoints                                                                                                                      |
+| `GET /api/companies/:id/my-role`                         | Get current user's role in company                                                                                                       |
+| `GET /api/companies/:id/members`                         | List company members                                                                                                                     |
+| `PATCH /api/companies/:id/members/:memberId`             | Change member role (owner only)                                                                                                          |
+| `POST /api/companies/:id/transfer-ownership`             | Transfer ownership to another member (owner only, atomic)                                                                                |
+| `DELETE /api/companies/:id/members/:memberId`            | Remove member (owner/admin only)                                                                                                         |
+| `GET /api/companies/:id/invitations`                     | List invitations                                                                                                                         |
+| `POST /api/companies/:id/invitations`                    | Create invitation                                                                                                                        |
+| `DELETE /api/companies/:id/invitations/:id`              | Revoke invitation                                                                                                                        |
+| `GET /api/companies/:id/agent-api-keys`                  | List agent API keys (cursor pagination, search)                                                                                          |
+| `POST /api/companies/:id/agent-api-keys`                 | Create agent API key                                                                                                                     |
+| `DELETE /api/companies/:id/agent-api-keys/:id`           | Revoke agent API key                                                                                                                     |
+| `GET /api/companies/:id/privacy/subjects/:userId/export` | Export the personal data held for one subject (owner only)                                                                               |
+| `POST /api/companies/:id/privacy/subjects/:userId/erase` | Erase a subject's personal data; irreversible (owner only)                                                                               |
+| `POST /api/webhooks/clerk`                               | Clerk webhook for invitation activation                                                                                                  |
+| `WS /ws`                                                 | Real-time events                                                                                                                         |
 
 ## Deployment
 

@@ -9,9 +9,12 @@ import {
 
 describe('RBAC permission matrix', () => {
   it('contains the complete permission set', () => {
-    expect(Object.keys(PERMISSION_MATRIX)).toHaveLength(29);
+    expect(Object.keys(PERMISSION_MATRIX)).toHaveLength(30);
     expect(PERMISSION_MATRIX['company.view']).toEqual(['owner', 'admin', 'member', 'viewer']);
     expect(PERMISSION_MATRIX['member.promote']).toEqual(['owner']);
+    // Subject export returns personal data and erasure is irreversible, so this
+    // must never widen to admin.
+    expect(PERMISSION_MATRIX['privacy.manage']).toEqual(['owner']);
   });
 
   it.each([

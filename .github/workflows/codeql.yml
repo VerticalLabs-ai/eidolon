@@ -30,6 +30,28 @@ jobs:
         uses: github/codeql-action/autobuild@v3
 
       - name: Analyze
+        id: analyze
         uses: github/codeql-action/analyze@v3
         with:
           category: '/language:javascript-typescript'
+          # Keep the SARIF locally as well as uploading it to the security tab,
+          # so the summary below has something to read.
+          output: sarif-results
+
+      # Reporting only, and additive: `if: always()` lets a failed analysis still
+      # produce a summary without masking the failure, since a failed step keeps
+      # the job red.
+      - name: Summarize findings
+        if: always() && hashFiles('sarif-results/*.sarif') != ''
+        run: node scripts/summarize-sarif.mjs sarif-results --out security-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload security summary
+        if: always() && hashFiles('sarif-results/*.sarif') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-security-summary
+          path: |
+            security-summary.md
+            sarif-results/*.sarif
+          retention-days: 30
+          if-no-files-found: warn
