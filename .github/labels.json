@@ -1,0 +1,133 @@
+{
+  "$comment": "Source of truth for the Eidolon issue label taxonomy. Apply with `pnpm labels:sync`, check for drift with `pnpm labels:check`. Documented in docs/delivery/labels.md. Prefixed names mirror the Linear EID team so an issue means the same thing in both systems.",
+  "labels": [
+    {
+      "name": "type/bug",
+      "color": "d73a4a",
+      "description": "Behaviour is wrong relative to a documented or intended contract"
+    },
+    {
+      "name": "type/feature",
+      "color": "0e8a16",
+      "description": "New user- or operator-visible capability"
+    },
+    {
+      "name": "type/improvement",
+      "color": "1d76db",
+      "description": "Existing capability made better without changing its contract"
+    },
+    {
+      "name": "type/chore",
+      "color": "c5def5",
+      "description": "Maintenance with no behaviour change: dependencies, cleanup, tooling"
+    },
+    {
+      "name": "type/docs",
+      "color": "0075ca",
+      "description": "Documentation, runbooks, or agent instructions"
+    },
+    {
+      "name": "type/security",
+      "color": "b60205",
+      "description": "Security or privacy control, hardening, or vulnerability fix"
+    },
+    {
+      "name": "type/test",
+      "color": "bfd4f2",
+      "description": "Test coverage, test infrastructure, or test reliability"
+    },
+
+    {
+      "name": "area/server",
+      "color": "5319e7",
+      "description": "server/ — Express API, services, middleware"
+    },
+    {
+      "name": "area/ui",
+      "color": "8250df",
+      "description": "ui/ — React web application"
+    },
+    {
+      "name": "area/desktop",
+      "color": "a371f7",
+      "description": "packages/desktop — Electron shell and local runtime companion"
+    },
+    {
+      "name": "area/mcp",
+      "color": "c297ff",
+      "description": "packages/mcp-server and MCP client integration"
+    },
+    {
+      "name": "area/db",
+      "color": "006b75",
+      "description": "packages/db — schema, Drizzle migrations, query performance"
+    },
+    {
+      "name": "area/ci",
+      "color": "fbca04",
+      "description": "GitHub Actions, lint, formatting, dead-code, and release automation"
+    },
+    {
+      "name": "area/docs",
+      "color": "d4c5f9",
+      "description": "docs/, README, AGENTS.md"
+    },
+    {
+      "name": "area/observability",
+      "color": "f9d0c4",
+      "description": "Health, metrics, tracing, logging, alerting, profiling"
+    },
+    {
+      "name": "area/security",
+      "color": "e99695",
+      "description": "Authentication, authorisation, secrets, privacy, scanning"
+    },
+    {
+      "name": "area/delivery",
+      "color": "fef2c0",
+      "description": "Backlog hygiene, labels, feature flags, rollout, dependency management"
+    },
+
+    {
+      "name": "priority/urgent",
+      "color": "b60205",
+      "description": "Active harm or legal exposure. Work starts now (Linear priority 1)"
+    },
+    {
+      "name": "priority/high",
+      "color": "d93f0b",
+      "description": "Blocks a committed outcome or leaves a known gap open (Linear priority 2)"
+    },
+    {
+      "name": "priority/medium",
+      "color": "fbca04",
+      "description": "Clear value, no deadline pressure (Linear priority 3)"
+    },
+    {
+      "name": "priority/low",
+      "color": "c2e0c6",
+      "description": "Worth doing when convenient (Linear priority 4)"
+    },
+
+    {
+      "name": "stale",
+      "color": "cfd3d7",
+      "description": "No activity for 60 days; applied by the issue-hygiene workflow"
+    },
+    {
+      "name": "sentry",
+      "color": "6f42c1",
+      "description": "Created from Sentry error tracking"
+    },
+    {
+      "name": "pinned",
+      "color": "ededed",
+      "description": "Exempt from stale marking"
+    },
+    {
+      "name": "duplicate",
+      "color": "cfd3d7",
+      "description": "Already tracked by another issue"
+    }
+  ]
+}

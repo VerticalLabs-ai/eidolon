@@ -4,6 +4,7 @@ Use these procedures for local development and production incidents:
 
 - [Deployment and rollback](deployment.md)
 - [Incident response](incident.md)
+- [Feature flag rollout and rollback](feature-flags.md)
 - [Security and DAST](security.md)
 
 Production access, Clerk/Vercel configuration, and provider credentials are
