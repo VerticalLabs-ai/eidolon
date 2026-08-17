@@ -2,12 +2,19 @@
 
 ## Triage
 
-1. Check the deployment commit and `GET /api/health`.
-2. Check Vercel function logs and the server's structured logs for the affected
-   route, company, agent, or runtime session.
-3. Redact authorization headers, API keys, cookies, prompt contents, and
+1. Check the deployment commit, then `GET /api/ready` before `GET /api/health`.
+   Readiness returns `503` with the failing dependency named; liveness returns
+   `200` even when Postgres is unreachable, so it cannot distinguish "up" from
+   "usable". See [reliability controls](reliability.md).
+2. If an external dependency is suspected, check which circuits are open:
+   `curl -H "Authorization: Bearer $METRICS_TOKEN" <host>/api/metrics | grep
+eidolon_provider_circuits_open`.
+3. Check Vercel function logs and the server's structured logs for the affected
+   route, company, agent, or runtime session. Readiness and liveness probes are
+   excluded from request logs, so they will not appear there.
+4. Redact authorization headers, API keys, cookies, prompt contents, and
    personal data before copying evidence.
-4. Identify whether the issue is availability, data integrity, auth/security,
+5. Identify whether the issue is availability, data integrity, auth/security,
    provider/runtime execution, or a migration problem.
 
 ## Containment
@@ -20,6 +27,6 @@
 
 ## Recovery and follow-up
 
-Restore service, verify `/api/health` and a representative authenticated API
-flow, then document the root cause, timeline, affected data, corrective
-change, and a regression test in the linked issue.
+Restore service, verify `GET /api/ready` returns `200` and a representative
+authenticated API flow succeeds, then document the root cause, timeline,
+affected data, corrective change, and a regression test in the linked issue.

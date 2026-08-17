@@ -53,6 +53,19 @@ jobs:
           measure build pnpm build
           exit "$overall"
 
+      # Runs even when a gate above failed, as long as the UI build produced
+      # output: a bundle that suddenly doubles is exactly the regression this
+      # profile exists to catch, and it should not be hidden by an unrelated
+      # test failure.
+      - name: Profile the UI bundle
+        if: always()
+        run: |
+          if [[ -d ui/dist ]]; then
+            pnpm profile:ui -- --csv ui-bundle.csv
+          else
+            echo "::notice::Skipping UI bundle profile because ui/dist was not produced."
+          fi
+
       - name: Publish performance summary
         if: always()
         run: |
@@ -62,6 +75,14 @@ jobs:
             echo '```csv'
             cat performance.csv
             echo '```'
+            if [[ -f ui-bundle.csv ]]; then
+              echo
+              echo "## UI bundle size"
+              echo
+              echo '```csv'
+              cat ui-bundle.csv
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload performance measurements
@@ -69,5 +90,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-test-performance-${{ github.run_id }}
-          path: performance.csv
+          path: |
+            performance.csv
+            ui-bundle.csv
+          if-no-files-found: warn
           retention-days: 90

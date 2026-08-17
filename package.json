@@ -22,6 +22,7 @@
     "labels:check": "node scripts/sync-labels.mjs",
     "labels:sync": "node scripts/sync-labels.mjs --sync",
     "backlog:health": "node scripts/backlog-health.mjs",
+    "profile:ui": "node scripts/profile-ui-bundle.mjs",
     "duplication": "jscpd . --config .jscpd.json",
     "dead-code": "knip --no-progress",
     "test": "vitest",

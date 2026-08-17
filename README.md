@@ -173,20 +173,24 @@ pnpm run db:migrate    # Apply outstanding migrations
 
 ### CI & developer tooling
 
-CI workflows (`.github/workflows/`) run on every PR and push:
+CI workflows live in `.github/workflows/`. They do not all run on every push — the trigger column is the part that matters when you are waiting on a gate:
 
-| Workflow            | Purpose                              |
-| ------------------- | ------------------------------------ |
-| `lint.yml`          | ESLint across the workspace          |
-| `pr-review.yml`     | Automated PR review                  |
-| `codeql.yml`        | GitHub CodeQL static analysis        |
-| `dast.yml`          | Dynamic application security testing |
-| `performance.yml`   | Performance regression checks        |
-| `security.yml`      | Dependency/security scanning         |
-| `rollback.yml`      | Rollback readiness verification      |
-| `sentry-issue.yml`  | Sentry issue hygiene                 |
-| `issue-hygiene.yml` | Issue/PR label and state enforcement |
-| `docs.yml`          | Documentation validation             |
+| Workflow            | Purpose                                                        | Trigger                              |
+| ------------------- | -------------------------------------------------------------- | ------------------------------------ |
+| `lint.yml`          | ESLint, changed-file formatting, duplication, dead code        | PR, push to `main`/`staging`         |
+| `pr-naming.yml`     | PR title, branch slug, and Linear link gate                    | PR                                   |
+| `pr-review.yml`     | Automated PR review                                            | PR                                   |
+| `codeql.yml`        | CodeQL static analysis and readable security review report     | PR, push to `main`/`staging`, weekly |
+| `docs.yml`          | Documentation and runbook index validation                     | PR/push touching docs, weekly        |
+| `release.yml`       | Typecheck, full test suite, build, then CalVer tag and release | Push to `main`                       |
+| `performance.yml`   | Build/test durations and UI bundle size profile                | Weekly, manual                       |
+| `dast.yml`          | OWASP ZAP baseline scan against a non-production target        | Weekly, manual                       |
+| `issue-hygiene.yml` | Marks inactive issues and PRs stale                            | Weekly                               |
+| `sentry-issue.yml`  | Turns a Sentry alert into a deduplicated GitHub issue          | `repository_dispatch`                |
+| `rollback.yml`      | Rolls production back to a known-good Vercel deployment        | Manual                               |
+| `promote.yml`       | Fast-forwards `main` to the reviewed tip of `staging`          | Manual                               |
+
+The full test suite runs in `release.yml` on push to `main`, so run `pnpm test:run` locally before opening a PR.
 
 Developer tooling includes a [devcontainer](.devcontainer/devcontainer.json) for one-click VS Code setup, [Renovate](renovate.json) for dependency updates, [Knip](knip.json) for dead-code detection (`pnpm dead-code`), [Prettier](.prettierrc.json) for formatting (`pnpm format` / `pnpm format:check`), and PR/issue templates (`.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/`).
 
@@ -352,14 +356,33 @@ Rate-limiting is opt-in via `RATE_LIMIT_ENABLED=1` (or automatic when `NODE_ENV=
 
 ## Operational configuration
 
+### Health and readiness
+
+| Route         | Question it answers            | Behaviour when the database is down   |
+| ------------- | ------------------------------ | ------------------------------------- |
+| `/api/health` | Is the process running?        | Still `200`                           |
+| `/api/ready`  | Can the process serve traffic? | `503` with the dependency marked down |
+
+Point load balancers and deployment verification at `/api/ready`; `/api/health` cannot distinguish a healthy instance from one that has lost its database. Both routes are unauthenticated, so a failed probe reports `ok: false` without the driver error text. See [reliability controls](docs/runbooks/reliability.md) for the per-deployable health inventory.
+
 ### Provider circuit breakers
 
-External provider calls are guarded by a circuit breaker that opens after consecutive failures and allows a probe request after a reset timeout. Configure via environment variables:
+Outbound calls are guarded by a circuit breaker that opens after consecutive failures and allows a probe request after a reset timeout. Configure via environment variables:
 
 | Variable                                     | Default | Description                                       |
 | -------------------------------------------- | ------- | ------------------------------------------------- |
 | `EIDOLON_PROVIDER_CIRCUIT_FAILURE_THRESHOLD` | `5`     | Consecutive failures before the circuit opens.    |
 | `EIDOLON_PROVIDER_CIRCUIT_RESET_MS`          | `30000` | Milliseconds before a half-open probe is allowed. |
+
+Guarded call paths:
+
+| Call path                                      | Circuit key                         |
+| ---------------------------------------------- | ----------------------------------- |
+| LLM completions (agentic loop, agent executor) | Provider name, for example `openai` |
+| MCP server connect                             | `mcp:<digest of server id>`         |
+| Remote runtime adapters                        | `remote_runtime:<digest of origin>` |
+
+MCP and remote-runtime circuits are keyed per endpoint so one company's dead server cannot suppress another's, and the key is a digest so tenant hostnames never reach telemetry. Open circuits are published as `eidolon_provider_circuits_open`, labelled by kind, on the token-gated `/api/metrics` route.
 
 ### Feature flags
 

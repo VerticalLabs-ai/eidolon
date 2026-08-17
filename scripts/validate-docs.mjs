@@ -27,7 +27,9 @@ for (const file of maintainedMarkdown) {
   const contents = readFileSync(file, 'utf8');
   for (const match of contents.matchAll(/\[[^\]]*]\(([^)]+)\)/g)) {
     const target = match[1].split('#', 1)[0];
-    if (!target || /^(https?:|mailto:)/.test(target)) {continue;}
+    if (!target || /^(https?:|mailto:)/.test(target)) {
+      continue;
+    }
 
     const resolved = path.resolve(path.dirname(file), target);
     if (!existsSync(resolved)) {
@@ -37,12 +39,39 @@ for (const file of maintainedMarkdown) {
 }
 
 const agents = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
-if (!agents.includes('## Promotion')) {missing.push('AGENTS.md promotion instructions');}
+if (!agents.includes('## Promotion')) {
+  missing.push('AGENTS.md promotion instructions');
+}
 
-if (missing.length || brokenLinks.length) {
-  if (missing.length) {console.error(`Missing required documentation:\n${missing.join('\n')}`);}
-  if (brokenLinks.length)
-    {console.error(`Broken relative Markdown links:\n${brokenLinks.join('\n')}`);}
+// Every runbook must be reachable from the runbook index. Without this a new
+// procedure can land in the directory and never be found during an incident,
+// which is exactly when nobody is going to go spelunking for it.
+const runbookDirectory = path.join(root, 'docs', 'runbooks');
+const runbookIndexPath = path.join(runbookDirectory, 'README.md');
+const runbookIndex = readFileSync(runbookIndexPath, 'utf8');
+const linkedRunbooks = new Set(
+  Array.from(runbookIndex.matchAll(/\[[^\]]*]\(([^)]+)\)/g), (match) =>
+    path.basename(match[1].split('#', 1)[0]),
+  ),
+);
+const unindexedRunbooks = readdirSync(runbookDirectory, { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+  .map((entry) => entry.name)
+  .filter((name) => name !== 'README.md' && !linkedRunbooks.has(name));
+
+if (missing.length || brokenLinks.length || unindexedRunbooks.length) {
+  if (missing.length) {
+    console.error(`Missing required documentation:\n${missing.join('\n')}`);
+  }
+  if (brokenLinks.length) {
+    console.error(`Broken relative Markdown links:\n${brokenLinks.join('\n')}`);
+  }
+  if (unindexedRunbooks.length) {
+    console.error(
+      'Runbooks not linked from docs/runbooks/README.md:\n' +
+        unindexedRunbooks.map((name) => `docs/runbooks/${name}`).join('\n'),
+    );
+  }
   process.exit(1);
 }
 

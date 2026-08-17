@@ -23,15 +23,42 @@ paths:
   /api/health:
     get:
       tags: [Health]
-      summary: Read service health
+      summary: Read process liveness
+      description: |
+        Liveness only. Returns 200 whenever the process is running, including
+        when a required dependency is unreachable. Use `/api/ready` for load
+        balancer and deployment checks.
       security: []
       responses:
         '200':
-          description: Service is healthy
+          description: Process is running
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+  /api/ready:
+    get:
+      tags: [Health]
+      summary: Read service readiness
+      description: |
+        Probes every required dependency and reports whether this instance can
+        serve traffic. Probe failures are reported as `ok: false` without the
+        underlying error, because the route is unauthenticated and driver errors
+        carry connection details.
+      security: []
+      responses:
+        '200':
+          description: Every required dependency is reachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: At least one required dependency is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
   /api/adapters:
     get:
       tags: [Adapters]
@@ -340,6 +367,30 @@ components:
               type: integer
             heapUsed:
               type: integer
+    ReadinessResponse:
+      type: object
+      required: [status, timestamp, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        timestamp:
+          type: string
+          format: date-time
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, ok, durationMs]
+            properties:
+              name:
+                type: string
+                description: Dependency identifier, for example `database`.
+              ok:
+                type: boolean
+              durationMs:
+                type: integer
+                description: Probe duration in whole milliseconds.
     Adapter:
       type: object
       required: [id, name]
