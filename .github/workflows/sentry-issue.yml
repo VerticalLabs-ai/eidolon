@@ -15,75 +15,16 @@ jobs:
     if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Create or reuse GitHub issue
-        uses: actions/github-script@v7
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          script: |
-            const payload = context.payload.client_payload ?? {};
-            const sentryIssue = payload.issue ?? payload.data?.issue ?? {};
-            const shortId = String(
-              sentryIssue.shortId ?? sentryIssue.id ?? payload.shortId ?? 'unknown',
-            );
-            const rawTitle = sentryIssue.title ?? payload.title ?? 'Unclassified Sentry alert';
-            const title = `Sentry alert: ${String(rawTitle).slice(0, 180)}`;
-            const url = sentryIssue.web_url ?? sentryIssue.url ?? payload.url ?? '';
+          node-version-file: .nvmrc
 
-            const openIssues = await github.paginate(
-              github.rest.issues.listForRepo,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                per_page: 100,
-              },
-            );
-
-            if (openIssues.some((issue) => issue.body?.includes(`Sentry ID: ${shortId}`))) {
-              core.info(`An open issue already tracks Sentry ID ${shortId}.`);
-              return;
-            }
-
-            // Colors and descriptions here must match .github/labels.json, or the
-            // weekly label drift check will report the label this workflow created.
-            const requiredLabels = [
-              { name: 'sentry', color: '6f42c1', description: 'Created from Sentry error tracking' },
-              {
-                name: 'type/bug',
-                color: 'd73a4a',
-                description: 'Behaviour is wrong relative to a documented or intended contract',
-              },
-            ];
-
-            for (const label of requiredLabels) {
-              try {
-                await github.rest.issues.getLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  name: label.name,
-                });
-              } catch (error) {
-                if (error.status !== 404) throw error;
-                await github.rest.issues.createLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ...label,
-                });
-              }
-            }
-
-            const body = [
-              'Automated issue from Sentry.',
-              '',
-              `Sentry ID: ${shortId}`,
-              url ? `Sentry link: ${url}` : null,
-              '',
-              'Triage the error in Sentry before adding customer or request data here.',
-            ].filter(Boolean).join('\n');
-
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: requiredLabels.map((label) => label.name),
-            });
+      - name: Create or reuse GitHub issue
+        env:
+          SENTRY_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/sentry-dispatch.mjs

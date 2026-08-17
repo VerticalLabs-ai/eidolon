@@ -88,3 +88,33 @@ issues. Security incidents follow
 Before sharing diagnostics, remove secrets, tokens, cookies, email addresses,
 names, company identifiers, prompts, transcripts, and document contents unless
 the recipient is authorized to receive them.
+
+## Product analytics instrumentation
+
+Product analytics is off by default and gated by the `productAnalytics` feature
+flag (see [`docs/runbooks/feature-flags.md`](../runbooks/feature-flags.md)).
+When disabled, no events are emitted; when enabled, events carry only
+non-sensitive aggregate fields.
+
+### What analytics events contain
+
+Each event has a stable name and a typed payload limited to company-scoped
+identifiers and counts — for example `company.created` carries `{companyId,
+plan}`, and `task.completed` carries `{companyId, projectId, durationMs}`.
+The full taxonomy is declared in `server/src/services/product-analytics.ts`.
+
+### What analytics events never contain
+
+A runtime redaction layer strips any field whose name matches a sensitive
+pattern (prompt, transcript, credential, password, secret, token, apiKey,
+email, phone, name, address, content, body, description, metadata) before the
+event reaches the transport. A runtime assertion throws if a sensitive field is
+attached, so a type-system escape is caught at emit time rather than silently
+redacted.
+
+### Provider-agnostic transport
+
+No vendor SDK is embedded in product code. The emitter calls a transport
+function that receives the sanitised event; the default transport is a no-op,
+and a console transport is available for development. Production wiring is
+configured via the `PRODUCT_ANALYTICS_TRANSPORT` environment variable.

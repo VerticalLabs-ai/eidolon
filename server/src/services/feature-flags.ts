@@ -60,6 +60,7 @@ export function isFeatureEnabled(flag: string, subject?: string): boolean {
 export const FEATURE_FLAGS = {
   analyticsAgentsBatched:
     'Compute the agent analytics response in one aggregate query instead of one query per agent.',
+  productAnalytics: 'Emit product analytics events via the provider-agnostic emitter.',
 } as const;
 
 export type FeatureFlagName = keyof typeof FEATURE_FLAGS;
