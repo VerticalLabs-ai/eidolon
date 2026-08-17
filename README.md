@@ -154,7 +154,7 @@ eidolon/
 - **Real-time:** WebSocket (`ws`) with typed events and an in-process event bus
 - **Validation:** Zod schemas shared between client and server
 - **MCP:** `@modelcontextprotocol/sdk` for both the client (agent side) and the standalone server package
-- **Quality bar:** 2402 tests, 0 typecheck errors, 0 lint errors across the workspace
+- **Quality bar:** 2723 tests, 0 typecheck errors, 0 lint errors across the workspace
 
 ## Development
 
@@ -177,24 +177,33 @@ pnpm run db:migrate    # Apply outstanding migrations
 
 CI workflows live in `.github/workflows/`. They do not all run on every push — the trigger column is the part that matters when you are waiting on a gate:
 
-| Workflow            | Purpose                                                        | Trigger                              |
-| ------------------- | -------------------------------------------------------------- | ------------------------------------ |
-| `lint.yml`          | ESLint, changed-file formatting, duplication, dead code        | PR, push to `main`/`staging`         |
-| `pr-naming.yml`     | PR title, branch slug, and Linear link gate                    | PR                                   |
-| `pr-review.yml`     | Automated PR review                                            | PR                                   |
-| `codeql.yml`        | CodeQL static analysis and readable security review report     | PR, push to `main`/`staging`, weekly |
-| `docs.yml`          | Documentation and runbook index validation                     | PR/push touching docs, weekly        |
-| `release.yml`       | Typecheck, full test suite, build, then CalVer tag and release | Push to `main`                       |
-| `performance.yml`   | Build/test durations and UI bundle size profile                | Weekly, manual                       |
-| `dast.yml`          | OWASP ZAP baseline scan against a non-production target        | Weekly, manual                       |
-| `issue-hygiene.yml` | Marks inactive issues and PRs stale                            | Weekly                               |
-| `sentry-issue.yml`  | Turns a Sentry alert into a deduplicated GitHub issue          | `repository_dispatch`                |
-| `rollback.yml`      | Rolls production back to a known-good Vercel deployment        | Manual                               |
-| `promote.yml`       | Fast-forwards `main` to the reviewed tip of `staging`          | Manual                               |
+| Workflow            | Purpose                                                           | Trigger                              |
+| ------------------- | ----------------------------------------------------------------- | ------------------------------------ |
+| `lint.yml`          | ESLint, changed-file formatting, duplication, dead code           | PR, push to `main`/`staging`         |
+| `pr-naming.yml`     | PR title, branch slug, and Linear link gate                       | PR                                   |
+| `pr-review.yml`     | Automated PR review                                               | PR                                   |
+| `codeql.yml`        | CodeQL static analysis and readable security review report        | PR, push to `main`/`staging`, weekly |
+| `docs.yml`          | Documentation and runbook index validation                        | PR/push touching docs, weekly        |
+| `release.yml`       | Typecheck, full test suite, build, then CalVer tag and release    | Push to `main`                       |
+| `performance.yml`   | Build/test durations and UI bundle size profile                   | Weekly, manual                       |
+| `dast.yml`          | OWASP ZAP baseline scan against a non-production target           | Weekly, manual                       |
+| `issue-hygiene.yml` | Marks inactive issues and PRs stale                               | Weekly                               |
+| `sentry-issue.yml`  | Turns a Sentry alert into a deduplicated GitHub issue             | `repository_dispatch`                |
+| `rollback.yml`      | Rolls production back to a known-good Vercel deployment           | Manual                               |
+| `promote.yml`       | Fast-forwards `main` to the reviewed tip of `staging`             | Manual                               |
+| `renovate.yml`      | Scheduled Renovate dependency update runner                       | Cron (every 4 hours)                 |
+| `quality-gate.yml`  | Coverage thresholds, duplication, dead-code gate + summary        | PR, push to `main`/`staging`         |
+| `deploy-verify.yml` | Post-deploy health checks on production (`/api/health`, `/ready`) | Push to `main`, manual               |
 
 The full test suite runs in `release.yml` on push to `main`, so run `pnpm test:run` locally before opening a PR.
 
 Developer tooling includes a [devcontainer](.devcontainer/devcontainer.json) for one-click VS Code setup, [Renovate](renovate.json) for dependency updates, [Knip](knip.json) for dead-code detection (`pnpm dead-code`), [Prettier](.prettierrc.json) for formatting (`pnpm format` / `pnpm format:check`), and PR/issue templates (`.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/`).
+
+### Security & observability
+
+Branch protection rulesets on `main` and `staging` require code-owner review (`.github/CODEOWNERS`), block force-push, and enforce for admins. See [docs/delivery/branch-protection.md](docs/delivery/branch-protection.md) and verify with `node scripts/verify-branch-protection.mjs`.
+
+The observability stack includes Pino structured logging with sensitive-field redaction (`server/src/utils/logger.ts`), Prometheus metrics with business gauges (`server/src/middleware/observability.ts`), optional OpenTelemetry distributed tracing (`server/src/utils/tracing.ts`), Sentry error tracking (server + UI), and a UI structured logger. See [docs/runbooks/observability.md](docs/runbooks/observability.md) for setup, [docs/runbooks/alerting.md](docs/runbooks/alerting.md) for alert rules, and [docs/security/data-handling.md](docs/security/data-handling.md) for PII classification and retention.
 
 ### Extended ESLint rules
 
