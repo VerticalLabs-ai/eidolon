@@ -5,8 +5,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ClerkProvider } from '@clerk/clerk-react';
 import { App } from './App';
 import { CLERK_PUBLISHABLE_KEY, isLocalTrustedAuth } from './lib/auth';
+import { initializeErrorTracking } from './lib/error-tracking';
 import { logger } from './lib/logger';
 import './index.css';
+
+// Initialize Sentry before React renders so the React error boundary and
+// any render-time exceptions are captured. This is a no-op when
+// VITE_SENTRY_DSN is unset (mirrors the server's error-tracking pattern).
+initializeErrorTracking();
 
 const queryClient = new QueryClient({
   defaultOptions: {

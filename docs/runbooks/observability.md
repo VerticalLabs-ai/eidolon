@@ -56,17 +56,54 @@ type `sentry-alert`. A Sentry webhook or integration should send a
 
 ## Sentry deployment setup
 
+The server and UI each have independent, optional Sentry integrations. Both
+mirror the same pattern: the SDK initializes **only** when a DSN is set, and
+no personal data is ever attached to events.
+
+### Server Sentry
+
 1. Create a Sentry project for the server and copy its DSN into the deployment
    environment as `SENTRY_DSN`.
 2. Set `SENTRY_ENVIRONMENT=production` and choose a low
    `SENTRY_TRACES_SAMPLE_RATE` such as `0.05` if performance tracing is
    enabled.
-3. Add the GitHub Actions secret `SENTRY_AUTH_TOKEN` with release and project
+3. The server's error tracking is initialized in
+   `server/src/utils/error-tracking.ts` (`initializeErrorTracking`).
+   Unexpected errors are captured with request ID, trace ID, route, method,
+   and authenticated user ID context. Credentials, prompts, transcripts, and
+   provider responses are never attached.
+
+### UI Sentry
+
+The UI initializes `@sentry/react` in `ui/src/lib/error-tracking.ts`
+(`initializeErrorTracking`), called from `ui/src/main.tsx` before React
+renders so render-time exceptions are captured.
+
+1. Create a separate Sentry project for the UI (recommended) or reuse the
+   server project, and copy its DSN into the build environment as
+   `VITE_SENTRY_DSN`. Error tracking stays disabled when this is unset —
+   there is no behavior change.
+2. Optionally set `VITE_SENTRY_ENVIRONMENT=production` and
+   `VITE_SENTRY_TRACES_SAMPLE_RATE` (0 to 1, defaults to `0`).
+3. The release is taken from `VITE_APP_VERSION`, which the release workflow
+   sets to the CalVer tag at build time.
+4. `sendDefaultPii` is `false`. User IDs, emails, prompts, transcripts, and
+   credentials are never attached to UI Sentry events. Use `captureUIError`
+   and pass only non-identifying context (e.g. `route` tags).
+
+### Source map upload
+
+1. Add the GitHub Actions secret `SENTRY_AUTH_TOKEN` with release and project
    artifact upload permissions.
-4. Add repository variables `SENTRY_ORG` and `SENTRY_PROJECT`.
-5. The CalVer release workflow uploads `server/dist` and `ui/dist` source maps
-   and finalizes the matching release. If the three GitHub settings are absent,
-   the upload step is skipped without failing the release.
+2. Add repository variables `SENTRY_ORG` and `SENTRY_PROJECT` (the server
+   project). Optionally add `SENTRY_UI_PROJECT` to send UI source maps to a
+   separate project; when unset, UI source maps are uploaded to
+   `SENTRY_PROJECT`.
+3. The CalVer release workflow (`.github/workflows/release.yml`) builds the
+   server and UI, then uses `getsentry/action-release@v3` to create and
+   finalize a Sentry release and upload source maps from `server/dist` and
+   `ui/dist`. If `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, or `SENTRY_PROJECT` is
+   absent, the upload job is skipped without failing the release.
 
 The repository exposes Prometheus metrics at `GET /api/metrics` (see
 [Metrics collection](#metrics-collection) below). Treat repeated health
