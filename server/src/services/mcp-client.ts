@@ -166,7 +166,9 @@ export class MCPClientService {
       });
       transport.stderr?.on('data', (chunk) => {
         stderr.push(String(chunk));
-        while (stderr.join('').length > 4000) {stderr.shift();}
+        while (stderr.join('').length > 4000) {
+          stderr.shift();
+        }
       });
       return { transport, stderr };
     }
@@ -596,7 +598,9 @@ export class MCPClientService {
 function sanitizeEnv(env: NodeJS.ProcessEnv | Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    if (typeof value === 'string') {out[key] = value;}
+    if (typeof value === 'string') {
+      out[key] = value;
+    }
   }
   return out;
 }
@@ -636,7 +640,9 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
       }),
     ]);
   } finally {
-    if (timeout) {clearTimeout(timeout);}
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 
@@ -645,7 +651,9 @@ function stripIpBrackets(value: string): string {
 }
 
 function isBlockedHostname(hostname: string): boolean {
-  if (net.isIP(hostname) !== 0) {return false;}
+  if (net.isIP(hostname) !== 0) {
+    return false;
+  }
   return (
     hostname === 'localhost' ||
     hostname.endsWith('.localhost') ||
