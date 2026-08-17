@@ -1,0 +1,131 @@
+name: Deploy verification
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Base URL to verify (defaults to production)
+        required: false
+        type: string
+        default: https://eidolon.verticallabs.ai
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    name: Post-deploy health checks
+    runs-on: ubuntu-latest
+    env:
+      VERIFY_URL: ${{ inputs.url || 'https://eidolon.verticallabs.ai' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Vercel promotes a new deployment shortly after a push to main. Give the
+      # promotion a brief window before probing so a just-pushed commit is live.
+      - name: Wait for deployment promotion
+        run: sleep 60
+
+      - name: Verify /api/health
+        id: health
+        run: |
+          set +e
+          HTTP_CODE=$(curl -s -o /tmp/health-body.json -w '%{http_code}' \
+            --max-time 30 \
+            "${VERIFY_URL}/api/health")
+          BODY=$(cat /tmp/health-body.json 2>/dev/null || echo '')
+          echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
+          echo "body=${BODY}" >> "$GITHUB_OUTPUT"
+          echo "Health endpoint returned HTTP ${HTTP_CODE}"
+          echo "Response: ${BODY}"
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "::error::/api/health returned HTTP ${HTTP_CODE} (expected 200)"
+            exit 1
+          fi
+
+      - name: Verify /api/ready
+        id: ready
+        run: |
+          set +e
+          HTTP_CODE=$(curl -s -o /tmp/ready-body.json -w '%{http_code}' \
+            --max-time 30 \
+            "${VERIFY_URL}/api/ready")
+          BODY=$(cat /tmp/ready-body.json 2>/dev/null || echo '')
+          echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
+          echo "body=${BODY}" >> "$GITHUB_OUTPUT"
+          echo "Readiness endpoint returned HTTP ${HTTP_CODE}"
+          echo "Response: ${BODY}"
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "::error::/api/ready returned HTTP ${HTTP_CODE} (expected 200)"
+            exit 1
+          fi
+
+      - name: Health check summary
+        if: always()
+        run: |
+          {
+            echo "## Deploy verification result"
+            echo ""
+            echo "| Endpoint | URL | HTTP Status | Result |"
+            echo "|----------|-----|-------------|--------|"
+            echo "| /api/health | ${VERIFY_URL}/api/health | ${{ steps.health.outputs.http_code || 'not run' }} | ${{ steps.health.outcome == 'success' && 'pass' || 'fail' }} |"
+            echo "| /api/ready | ${VERIFY_URL}/api/ready | ${{ steps.ready.outputs.http_code || 'not run' }} | ${{ steps.ready.outcome == 'success' && 'pass' || 'fail' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # When a health check fails, open a GitHub issue so the on-call engineer
+      # is notified. The issue includes the failing endpoint, HTTP status, the
+      # commit SHA, and a link to the workflow run. Duplicates are avoided by
+      # searching for an open issue with the deploy-verify label before
+      # creating a new one.
+      - name: Notify on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEALTH_CODE: ${{ steps.health.outputs.http_code }}
+          READY_CODE: ${{ steps.ready.outputs.http_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh label create deploy-verify --color B60205 --description "Post-deploy health verification failure" --force 2>/dev/null || true
+
+          # Reuse an open issue if one already exists to avoid duplicates.
+          EXISTING=$(gh issue list --label deploy-verify --state open --json number --jq '.[0].number // empty')
+          BODY=$(cat <<'EOF'
+          ## Post-deploy health verification failed
+
+          The deploy-verify workflow detected that one or more health endpoints
+          are not responding with HTTP 200 on the production deployment.
+
+          | Endpoint | HTTP Status |
+          |----------|-------------|
+          | /api/health | ${HEALTH_CODE} |
+          | /api/ready | ${READY_CODE} |
+
+          - **Commit:** ${COMMIT_SHA}
+          - **Workflow run:** ${RUN_URL}
+          - **Production URL:** ${VERIFY_URL}
+
+          ### Next steps
+
+          1. Check the [Vercel dashboard](https://vercel.com/verticallabs/eidolon) for the deployment status.
+          2. Verify the database is reachable (`/api/ready` returns 503 when Postgres is down).
+          3. If the deployment is bad, follow the [rollback runbook](../docs/runbooks/deployment.md#rollback).
+          4. Close this issue once the health checks pass.
+          EOF
+          )
+
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+            echo "Added comment to existing issue #$EXISTING"
+          else
+            gh issue create \
+              --title "Deploy verification failed — health check non-200" \
+              --body "$BODY" \
+              --label deploy-verify
+            echo "Created new issue for deploy verification failure"
+          fi

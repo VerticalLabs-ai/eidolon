@@ -384,3 +384,96 @@ To preview the metrics summary without CI:
 node scripts/quality-metrics-summary.mjs \
   coverage/coverage-summary.json
 ```
+
+## Deployment observability
+
+Post-deployment health verification ensures a promoted commit is actually
+serving traffic correctly on production. The `deploy-verify` GitHub Actions
+workflow automates this check and opens an issue when it fails.
+
+### Health verification procedure
+
+After a promotion to `main`, the `.github/workflows/deploy-verify.yml`
+workflow runs automatically. It waits 60 seconds for Vercel to promote the
+new deployment, then probes two endpoints on the production URL
+(`https://eidolon.verticallabs.ai`):
+
+| Endpoint      | Purpose                           | Passing  | Failing                  |
+| ------------- | --------------------------------- | -------- | ------------------------ |
+| `/api/health` | Liveness — is the process up?     | HTTP 200 | non-200 → workflow fails |
+| `/api/ready`  | Readiness — can it serve traffic? | HTTP 200 | non-200 → workflow fails |
+
+`/api/health` returns 200 as long as the process is running, even if the
+database is unreachable. `/api/ready` returns 503 when a required dependency
+(Postgres) is down. The workflow fails if either endpoint returns anything
+other than 200, so a process that is alive but cannot serve traffic is still
+flagged.
+
+### Running the workflow manually
+
+The workflow also accepts a `workflow_dispatch` trigger with an optional
+`url` input (defaults to `https://eidolon.verticallabs.ai`). Use this to
+verify a specific environment after a manual deployment or rollback:
+
+1. Open **Actions → Deploy verification → Run workflow**.
+2. Optionally enter a different base URL (e.g., a Vercel preview deployment).
+3. Run the workflow and review the step summary for the results table.
+
+### Failure notification
+
+When a health check fails, the workflow creates a GitHub issue labelled
+`deploy-verify` with the failing endpoint, HTTP status code, commit SHA, and
+a link to the workflow run. If an open `deploy-verify` issue already exists,
+the workflow adds a comment instead of creating a duplicate. Close the issue
+once the health checks pass.
+
+### Deployment annotations
+
+When investigating a deployment issue, correlate the following signals:
+
+- **Commit SHA** — the `deploy-verify` issue includes the commit SHA that
+  was promoted. Check the [Vercel
+  dashboard](https://vercel.com/verticallabs/eidolon) to confirm the
+  deployment matches this commit.
+- **Workflow run URL** — the issue links to the failed workflow run for
+  full step logs, including the raw HTTP response body from each endpoint.
+- **GitHub Actions step summary** — each run writes a Markdown results table
+  to `$GITHUB_STEP_SUMMARY` showing the HTTP status and pass/fail result for
+  both endpoints.
+- **Sentry releases** — when `SENTRY_DSN` is configured, the release
+  workflow uploads source maps and creates a Sentry release tagged with the
+  CalVer version. Check the Sentry dashboard for errors associated with the
+  release to correlate failures with code changes.
+- **Prometheus metrics** — check `eidolon_http_requests_total` and
+  `eidolon_http_request_duration_seconds` on `GET /api/metrics` for elevated
+  5xx rates or latency spikes around the deployment time.
+
+### Dashboard guidance
+
+Use the following Grafana panels (backed by the Prometheus scrape job
+described in [Metrics collection](#metrics-collection)) to monitor
+deployments:
+
+- **Request rate** — `rate(eidolon_http_requests_total[5m])`. A drop to zero
+  after a deployment indicates the new version is not receiving traffic.
+- **Error rate** — `sum(rate(eidolon_http_requests_total{status_code=~"5.."}[5m])) / sum(rate(eidolon_http_requests_total[5m])) * 100`.
+  A spike after a deployment signals the new version is broken.
+- **P99 latency** — `histogram_quantile(0.99, rate(eidolon_http_request_duration_seconds_bucket[5m]))`.
+  A latency increase may indicate a performance regression.
+- **Open circuit breakers** — `eidolon_provider_circuits_open`. An open
+  circuit after a deployment may indicate a provider configuration issue.
+
+Set Grafana alerting rules on these panels (see the [reliability
+controls](reliability.md) for circuit breaker and error-rate guidance, and the
+[incident runbook](incident.md) for escalation procedures).
+
+### Rollback procedure
+
+If `deploy-verify` fails and the deployment is confirmed bad, follow the
+[rollback runbook](deployment.md#rollback):
+
+1. Stop promoting new commits to `main`.
+2. Run the **Roll back Vercel production** workflow with the last known-good
+   deployment URL.
+3. Re-run **Deploy verification** to confirm the rollback restored health.
+4. Record the incident per the [incident runbook](incident.md).
