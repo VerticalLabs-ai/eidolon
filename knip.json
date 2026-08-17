@@ -11,7 +11,8 @@
     "ui/src/components/dashboard/StatCard.tsx",
     "ui/src/components/ui/AnimatedList.tsx",
     "scripts/sentry-dispatch.d.mts",
-    "scripts/verify-branch-protection.mjs"
+    "scripts/verify-branch-protection.mjs",
+    "scripts/quality-metrics-summary.d.mts"
   ],
   "ignoreDependencies": [
     "@eidolon/shared",

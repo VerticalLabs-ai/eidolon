@@ -320,3 +320,67 @@ It parses incoming `traceparent` headers, generates `X-Request-ID` and
 `X-Trace-ID` response headers, and propagates the trace context. This
 behavior is present regardless of whether the OpenTelemetry SDK is
 enabled — the middleware does not depend on OTel.
+
+## Code quality CI gate
+
+The `.github/workflows/quality-gate.yml` workflow runs on every pull
+request and on pushes to `main` and `staging`. It enforces coverage
+thresholds and publishes a code quality metrics summary to the GitHub
+Actions run page.
+
+### What the gate checks
+
+1. **Coverage thresholds** — `pnpm test:coverage` runs the full test
+   suite with V8 coverage. Vitest enforces the thresholds configured in
+   `vitest.config.ts` (`coverage.thresholds`). If any metric (lines,
+   statements, functions, branches) falls below its threshold, vitest
+   exits non-zero and the workflow fails.
+2. **Duplication** — `pnpm duplication` runs jscpd to detect duplicated
+   code. The threshold is configured in `.jscpd.json`.
+3. **Dead code** — `pnpm dead-code` runs knip to detect unused exports,
+   dependencies, and files.
+
+### Current thresholds
+
+| Metric     | Threshold |
+| ---------- | --------- |
+| Lines      | 40%       |
+| Statements | 40%       |
+| Functions  | 50%       |
+| Branches   | 40%       |
+
+These are set slightly below the desktop package's coverage levels to
+gate against regressions without blocking the existing server and
+packages test suite. Raise thresholds as coverage improves.
+
+### Metrics summary
+
+After the gate runs, `scripts/quality-metrics-summary.mjs` writes a
+Markdown table to `$GITHUB_STEP_SUMMARY` with:
+
+- Coverage percentages (lines, statements, functions, branches) from
+  `coverage/coverage-summary.json`.
+- Test counts (passed, failed, skipped) parsed from the vitest output.
+- Duplication percentage from the jscpd output.
+- Dead-code analysis output from knip.
+
+The summary appears on the Actions run page under the job's summary
+section. A coverage report artifact (`coverage-report-<run-id>`) is also
+uploaded for detailed inspection.
+
+### Local usage
+
+Run the same commands locally to check before pushing:
+
+```bash
+pnpm test:coverage   # enforces thresholds, writes coverage/
+pnpm duplication     # checks duplicated code
+pnpm dead-code       # checks unused exports and dependencies
+```
+
+To preview the metrics summary without CI:
+
+```bash
+node scripts/quality-metrics-summary.mjs \
+  coverage/coverage-summary.json
+```
