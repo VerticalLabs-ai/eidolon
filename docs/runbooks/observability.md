@@ -56,3 +56,11 @@ Build the server, start the representative workload, and run
 `server/profiles/`; inspect it with Chrome DevTools or another compatible
 profile viewer. Stop the process normally before collecting the profile and
 remove sensitive request data from any shared analysis.
+
+## Schema ownership
+
+The server is the sole owner of the database schema. The UI, desktop, and
+MCP server applications do not define or migrate schemas; they access data
+through the server's REST and WebSocket APIs. See
+[Database schema ownership](../architecture/schema-ownership.md) for the
+full ownership model, migration workflow, and schema management tools.
