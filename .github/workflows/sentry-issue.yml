@@ -43,21 +43,32 @@ jobs:
               return;
             }
 
-            try {
-              await github.rest.issues.getLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: 'sentry',
-              });
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              await github.rest.issues.createLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: 'sentry',
-                color: '6f42c1',
-                description: 'Created from Sentry error tracking',
-              });
+            // Colors and descriptions here must match .github/labels.json, or the
+            // weekly label drift check will report the label this workflow created.
+            const requiredLabels = [
+              { name: 'sentry', color: '6f42c1', description: 'Created from Sentry error tracking' },
+              {
+                name: 'type/bug',
+                color: 'd73a4a',
+                description: 'Behaviour is wrong relative to a documented or intended contract',
+              },
+            ];
+
+            for (const label of requiredLabels) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ...label,
+                });
+              }
             }
 
             const body = [
@@ -74,5 +85,5 @@ jobs:
               repo: context.repo.repo,
               title,
               body,
-              labels: ['sentry'],
+              labels: requiredLabels.map((label) => label.name),
             });

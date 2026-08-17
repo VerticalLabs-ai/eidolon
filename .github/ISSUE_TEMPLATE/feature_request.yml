@@ -2,7 +2,7 @@ name: Feature request
 description: Propose a focused improvement to Eidolon.
 title: 'feat: '
 labels:
-  - enhancement
+  - type/feature
 body:
   - type: textarea
     id: problem

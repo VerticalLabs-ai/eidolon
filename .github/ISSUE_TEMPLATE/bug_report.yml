@@ -2,7 +2,7 @@ name: Bug report
 description: Report a reproducible problem in Eidolon.
 title: 'fix: '
 labels:
-  - bug
+  - type/bug
 body:
   - type: textarea
     id: summary

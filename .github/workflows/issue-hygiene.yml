@@ -27,5 +27,31 @@ jobs:
           stale-pr-message: >
             This pull request has had no activity for 60 days. It remains open
             for maintainer review and will not be closed automatically.
-          exempt-issue-labels: pinned,security
-          exempt-pr-labels: pinned,security
+          # `security` was never a label in this repository, so the previous value
+          # exempted nothing. Names come from .github/labels.json.
+          exempt-issue-labels: pinned,type/security,area/security,priority/urgent
+          exempt-pr-labels: pinned,type/security,area/security,priority/urgent
+
+  labels:
+    name: Check label taxonomy drift
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The check needs only Node and the preinstalled GitHub CLI, so it skips
+      # the pnpm install every other workflow needs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      # Reports labels that are missing or have drifted from .github/labels.json.
+      # Labels present only on GitHub are reported without failing, because a
+      # maintainer may add one deliberately before the file catches up.
+      - name: Check labels against .github/labels.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/sync-labels.mjs

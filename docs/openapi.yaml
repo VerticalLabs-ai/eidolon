@@ -281,6 +281,29 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Goal'
+  /api/companies/{companyId}/flags:
+    parameters:
+      - $ref: '#/components/parameters/CompanyId'
+    get:
+      tags: [Feature flags]
+      summary: Read the company's evaluated feature flags
+      description: >-
+        Returns the flags this build declares, evaluated for this company. The
+        response never includes the raw EIDOLON_FEATURE_FLAGS configuration, a
+        rollout percentage, or another company's assignment.
+      responses:
+        '200':
+          description: Evaluated flags for the company
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/FeatureFlagState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 components:
   securitySchemes:
     clerkCookie:
@@ -307,6 +330,21 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
   schemas:
+    FeatureFlagState:
+      type: object
+      required: [subject, flags]
+      properties:
+        subject:
+          type: string
+          format: uuid
+          description: The company the flags were evaluated for.
+        flags:
+          type: object
+          description: >-
+            Declared flag name to evaluated outcome for this subject. Only flags
+            this build declares appear here.
+          additionalProperties:
+            type: boolean
     HealthResponse:
       type: object
       required: [status, uptime, timestamp, wsClients, memory]
