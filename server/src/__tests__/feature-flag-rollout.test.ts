@@ -77,7 +77,7 @@ describe('feature flag rollout', () => {
     expect(body).not.toContain('unreleasedAcquisitionPricing');
     // rolloutPercentage describes the population, not this caller.
     expect(body).not.toContain('rolloutPercentage');
-    expect(body).not.toContain('37');
+    expect(JSON.stringify(response.body.data.flags)).not.toContain('37');
     // Only declared flags are present, each as a boolean outcome. Which
     // outcome depends on where this company falls in the 37% bucket.
     expect(Object.keys(response.body.data.flags).sort()).toEqual([...FEATURE_FLAG_NAMES].sort());

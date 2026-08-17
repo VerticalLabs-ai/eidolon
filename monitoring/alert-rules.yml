@@ -1,0 +1,144 @@
+# Prometheus alert rules for Eidolon service health.
+#
+# Load this file in your Prometheus configuration:
+#
+#   rule_files:
+#     - /path/to/eidolon/monitoring/alert-rules.yml
+#
+# The expressions reference metrics exposed by the Eidolon server at
+# `GET /api/metrics` (see docs/runbooks/observability.md#metrics-collection)
+# plus the standard `up` metric emitted by Prometheus for every scrape target
+# and the `probe_*` metrics emitted by the blackbox exporter for the readiness
+# endpoint probe described in docs/runbooks/alerting.md.
+#
+# Severity labels:
+#   - critical: user-facing impact or imminent outage — page the on-call.
+#   - warning:  degraded but not yet user-facing — investigate during business
+#               hours and watch for escalation.
+groups:
+  - name: eidolon-service-health
+    interval: 30s
+    rules:
+      # -------------------------------------------------------------------------
+      # HighErrorRate
+      # -------------------------------------------------------------------------
+      # Fires when more than 5% of HTTP responses are 5xx over a 5-minute
+      # window. The denominator guards against firing during very low traffic
+      # (a single 500 on an idle instance should not page).
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(eidolon_http_requests_total{status_code=~"5.."}[5m]))
+              /
+            clamp_min(sum(rate(eidolon_http_requests_total[5m])), 1)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: eidolon
+        annotations:
+          summary: 'Eidolon 5xx error rate above 5%'
+          description: >
+            More than 5% of HTTP responses returned a 5xx status code over the
+            last 5 minutes. Check Sentry and the server structured logs for the
+            failing routes (use the `route` label on
+            `eidolon_http_requests_total` to narrow down).
+          runbook_url: 'https://github.com/VerticalLabs-ai/eidolon/blob/main/docs/runbooks/alerting.md#higherrorrate'
+
+      # -------------------------------------------------------------------------
+      # HighLatencyP99
+      # -------------------------------------------------------------------------
+      # Fires when the p99 request latency exceeds 2.5 seconds for 10 minutes.
+      # The histogram buckets exposed by the server are
+      # [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]; 2.5s sits on a bucket
+      # boundary so the quantile estimate is stable.
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(eidolon_http_request_duration_seconds_bucket[5m]))
+          ) > 2.5
+        for: 10m
+        labels:
+          severity: warning
+          service: eidolon
+        annotations:
+          summary: 'Eidolon p99 latency above 2.5s'
+          description: >
+            The 99th-percentile HTTP request latency has exceeded 2.5 seconds
+            for 10 minutes. Inspect slow routes via the `route` label and check
+            for database pressure, provider timeouts, or a recent deployment.
+          runbook_url: 'https://github.com/VerticalLabs-ai/eidolon/blob/main/docs/runbooks/alerting.md#highlatencyp99'
+
+      # -------------------------------------------------------------------------
+      # DatabaseUnavailable
+      # -------------------------------------------------------------------------
+      # Fires when the readiness endpoint (/api/ready) stops returning success.
+      # /api/ready returns 503 when a required dependency (Postgres) is
+      # unreachable, so a probe failure indicates the server cannot serve
+      # traffic even though the process may still be up. This rule expects a
+      # blackbox exporter scrape job named `eidolon-ready` probing
+      # https://eidolon.verticallabs.ai/api/ready — see the runbook for setup.
+      - alert: DatabaseUnavailable
+        expr: probe_success{job="eidolon-ready"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: eidolon
+        annotations:
+          summary: 'Eidolon readiness endpoint failing'
+          description: >
+            The /api/ready endpoint has been failing for 2 minutes. The server
+            process is likely up but a required dependency (Postgres) is
+            unreachable. Verify the database connection and check
+            /api/ready for the failing dependency name.
+          runbook_url: 'https://github.com/VerticalLabs-ai/eidolon/blob/main/docs/runbooks/alerting.md#databaseunavailable'
+
+      # -------------------------------------------------------------------------
+      # CircuitBreakerOpen
+      # -------------------------------------------------------------------------
+      # Fires when one or more provider circuit breakers stay open for 5
+      # minutes. The `eidolon_provider_circuits_open` gauge is labelled by
+      # `kind` (llm_provider, mcp, remote_runtime). A persistently open circuit
+      # means the downstream dependency is still failing its probe requests.
+      - alert: CircuitBreakerOpen
+        expr: eidolon_provider_circuits_open > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: eidolon
+        annotations:
+          summary: 'Eidolon circuit breaker open'
+          description: >
+            One or more circuit breakers have been open for 5 minutes. Check
+            the `kind` label to identify whether an LLM provider, MCP server,
+            or remote runtime is the failing dependency. An open MCP circuit
+            may point at a customer-configured server rather than Eidolon.
+          runbook_url: 'https://github.com/VerticalLabs-ai/eidolon/blob/main/docs/runbooks/alerting.md#circuitbreakeropen'
+
+      # -------------------------------------------------------------------------
+      # MemoryPressure
+      # -------------------------------------------------------------------------
+      # Fires when the Node.js heap utilization exceeds 85% for 10 minutes,
+      # indicating a likely memory leak or unbounded retention. The
+      # `nodejs_heap_size_*` metrics are emitted by prom-client's
+      # `collectDefaultMetrics`.
+      - alert: MemoryPressure
+        expr: |
+          (
+            nodejs_heap_size_used_bytes
+              /
+            clamp_min(nodejs_heap_size_total_bytes, 1)
+          ) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          service: eidolon
+        annotations:
+          summary: 'Eidolon Node.js heap utilization above 85%'
+          description: >
+            The Node.js heap has been over 85% utilized for 10 minutes. This
+            may indicate a memory leak or unbounded in-memory retention. Check
+            the `/api/health` `memory` fields, review recent changes for
+            retained references, and prepare a restart if it continues to grow.
+          runbook_url: 'https://github.com/VerticalLabs-ai/eidolon/blob/main/docs/runbooks/alerting.md#memorypressure'

@@ -1,0 +1,90 @@
+name: Quality gate
+
+on:
+  pull_request:
+  push:
+    branches: [main, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    name: Coverage and quality metrics
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres@localhost:5432/eidolon_test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter '!@eidolon/desktop'
+
+      - name: Create test database
+        run: psql postgres://postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE eidolon_test'
+
+      # Coverage gate — vitest enforces thresholds configured in
+      # vitest.config.ts. The step (and workflow) fail if coverage
+      # falls below any threshold.
+      - name: Run tests with coverage
+        run: |
+          set -o pipefail
+          pnpm test:coverage 2>&1 | tee test-output.txt
+
+      - name: Check duplication
+        run: |
+          set -o pipefail
+          pnpm duplication 2>&1 | tee duplication-output.txt
+
+      - name: Check dead code
+        run: |
+          set -o pipefail
+          pnpm dead-code 2>&1 | tee dead-code-output.txt
+
+      # Publish quality metrics to the GitHub Actions run summary.
+      # scripts/quality-metrics-summary.mjs writes a Markdown table to
+      # $GITHUB_STEP_SUMMARY with coverage percentages, test counts,
+      # duplication percentage, and dead-code results.
+      - name: Publish quality metrics summary
+        if: always()
+        run: |
+          node scripts/quality-metrics-summary.mjs \
+            coverage/coverage-summary.json \
+            test-output.txt \
+            duplication-output.txt \
+            dead-code-output.txt
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-${{ github.run_id }}
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 30

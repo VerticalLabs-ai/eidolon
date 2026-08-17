@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   Download,
@@ -19,7 +19,7 @@ import {
   Save,
   RefreshCcw,
   Trash2,
-} from "lucide-react";
+} from 'lucide-react';
 import {
   useCompanies,
   useDeleteTemplate,
@@ -27,42 +27,43 @@ import {
   useImportTemplate,
   useTemplates,
   useUpdateTemplateFromCompany,
-} from "@/lib/hooks";
-import type { CompanyTemplate } from "@/lib/api";
-import { ProjectTemplateGallery } from "@/components/templates/ProjectTemplateGallery";
+} from '@/lib/hooks';
+import type { CompanyTemplate } from '@/lib/api';
+import { logger } from '@/lib/logger';
+import { ProjectTemplateGallery } from '@/components/templates/ProjectTemplateGallery';
 
 const CATEGORIES = [
-  { id: "all", label: "All Templates", icon: Layers },
-  { id: "software", label: "Software", icon: Code },
-  { id: "marketing", label: "Marketing", icon: Megaphone },
-  { id: "ecommerce", label: "E-commerce", icon: ShoppingCart },
-  { id: "consulting", label: "Consulting", icon: Briefcase },
-  { id: "content", label: "Content", icon: PenTool },
+  { id: 'all', label: 'All Templates', icon: Layers },
+  { id: 'software', label: 'Software', icon: Code },
+  { id: 'marketing', label: 'Marketing', icon: Megaphone },
+  { id: 'ecommerce', label: 'E-commerce', icon: ShoppingCart },
+  { id: 'consulting', label: 'Consulting', icon: Briefcase },
+  { id: 'content', label: 'Content', icon: PenTool },
 ];
 
 const CATEGORY_COLORS: Record<string, string> = {
-  software: "#f59e0b",
-  marketing: "#8b5cf6",
-  ecommerce: "#10b981",
-  consulting: "#3b82f6",
-  content: "#ec4899",
-  general: "#6b7280",
+  software: '#f59e0b',
+  marketing: '#8b5cf6',
+  ecommerce: '#10b981',
+  consulting: '#3b82f6',
+  content: '#ec4899',
+  general: '#6b7280',
 };
 
 export function Templates() {
   const navigate = useNavigate();
-  const [activeCategory, setActiveCategory] = useState("all");
+  const [activeCategory, setActiveCategory] = useState('all');
   const [selectedTemplate, setSelectedTemplate] = useState<CompanyTemplate | null>(null);
-  const [importName, setImportName] = useState("");
+  const [importName, setImportName] = useState('');
   const [showImportModal, setShowImportModal] = useState(false);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [templateToUpdate, setTemplateToUpdate] = useState<CompanyTemplate | null>(null);
-  const [sourceCompanyId, setSourceCompanyId] = useState("");
-  const [templateName, setTemplateName] = useState("");
-  const [templateDescription, setTemplateDescription] = useState("");
-  const [templateCategory, setTemplateCategory] = useState("software");
-  const [templateTags, setTemplateTags] = useState("");
+  const [sourceCompanyId, setSourceCompanyId] = useState('');
+  const [templateName, setTemplateName] = useState('');
+  const [templateDescription, setTemplateDescription] = useState('');
+  const [templateCategory, setTemplateCategory] = useState('software');
+  const [templateTags, setTemplateTags] = useState('');
   const [templateNotice, setTemplateNotice] = useState<string | null>(null);
 
   const { data: templates, isLoading } = useTemplates(activeCategory);
@@ -73,7 +74,9 @@ export function Templates() {
   const deleteTemplateMutation = useDeleteTemplate();
 
   const handleImport = async () => {
-    if (!selectedTemplate) return;
+    if (!selectedTemplate) {
+      return;
+    }
     try {
       const result = await importMutation.mutateAsync({
         templateId: selectedTemplate.id,
@@ -86,17 +89,17 @@ export function Templates() {
         if (companyId) {
           navigate(`/company/${companyId}`);
         } else {
-          navigate("/");
+          navigate('/');
         }
       }, 1500);
     } catch (err) {
-      console.error("Import failed:", err);
+      logger.error('Import failed', { error: err instanceof Error ? err.message : String(err) });
     }
   };
 
   const getConfig = (template: CompanyTemplate) => {
     try {
-      return typeof template.config === "string"
+      return typeof template.config === 'string'
         ? JSON.parse(template.config as any)
         : template.config;
     } catch {
@@ -107,24 +110,26 @@ export function Templates() {
   const openSaveTemplateModal = (template?: CompanyTemplate) => {
     const firstCompany = companies[0];
     setTemplateToUpdate(template ?? null);
-    setSourceCompanyId(firstCompany?.id ?? "");
-    setTemplateName(template?.name ?? (firstCompany ? `${firstCompany.name} Template` : ""));
-    setTemplateDescription(template?.description ?? "");
+    setSourceCompanyId(firstCompany?.id ?? '');
+    setTemplateName(template?.name ?? (firstCompany ? `${firstCompany.name} Template` : ''));
+    setTemplateDescription(template?.description ?? '');
     setTemplateCategory(
-      template?.category ?? (activeCategory !== "all" ? activeCategory : "software"),
+      template?.category ?? (activeCategory !== 'all' ? activeCategory : 'software'),
     );
-    setTemplateTags(template?.tags?.join(", ") ?? "");
+    setTemplateTags(template?.tags?.join(', ') ?? '');
     setShowSaveModal(true);
   };
 
   const handleSaveTemplate = async () => {
-    if (!sourceCompanyId || !templateName.trim()) return;
+    if (!sourceCompanyId || !templateName.trim()) {
+      return;
+    }
     const payload = {
       name: templateName.trim(),
       description: templateDescription.trim() || undefined,
       category: templateCategory,
       tags: templateTags
-        .split(",")
+        .split(',')
         .map((tag) => tag.trim())
         .filter(Boolean),
     };
@@ -144,7 +149,9 @@ export function Templates() {
   };
 
   const handleDeleteTemplate = async (template: CompanyTemplate) => {
-    if (!window.confirm(`Delete "${template.name}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete "${template.name}"? This cannot be undone.`)) {
+      return;
+    }
     await deleteTemplateMutation.mutateAsync(template.id);
     setTemplateNotice(`Deleted ${template.name}.`);
   };
@@ -157,7 +164,7 @@ export function Templates() {
         <div className="absolute inset-0 scan-lines pointer-events-none" />
         <div className="relative mx-auto max-w-6xl px-4 py-16 sm:px-6">
           <button
-            onClick={() => navigate("/")}
+            onClick={() => navigate('/')}
             className="mb-8 inline-flex items-center gap-1.5 text-sm text-text-secondary hover:text-accent transition-colors"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -208,8 +215,8 @@ export function Templates() {
                     flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all whitespace-nowrap
                     ${
                       isActive
-                        ? "border-amber-500 text-amber-500"
-                        : "border-transparent text-text-secondary hover:text-text-primary hover:border-white/10"
+                        ? 'border-amber-500 text-amber-500'
+                        : 'border-transparent text-text-secondary hover:text-text-primary hover:border-white/10'
                     }
                   `}
                 >
@@ -227,9 +234,7 @@ export function Templates() {
         {isLoading ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="h-8 w-8 text-amber-500 animate-spin" />
-            <span className="ml-3 text-text-secondary">
-              Loading templates...
-            </span>
+            <span className="ml-3 text-text-secondary">Loading templates...</span>
           </div>
         ) : importSuccess ? (
           <div className="flex flex-col items-center justify-center py-20">
@@ -239,9 +244,7 @@ export function Templates() {
             <h3 className="font-display text-lg font-semibold text-text-primary">
               Company Created Successfully
             </h3>
-            <p className="text-sm text-text-secondary mt-1">
-              Redirecting to your new company...
-            </p>
+            <p className="text-sm text-text-secondary mt-1">Redirecting to your new company...</p>
           </div>
         ) : !templates?.length ? (
           <div className="flex flex-col items-center justify-center py-20">
@@ -259,13 +262,13 @@ export function Templates() {
               const config = getConfig(template);
               const agents = config.agents ?? [];
               const catColor = CATEGORY_COLORS[template.category] ?? CATEGORY_COLORS.general;
-              const isBuiltIn = template.id.startsWith("builtin-");
+              const isBuiltIn = template.id.startsWith('builtin-');
 
               return (
                 <div
                   key={template.id}
                   className="group relative flex flex-col rounded-xl glass-raised p-6 transition-all duration-300 ease-out hover:glass-hover hover:-translate-y-1 hover:shadow-lg"
-                  style={{ ["--cat-color" as any]: catColor }}
+                  style={{ ['--cat-color' as any]: catColor }}
                 >
                   {/* Category accent bar */}
                   <div
@@ -324,7 +327,7 @@ export function Templates() {
                     {template.name}
                   </h3>
                   <p className="mt-1.5 text-sm text-text-secondary line-clamp-2 flex-1">
-                    {template.description ?? "No description"}
+                    {template.description ?? 'No description'}
                   </p>
 
                   {/* Agent preview */}
@@ -357,16 +360,14 @@ export function Templates() {
                       </span>
                       <span className="flex items-center gap-1">
                         <Download className="h-3.5 w-3.5 text-text-secondary/40" />
-                        <span className="tabular-nums font-display">
-                          {template.downloadCount}
-                        </span>
+                        <span className="tabular-nums font-display">{template.downloadCount}</span>
                       </span>
                     </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedTemplate(template);
-                        setImportName("");
+                        setImportName('');
                         setShowImportModal(true);
                       }}
                       className="inline-flex items-center gap-1 rounded-md h-7 px-3 text-xs font-medium text-surface bg-amber-500 transition-all duration-200 hover:brightness-110 active:scale-[0.97]"
@@ -423,13 +424,13 @@ export function Templates() {
               </div>
               <div className="grid grid-cols-2 gap-3 text-xs text-text-secondary">
                 <div>
-                  <span className="text-text-secondary/60">Agents:</span>{" "}
+                  <span className="text-text-secondary/60">Agents:</span>{' '}
                   <span className="text-text-primary font-display tabular-nums">
                     {selectedTemplate.agentCount}
                   </span>
                 </div>
                 <div>
-                  <span className="text-text-secondary/60">Category:</span>{" "}
+                  <span className="text-text-secondary/60">Category:</span>{' '}
                   <span className="text-text-primary capitalize">{selectedTemplate.category}</span>
                 </div>
               </div>
@@ -438,7 +439,9 @@ export function Templates() {
               {(() => {
                 const config = getConfig(selectedTemplate);
                 const agents = config.agents ?? [];
-                if (agents.length === 0) return null;
+                if (agents.length === 0) {
+                  return null;
+                }
                 return (
                   <div className="mt-3 pt-3 border-t border-white/[0.06]">
                     <p className="text-[11px] text-text-secondary/60 uppercase tracking-wider mb-2">
@@ -468,7 +471,7 @@ export function Templates() {
                 onChange={(e) => setImportName(e.target.value)}
                 placeholder={(() => {
                   const config = getConfig(selectedTemplate);
-                  return config.name ?? "My New Company";
+                  return config.name ?? 'My New Company';
                 })()}
                 className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
               />
@@ -509,12 +512,12 @@ export function Templates() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="glass-raised rounded-2xl w-full max-w-lg mx-4 p-6 shadow-2xl border border-white/10">
             <h2 className="font-display text-lg font-semibold text-text-primary mb-1">
-              {templateToUpdate ? "Update Template" : "Save Company Template"}
+              {templateToUpdate ? 'Update Template' : 'Save Company Template'}
             </h2>
             <p className="text-sm text-text-secondary mb-6">
               {templateToUpdate
-                ? "Refresh this saved template from the latest company state and bump its version."
-                : "Save the current company structure as a reusable versioned template."}
+                ? 'Refresh this saved template from the latest company state and bump its version.'
+                : 'Save the current company structure as a reusable versioned template.'}
             </p>
 
             <div className="space-y-4">
@@ -529,7 +532,7 @@ export function Templates() {
                     setSourceCompanyId(nextCompanyId);
                     if (!templateToUpdate) {
                       const company = companies.find((item) => item.id === nextCompanyId);
-                      setTemplateName(company ? `${company.name} Template` : "");
+                      setTemplateName(company ? `${company.name} Template` : '');
                     }
                   }}
                   className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
@@ -577,7 +580,7 @@ export function Templates() {
                     onChange={(e) => setTemplateCategory(e.target.value)}
                     className="w-full h-9 rounded-md bg-white/[0.04] border border-white/10 px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-amber-500/50 focus:border-amber-500/50"
                   >
-                    {CATEGORIES.filter((cat) => cat.id !== "all").map((cat) => (
+                    {CATEGORIES.filter((cat) => cat.id !== 'all').map((cat) => (
                       <option key={cat.id} value={cat.id}>
                         {cat.label}
                       </option>
@@ -586,9 +589,7 @@ export function Templates() {
                 </label>
 
                 <label className="block">
-                  <span className="text-xs font-medium text-text-secondary mb-1 block">
-                    Tags
-                  </span>
+                  <span className="text-xs font-medium text-text-secondary mb-1 block">Tags</span>
                   <input
                     type="text"
                     value={templateTags}
@@ -601,7 +602,7 @@ export function Templates() {
 
               {templateToUpdate && (
                 <div className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-text-secondary">
-                  Current version:{" "}
+                  Current version:{' '}
                   <span className="font-display text-text-primary">
                     v{templateToUpdate.version}
                   </span>
@@ -639,7 +640,7 @@ export function Templates() {
                     ) : (
                       <Save className="h-4 w-4" />
                     )}
-                    {templateToUpdate ? "Update Template" : "Save Template"}
+                    {templateToUpdate ? 'Update Template' : 'Save Template'}
                   </>
                 )}
               </button>

@@ -89,6 +89,81 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  sentry-source-maps:
+    needs: [verify, release]
+    if: needs.verify.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Sentry configuration
+        id: sentry-config
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_UI_PROJECT: ${{ vars.SENTRY_UI_PROJECT }}
+        run: |
+          if [[ -n "$SENTRY_AUTH_TOKEN" && -n "$SENTRY_ORG" && -n "$SENTRY_PROJECT" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            # The UI Sentry project defaults to the server project when a
+            # dedicated SENTRY_UI_PROJECT variable is not configured.
+            echo "ui-project=${SENTRY_UI_PROJECT:-$SENTRY_PROJECT}" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Sentry source map upload because SENTRY_AUTH_TOKEN, SENTRY_ORG, or SENTRY_PROJECT is not configured."
+          fi
+
+      - if: steps.sentry-config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - if: steps.sentry-config.outputs.enabled == 'true'
+        uses: pnpm/action-setup@v4
+
+      - if: steps.sentry-config.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - if: steps.sentry-config.outputs.enabled == 'true'
+        run: pnpm install --frozen-lockfile --filter '!@eidolon/desktop'
+
+      - name: CalVer version for UI build
+        if: steps.sentry-config.outputs.enabled == 'true'
+        run: echo "VITE_APP_VERSION=${{ needs.verify.outputs.tag }}" >> "$GITHUB_ENV"
+
+      - name: Build server and UI for source maps
+        if: steps.sentry-config.outputs.enabled == 'true'
+        run: pnpm run build
+
+      - name: Create Sentry release and upload server source maps
+        if: steps.sentry-config.outputs.enabled == 'true'
+        uses: getsentry/action-release@v3
+        with:
+          environment: production
+          version: ${{ needs.verify.outputs.tag }}
+          sourcemaps: server/dist
+          finalize: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+
+      - name: Upload UI source maps to Sentry
+        if: steps.sentry-config.outputs.enabled == 'true'
+        uses: getsentry/action-release@v3
+        with:
+          environment: production
+          version: ${{ needs.verify.outputs.tag }}
+          sourcemaps: ui/dist
+          finalize: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ steps.sentry-config.outputs.ui-project }}
+
   desktop-mac:
     needs: verify
     if: needs.verify.outputs.skip != 'true'

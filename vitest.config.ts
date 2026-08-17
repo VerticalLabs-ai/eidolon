@@ -1,15 +1,15 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   resolve: {
     // Load TS source for workspace packages during tests so Vitest does not use stale dist artifacts.
-    conditions: ["source"],
+    conditions: ['source'],
   },
   test: {
     globals: true,
-    environment: "node",
+    environment: 'node',
     isolate: true,
-    include: ["packages/*/src/**/*.test.ts", "server/src/**/*.test.ts"],
+    include: ['packages/*/src/**/*.test.ts', 'server/src/**/*.test.ts'],
     // Database-per-file template-clone isolation: the first
     // `createTestDb()` call in each file clones the `eidolon_test_template`
     // database (all migrations pre-applied) into a unique
@@ -20,14 +20,14 @@ export default defineConfig({
     // `globalSetup` drops orphaned `eidolon_test_*` databases before the run.
     // Real Postgres uses TCP (non-blocking), so there is no WASM event-loop
     // contention and forks can scale higher than the previous PGlite cap.
-    setupFiles: ["./server/src/test-setup.ts"],
+    setupFiles: ['./server/src/test-setup.ts'],
     // With real Postgres there is no WASM blocking, so we can run more
     // forks in parallel. Each fork clones the template database (fast
     // file-level copy, no migrations) and creates a small connection pool.
     // A cap of 6 forks balances speed with Postgres server load from
     // concurrent database clone/drop operations (reduced from 8 to relieve
     // connection contention that caused non-deterministic failures).
-    globalSetup: ["./server/src/test-global-setup.ts"],
+    globalSetup: ['./server/src/test-global-setup.ts'],
     poolOptions: {
       forks: {
         maxForks: 6,
@@ -39,5 +39,29 @@ export default defineConfig({
     // silent (60s is still a clear signal if a test hangs).
     testTimeout: 30_000,
     hookTimeout: 60_000,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json-summary', 'html'],
+      include: ['packages/*/src/**/*.{ts,tsx}', 'server/src/**/*.{ts,tsx}'],
+      exclude: [
+        'packages/*/src/**/*.test.ts',
+        'server/src/**/*.test.ts',
+        'server/src/test-setup.ts',
+        'server/src/test-global-setup.ts',
+        'server/src/types.ts',
+        '**/*.d.ts',
+        '**/types.ts',
+      ],
+      thresholds: {
+        // Thresholds set slightly below the desktop package's levels
+        // (lines: 50, statements: 50, functions: 80, branches: 65) to
+        // gate against coverage regressions without blocking the existing
+        // server and packages test suite.
+        lines: 40,
+        statements: 40,
+        functions: 50,
+        branches: 40,
+      },
+    },
   },
 });

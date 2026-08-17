@@ -1,3 +1,4 @@
+import { wrapClientWithTracing, isTracingEnabled } from './utils/tracing.js'; // OTel SDK init — must precede instrumented module loads
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres, { type Sql } from 'postgres';
@@ -194,7 +195,9 @@ function resolveConnectionString(): string {
 function maskUrl(url: string): string {
   try {
     const u = new URL(url);
-    if (u.password) {u.password = '***';}
+    if (u.password) {
+      u.password = '***';
+    }
     return u.toString();
   } catch {
     return '(unparseable url)';
@@ -207,7 +210,11 @@ async function build(options: BootstrapOptions): Promise<BootstrapResult> {
   const connectionString = resolveConnectionString();
   logger.info({ db: maskUrl(connectionString) }, 'Opening Postgres connection');
 
-  const client = postgres(connectionString, { max: maxConnections });
+  // Only wrap the client with tracing when EIDOLON_OTEL_ENABLED is set.
+  // When tracing is disabled, use the raw postgres.js client directly to
+  // avoid any Proxy overhead and ensure Drizzle query paths are unaffected.
+  const rawClient = postgres(connectionString, { max: maxConnections });
+  const client = isTracingEnabled() ? wrapClientWithTracing(rawClient) : rawClient;
   const drizzleDb = drizzle(client);
 
   if (runMigrations) {

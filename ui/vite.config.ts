@@ -1,23 +1,27 @@
-import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
-import { execSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { defineConfig, loadEnv } from "vite";
+import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
+import { execSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, loadEnv } from 'vite';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, "..");
+const repoRoot = resolve(__dirname, '..');
 
 /** CalVer (YYYY.M.D): env, newest git tag, or UTC calendar date — matches RELEASING.md / scripts/calver-next-tag.sh */
 function getAppVersion(): string {
   const fromEnv = process.env.VITE_APP_VERSION?.trim();
-  if (fromEnv) return fromEnv;
+  if (fromEnv) {
+    return fromEnv;
+  }
   try {
-    const tag = execSync("git describe --tags --abbrev=0", {
-      encoding: "utf8",
+    const tag = execSync('git describe --tags --abbrev=0', {
+      encoding: 'utf8',
       cwd: repoRoot,
     }).trim();
-    if (tag) return tag;
+    if (tag) {
+      return tag;
+    }
   } catch {
     /* not a git checkout or no tags */
   }
@@ -30,11 +34,8 @@ export default defineConfig(({ mode }) => {
   // Vite's `loadEnv` normally only returns VITE_* vars; passing an empty
   // prefix array gets us the full set so we can fall back to Clerk's
   // NEXT_PUBLIC_ naming when the Vercel Marketplace provisions it.
-  const rootEnv = loadEnv(mode, repoRoot, [
-    "VITE_",
-    "NEXT_PUBLIC_",
-  ]);
-  const uiEnv = loadEnv(mode, __dirname, ["VITE_", "NEXT_PUBLIC_"]);
+  const rootEnv = loadEnv(mode, repoRoot, ['VITE_', 'NEXT_PUBLIC_']);
+  const uiEnv = loadEnv(mode, __dirname, ['VITE_', 'NEXT_PUBLIC_']);
   const merged = { ...rootEnv, ...uiEnv, ...process.env };
 
   // Clerk ships the publishable key as NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY via
@@ -42,38 +43,39 @@ export default defineConfig(({ mode }) => {
   // VITE_CLERK_PUBLISHABLE_KEY so the browser bundle can read it via
   // import.meta.env (Vite only inlines vars prefixed with VITE_).
   const clerkPublishableKey =
-    merged.VITE_CLERK_PUBLISHABLE_KEY ??
-    merged.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
-    "";
-  const apiPort = merged.PORT?.trim() || "3100";
-  const apiProxyTarget =
-    merged.VITE_API_PROXY_TARGET?.trim() || `http://localhost:${apiPort}`;
+    merged.VITE_CLERK_PUBLISHABLE_KEY ?? merged.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? '';
+  const apiPort = merged.PORT?.trim() || '3100';
+  const apiProxyTarget = merged.VITE_API_PROXY_TARGET?.trim() || `http://localhost:${apiPort}`;
   const wsProxyTarget =
-    merged.VITE_WS_PROXY_TARGET?.trim() ||
-    apiProxyTarget.replace(/^http/, "ws");
-  const authMode = merged.VITE_AUTH_MODE ?? "";
+    merged.VITE_WS_PROXY_TARGET?.trim() || apiProxyTarget.replace(/^http/, 'ws');
+  const authMode = merged.VITE_AUTH_MODE ?? '';
 
   return {
     define: {
-      "import.meta.env.VITE_APP_VERSION": JSON.stringify(getAppVersion()),
-      "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY":
-        JSON.stringify(clerkPublishableKey),
-      "import.meta.env.VITE_AUTH_MODE": JSON.stringify(authMode),
+      'import.meta.env.VITE_APP_VERSION': JSON.stringify(getAppVersion()),
+      'import.meta.env.VITE_CLERK_PUBLISHABLE_KEY': JSON.stringify(clerkPublishableKey),
+      'import.meta.env.VITE_AUTH_MODE': JSON.stringify(authMode),
+    },
+    // Generate source maps for all builds so they can be uploaded to Sentry
+    // for stack trace de-obfuscation. 'hidden' produces .map files without
+    // referencing them in the output, preventing browsers from fetching them.
+    build: {
+      sourcemap: 'hidden',
     },
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        "@": resolve(__dirname, "src"),
+        '@': resolve(__dirname, 'src'),
       },
     },
     server: {
       port: 5173,
       proxy: {
-        "/api": {
+        '/api': {
           target: apiProxyTarget,
           changeOrigin: true,
         },
-        "/ws": {
+        '/ws': {
           target: wsProxyTarget,
           ws: true,
         },

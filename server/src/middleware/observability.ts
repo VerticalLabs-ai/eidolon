@@ -1,8 +1,10 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
+import { sql } from 'drizzle-orm';
 import client from 'prom-client';
 import { getProviderCircuitSnapshot } from '../services/provider-circuit-breaker.js';
+import type { DbInstance } from '../types.js';
 
 declare global {
   namespace Express {
@@ -68,6 +70,116 @@ const openCircuits = new client.Gauge({
     }
   },
 });
+
+// ---------------------------------------------------------------------------
+// Business metrics (DB-backed gauges)
+//
+// These gauges query the database on each scrape to report operationally
+// useful counts. The DB reference is set via `setBusinessMetricsDb()` from
+// `createApp`. When the DB is not yet wired (e.g. early in startup or in
+// unit tests that don't exercise the metrics endpoint), the collect
+// callbacks short-circuit and leave the gauges at zero.
+// ---------------------------------------------------------------------------
+
+let businessMetricsDb: DbInstance | null = null;
+
+/**
+ * Wire the database instance used by business-metric gauges. Called once
+ * from `createApp` after the DB pool is available.
+ */
+export function setBusinessMetricsDb(db: DbInstance): void {
+  businessMetricsDb = db;
+}
+
+/** Agent statuses tracked by the `eidolon_agents_by_status` gauge. */
+const AGENT_STATUSES = ['idle', 'working', 'paused', 'error', 'offline'] as const;
+
+/** Task statuses tracked by the `eidolon_tasks_by_status` gauge. */
+const TASK_STATUSES = [
+  'backlog',
+  'todo',
+  'in_progress',
+  'review',
+  'done',
+  'cancelled',
+  'timed_out',
+] as const;
+
+const activeCompaniesGauge = new client.Gauge({
+  name: 'eidolon_companies_active',
+  help: 'Number of companies with status "active".',
+  registers: [register],
+  async collect() {
+    if (!businessMetricsDb) {
+      return;
+    }
+    try {
+      const rows = (await businessMetricsDb.drizzle.execute(sql`
+        SELECT count(*)::int AS count FROM companies WHERE status = 'active'
+      `)) as unknown as Array<{ count: number }>;
+      this.set(Number(rows[0]?.count ?? 0));
+    } catch {
+      // Leave the gauge at its last value on transient DB errors.
+    }
+  },
+});
+
+const agentsByStatusGauge = new client.Gauge({
+  name: 'eidolon_agents_by_status',
+  help: 'Number of agents, grouped by status.',
+  labelNames: ['status'] as const,
+  registers: [register],
+  async collect() {
+    if (!businessMetricsDb) {
+      return;
+    }
+    try {
+      const rows = (await businessMetricsDb.drizzle.execute(sql`
+        SELECT status, count(*)::int AS count FROM agents GROUP BY status
+      `)) as unknown as Array<{ status: string; count: number }>;
+      const counts = new Map<string, number>(AGENT_STATUSES.map((s) => [s, 0]));
+      for (const row of rows) {
+        counts.set(row.status, Number(row.count));
+      }
+      for (const [status, count] of counts) {
+        this.set({ status }, count);
+      }
+    } catch {
+      // Leave the gauge at its last value on transient DB errors.
+    }
+  },
+});
+
+const tasksByStatusGauge = new client.Gauge({
+  name: 'eidolon_tasks_by_status',
+  help: 'Number of tasks, grouped by status.',
+  labelNames: ['status'] as const,
+  registers: [register],
+  async collect() {
+    if (!businessMetricsDb) {
+      return;
+    }
+    try {
+      const rows = (await businessMetricsDb.drizzle.execute(sql`
+        SELECT status, count(*)::int AS count FROM tasks GROUP BY status
+      `)) as unknown as Array<{ status: string; count: number }>;
+      const counts = new Map<string, number>(TASK_STATUSES.map((s) => [s, 0]));
+      for (const row of rows) {
+        counts.set(row.status, Number(row.count));
+      }
+      for (const [status, count] of counts) {
+        this.set({ status }, count);
+      }
+    } catch {
+      // Leave the gauge at its last value on transient DB errors.
+    }
+  },
+});
+
+// Touch gauges so they are not tree-shaken in production builds.
+void activeCompaniesGauge;
+void agentsByStatusGauge;
+void tasksByStatusGauge;
 
 function safeRequestId(candidate: string | undefined): string {
   if (candidate && /^[A-Za-z0-9._:-]{1,128}$/.test(candidate)) {

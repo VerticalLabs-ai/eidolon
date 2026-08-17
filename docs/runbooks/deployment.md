@@ -11,6 +11,13 @@
    gate: `/api/health` returns `200` even when the database is unreachable. See
    [reliability controls](reliability.md).
 
+The **Deploy verification** workflow (`.github/workflows/deploy-verify.yml`)
+runs automatically after every push to `main` and probes both `/api/health`
+and `/api/ready` on the production URL. It opens a GitHub issue labelled
+`deploy-verify` if either endpoint returns non-200. See
+[Deployment observability](observability.md#deployment-observability) in the
+observability runbook for the full procedure.
+
 ## Rollback
 
 1. Stop promoting new commits to `main`.

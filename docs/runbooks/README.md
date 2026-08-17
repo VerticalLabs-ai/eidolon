@@ -2,6 +2,7 @@
 
 Use these procedures for local development and production incidents:
 
+- [Alerting](alerting.md)
 - [Deployment and rollback](deployment.md)
 - [Incident response](incident.md)
 - [Feature flag rollout and rollback](feature-flags.md)
@@ -11,6 +12,12 @@ Use these procedures for local development and production incidents:
 
 Every Markdown file in this directory must be linked above. `pnpm docs:check`
 fails on an unindexed runbook, so a new procedure cannot land unreachable.
+
+## Architecture references
+
+- [Database schema ownership](../architecture/schema-ownership.md) — which
+  applications own which schemas, the migration workflow, and schema
+  management tools
 
 ## First checks during an incident
 
