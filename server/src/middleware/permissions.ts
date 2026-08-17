@@ -29,7 +29,8 @@ export type Permission =
   | 'sessions.manage'
   | 'skills.manage'
   | 'environments.manage'
-  | 'apikeys.manage';
+  | 'apikeys.manage'
+  | 'privacy.manage';
 
 const ALL_ROLES: Role[] = ['owner', 'admin', 'member', 'viewer'];
 const CONTRIBUTOR_ROLES: Role[] = ['owner', 'admin', 'member'];
@@ -65,6 +66,9 @@ export const PERMISSION_MATRIX: Record<Permission, Role[]> = {
   'skills.manage': ADMIN_ROLES,
   'environments.manage': ADMIN_ROLES,
   'apikeys.manage': ADMIN_ROLES,
+  // Owner only. Subject export returns personal data and erasure is
+  // irreversible, so neither belongs to a role that can be granted casually.
+  'privacy.manage': ['owner'],
 };
 
 export function hasPermission(role: Role, permission: Permission): boolean {

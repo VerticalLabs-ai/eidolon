@@ -18,6 +18,7 @@ import { goalsRouter } from './routes/goals.js';
 import { messagesRouter } from './routes/messages.js';
 import { budgetsRouter } from './routes/budgets.js';
 import { analyticsRouter } from './routes/analytics.js';
+import { privacyRouter } from './routes/privacy.js';
 import { featureFlagsRouter } from './routes/feature-flags.js';
 import { workflowsRouter } from './routes/workflows.js';
 import { activityRouter } from './routes/activity.js';
@@ -373,6 +374,12 @@ export function createApp(db: DbInstance): express.Express {
     requireAuth,
     requirePermission('company.view'),
     analyticsRouter(db),
+  );
+  app.use(
+    '/api/companies/:companyId/privacy',
+    requireAuth,
+    requirePermission('privacy.manage'),
+    privacyRouter(db),
   );
   app.use(
     '/api/companies/:companyId/flags',
