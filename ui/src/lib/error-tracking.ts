@@ -69,6 +69,7 @@ const ALLOWED_TAG_KEYS = new Set([
   'browser',
   'platform',
   'environment',
+  'attempt',
 ]);
 
 export function captureUIError(
