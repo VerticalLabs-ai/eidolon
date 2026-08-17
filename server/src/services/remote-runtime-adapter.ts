@@ -2,10 +2,8 @@ import dns from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import type {
-  LocalCliRunResult,
-  LocalCliTranscriptEntry,
-} from './local-cli-adapter.js';
+import type { LocalCliRunResult, LocalCliTranscriptEntry } from './local-cli-adapter.js';
+import { externalCircuitKey, withProviderCircuitBreaker } from './provider-circuit-breaker.js';
 
 const DEFAULT_TIMEOUT_SEC = 30;
 const MAX_TIMEOUT_SEC = 300;
@@ -19,12 +17,8 @@ const FORBIDDEN_HEADERS = new Set([
   'transfer-encoding',
 ]);
 
-export const REMOTE_RUNTIME_ADAPTER_IDS = [
-  'http:remote',
-  'openclaw:webhook',
-] as const;
-export type RemoteRuntimeAdapterId =
-  (typeof REMOTE_RUNTIME_ADAPTER_IDS)[number];
+export const REMOTE_RUNTIME_ADAPTER_IDS = ['http:remote', 'openclaw:webhook'] as const;
+export type RemoteRuntimeAdapterId = (typeof REMOTE_RUNTIME_ADAPTER_IDS)[number];
 
 interface RemoteRuntimeAdapterInput {
   adapterId: string;
@@ -49,15 +43,13 @@ interface RemoteResponse {
   body: string;
 }
 
-export function isRemoteRuntimeAdapterId(
-  value: string,
-): value is RemoteRuntimeAdapterId {
+export function isRemoteRuntimeAdapterId(value: string): value is RemoteRuntimeAdapterId {
   return REMOTE_RUNTIME_ADAPTER_IDS.includes(value as RemoteRuntimeAdapterId);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 
@@ -68,9 +60,7 @@ function asPositiveNumber(value: unknown, fallback: number): number {
 }
 
 function stripIpBrackets(value: string): string {
-  return value.startsWith('[') && value.endsWith(']')
-    ? value.slice(1, -1)
-    : value;
+  return value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
 }
 
 function canonicalizeIpAddress(value: string): string | null {
@@ -88,9 +78,7 @@ function canonicalizeIpAddress(value: string): string | null {
 function parseHostAllowlist(): Map<string, Set<string>> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(
-      process.env.EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON ?? '{}',
-    );
+    parsed = JSON.parse(process.env.EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON ?? '{}');
   } catch {
     throw new Error(
       'EIDOLON_RUNTIME_HTTP_ORIGIN_ALLOWLIST_JSON must be a JSON object mapping HTTP origins to approved IP addresses.',
@@ -122,18 +110,13 @@ function parseHostAllowlist(): Map<string, Set<string>> {
         `Runtime HTTP allowlist key "${configuredOrigin}" must be an HTTP origin such as https://openclaw.internal:443.`,
       );
     }
-    if (
-      !Array.isArray(configuredAddresses) ||
-      configuredAddresses.length === 0
-    ) {
+    if (!Array.isArray(configuredAddresses) || configuredAddresses.length === 0) {
       throw new Error(
         `Runtime HTTP origin "${configuredOrigin}" must map to at least one approved IP address.`,
       );
     }
     const addresses = configuredAddresses.map((address) =>
-      typeof address === 'string'
-        ? canonicalizeIpAddress(address)
-        : null,
+      typeof address === 'string' ? canonicalizeIpAddress(address) : null,
     );
     if (addresses.some((address) => address === null)) {
       throw new Error(
@@ -209,9 +192,7 @@ async function resolveRemoteTarget(
       ...entry,
       address: canonicalizeIpAddress(entry.address),
     }))
-    .find((entry) =>
-      entry.address !== null && approvedAddresses.has(entry.address),
-    );
+    .find((entry) => entry.address !== null && approvedAddresses.has(entry.address));
   if (!pinned || (pinned.family !== 4 && pinned.family !== 6)) {
     const resolved = addresses.map((entry) => entry.address).join(', ') || 'none';
     throw new Error(
@@ -251,9 +232,7 @@ function resolveResponseFields(config: Record<string, unknown>): string[] {
     !Array.isArray(config.responseFields) ||
     config.responseFields.length > 20 ||
     config.responseFields.some(
-      (field) =>
-        typeof field !== 'string' ||
-        !/^[a-zA-Z0-9_.-]{1,64}$/.test(field),
+      (field) => typeof field !== 'string' || !/^[a-zA-Z0-9_.-]{1,64}$/.test(field),
     )
   ) {
     throw new Error(
@@ -283,7 +262,26 @@ function selectResponseData(
   return Object.keys(selected).length > 0 ? selected : null;
 }
 
+/**
+ * Guarded by a per-origin circuit breaker so a hard-down remote runtime stops
+ * costing every session the full request timeout. Both callers already treat a
+ * thrown error as an adapter failure, so an open circuit surfaces through the
+ * existing diagnostic path.
+ */
 async function requestPinnedRemote(input: {
+  target: PinnedRemoteTarget;
+  method: 'HEAD' | 'POST';
+  headers: Record<string, string>;
+  body?: string;
+  signal: AbortSignal;
+}): Promise<RemoteResponse> {
+  return withProviderCircuitBreaker(
+    externalCircuitKey('remote_runtime', input.target.url.origin),
+    () => sendPinnedRemote(input),
+  );
+}
+
+async function sendPinnedRemote(input: {
   target: PinnedRemoteTarget;
   method: 'HEAD' | 'POST';
   headers: Record<string, string>;
@@ -305,10 +303,12 @@ async function requestPinnedRemote(input: {
         agent: false,
         lookup: (_hostname, options, callback) => {
           if (options.all) {
-            callback(null, [{
-              address: input.target.address,
-              family: input.target.family,
-            }]);
+            callback(null, [
+              {
+                address: input.target.address,
+                family: input.target.family,
+              },
+            ]);
             return;
           }
           callback(null, input.target.address, input.target.family);
@@ -321,9 +321,7 @@ async function requestPinnedRemote(input: {
           bytes += chunk.length;
           if (bytes > MAX_RESPONSE_BYTES) {
             request.destroy(
-              new Error(
-                `Remote adapter response exceeded ${MAX_RESPONSE_BYTES} bytes.`,
-              ),
+              new Error(`Remote adapter response exceeded ${MAX_RESPONSE_BYTES} bytes.`),
             );
             return;
           }
@@ -349,17 +347,10 @@ function validateOpenClawConfig(config: Record<string, unknown>): void {
     config.agentId !== undefined &&
     (typeof config.agentId !== 'string' || !config.agentId.trim())
   ) {
-    throw new Error(
-      'openclaw:webhook adapterConfig.agentId must be a non-empty string.',
-    );
+    throw new Error('openclaw:webhook adapterConfig.agentId must be a non-empty string.');
   }
-  if (
-    config.deliver !== undefined &&
-    typeof config.deliver !== 'boolean'
-  ) {
-    throw new Error(
-      'openclaw:webhook adapterConfig.deliver must be a boolean.',
-    );
+  if (config.deliver !== undefined && typeof config.deliver !== 'boolean') {
+    throw new Error('openclaw:webhook adapterConfig.deliver must be a boolean.');
   }
 }
 
@@ -412,12 +403,8 @@ export async function testRemoteRuntimeAdapter(input: {
   }
   const config = asRecord(input.adapterConfig);
   const timeoutSec = asPositiveNumber(config.timeoutSec, DEFAULT_TIMEOUT_SEC);
-  const timeoutSignal = AbortSignal.timeout(
-    Math.max(1, Math.round(timeoutSec * 1_000)),
-  );
-  const signal = input.signal
-    ? AbortSignal.any([input.signal, timeoutSignal])
-    : timeoutSignal;
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.round(timeoutSec * 1_000)));
+  const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
   const target = await resolveRemoteTarget(config, signal);
   const headers = resolveHeaders(config);
   resolveResponseFields(config);
@@ -477,12 +464,8 @@ export async function runRemoteRuntimeAdapter(
   const startedAt = Date.now();
   const config = asRecord(input.adapterConfig);
   const timeoutSec = asPositiveNumber(config.timeoutSec, DEFAULT_TIMEOUT_SEC);
-  const timeoutSignal = AbortSignal.timeout(
-    Math.max(1, Math.round(timeoutSec * 1_000)),
-  );
-  const signal = input.signal
-    ? AbortSignal.any([input.signal, timeoutSignal])
-    : timeoutSignal;
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.round(timeoutSec * 1_000)));
+  const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
   const target = await resolveRemoteTarget(config, signal);
   const headers = resolveHeaders(config);
   const responseFields = resolveResponseFields(config);
@@ -507,10 +490,7 @@ export async function runRemoteRuntimeAdapter(
     responseText = response.body;
     if (responseFields.length > 0) {
       try {
-        responseData = selectResponseData(
-          JSON.parse(responseText),
-          responseFields,
-        );
+        responseData = selectResponseData(JSON.parse(responseText), responseFields);
       } catch {
         responseData = null;
       }
@@ -532,12 +512,14 @@ export async function runRemoteRuntimeAdapter(
       timedOut: timeoutSignal.aborted,
       durationMs: diagnostic.durationMs,
       summary: null,
-      transcript: [{
-        timestamp: new Date().toISOString(),
-        stream: 'system',
-        kind: 'diagnostic',
-        data: diagnostic,
-      }],
+      transcript: [
+        {
+          timestamp: new Date().toISOString(),
+          stream: 'system',
+          kind: 'diagnostic',
+          data: diagnostic,
+        },
+      ],
       resumeState: input.resumeState ?? {},
       diagnostic,
     };
@@ -545,10 +527,7 @@ export async function runRemoteRuntimeAdapter(
 
   const ok = response.status >= 200 && response.status < 300;
   const durationMs = Date.now() - startedAt;
-  const summaryCandidate =
-    responseData?.summary ??
-    responseData?.result ??
-    responseData?.message;
+  const summaryCandidate = responseData?.summary ?? responseData?.result ?? responseData?.message;
   const summary =
     typeof summaryCandidate === 'string' && summaryCandidate.trim()
       ? summaryCandidate.trim().slice(0, 100_000)
@@ -573,8 +552,7 @@ export async function runRemoteRuntimeAdapter(
     durationMs,
   };
   if (!ok) {
-    diagnostic.message =
-      `Remote adapter returned HTTP ${response.status} ${response.statusText}.`;
+    diagnostic.message = `Remote adapter returned HTTP ${response.status} ${response.statusText}.`;
   }
   transcript.push({
     timestamp: new Date().toISOString(),

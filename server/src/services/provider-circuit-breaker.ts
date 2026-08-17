@@ -1,9 +1,25 @@
+import { createHash } from 'node:crypto';
+
 type CircuitState = {
   consecutiveFailures: number;
   openUntil: number;
 };
 
 const circuits = new Map<string, CircuitState>();
+
+/**
+ * Build a circuit key for an outbound dependency whose address is
+ * tenant-supplied.
+ *
+ * Each distinct endpoint needs its own circuit — one company's dead MCP server
+ * must not suppress calls for every other company — but circuit keys surface in
+ * the metrics registry, so the address is reduced to a short digest rather than
+ * carried verbatim. A hostname is customer configuration, not telemetry.
+ */
+export function externalCircuitKey(kind: string, address: string): string {
+  const digest = createHash('sha256').update(address).digest('hex').slice(0, 12);
+  return `${kind}:${digest}`;
+}
 
 export class ProviderCircuitOpenError extends Error {
   constructor(provider: string, retryAfterMs: number) {
@@ -25,6 +41,33 @@ function failureThreshold(): number {
 
 function resetTimeoutMs(): number {
   return positiveInteger(process.env.EIDOLON_PROVIDER_CIRCUIT_RESET_MS, 30_000);
+}
+
+export type ProviderCircuitStatus = {
+  provider: string;
+  consecutiveFailures: number;
+  open: boolean;
+  /** Milliseconds until a probe is allowed; `0` when the circuit is closed. */
+  retryAfterMs: number;
+};
+
+/**
+ * Read-only view of every tracked circuit.
+ *
+ * Without this an open circuit is only observable by triggering the failure it
+ * is suppressing, which is exactly when an operator cannot afford to
+ * experiment.
+ */
+export function getProviderCircuitSnapshot(now = Date.now): ProviderCircuitStatus[] {
+  const currentTime = now();
+  return Array.from(circuits.entries())
+    .map(([provider, state]) => ({
+      provider,
+      consecutiveFailures: state.consecutiveFailures,
+      open: state.openUntil > currentTime,
+      retryAfterMs: Math.max(0, state.openUntil - currentTime),
+    }))
+    .sort((a, b) => a.provider.localeCompare(b.provider));
 }
 
 export async function withProviderCircuitBreaker<T>(

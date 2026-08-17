@@ -45,11 +45,63 @@ export class QueryCounter implements Logger {
     this.count = 0;
   }
 
+  /** Queries observed since construction or the last `reset()`. */
+  get queries(): number {
+    return this.count;
+  }
+
   assertAtMost(limit: number): void {
     if (this.count > limit) {
       throw new Error(`Expected at most ${limit} database queries, received ${this.count}.`);
     }
   }
+
+  /** Count the queries a single operation issues, ignoring any earlier ones. */
+  async measure(operation: () => Promise<unknown>): Promise<number> {
+    this.reset();
+    await operation();
+    return this.count;
+  }
+}
+
+/**
+ * Assert that a read flow issues the same number of queries regardless of how
+ * many rows it returns.
+ *
+ * An absolute query budget has to be re-tuned whenever an unrelated query is
+ * added or removed, so it tends to be loosened until it stops failing. The
+ * invariant that actually matters for N+1 is that query count does not grow
+ * with row count, which this measures directly: `seed` adds rows between the
+ * two measurements, and any per-row query shows up as a difference.
+ */
+export async function assertQueryCountIndependentOfRows(input: {
+  queries: QueryCounter;
+  /** Issue the read being protected. Must succeed both times. */
+  read: () => Promise<unknown>;
+  /** Add more rows to the collection the read returns. */
+  seed: () => Promise<unknown>;
+  /** Label used in the failure message. */
+  label: string;
+}): Promise<number> {
+  const before = await input.queries.measure(input.read);
+  if (before === 0) {
+    throw new Error(
+      `${input.label}: no queries were observed, so this guard would pass for any ` +
+        'implementation. The QueryCounter is not attached to the database this read ' +
+        'uses — pass it to the first createTestDb() call in the file.',
+    );
+  }
+
+  await input.seed();
+  const after = await input.queries.measure(input.read);
+
+  if (after !== before) {
+    throw new Error(
+      `${input.label}: query count grew from ${before} to ${after} after adding rows, ` +
+        'which means the flow issues at least one query per row (N+1).',
+    );
+  }
+  return after;
 }
 
 /**
@@ -213,7 +265,9 @@ async function ensureTemplateDatabase(mgmtClient: ReturnType<typeof postgres>): 
  * CASCADE`. Excludes `__drizzle_migrations` so the migrator doesn't re-run.
  */
 async function resetTestDb(): Promise<void> {
-  if (!_client) {return;}
+  if (!_client) {
+    return;
+  }
 
   const rows = await _client`
     SELECT tablename
@@ -224,7 +278,9 @@ async function resetTestDb(): Promise<void> {
   `;
 
   const tables = rows.map((row) => row.tablename as string);
-  if (tables.length === 0) {return;}
+  if (tables.length === 0) {
+    return;
+  }
 
   const tableList = tables.map((t) => `"public"."${t}"`).join(', ');
   const statement = `TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`;
@@ -241,7 +297,9 @@ async function resetTestDb(): Promise<void> {
     } catch (error) {
       const code = (error as { code?: string }).code;
       const transient = code === DEADLOCK_DETECTED || code === LOCK_NOT_AVAILABLE;
-      if (!transient || attempt >= TRUNCATE_MAX_RETRIES) {throw error;}
+      if (!transient || attempt >= TRUNCATE_MAX_RETRIES) {
+        throw error;
+      }
       await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
     }
   }

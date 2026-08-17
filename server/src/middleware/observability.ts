@@ -2,6 +2,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import client from 'prom-client';
+import { getProviderCircuitSnapshot } from '../services/provider-circuit-breaker.js';
 
 declare global {
   namespace Express {
@@ -14,6 +15,17 @@ declare global {
 
 const register = new client.Registry();
 client.collectDefaultMetrics({ register });
+
+/**
+ * Circuit-key prefixes emitted by `externalCircuitKey`. LLM provider circuits
+ * are keyed by bare provider name and have no prefix.
+ */
+const CIRCUIT_KINDS = ['llm_provider', 'mcp', 'remote_runtime'] as const;
+
+function circuitKind(circuitKey: string): string {
+  const prefix = circuitKey.includes(':') ? circuitKey.split(':', 1)[0] : 'llm_provider';
+  return (CIRCUIT_KINDS as readonly string[]).includes(prefix) ? prefix : 'other';
+}
 
 const requestCounter = new client.Counter({
   name: 'eidolon_http_requests_total',
@@ -28,6 +40,33 @@ const requestDuration = new client.Histogram({
   labelNames: ['method', 'route', 'status_code'] as const,
   buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
   registers: [register],
+});
+
+/**
+ * Open circuits, aggregated by dependency kind rather than by circuit.
+ *
+ * Per-circuit labels would grow with every tenant-registered MCP server and
+ * remote runtime, so the label set is bounded to the fixed set of kinds. The
+ * per-circuit detail stays on the authenticated operations surface.
+ */
+const openCircuits = new client.Gauge({
+  name: 'eidolon_provider_circuits_open',
+  help: 'Number of circuit breakers currently open, by dependency kind.',
+  labelNames: ['kind'] as const,
+  registers: [register],
+  collect() {
+    const counts = new Map<string, number>(CIRCUIT_KINDS.map((kind) => [kind, 0]));
+    for (const circuit of getProviderCircuitSnapshot()) {
+      if (!circuit.open) {
+        continue;
+      }
+      const kind = circuitKind(circuit.provider);
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    for (const [kind, count] of counts) {
+      this.set({ kind }, count);
+    }
+  },
 });
 
 function safeRequestId(candidate: string | undefined): string {
