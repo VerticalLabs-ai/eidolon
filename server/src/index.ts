@@ -1,4 +1,5 @@
 import './env.js'; // must be first — loads .env from monorepo root
+import './utils/tracing.js'; // OTel SDK init — must precede instrumented module loads
 import { createServer } from 'node:http';
 
 import logger from './utils/logger.js';
@@ -54,7 +55,9 @@ server.listen(PORT, HOST, () => {
 function maskUrl(url: string): string {
   try {
     const u = new URL(url);
-    if (u.password) u.password = '***';
+    if (u.password) {
+      u.password = '***';
+    }
     return u.toString();
   } catch {
     return '(unparseable url)';
@@ -67,10 +70,7 @@ function maskUrl(url: string): string {
 
 let shuttingDown = false;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
-const parsedShutdownTimeoutMs = Number.parseInt(
-  process.env.SHUTDOWN_TIMEOUT_MS ?? '',
-  10,
-);
+const parsedShutdownTimeoutMs = Number.parseInt(process.env.SHUTDOWN_TIMEOUT_MS ?? '', 10);
 const shutdownTimeoutMs =
   Number.isFinite(parsedShutdownTimeoutMs) && parsedShutdownTimeoutMs > 0
     ? parsedShutdownTimeoutMs

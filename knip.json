@@ -23,6 +23,7 @@
     "uuid",
     "@types/express-serve-static-core",
     "@types/uuid",
+    "@types/pg",
     "@electron-forge/maker-dmg"
   ]
 }

@@ -1,3 +1,4 @@
+import './utils/tracing.js'; // OTel SDK init — must precede instrumented module loads
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres, { type Sql } from 'postgres';
@@ -194,7 +195,9 @@ function resolveConnectionString(): string {
 function maskUrl(url: string): string {
   try {
     const u = new URL(url);
-    if (u.password) {u.password = '***';}
+    if (u.password) {
+      u.password = '***';
+    }
     return u.toString();
   } catch {
     return '(unparseable url)';

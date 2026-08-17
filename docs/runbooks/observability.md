@@ -227,3 +227,59 @@ MCP server applications do not define or migrate schemas; they access data
 through the server's REST and WebSocket APIs. See
 [Database schema ownership](../architecture/schema-ownership.md) for the
 full ownership model, migration workflow, and schema management tools.
+
+## Distributed tracing
+
+The server optionally initializes the OpenTelemetry SDK to export
+distributed traces via the OTLP protocol. Tracing is **opt-in** and has
+**no behavior change** when unconfigured — the SDK is not started, no
+exporters are created, and no instrumentations are registered.
+
+### Configuration
+
+| Variable                              | Description                             | Default                           |
+| ------------------------------------- | --------------------------------------- | --------------------------------- |
+| `EIDOLON_OTEL_ENABLED`                | Set to `1` or `true` to enable the SDK. | unset (disabled)                  |
+| `EIDOLON_OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP trace exporter endpoint URL.       | `http://localhost:4318/v1/traces` |
+
+### Setup
+
+1. Deploy an OTLP-compatible trace collector (e.g., Jaeger, Grafana Tempo,
+   Honeycomb, or the OpenTelemetry Collector) and note its OTLP/HTTP
+   endpoint.
+
+2. Set the environment variables in your deployment:
+
+   ```
+   EIDOLON_OTEL_ENABLED=1
+   EIDOLON_OTEL_EXPORTER_OTLP_ENDPOINT=https://your-collector:4318/v1/traces
+   ```
+
+3. Restart the server. The SDK initializes during module loading, before
+   Express, HTTP, and Postgres modules are imported, so auto-instrumentations
+   can patch them at load time.
+
+4. Verify traces appear in your tracing backend. The server emits spans for
+   inbound HTTP requests, Express route handling, and Postgres queries
+   automatically via `@opentelemetry/auto-instrumentations-node`.
+
+### How it works
+
+- `server/src/utils/tracing.ts` initializes the `NodeSDK` from
+  `@opentelemetry/sdk-node` with `getNodeAutoInstrumentations()` when
+  `EIDOLON_OTEL_ENABLED` is set.
+- The module is imported as the first import in `server/src/bootstrap.ts`
+  (and after `./env.js` in `server/src/index.ts`) so the SDK starts before
+  instrumented modules load.
+- The OTLP exporter sends traces to the configured endpoint via HTTP.
+- Filesystem and DNS instrumentations are disabled to reduce noise.
+- The SDK gracefully shuts down on `SIGTERM`/`SIGINT` to flush pending spans.
+
+### W3C traceparent propagation
+
+The observability middleware independently implements W3C traceparent
+parsing and propagation (see `server/src/middleware/observability.ts`).
+It parses incoming `traceparent` headers, generates `X-Request-ID` and
+`X-Trace-ID` response headers, and propagates the trace context. This
+behavior is present regardless of whether the OpenTelemetry SDK is
+enabled — the middleware does not depend on OTel.
