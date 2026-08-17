@@ -3,7 +3,7 @@ import request from 'supertest';
 import { and, eq, sql } from 'drizzle-orm';
 import type { DbInstance } from '../types.js';
 import { createTestDb, createTestServer } from '../test-utils.js';
-import { redactedEmail, subjectPseudonym } from '../services/privacy.js';
+import { redactedEmail, subjectPseudonym, deleteClerkUser } from '../services/privacy.js';
 
 const SUBJECT = 'user-subject-001';
 const OTHER_MEMBER = 'user-other-002';
@@ -337,5 +337,28 @@ describe('subject data export and erasure', () => {
       (entry) => !entry.startsWith('company_members') && !entry.startsWith('activity_log'),
     );
     expect(inThisCompany).toEqual([]);
+  });
+
+  it('reports a Clerk deletion result on erasure (no-op without CLERK_SECRET_KEY)', async () => {
+    // The test harness deletes CLERK_SECRET_KEY, so the integrated Clerk
+    // deletion step must be a safe no-op rather than a failure.
+    const response = await request(app)
+      .post(eraseUrl(companyId, SUBJECT))
+      .send({ confirmSubject: SUBJECT })
+      .expect(200);
+
+    const clerk = response.body.data.clerkDeletion;
+    expect(clerk).toBeTruthy();
+    expect(clerk.attempted).toBe(false);
+    expect(clerk.deleted).toBe(false);
+    expect(typeof clerk.reason).toBe('string');
+    expect(clerk.reason.length).toBeGreaterThan(0);
+  });
+
+  it('deleteClerkUser is a no-op when CLERK_SECRET_KEY is not configured', async () => {
+    const result = await deleteClerkUser(SUBJECT);
+    expect(result.attempted).toBe(false);
+    expect(result.deleted).toBe(false);
+    expect(result.reason).toContain('CLERK_SECRET_KEY');
   });
 });
