@@ -78,13 +78,16 @@ describe('feature flag rollout', () => {
     // rolloutPercentage describes the population, not this caller.
     expect(body).not.toContain('rolloutPercentage');
     expect(body).not.toContain('37');
-    // Only the declared flag is present, and only as a boolean outcome. Which
+    // Only declared flags are present, each as a boolean outcome. Which
     // outcome depends on where this company falls in the 37% bucket.
-    expect(Object.keys(response.body.data.flags)).toEqual(['analyticsAgentsBatched']);
+    expect(Object.keys(response.body.data.flags).sort()).toEqual([...FEATURE_FLAG_NAMES].sort());
     expect(typeof response.body.data.flags.analyticsAgentsBatched).toBe('boolean');
     expect(response.body.data.flags.analyticsAgentsBatched).toBe(
       isFeatureEnabled('analyticsAgentsBatched', companyId),
     );
+    // productAnalytics is declared but not configured here, so it is off.
+    expect(typeof response.body.data.flags.productAnalytics).toBe('boolean');
+    expect(response.body.data.flags.productAnalytics).toBe(false);
   });
 
   it('refuses an unauthenticated caller', async () => {

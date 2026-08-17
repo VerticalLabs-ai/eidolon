@@ -3,7 +3,7 @@ import cors from 'cors';
 import pinoHttp from 'pino-http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import logger from './utils/logger.js';
+import logger, { requestSerializer } from './utils/logger.js';
 import { notFound, errorHandler } from './middleware/error-handler.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createAgentKeyMiddleware } from './middleware/agent-key-auth.js';
@@ -162,10 +162,7 @@ export function createApp(db: DbInstance): express.Express {
         traceId: (req as any).traceId,
       }),
       serializers: {
-        req: (req) => ({
-          method: req.method,
-          url: req.url,
-        }),
+        req: requestSerializer,
         res: (res) => ({
           statusCode: res.statusCode,
         }),
