@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error - plain ESM tooling script without type declarations
 import {
   buildIssueDraft,
   createIssueBody,
@@ -184,13 +183,9 @@ describe('sentry dispatch contract', () => {
 
   describe('REQUIRED_LABELS', () => {
     it('declares sentry and type/bug with colors matching labels.json', () => {
-      const names = (REQUIRED_LABELS as Array<{ name: string }>).map((l) => l.name);
+      const names = REQUIRED_LABELS.map((l) => l.name);
       expect(names).toEqual(['sentry', 'type/bug']);
-      for (const label of REQUIRED_LABELS as Array<{
-        name: string;
-        color: string;
-        description: string;
-      }>) {
+      for (const label of REQUIRED_LABELS) {
         expect(label.color).toMatch(/^[0-9a-f]{6}$/);
         expect(label.description.length).toBeGreaterThan(10);
       }
