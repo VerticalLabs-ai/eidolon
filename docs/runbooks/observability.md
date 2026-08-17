@@ -257,6 +257,20 @@ up in the Prometheus UI under **Status → Targets**.
 3. Set up alert panels or Grafana alerting rules based on the Prometheus
    queries above.
 
+## Alerting
+
+The Prometheus alert rules in
+[`monitoring/alert-rules.yml`](../../monitoring/alert-rules.yml) define alerts
+for high error rate, high latency, database unavailability, circuit breaker
+state, and memory pressure. Load the rule file in your Prometheus
+configuration and route firing alerts through Alertmanager to the on-call.
+
+Each alert — what it means, how to investigate, what action to take, and how
+to acknowledge and resolve it — is documented in the
+[Alerting runbook](alerting.md). That runbook also documents the existing
+Sentry alert rules (error volume, HTTP 5xx rate) that route to GitHub issues
+via the `Sentry alert to issue` workflow.
+
 ## Schema ownership
 
 The server is the sole owner of the database schema. The UI, desktop, and

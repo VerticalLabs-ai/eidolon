@@ -2,6 +2,7 @@
 
 Use these procedures for local development and production incidents:
 
+- [Alerting](alerting.md)
 - [Deployment and rollback](deployment.md)
 - [Incident response](incident.md)
 - [Feature flag rollout and rollback](feature-flags.md)
