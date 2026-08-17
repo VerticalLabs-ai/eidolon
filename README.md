@@ -200,6 +200,18 @@ Developer tooling includes a [devcontainer](.devcontainer/devcontainer.json) for
 
 The ESLint config enforces quality rules from the eid-67 agent readiness audit: `curly` (all), `eqeqeq` (always), `no-var`, `no-duplicate-imports`, `complexity` (max 20), `max-lines` (800, skipping blanks/comments), `@typescript-eslint/consistent-type-imports` (prefer `type` imports), and `@typescript-eslint/naming-convention` (camelCase/PascalCase/UPPER_CASE variables, camelCase/PascalCase functions, PascalCase types). Run `pnpm lint` to check and `pnpm lint:fix` to auto-fix.
 
+### Issue and backlog conventions
+
+Planning happens in the Linear `EID` team; GitHub issues receive external reports. One taxonomy covers both, with `.github/labels.json` as the source of truth for GitHub.
+
+| Command               | Purpose                                                             |
+| --------------------- | ------------------------------------------------------------------- |
+| `pnpm labels:check`   | Report GitHub label drift against `.github/labels.json`             |
+| `pnpm labels:sync`    | Create and update GitHub labels to match the file. Never deletes    |
+| `pnpm backlog:health` | Check the Linear backlog against the policy. Needs `LINEAR_API_KEY` |
+
+See [docs/delivery/labels.md](docs/delivery/labels.md) for the label dimensions and the Linear-to-GitHub priority mapping, and [docs/delivery/backlog-health.md](docs/delivery/backlog-health.md) for what makes an issue ready, stale, or wrongly stated.
+
 ### The standalone MCP server
 
 ```bash
@@ -381,10 +393,18 @@ MCP and remote-runtime circuits are keyed per endpoint so one company's dead ser
 Feature flags are configured as a JSON environment variable. Each flag has an `enabled` boolean and an optional `rolloutPercentage` (0–100) for deterministic percentage-based rollout:
 
 ```json
-{ "new_runtime": { "enabled": true, "rolloutPercentage": 25 } }
+{ "analyticsAgentsBatched": { "enabled": true, "rolloutPercentage": 25 } }
 ```
 
-Set via `EIDOLON_FEATURE_FLAGS` (default `{}`). Flags are evaluated at runtime; an unset variable means all flags are disabled.
+Set via `EIDOLON_FEATURE_FLAGS` (default `{}`). Flags are evaluated at runtime; an unset variable means all flags are disabled. Assignment buckets on `flag:companyId`, so a company keeps the same answer across processes and restarts, and widening a rollout only ever adds companies.
+
+Only flags declared in `FEATURE_FLAGS` (`server/src/services/feature-flags.ts`) are evaluated for clients, so the variable can hold entries for unreleased work without exposing their names. An authenticated member reads its own company's evaluated flags from `GET /api/companies/:companyId/flags`, which returns declared names and boolean outcomes only — never the raw configuration, the rollout percentage, or another company's assignment.
+
+| Flag                     | Effect when enabled                                                                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `analyticsAgentsBatched` | `GET /api/companies/:companyId/analytics/agents` computes task counts in one aggregate query instead of one per agent. Response is identical |
+
+See the [feature flag runbook](docs/runbooks/feature-flags.md) for the rollout ladder, rollback, and flag retirement.
 
 Set `CLERK_WEBHOOK_SECRET` to the signing secret from your Clerk dashboard so the `/api/webhooks/clerk` endpoint can verify Clerk webhook signatures before activating invitations.
 

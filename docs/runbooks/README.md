@@ -4,6 +4,7 @@ Use these procedures for local development and production incidents:
 
 - [Deployment and rollback](deployment.md)
 - [Incident response](incident.md)
+- [Feature flag rollout and rollback](feature-flags.md)
 - [Observability](observability.md)
 - [Reliability controls](reliability.md)
 - [Security and DAST](security.md)

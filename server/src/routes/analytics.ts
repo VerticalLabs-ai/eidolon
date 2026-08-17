@@ -2,6 +2,49 @@ import { Router } from 'express';
 import { eq, sql, and, gte, desc } from 'drizzle-orm';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { isFeatureEnabled } from '../services/feature-flags.js';
+
+type TaskSummary = { total: number; byStatus: Record<string, number> };
+
+function emptyTaskSummary(): TaskSummary {
+  return { total: 0, byStatus: {} };
+}
+
+/**
+ * Shared response shape for the agent analytics row.
+ *
+ * Both the batched and unbatched paths build their rows here, including key
+ * order, so the only difference a rollout can introduce is how many queries ran.
+ */
+function agentMetrics(
+  agent: {
+    id: string;
+    name: string;
+    role: string;
+    status: string;
+    budgetMonthlyCents: number;
+    spentMonthlyCents: number;
+    lastHeartbeatAt: Date | null;
+  },
+  tasks: TaskSummary,
+) {
+  return {
+    agentId: agent.id,
+    name: agent.name,
+    role: agent.role,
+    status: agent.status,
+    budget: {
+      monthlyCents: agent.budgetMonthlyCents,
+      spentCents: agent.spentMonthlyCents,
+      utilizationPct:
+        agent.budgetMonthlyCents > 0
+          ? Math.round((agent.spentMonthlyCents / agent.budgetMonthlyCents) * 100)
+          : 0,
+    },
+    tasks,
+    lastHeartbeatAt: agent.lastHeartbeatAt,
+  };
+}
 
 export function analyticsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
@@ -47,12 +90,7 @@ export function analyticsRouter(db: DbInstance): Router {
         totalCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)`,
       })
       .from(costEvents)
-      .where(
-        and(
-          eq(costEvents.companyId, companyId),
-          gte(costEvents.createdAt, startOfMonth),
-        ),
-      );
+      .where(and(eq(costEvents.companyId, companyId), gte(costEvents.createdAt, startOfMonth)));
 
     const agentsByStatus: Record<string, number> = {};
     let totalAgents = 0;
@@ -85,12 +123,44 @@ export function analyticsRouter(db: DbInstance): Router {
   router.get('/agents', async (req, res) => {
     const companyId = routeParams(req).companyId;
 
-    const agentList = await db.drizzle
-      .select()
-      .from(agents)
-      .where(eq(agents.companyId, companyId));
+    const agentList = await db.drizzle.select().from(agents).where(eq(agents.companyId, companyId));
 
-    const agentMetrics = await Promise.all(
+    // One aggregate query for every agent, behind `analyticsAgentsBatched`.
+    // The unbatched path below issues one query per agent, so its cost grows
+    // with the company's agent count. Both paths must produce an identical
+    // response; a test asserts that, because the flag is only rollable if the
+    // two are indistinguishable to a client.
+    if (isFeatureEnabled('analyticsAgentsBatched', companyId)) {
+      const taskCounts = await db.drizzle
+        .select({
+          agentId: tasks.assigneeAgentId,
+          status: tasks.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(tasks)
+        .where(eq(tasks.companyId, companyId))
+        .groupBy(tasks.assigneeAgentId, tasks.status);
+
+      const countsByAgent = new Map<string, { total: number; byStatus: Record<string, number> }>();
+      for (const row of taskCounts) {
+        if (!row.agentId) {
+          continue;
+        }
+        const entry = countsByAgent.get(row.agentId) ?? { total: 0, byStatus: {} };
+        entry.byStatus[row.status] = Number(row.count);
+        entry.total += Number(row.count);
+        countsByAgent.set(row.agentId, entry);
+      }
+
+      res.json({
+        data: agentList.map((agent) =>
+          agentMetrics(agent, countsByAgent.get(agent.id) ?? emptyTaskSummary()),
+        ),
+      });
+      return;
+    }
+
+    const unbatched = await Promise.all(
       agentList.map(async (agent) => {
         const taskCounts = await db.drizzle
           .select({
@@ -98,41 +168,20 @@ export function analyticsRouter(db: DbInstance): Router {
             count: sql<number>`count(*)`,
           })
           .from(tasks)
-          .where(
-            and(
-              eq(tasks.companyId, companyId),
-              eq(tasks.assigneeAgentId, agent.id),
-            ),
-          )
+          .where(and(eq(tasks.companyId, companyId), eq(tasks.assigneeAgentId, agent.id)))
           .groupBy(tasks.status);
 
-        const byStatus: Record<string, number> = {};
-        let total = 0;
+        const summary = emptyTaskSummary();
         for (const r of taskCounts) {
-          byStatus[r.status] = Number(r.count);
-          total += Number(r.count);
+          summary.byStatus[r.status] = Number(r.count);
+          summary.total += Number(r.count);
         }
 
-        return {
-          agentId: agent.id,
-          name: agent.name,
-          role: agent.role,
-          status: agent.status,
-          budget: {
-            monthlyCents: agent.budgetMonthlyCents,
-            spentCents: agent.spentMonthlyCents,
-            utilizationPct:
-              agent.budgetMonthlyCents > 0
-                ? Math.round((agent.spentMonthlyCents / agent.budgetMonthlyCents) * 100)
-                : 0,
-          },
-          tasks: { total, byStatus },
-          lastHeartbeatAt: agent.lastHeartbeatAt,
-        };
+        return agentMetrics(agent, summary);
       }),
     );
 
-    res.json({ data: agentMetrics });
+    res.json({ data: unbatched });
   });
 
   // GET /api/companies/:companyId/analytics/costs
@@ -151,12 +200,7 @@ export function analyticsRouter(db: DbInstance): Router {
         eventCount: sql<number>`count(*)`,
       })
       .from(costEvents)
-      .where(
-        and(
-          eq(costEvents.companyId, companyId),
-          gte(costEvents.createdAt, thirtyDaysAgo),
-        ),
-      )
+      .where(and(eq(costEvents.companyId, companyId), gte(costEvents.createdAt, thirtyDaysAgo)))
       .groupBy(costDay)
       .orderBy(costDay);
 
@@ -167,12 +211,7 @@ export function analyticsRouter(db: DbInstance): Router {
         totalCents: sql<number>`sum(${costEvents.costCents})`,
       })
       .from(costEvents)
-      .where(
-        and(
-          eq(costEvents.companyId, companyId),
-          gte(costEvents.createdAt, thirtyDaysAgo),
-        ),
-      )
+      .where(and(eq(costEvents.companyId, companyId), gte(costEvents.createdAt, thirtyDaysAgo)))
       .groupBy(costEvents.provider);
 
     // By model
@@ -184,12 +223,7 @@ export function analyticsRouter(db: DbInstance): Router {
         totalOutputTokens: sql<number>`sum(${costEvents.outputTokens})`,
       })
       .from(costEvents)
-      .where(
-        and(
-          eq(costEvents.companyId, companyId),
-          gte(costEvents.createdAt, thirtyDaysAgo),
-        ),
-      )
+      .where(and(eq(costEvents.companyId, companyId), gte(costEvents.createdAt, thirtyDaysAgo)))
       .groupBy(costEvents.model);
 
     res.json({
