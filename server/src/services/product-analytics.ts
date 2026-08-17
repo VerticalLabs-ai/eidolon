@@ -12,6 +12,7 @@
  */
 
 import type { DbInstance } from '../types.js';
+import { logger } from '../utils/logger.js';
 import { isFeatureEnabled, type FeatureFlagName } from './feature-flags.js';
 
 // ---------------------------------------------------------------------------
@@ -135,8 +136,7 @@ export const noopTransport: AnalyticsTransport = () => {};
 
 /** Logging transport for development. */
 export const consoleTransport: AnalyticsTransport = (event) => {
-  // eslint-disable-next-line no-console
-  console.log('[analytics]', JSON.stringify(event));
+  logger.info({ analyticsEvent: event }, 'analytics event emitted');
 };
 
 // ---------------------------------------------------------------------------

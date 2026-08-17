@@ -1,5 +1,29 @@
 # Observability
 
+## UI structured logging
+
+The UI application uses the structured logger in `ui/src/lib/logger.ts` instead
+of direct `console.log`/`console.error` calls. It supports four levels:
+`error`, `warn`, `info`, and `debug`.
+
+- In production builds (`import.meta.env.PROD`), the logger emits
+  newline-delimited JSON with `level`, `message`, `timestamp`, and any optional
+  context fields. These logs are captured by the hosting platform's log drain
+  (e.g., Vercel) and can be aggregated by Loki, CloudWatch, or a similar sink.
+- In development, the logger prints a human-readable line to the console method
+  that matches the level (`console.error`, `console.warn`, `console.info`,
+  `console.debug`).
+
+Application code should import the default `logger` singleton and pass
+structured context as the second argument:
+
+```ts
+import { logger } from '@/lib/logger';
+
+logger.info('Company created', { companyId });
+logger.error('Import failed', { error: err.message });
+```
+
 ## Deployment checks
 
 - Vercel project dashboard: https://vercel.com/verticallabs/eidolon

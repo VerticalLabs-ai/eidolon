@@ -9,6 +9,7 @@ import {
   redactPayload,
   type AnalyticsEventPayload,
 } from '../services/product-analytics.js';
+import { logger } from '../utils/logger.js';
 import { isFeatureEnabled } from '../services/feature-flags.js';
 
 describe('product analytics', () => {
@@ -209,15 +210,17 @@ describe('product analytics', () => {
       ).not.toThrow();
     });
 
-    it('consoleTransport logs the event', () => {
-      const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    it('consoleTransport logs the event via the structured logger', () => {
+      const spy = vi.spyOn(logger, 'info').mockImplementation(() => {});
       consoleTransport({
         name: 'company.created',
         payload: { companyId: 'c1', plan: null },
         timestamp: '2026-01-01',
       });
       expect(spy).toHaveBeenCalled();
-      expect(spy.mock.calls[0][0]).toBe('[analytics]');
+      const call = spy.mock.calls[0];
+      expect(call[0]).toMatchObject({ analyticsEvent: { name: 'company.created' } });
+      expect(call[1]).toBe('analytics event emitted');
       spy.mockRestore();
     });
   });
