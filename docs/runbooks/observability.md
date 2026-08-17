@@ -68,10 +68,10 @@ type `sentry-alert`. A Sentry webhook or integration should send a
    and finalizes the matching release. If the three GitHub settings are absent,
    the upload step is skipped without failing the release.
 
-The repository does not currently provide hosted metrics dashboards or
-automated alert delivery. Treat repeated health failures, elevated 5xx rates,
-or stuck runtime sessions as escalation triggers and follow the [incident
-runbook](incident.md).
+The repository exposes Prometheus metrics at `GET /api/metrics` (see
+[Metrics collection](#metrics-collection) below). Treat repeated health
+failures, elevated 5xx rates, or stuck runtime sessions as escalation
+triggers and follow the [incident runbook](incident.md).
 
 ## Profiling
 
@@ -80,6 +80,145 @@ Build the server, start the representative workload, and run
 `server/profiles/`; inspect it with Chrome DevTools or another compatible
 profile viewer. Stop the process normally before collecting the profile and
 remove sensitive request data from any shared analysis.
+
+## Metrics collection
+
+The server exposes a Prometheus-format metrics endpoint at `GET /api/metrics`.
+The endpoint is token-gated: it returns `404 Not Found` unless a valid bearer
+token is supplied, and it returns `404` when `METRICS_TOKEN` is not configured
+at all (no auth bypass).
+
+### Available metrics
+
+| Metric                                  | Type      | Labels                     | Description                              |
+| --------------------------------------- | --------- | -------------------------- | ---------------------------------------- |
+| `eidolon_http_requests_total`           | Counter   | method, route, status_code | Total HTTP requests handled              |
+| `eidolon_http_request_duration_seconds` | Histogram | method, route, status_code | Request latency in seconds               |
+| `eidolon_provider_circuits_open`        | Gauge     | kind                       | Open circuit breakers by dependency kind |
+| `eidolon_companies_active`              | Gauge     | —                          | Companies with `status = 'active'`       |
+| `eidolon_agents_by_status`              | Gauge     | status                     | Agent count grouped by status            |
+| `eidolon_tasks_by_status`               | Gauge     | status                     | Task count grouped by status             |
+
+Default process metrics (`process_cpu_seconds_total`, `nodejs_memory_*`,
+etc.) are also collected via `prom-client`'s `collectDefaultMetrics`.
+
+### Configuring the metrics token
+
+1. Generate a strong random token:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. Set `METRICS_TOKEN` in the deployment environment (Vercel project
+   settings, `.env` for self-hosted). The endpoint returns `404` for all
+   callers when this variable is empty or unset.
+
+3. Verify the endpoint returns metrics:
+
+   ```bash
+   curl -sf \
+     -H "Authorization: Bearer $METRICS_TOKEN" \
+     https://eidolon.verticallabs.ai/api/metrics
+   ```
+
+   A `404` response means the token is missing, unset, or incorrect — the
+   endpoint never reveals whether the token is wrong vs. unconfigured.
+
+### Scraping with Prometheus
+
+Add a scrape job to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: eidolon
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /api/metrics
+    scheme: https
+    authorization:
+      credentials: <METRICS_TOKEN>
+    static_configs:
+      - targets:
+          - eidolon.verticallabs.ai
+```
+
+For local development against the launchd-managed server on `:3100`:
+
+```yaml
+scrape_configs:
+  - job_name: eidolon-local
+    scrape_interval: 15s
+    metrics_path: /api/metrics
+    scheme: http
+    authorization:
+      credentials: <METRICS_TOKEN>
+    static_configs:
+      - targets:
+          - localhost:3100
+```
+
+Reload Prometheus (`POST /-/reload` or restart) and confirm the target is
+up in the Prometheus UI under **Status → Targets**.
+
+### Visualizing in Grafana
+
+1. Add Prometheus as a data source in Grafana
+   (**Connections → Data sources → Add data source → Prometheus**).
+   Point the URL at your Prometheus instance.
+2. Create a dashboard with panels for key metrics:
+
+   **Request rate** (QPS):
+
+   ```promql
+   rate(eidolon_http_requests_total[5m])
+   ```
+
+   **Error rate** (5xx percentage):
+
+   ```promql
+   sum(rate(eidolon_http_requests_total{status_code=~"5.."}[5m]))
+     / sum(rate(eidolon_http_requests_total[5m])) * 100
+   ```
+
+   **P99 latency**:
+
+   ```promql
+   histogram_quantile(0.99,
+     rate(eidolon_http_request_duration_seconds_bucket[5m]))
+   ```
+
+   **Open circuit breakers**:
+
+   ```promql
+   eidolon_provider_circuits_open
+   ```
+
+   **Active companies**:
+
+   ```promql
+   eidolon_companies_active
+   ```
+
+   **Agents by status**:
+
+   ```promql
+   eidolon_agents_by_status
+   ```
+
+   **Task completion rate** (done vs. total non-cancelled):
+
+   ```promql
+   eidolon_tasks_by_status{status="done"}
+     / (eidolon_tasks_by_status{status="done"}
+        + eidolon_tasks_by_status{status="in_progress"}
+        + eidolon_tasks_by_status{status="review"}
+        + eidolon_tasks_by_status{status="todo"}
+        + eidolon_tasks_by_status{status="backlog"}) * 100
+   ```
+
+3. Set up alert panels or Grafana alerting rules based on the Prometheus
+   queries above.
 
 ## Schema ownership
 

@@ -69,6 +69,7 @@ import {
   metricsRouter,
   requestIdMiddleware,
   requestMetricsMiddleware,
+  setBusinessMetricsDb,
 } from './middleware/observability.js';
 import { initializeErrorTracking } from './utils/error-tracking.js';
 import type { DbInstance } from './types.js';
@@ -78,6 +79,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function createApp(db: DbInstance): express.Express {
   const app = express();
   initializeErrorTracking();
+  setBusinessMetricsDb(db);
   const { requireAuth, requireOrgMember, requirePermission, requirePermissionByMethod } =
     createAuthMiddleware({ db });
   // Parse service tokens once and share with both agent-key and service-token
