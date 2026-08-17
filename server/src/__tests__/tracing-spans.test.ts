@@ -17,7 +17,51 @@ import { wrapClientWithTracing, __resetForTesting } from '../utils/tracing.js';
 // assert that spans are genuinely produced, exported, and carry the correct
 // attributes. A BasicTracerProvider with a SimpleSpanProcessor is used so
 // spans are exported synchronously on end (no batch flush timing issues).
+//
+// Scrutiny round 2 (non-blocking): The fake client now models a postgres-js
+// Query object (extends Promise, has Symbol.species → Promise, supports
+// modifier chaining) instead of returning a native Promise, so tests reflect
+// real postgres-js semantics.
 // ---------------------------------------------------------------------------
+
+/**
+ * A postgres-js-like Query that extends Promise and has modifier methods.
+ * The real postgres.js Query has `static get [Symbol.species]() { return
+ * Promise }`, meaning .then() returns a native Promise (not a Query). This
+ * fake replicates that behavior so tests model real modifier chaining.
+ */
+class FakeQuery extends Promise<unknown[]> {
+  constructor(
+    executor: (resolve: (value: unknown[]) => void, reject: (reason?: unknown) => void) => void,
+  ) {
+    super(
+      executor as (
+        resolve: (value: unknown[] | PromiseLike<unknown[]>) => void,
+        reject: (reason?: unknown) => void,
+      ) => void,
+    );
+  }
+
+  static get [Symbol.species]() {
+    return Promise;
+  }
+
+  simple(): this {
+    return this;
+  }
+
+  raw(): this {
+    return this;
+  }
+
+  values(): this {
+    return this;
+  }
+
+  cursor(): this {
+    return this;
+  }
+}
 
 describe('Distributed tracing — real span creation (EID-105)', () => {
   let exporter: InMemorySpanExporter;
@@ -85,13 +129,13 @@ describe('Distributed tracing — real span creation (EID-105)', () => {
   });
 
   it('creates db.query spans via wrapClientWithTracing', async () => {
-    // Create a fake postgres.js-like callable that returns a promise.
-    // We only need the callable interface to verify span creation.
+    // Model a postgres-js-like callable that returns a Query (extends
+    // Promise) with modifier methods, rather than a native Promise.
     const fakeClient = Object.assign(
-      async (strings: TemplateStringsArray, ...values: unknown[]) =>
-        Promise.resolve([{ id: 1, query: strings.join('?'), values }]),
+      (strings: TemplateStringsArray, ...values: unknown[]) =>
+        new FakeQuery((resolve) => resolve([{ id: 1, query: strings.join('?'), values }])),
       {
-        unsafe: (sql: string) => Promise.resolve([{ sql }]),
+        unsafe: (sql: string) => new FakeQuery((resolve) => resolve([{ sql }])),
         end: () => Promise.resolve(),
       },
     );
@@ -99,10 +143,18 @@ describe('Distributed tracing — real span creation (EID-105)', () => {
     const wrapped = wrapClientWithTracing(fakeClient);
 
     // Execute a query via the main callable (tagged template).
-    await wrapped`SELECT 1`;
+    // Verify the returned object preserves Query modifier methods.
+    const queryResult = wrapped`SELECT 1`;
+    expect(queryResult).toBeInstanceOf(FakeQuery);
+    expect(typeof queryResult.simple).toBe('function');
+    expect(typeof queryResult.values).toBe('function');
+    await queryResult;
 
-    // Execute a query via .unsafe().
-    await wrapped.unsafe('SELECT 1');
+    // Execute a query via .unsafe() with modifier chaining.
+    const unsafeResult = wrapped.unsafe('SELECT 1');
+    expect(unsafeResult).toBeInstanceOf(FakeQuery);
+    expect(typeof unsafeResult.raw).toBe('function');
+    await unsafeResult;
 
     const spans: ReadableSpan[] = exporter.getFinishedSpans();
     const spanNames = spans.map((s) => s.name);
@@ -112,7 +164,7 @@ describe('Distributed tracing — real span creation (EID-105)', () => {
   });
 
   it('passes through non-traced methods unchanged', async () => {
-    const fakeClient = Object.assign(async () => Promise.resolve([]), {
+    const fakeClient = Object.assign(() => new FakeQuery((resolve) => resolve([])), {
       end: () => Promise.resolve(),
       options: { max: 10 },
     });

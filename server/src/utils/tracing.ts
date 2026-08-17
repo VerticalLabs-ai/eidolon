@@ -121,30 +121,53 @@ export function getDbTracer(): Tracer {
 /**
  * Trace a single async/sync DB operation with a span. Sets status and
  * records exceptions on failure. Returns the operation's result.
+ *
+ * IMPORTANT: This function preserves the original return value. postgres-js
+ * Query/PendingQuery objects extend Promise but define `static get
+ * [Symbol.species]() { return Promise }`, so calling `.then()` on a Query
+ * returns a native Promise — stripping modifier methods like `.values()`,
+ * `.raw()`, `.simple()`, and `.cursor()` that Drizzle relies on. To avoid
+ * this, we call `.then()` for side effects only (to end the span on
+ * completion) and return the original Query object unchanged.
  */
 function traceDbOperation<T>(operation: string, fn: () => T): T {
   const tracer = getDbTracer();
   return tracer.startActiveSpan(`db.${operation}`, (span: Span) => {
     try {
       const result = fn();
-      // Handle promises (postgres.js queries are thenable).
-      if (result instanceof Promise) {
-        return result.then(
-          (value: unknown) => {
+      // Attach span lifecycle hooks to thenable results (postgres.js
+      // Query/PendingQuery) WITHOUT replacing the original return value.
+      // We call .then() for side effects only — the returned native Promise
+      // is discarded, and the original Query (with all modifier methods) is
+      // returned to the caller.
+      if (
+        result !== null &&
+        typeof result === 'object' &&
+        typeof (result as { then?: unknown }).then === 'function'
+      ) {
+        (
+          result as unknown as {
+            then: (
+              onFulfilled: (value: unknown) => void,
+              onRejected: (err: Error) => void,
+            ) => unknown;
+          }
+        ).then(
+          () => {
             span.setStatus({ code: SpanStatusCode.OK });
             span.end();
-            return value as T;
           },
           (err: Error) => {
             span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
             span.recordException(err);
             span.end();
-            throw err;
           },
-        ) as T;
+        );
+      } else {
+        // Synchronous result — end the span immediately.
+        span.setStatus({ code: SpanStatusCode.OK });
+        span.end();
       }
-      span.setStatus({ code: SpanStatusCode.OK });
-      span.end();
       return result;
     } catch (err) {
       span.setStatus({
