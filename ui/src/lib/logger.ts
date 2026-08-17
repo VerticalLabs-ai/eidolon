@@ -19,6 +19,34 @@ export interface Logger {
 
 type ConsoleMethod = 'log' | 'error' | 'warn' | 'info' | 'debug';
 
+/**
+ * Reserved field names that are set by the logger itself. Caller-supplied
+ * context keys matching these are silently dropped to prevent overriding the
+ * structured log entry's level, message, or timestamp.
+ */
+const RESERVED_FIELDS = new Set(['level', 'message', 'timestamp', 'time']);
+
+/**
+ * Strip reserved field names from caller-supplied context so they cannot
+ * override the logger's own `level`, `message`, or `timestamp` fields.
+ */
+function sanitizeContext(context?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!context) {
+    return undefined;
+  }
+  const hasReserved = Object.keys(context).some((key) => RESERVED_FIELDS.has(key));
+  if (!hasReserved) {
+    return context;
+  }
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (!RESERVED_FIELDS.has(key)) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
 const LEVEL_CONSOLE_METHOD: Record<LogLevel, ConsoleMethod> = {
   error: 'error',
   warn: 'warn',
@@ -42,11 +70,12 @@ function writeProductionLog(
   message: string,
   context?: Record<string, unknown>,
 ): void {
+  const safeContext = sanitizeContext(context);
   const entry: LogEntry = {
     level,
     message,
     timestamp: new Date().toISOString(),
-    ...(context ?? {}),
+    ...(safeContext ?? {}),
   };
   // In production the logger emits newline-delimited JSON so logs can be
   // aggregated by Loki/CloudWatch/etc. This is the only intentional console
@@ -60,7 +89,7 @@ function writeDevelopmentLog(
   message: string,
   context?: Record<string, unknown>,
 ): void {
-  const line = formatDevLine(level, message, context);
+  const line = formatDevLine(level, message, sanitizeContext(context));
   const method = LEVEL_CONSOLE_METHOD[level];
   // Development output is human-readable and routed to the matching console
   // method. This is the only intentional console usage in the UI.

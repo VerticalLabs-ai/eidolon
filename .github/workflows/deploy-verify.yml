@@ -32,6 +32,7 @@ jobs:
 
       - name: Verify /api/health
         id: health
+        continue-on-error: true
         run: |
           set +e
           HTTP_CODE=$(curl -s -o /tmp/health-body.json -w '%{http_code}' \
@@ -49,6 +50,7 @@ jobs:
 
       - name: Verify /api/ready
         id: ready
+        if: always()
         run: |
           set +e
           HTTP_CODE=$(curl -s -o /tmp/ready-body.json -w '%{http_code}' \
@@ -63,6 +65,20 @@ jobs:
             echo "::error::/api/ready returned HTTP ${HTTP_CODE} (expected 200)"
             exit 1
           fi
+
+      - name: Fail if any health check failed
+        if: always()
+        run: |
+          FAIL=0
+          if [[ "${{ steps.health.outcome }}" != "success" ]]; then
+            echo "::error::/api/health check failed (outcome: ${{ steps.health.outcome }})"
+            FAIL=1
+          fi
+          if [[ "${{ steps.ready.outcome }}" != "success" ]]; then
+            echo "::error::/api/ready check failed (outcome: ${{ steps.ready.outcome }})"
+            FAIL=1
+          fi
+          exit $FAIL
 
       - name: Health check summary
         if: always()
@@ -95,7 +111,7 @@ jobs:
 
           # Reuse an open issue if one already exists to avoid duplicates.
           EXISTING=$(gh issue list --label deploy-verify --state open --json number --jq '.[0].number // empty')
-          BODY=$(cat <<'EOF'
+          BODY=$(cat <<EOF
           ## Post-deploy health verification failed
 
           The deploy-verify workflow detected that one or more health endpoints
@@ -113,7 +129,7 @@ jobs:
           ### Next steps
 
           1. Check the [Vercel dashboard](https://vercel.com/verticallabs/eidolon) for the deployment status.
-          2. Verify the database is reachable (`/api/ready` returns 503 when Postgres is down).
+          2. Verify the database is reachable (\`/api/ready\` returns 503 when Postgres is down).
           3. If the deployment is bad, follow the [rollback runbook](../docs/runbooks/deployment.md#rollback).
           4. Close this issue once the health checks pass.
           EOF

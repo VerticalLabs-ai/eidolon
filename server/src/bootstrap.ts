@@ -1,4 +1,4 @@
-import './utils/tracing.js'; // OTel SDK init — must precede instrumented module loads
+import { wrapClientWithTracing } from './utils/tracing.js'; // OTel SDK init — must precede instrumented module loads
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres, { type Sql } from 'postgres';
@@ -210,7 +210,7 @@ async function build(options: BootstrapOptions): Promise<BootstrapResult> {
   const connectionString = resolveConnectionString();
   logger.info({ db: maskUrl(connectionString) }, 'Opening Postgres connection');
 
-  const client = postgres(connectionString, { max: maxConnections });
+  const client = wrapClientWithTracing(postgres(connectionString, { max: maxConnections }));
   const drizzleDb = drizzle(client);
 
   if (runMigrations) {

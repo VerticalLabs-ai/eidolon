@@ -53,13 +53,19 @@ jobs:
       # vitest.config.ts. The step (and workflow) fail if coverage
       # falls below any threshold.
       - name: Run tests with coverage
-        run: pnpm test:coverage 2>&1 | tee test-output.txt
+        run: |
+          set -o pipefail
+          pnpm test:coverage 2>&1 | tee test-output.txt
 
       - name: Check duplication
-        run: pnpm duplication 2>&1 | tee duplication-output.txt
+        run: |
+          set -o pipefail
+          pnpm duplication 2>&1 | tee duplication-output.txt
 
       - name: Check dead code
-        run: pnpm dead-code 2>&1 | tee dead-code-output.txt
+        run: |
+          set -o pipefail
+          pnpm dead-code 2>&1 | tee dead-code-output.txt
 
       # Publish quality metrics to the GitHub Actions run summary.
       # scripts/quality-metrics-summary.mjs writes a Markdown table to

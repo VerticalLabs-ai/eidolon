@@ -53,7 +53,24 @@ export function initializeErrorTracking(): boolean {
  * When Sentry is not initialized this is a no-op. Only non-identifying context
  * (e.g. a route tag) should be attached — never user IDs, emails, prompts,
  * transcripts, or credentials.
+ *
+ * Tags are filtered to a whitelist of safe, non-identifying keys to prevent
+ * accidental leakage of sensitive data through Sentry tags.
  */
+const ALLOWED_TAG_KEYS = new Set([
+  'route',
+  'component',
+  'action',
+  'feature',
+  'view',
+  'source',
+  'error_type',
+  'error_code',
+  'browser',
+  'platform',
+  'environment',
+]);
+
 export function captureUIError(
   error: unknown,
   context?: Record<string, string | number | boolean>,
@@ -65,7 +82,9 @@ export function captureUIError(
   Sentry.withScope((scope) => {
     if (context) {
       for (const [key, value] of Object.entries(context)) {
-        scope.setTag(key, value);
+        if (ALLOWED_TAG_KEYS.has(key)) {
+          scope.setTag(key, value);
+        }
       }
     }
     Sentry.captureException(error);

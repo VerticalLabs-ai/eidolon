@@ -29,16 +29,17 @@ Sentry alerts create a deduplicated GitHub issue labelled `sentry` and
 
 ## Acknowledging and resolving an alert
 
-1. **Acknowledge** — in Alertmanager, set the alert to `ack` to stop repeat
-   notifications. For Sentry-derived GitHub issues, assign the issue to
-   yourself and add a comment noting you are investigating.
+1. **Silence** — in Alertmanager, silence the alert to stop repeat
+   notifications while you investigate. For Sentry-derived GitHub issues,
+   assign the issue to yourself and add a comment noting you are
+   investigating.
 2. **Investigate** — follow the per-alert procedure below.
 3. **Act** — apply the fix or mitigation.
 4. **Verify** — confirm the alert has cleared in Prometheus/Alertmanager or
    that the Sentry issue is resolved.
-5. **Resolve** — close the GitHub issue or Alertmanager silence once the
-   underlying cause is fixed. Record the root cause, timeline, and corrective
-   change in the linked issue per [Incident response](incident.md).
+5. **Resolve** — close the GitHub issue or remove the Alertmanager silence
+   once the underlying cause is fixed. Record the root cause, timeline, and
+   corrective change in the linked issue per [Incident response](incident.md).
 
 ---
 

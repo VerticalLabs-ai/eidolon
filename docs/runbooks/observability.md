@@ -246,12 +246,11 @@ up in the Prometheus UI under **Status → Targets**.
    **Task completion rate** (done vs. total non-cancelled):
 
    ```promql
-   eidolon_tasks_by_status{status="done"}
-     / (eidolon_tasks_by_status{status="done"}
-        + eidolon_tasks_by_status{status="in_progress"}
-        + eidolon_tasks_by_status{status="review"}
-        + eidolon_tasks_by_status{status="todo"}
-        + eidolon_tasks_by_status{status="backlog"}) * 100
+   sum(eidolon_tasks_by_status{status="done"})
+     / clamp_min(
+         sum(eidolon_tasks_by_status{status!="cancelled",status!="timed_out"}),
+         1
+       ) * 100
    ```
 
 3. Set up alert panels or Grafana alerting rules based on the Prometheus
@@ -311,8 +310,12 @@ exporters are created, and no instrumentations are registered.
    can patch them at load time.
 
 4. Verify traces appear in your tracing backend. The server emits spans for
-   inbound HTTP requests, Express route handling, and Postgres queries
-   automatically via `@opentelemetry/auto-instrumentations-node`.
+   inbound HTTP requests, Express route handling, and Postgres queries.
+   HTTP and Express spans are produced automatically via
+   `@opentelemetry/auto-instrumentations-node`. Because Eidolon uses
+   postgres-js (not `pg`), database query spans are created manually by
+   wrapping the postgres.js client with `wrapClientWithTracing()` in
+   `server/src/utils/tracing.ts`, applied in `server/src/bootstrap.ts`.
 
 ### How it works
 

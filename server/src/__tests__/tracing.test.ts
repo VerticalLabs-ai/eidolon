@@ -50,6 +50,21 @@ vi.mock('@opentelemetry/api', () => ({
   },
   DiagConsoleLogger: vi.fn(),
   DiagLogLevel: { INFO: 1, ERROR: 2 },
+  trace: {
+    getTracer: vi.fn().mockReturnValue({
+      startActiveSpan: vi
+        .fn()
+        .mockImplementation((name: string, fn: (span: unknown) => unknown) => {
+          const span = {
+            setStatus: vi.fn(),
+            recordException: vi.fn(),
+            end: vi.fn(),
+          };
+          return fn(span);
+        }),
+    }),
+  },
+  SpanStatusCode: { OK: 1, ERROR: 2 },
 }));
 
 // Import after mocks are in place.
