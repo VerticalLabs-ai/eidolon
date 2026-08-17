@@ -7,7 +7,9 @@
    dead-code, and changed-file formatting checks pass.
 3. The CalVer release workflow creates the tag and GitHub Release automatically.
 4. Check the Vercel deployment for the expected commit and verify
-   `GET /api/health` returns HTTP 200.
+   `GET /api/ready` returns HTTP 200. Readiness, not liveness, is the release
+   gate: `/api/health` returns `200` even when the database is unreachable. See
+   [reliability controls](reliability.md).
 
 ## Rollback
 
@@ -19,6 +21,7 @@
 3. If a database migration is involved, do not reverse it blindly. Preserve
    compatible reads/writes, restore from an approved backup, or ship a forward
    fix after assessing the migration.
-4. Verify `GET /api/health` and a representative authenticated API request.
+4. Verify `GET /api/ready` returns HTTP 200 and a representative authenticated
+   API request succeeds.
 5. Record the incident, affected release, user impact, and recovery steps in
    the related issue.

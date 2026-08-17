@@ -13,6 +13,7 @@ import net from 'node:net';
 import type { DbInstance } from '../types.js';
 import eventBus from '../realtime/events.js';
 import logger from '../utils/logger.js';
+import { externalCircuitKey, withProviderCircuitBreaker } from './provider-circuit-breaker.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,9 +108,8 @@ export class MCPClientService {
     }
 
     const hostname = stripIpBrackets(url.hostname.toLowerCase());
-    const allowedHosts = parseCsvAllowlist(
-      process.env[REMOTE_MCP_HOST_ALLOWLIST],
-      (entry) => stripIpBrackets(entry.toLowerCase()),
+    const allowedHosts = parseCsvAllowlist(process.env[REMOTE_MCP_HOST_ALLOWLIST], (entry) =>
+      stripIpBrackets(entry.toLowerCase()),
     );
     if (allowedHosts.has(hostname)) {
       return url;
@@ -132,16 +132,15 @@ export class MCPClientService {
 
   private createRemoteFetch(): typeof fetch {
     return (async (input, init) => {
-      const urlText = input instanceof Request
-        ? input.url
-        : input instanceof URL
-          ? input.href
-          : String(input);
+      const urlText =
+        input instanceof Request ? input.url : input instanceof URL ? input.href : String(input);
       await this.assertRemoteTransportAllowed(urlText);
 
       const response = await fetch(input, { ...init, redirect: 'manual' });
       if (response.status >= 300 && response.status < 400) {
-        throw new MCPPolicyError(`MCP remote redirect from "${urlText}" is blocked by server policy`);
+        throw new MCPPolicyError(
+          `MCP remote redirect from "${urlText}" is blocked by server policy`,
+        );
       }
       return response;
     }) as typeof fetch;
@@ -167,7 +166,7 @@ export class MCPClientService {
       });
       transport.stderr?.on('data', (chunk) => {
         stderr.push(String(chunk));
-        while (stderr.join('').length > 4000) stderr.shift();
+        while (stderr.join('').length > 4000) {stderr.shift();}
       });
       return { transport, stderr };
     }
@@ -189,9 +188,12 @@ export class MCPClientService {
         throw new Error(`MCP server "${server.name}" is missing url`);
       }
       return {
-        transport: new StreamableHTTPClientTransport(await this.assertRemoteTransportAllowed(server.url), {
-          fetch: this.createRemoteFetch(),
-        }),
+        transport: new StreamableHTTPClientTransport(
+          await this.assertRemoteTransportAllowed(server.url),
+          {
+            fetch: this.createRemoteFetch(),
+          },
+        ),
         stderr,
       };
     }
@@ -199,27 +201,36 @@ export class MCPClientService {
     throw new Error(`Unsupported MCP transport: ${server.transport}`);
   }
 
+  /**
+   * Establish a connection, guarded by a per-server circuit breaker.
+   *
+   * A timeout alone does not help when a registered MCP server is hard-down:
+   * every agent turn still pays the full connect timeout. The breaker is keyed
+   * per server row so one company's dead endpoint cannot suppress another's.
+   */
   private async connect(server: any): Promise<{ client: Client; transport: Transport }> {
-    const client = new Client({
-      name: 'eidolon-server',
-      version: '0.1.0',
-    });
-    const { transport, stderr } = await this.createTransport(server);
-    try {
-      await withTimeout(
-        client.connect(transport),
-        MCP_CONNECT_TIMEOUT_MS,
-        `MCP server "${server.name}" connect timed out after ${MCP_CONNECT_TIMEOUT_MS}ms`,
-      );
-    } catch (error) {
-      await this.closeConnection(client, transport);
-      const stderrText = stderr.join('').trim();
-      if (stderrText && error instanceof Error) {
-        throw new Error(`${error.message}; stderr: ${stderrText}`);
+    return withProviderCircuitBreaker(externalCircuitKey('mcp', String(server.id)), async () => {
+      const client = new Client({
+        name: 'eidolon-server',
+        version: '0.1.0',
+      });
+      const { transport, stderr } = await this.createTransport(server);
+      try {
+        await withTimeout(
+          client.connect(transport),
+          MCP_CONNECT_TIMEOUT_MS,
+          `MCP server "${server.name}" connect timed out after ${MCP_CONNECT_TIMEOUT_MS}ms`,
+        );
+      } catch (error) {
+        await this.closeConnection(client, transport);
+        const stderrText = stderr.join('').trim();
+        if (stderrText && error instanceof Error) {
+          throw new Error(`${error.message}; stderr: ${stderrText}`);
+        }
+        throw error;
       }
-      throw error;
-    }
-    return { client, transport };
+      return { client, transport };
+    });
   }
 
   private async closeConnection(client: Client, transport: Transport): Promise<void> {
@@ -241,10 +252,7 @@ export class MCPClientService {
    */
   async listServers(companyId: string): Promise<any[]> {
     const { mcpServers } = this.db.schema;
-    return this.db.drizzle
-      .select()
-      .from(mcpServers)
-      .where(eq(mcpServers.companyId, companyId));
+    return this.db.drizzle.select().from(mcpServers).where(eq(mcpServers.companyId, companyId));
   }
 
   /**
@@ -447,20 +455,24 @@ export class MCPClientService {
     if (!server) {
       logger.warn({ serverId, toolName }, 'MCP tool call to unknown server');
       return {
-        content: [{
-          type: 'text',
-          text: `Error: MCP server "${serverId}" not found`,
-        }],
+        content: [
+          {
+            type: 'text',
+            text: `Error: MCP server "${serverId}" not found`,
+          },
+        ],
         isError: true,
       };
     }
     if (server.companyId !== companyId) {
       logger.warn({ serverId, toolName, companyId }, 'MCP tool call rejected for wrong company');
       return {
-        content: [{
-          type: 'text',
-          text: `Error: MCP server "${serverId}" not found`,
-        }],
+        content: [
+          {
+            type: 'text',
+            text: `Error: MCP server "${serverId}" not found`,
+          },
+        ],
         isError: true,
       };
     }
@@ -515,7 +527,13 @@ export class MCPClientService {
       });
 
       logger.info(
-        { callId, serverId: server.id, serverName: server.name, toolName, transport: server.transport },
+        {
+          callId,
+          serverId: server.id,
+          serverName: server.name,
+          toolName,
+          transport: server.transport,
+        },
         'MCP tool call completed',
       );
 
@@ -570,12 +588,7 @@ export class MCPClientService {
     const { mcpServers } = this.db.schema;
     await this.db.drizzle
       .delete(mcpServers)
-      .where(
-        and(
-          eq(mcpServers.id, serverId),
-          eq(mcpServers.companyId, companyId),
-        ),
-      );
+      .where(and(eq(mcpServers.id, serverId), eq(mcpServers.companyId, companyId)));
     logger.info({ serverId, companyId }, 'MCP server deleted');
   }
 }
@@ -583,7 +596,7 @@ export class MCPClientService {
 function sanitizeEnv(env: NodeJS.ProcessEnv | Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    if (typeof value === 'string') out[key] = value;
+    if (typeof value === 'string') {out[key] = value;}
   }
   return out;
 }
@@ -605,9 +618,7 @@ function stdioCommandKey(command: string, args: string[]): string {
 }
 
 function shellToken(value: string): string {
-  return /^[A-Za-z0-9_./:=@+-]+$/.test(value)
-    ? value
-    : `'${value.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number): number {
@@ -615,11 +626,7 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
@@ -629,7 +636,7 @@ async function withTimeout<T>(
       }),
     ]);
   } finally {
-    if (timeout) clearTimeout(timeout);
+    if (timeout) {clearTimeout(timeout);}
   }
 }
 
@@ -638,7 +645,7 @@ function stripIpBrackets(value: string): string {
 }
 
 function isBlockedHostname(hostname: string): boolean {
-  if (net.isIP(hostname) !== 0) return false;
+  if (net.isIP(hostname) !== 0) {return false;}
   return (
     hostname === 'localhost' ||
     hostname.endsWith('.localhost') ||
@@ -663,11 +670,11 @@ function isPrivateOrReservedIp(address: string): boolean {
       a === 0 ||
       a === 10 ||
       a === 127 ||
-      a === 169 && b === 254 ||
-      a === 172 && b >= 16 && b <= 31 ||
-      a === 192 && b === 168 ||
-      a === 100 && b >= 64 && b <= 127 ||
-      a === 198 && (b === 18 || b === 19) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 198 && (b === 18 || b === 19)) ||
       a >= 224
     );
   }

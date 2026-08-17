@@ -19,6 +19,7 @@
     "format:check": "prettier --check .",
     "format:changed": "node scripts/check-format.mjs",
     "docs:check": "node scripts/validate-docs.mjs",
+    "profile:ui": "node scripts/profile-ui-bundle.mjs",
     "duplication": "jscpd . --config .jscpd.json",
     "dead-code": "knip --no-progress",
     "test": "vitest",

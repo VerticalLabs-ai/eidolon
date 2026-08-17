@@ -10,7 +10,7 @@ import { createAgentKeyMiddleware } from './middleware/agent-key-auth.js';
 import { createServiceTokenMiddleware, parseServiceTokens } from './middleware/service-tokens.js';
 import { apiRateLimit, authSensitiveRateLimit } from './middleware/rate-limit.js';
 import { originCsrf } from './middleware/csrf.js';
-import healthRouter from './routes/health.js';
+import healthRouter, { readinessRouter } from './routes/health.js';
 import { companiesRouter } from './routes/companies.js';
 import { agentsRouter, orgChartRouter } from './routes/agents.js';
 import { tasksRouter } from './routes/tasks.js';
@@ -148,8 +148,11 @@ export function createApp(db: DbInstance): express.Express {
       logger,
       autoLogging: {
         ignore: (req) => {
-          // Don't log health checks in production
-          return (req as any).url === '/api/health';
+          // Don't log liveness or readiness probes: both are polled on a short
+          // interval by load balancers and the desktop companion, and would
+          // otherwise dominate the log volume.
+          const url = (req as any).url;
+          return url === '/api/health' || url === '/api/ready';
         },
       },
       customProps: (req) => ({
@@ -174,6 +177,7 @@ export function createApp(db: DbInstance): express.Express {
 
   // Public endpoints (no auth required)
   app.use('/api', healthRouter);
+  app.use('/api', readinessRouter(db));
   app.use('/api', metricsRouter());
 
   // Local-trusted test user creation (guarded to AUTH_MODE=local_trusted
