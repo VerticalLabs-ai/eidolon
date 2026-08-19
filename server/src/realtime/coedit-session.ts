@@ -15,14 +15,14 @@
 
 import type { WebSocket } from 'ws';
 import { getArtifact, saveArtifactContent } from '../services/artifact-service.js';
-import { validateArtifactContent, applyOp, applyOps, diffContent, isCoEditableType } from '@eidolon/shared';
-import type {
-  CoEditOp,
-  DocOp,
-  SheetOp,
-  BoardOp,
-  CoEditServerMsg,
+import {
+  validateArtifactContent,
+  applyOp,
+  applyOps,
+  diffContent,
+  isCoEditableType,
 } from '@eidolon/shared';
+import type { CoEditOp, DocOp, SheetOp, BoardOp, CoEditServerMsg } from '@eidolon/shared';
 import { colorForUser } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -94,7 +94,22 @@ export function __injectSessionForTest(
     version,
     lastSavedContent: JSON.parse(JSON.stringify(content)),
     participants: new Map([
-      ['test-user', { ws: { readyState: 1, OPEN: 1, send: () => {}, close: () => {}, on: () => {}, off: () => {} } as unknown as WebSocket, userId: 'test-user', name: 'Tester', color: '#fff' }],
+      [
+        'test-user',
+        {
+          ws: {
+            readyState: 1,
+            OPEN: 1,
+            send: () => {},
+            close: () => {},
+            on: () => {},
+            off: () => {},
+          } as unknown as WebSocket,
+          userId: 'test-user',
+          name: 'Tester',
+          color: '#fff',
+        },
+      ],
     ]),
     dirty: false,
   });
@@ -116,7 +131,7 @@ export function getSessionContent(artifactId: string): {
   lastSavedContent: Record<string, unknown>;
 } | null {
   const session = sessions.get(artifactId);
-  if (!session || session.participants.size === 0) return null;
+  if (!session || session.participants.size === 0) {return null;}
   return {
     content: session.content,
     version: session.version,
@@ -137,10 +152,14 @@ export function getSessionContent(artifactId: string): {
 export function mergeExternalUpdate(
   artifactId: string,
   incomingContent: Record<string, unknown>,
-  editor: { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' },
+  editor: {
+    userId?: string | null;
+    agentId?: string | null;
+    editSource?: 'user' | 'agent' | 'system';
+  },
 ): { merged: Record<string, unknown>; ops: CoEditOp[] } | null {
   const session = sessions.get(artifactId);
-  if (!session || session.participants.size === 0) return null;
+  if (!session || session.participants.size === 0) {return null;}
 
   const base = session.lastSavedContent;
   const current = session.content;
@@ -152,10 +171,7 @@ export function mergeExternalUpdate(
   // discarded while the version increments. Fall back to last-write-wins:
   // take the incoming content directly as the merged result.
   if (!isCoEditableType(session.artifactType)) {
-    const validation = validateArtifactContent(
-      session.artifactType as any,
-      incoming,
-    );
+    const validation = validateArtifactContent(session.artifactType as any, incoming);
     if (!validation.success) {
       throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Merged content is invalid');
     }
@@ -170,10 +186,7 @@ export function mergeExternalUpdate(
   const merged = applyOps(session.artifactType, current, agentOps);
 
   // Validate merged content
-  const validation = validateArtifactContent(
-    session.artifactType as any,
-    merged,
-  );
+  const validation = validateArtifactContent(session.artifactType as any, merged);
   if (!validation.success) {
     throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', 'Merged content is invalid');
   }
@@ -200,16 +213,22 @@ export function mergeExternalUpdate(
  */
 export async function flushSession(
   artifactId: string,
-  editor: { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' },
+  editor: {
+    userId?: string | null;
+    agentId?: string | null;
+    editSource?: 'user' | 'agent' | 'system';
+  },
   title?: string,
 ): Promise<{ version: number; content: Record<string, unknown> } | null> {
-  if (!_db) throw new Error('CoEdit manager not initialized');
+  if (!_db) {throw new Error('CoEdit manager not initialized');}
   const session = sessions.get(artifactId);
-  if (!session) return null;
+  if (!session) {return null;}
 
   if (!session.dirty && title === undefined) {
     return { version: session.version, content: session.content };
   }
+
+  const contentToSave = session.content;
 
   // Use saveArtifactContent (direct DB save) to bypass the co-edit session
   // check in updateArtifact (avoids recursion). Pass the title so it is
@@ -218,7 +237,7 @@ export async function flushSession(
     _db,
     session.companyId,
     artifactId,
-    session.content,
+    contentToSave,
     session.version,
     editor,
     undefined,
@@ -226,8 +245,8 @@ export async function flushSession(
   );
 
   session.version = updated.version;
-  session.lastSavedContent = JSON.parse(JSON.stringify(session.content));
-  session.dirty = false;
+  session.lastSavedContent = JSON.parse(JSON.stringify(contentToSave));
+  session.dirty = session.content !== contentToSave;
 
   // Broadcast saved to all participants (include the persisted title so
   // clients can update their cache without a refetch).
@@ -235,11 +254,11 @@ export async function flushSession(
     type: 'coedit.saved',
     artifactId,
     version: updated.version,
-    content: session.content,
+    content: contentToSave,
     title: updated.title,
   });
 
-  return { version: updated.version, content: session.content };
+  return { version: updated.version, content: contentToSave };
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +283,11 @@ const flushQueues = new Map<string, Promise<unknown>>();
  */
 export function flushSessionSerialized(
   artifactId: string,
-  editor: { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' },
+  editor: {
+    userId?: string | null;
+    agentId?: string | null;
+    editSource?: 'user' | 'agent' | 'system';
+  },
   title?: string,
 ): Promise<{ version: number; content: Record<string, unknown> } | null> {
   const prev = flushQueues.get(artifactId) ?? Promise.resolve();
@@ -299,7 +322,7 @@ export function updateSessionAfterFlush(
   title?: string,
 ): void {
   const session = sessions.get(artifactId);
-  if (!session) return;
+  if (!session) {return;}
   session.version = newVersion;
   session.lastSavedContent = JSON.parse(JSON.stringify(content));
   session.dirty = false;
@@ -328,7 +351,7 @@ export async function joinSession(
   name: string,
   ws: WebSocket,
 ): Promise<void> {
-  if (!_db) throw new Error('CoEdit manager not initialized');
+  if (!_db) {throw new Error('CoEdit manager not initialized');}
 
   let session = sessions.get(artifactId);
   if (!session) {
@@ -382,12 +405,9 @@ export async function joinSession(
  * `coedit.user.left` to remaining clients. If the last participant leaves,
  * flushes any dirty state and destroys the session.
  */
-export async function leaveSession(
-  artifactId: string,
-  userId: string,
-): Promise<void> {
+export async function leaveSession(artifactId: string, userId: string): Promise<void> {
   const session = sessions.get(artifactId);
-  if (!session) return;
+  if (!session) {return;}
 
   session.participants.delete(userId);
 
@@ -412,12 +432,9 @@ export async function leaveSession(
 }
 
 /** Remove a participant by WS connection (on disconnect). */
-export async function leaveSessionByWs(
-  artifactId: string,
-  ws: WebSocket,
-): Promise<void> {
+export async function leaveSessionByWs(artifactId: string, ws: WebSocket): Promise<void> {
   const session = sessions.get(artifactId);
-  if (!session) return;
+  if (!session) {return;}
   for (const [userId, participant] of session.participants) {
     if (participant.ws === ws) {
       await leaveSession(artifactId, userId);
@@ -435,11 +452,7 @@ export async function leaveSessionByWs(
  * session state, acknowledged to the sender, and broadcast to all other
  * participants.
  */
-export function applyOperation(
-  artifactId: string,
-  op: CoEditOp,
-  userId: string,
-): void {
+export function applyOperation(artifactId: string, op: CoEditOp, userId: string): void {
   const session = sessions.get(artifactId);
   if (!session) {
     throw new Error('No active co-edit session for artifact ' + artifactId);
@@ -497,7 +510,7 @@ export function broadcastCursor(
   position: number | { rowId: string; colKey: string } | { cardId: string } | null,
 ): void {
   const session = sessions.get(artifactId);
-  if (!session) return;
+  if (!session) {return;}
   if (!session.participants.has(userId)) {
     throw new Error('Not a participant in this co-edit session');
   }
@@ -529,7 +542,7 @@ export function broadcastSelection(
   range: { start: number; end: number } | null,
 ): void {
   const session = sessions.get(artifactId);
-  if (!session) return;
+  if (!session) {return;}
   if (!session.participants.has(userId)) {
     throw new Error('Not a participant in this co-edit session');
   }
