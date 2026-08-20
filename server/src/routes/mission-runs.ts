@@ -12,6 +12,7 @@ import {
   decodeCursor,
 } from '../services/mission/snapshot.js';
 import { MissionReplayService } from '../services/mission/replay.js';
+import { MissionStreamService } from '../services/mission/stream.js';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -47,6 +48,12 @@ const EventsQuery = z.object({
   /** Run-local sequence cursor; default 0 replays from creation. */
   after: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+/** SSE stream query: optional `after` cursor (explicit `after` wins over
+ *  Last-Event-ID header; default 0 replays from creation). */
+const StreamQuery = z.object({
+  after: z.coerce.number().int().min(0).optional(),
 });
 
 /** Validate the Idempotency-Key header: 1-128 safe chars, no controls, no
@@ -210,6 +217,37 @@ export function missionRunsRouter(db: DbInstance): Router {
         latestSequence: result.latestSequence,
       },
     });
+  });
+
+  // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId/stream
+  // Authenticated SSE: replays committed events by run-local sequence, then
+  // tails the journal for live delivery. Explicit `after` query param wins
+  // over `Last-Event-ID` header; default 0 replays from creation. Sends
+  // comment heartbeats while idle, disconnects slow clients, and closes
+  // gracefully after a terminal event. Reads do not require the mission flag.
+  router.get('/:runId/stream', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const parsed = StreamQuery.safeParse(req.query);
+    if (!parsed.success) {
+      throw parsed.error; // caught by errorHandler as ZodError → 400 VALIDATION_ERROR
+    }
+    const after = parsed.data.after ?? null;
+
+    // Parse Last-Event-ID header (lenient: ignore non-integer values).
+    const lastEventIdHeader = req.get('Last-Event-ID');
+    let lastEventId: number | null = null;
+    if (lastEventIdHeader) {
+      const parsed = Number(lastEventIdHeader);
+      if (Number.isInteger(parsed) && parsed >= 0) {
+        lastEventId = parsed;
+      }
+    }
+
+    const service = new MissionStreamService(db);
+    await service.stream({ companyId, projectId, runId, after, lastEventId }, req, res);
   });
 
   return router;
