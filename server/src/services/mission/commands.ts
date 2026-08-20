@@ -27,6 +27,20 @@ import { canonicalHash } from './policy.js';
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const RETRY_LEGAL = new Set(['failed', 'cancelled']);
 
+/**
+ * Internal sentinel thrown inside the locked transaction when a concurrent
+ * duplicate command is detected after locking. The catch block in `submit`
+ * converts it to a replay/conflict response. This ensures no uniqueness
+ * error escapes (HIGH-RISK REPAIR: recheck durable idempotency after
+ * locking).
+ */
+class IdempotencyReplayError extends Error {
+  constructor(readonly row: MissionCommandRow) {
+    super('Concurrent idempotent command detected after locking');
+    this.name = 'IdempotencyReplayError';
+  }
+}
+
 export type RunCommandType = 'run.cancel' | 'run.retry';
 
 export interface CancelBody {
@@ -143,19 +157,22 @@ export class MissionCommandService {
   }
 
   async submit(input: CommandInput): Promise<CommandResult> {
-    const { companyId, runId, type, body, idempotencyKey, ifMatch, actorType, actorId } = input;
+    const { companyId, projectId, runId, type, body, idempotencyKey, ifMatch, actorType, actorId } =
+      input;
     const traceId = input.traceId ?? null;
 
     // 1. Idempotency replay takes first precedence: a same-key replay wins
-    //    even after the run advanced (VAL-RUN-137).
-    const existing = await this.lookupCommand(companyId, runId, idempotencyKey);
+    //    even after the run advanced (VAL-RUN-137). Scope check includes
+    //    projectId so a command from a different project cannot replay
+    //    (HIGH-RISK REPAIR: company + project + run scope).
+    const existing = await this.lookupCommand(companyId, projectId, runId, idempotencyKey);
     if (existing) {
       return this.replayOrConflict(existing, type, body);
     }
 
-    // 2. Load the run with a scope check. Non-enumerating 404 for absent or
-    //    cross-scope ids.
-    const run = await this.loadRun(companyId, runId);
+    // 2. Load the run with a scope check (company + project + run).
+    //    Non-enumerating 404 for absent or cross-scope ids.
+    const run = await this.loadRun(companyId, projectId, runId);
 
     // 3. Precondition presence + state guard (before the transaction so a
     //    rejection leaves no command row, state, or event change).
@@ -183,11 +200,31 @@ export class MissionCommandService {
       }
     }
 
-    // 4. Locked transaction: re-check the version under the lock, apply, and
-    //    record the replayable result.
+    // 4. Locked transaction: re-check durable idempotency under the lock,
+    //    re-check the version, apply, and record the replayable result.
+    //    Rechecking idempotency after locking ensures concurrent duplicate
+    //    commands replay one outcome, changed requests conflict, and no
+    //    stale-version or uniqueness error escapes (HIGH-RISK REPAIR).
     try {
       const outcome = await this.db.drizzle.transaction(async (tx) => {
-        const locked = await this.lockRun(tx, companyId, runId);
+        const locked = await this.lockRun(tx, companyId, projectId, runId);
+
+        // Recheck durable idempotency after locking: a concurrent duplicate
+        // may have inserted between the pre-lock lookup and the lock
+        // acquisition. If found, replay/conflict from within the tx so no
+        // uniqueness error escapes.
+        const concurrent = await this.lookupCommandInTx(
+          tx,
+          companyId,
+          projectId,
+          runId,
+          idempotencyKey,
+        );
+        if (concurrent) {
+          // Throw a special sentinel that the catch block converts to
+          // replay/conflict. This avoids a unique violation.
+          throw new IdempotencyReplayError(concurrent);
+        }
 
         if (type === 'run.cancel') {
           if (locked.stateVersion !== ifMatch) {
@@ -215,10 +252,14 @@ export class MissionCommandService {
       });
       return this.toResult(outcome);
     } catch (err) {
+      // A concurrent duplicate was detected after locking: replay/conflict.
+      if (err instanceof IdempotencyReplayError) {
+        return this.replayOrConflict(err.row, type, body);
+      }
       // A unique-violation on the run idempotency index means a concurrent
       // identical command won; re-read and replay/conflict.
       if (this.isUniqueViolation(err)) {
-        const ex = await this.lookupCommand(companyId, runId, idempotencyKey);
+        const ex = await this.lookupCommand(companyId, projectId, runId, idempotencyKey);
         if (ex) {
           return this.replayOrConflict(ex, type, body);
         }
@@ -402,6 +443,56 @@ export class MissionCommandService {
     const requestEnvelope = retryBody.request ?? (run.requestEnvelope as Record<string, unknown>);
     const reqHash = canonicalHash(requestEnvelope);
 
+    // Narrow the original policy limits with the retry body's limits
+    // (minimum wins — retry may only lower, never raise). Recompute the
+    // policy content hash so the narrowed snapshot has a distinct identity
+    // (HIGH-RISK REPAIR: retry narrows limits and recomputes policy hash).
+    const origLimits = origPolicy.limits as Record<string, number>;
+    const retryLimits = retryBody.limits ?? {};
+    const narrowedLimits: Record<string, number> = { ...origLimits };
+    for (const key of [
+      'costCents',
+      'totalTokens',
+      'durationSeconds',
+      'providerCalls',
+      'steps',
+      'outputBytes',
+    ]) {
+      const override = retryLimits[key as keyof typeof retryLimits];
+      if (override !== undefined) {
+        narrowedLimits[key] = Math.min(origLimits[key] ?? override, override);
+      }
+    }
+    const narrowedPolicyContentHash = canonicalHash({
+      schemaVersion: origPolicy.schemaVersion,
+      sourceProfile: origPolicy.sourceProfile,
+      provider: origPolicy.provider,
+      adapterId: origPolicy.adapterId,
+      model: origPolicy.model,
+      reasoningDepth: origPolicy.reasoningDepth,
+      systemPromptHash: origPolicy.systemPromptHash,
+      instructionHash: origPolicy.instructionHash,
+      toolAllowlist: origPolicy.toolAllowlist,
+      domainAllowlist: origPolicy.domainAllowlist,
+      researchPolicy: origPolicy.researchPolicy,
+      planningPolicy: origPolicy.planningPolicy,
+      approvalPolicy: origPolicy.approvalPolicy,
+      fallbackPolicy: origPolicy.fallbackPolicy,
+      partialResultPolicy: origPolicy.partialResultPolicy,
+      limits: narrowedLimits,
+      resolvedMode: run.resolvedMode,
+    });
+
+    // Re-insert the policy snapshot with the narrowed limits and recomputed
+    // hash (replace the verbatim copy above).
+    await tx
+      .update(schema.runPolicySnapshots)
+      .set({
+        limits: narrowedLimits as unknown as Record<string, number>,
+        contentHash: narrowedPolicyContentHash,
+      })
+      .where(eq(schema.runPolicySnapshots.id, successorPolicyId));
+
     const successorId = randomUUID();
     await tx.insert(schema.missionRuns).values({
       id: successorId,
@@ -427,14 +518,15 @@ export class MissionCommandService {
       updatedAt: now,
     });
 
-    // Fresh finite root budget reservation + allocation, matching the
-    // original ceiling.
+    // Fresh finite root budget reservation + allocation with the narrowed
+    // ceiling (HIGH-RISK REPAIR: reserve the authoritative narrowed budget).
     const [origReservation] = await tx
       .select()
       .from(schema.budgetReservations)
       .where(eq(schema.budgetReservations.runId, run.id))
       .limit(1);
-    const ceiling = origReservation?.requestedCents ?? 0;
+    const origCeiling = origReservation?.requestedCents ?? 0;
+    const ceiling = Math.min(origCeiling, narrowedLimits['costCents'] ?? origCeiling);
     const periodKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
     const [reservation] = await tx
       .insert(schema.budgetReservations)
@@ -499,7 +591,7 @@ export class MissionCommandService {
       { type: 'mode.resolved', payload: { resolvedMode: run.resolvedMode, retry: true } },
       {
         type: 'policy.snapshotted',
-        payload: { policySnapshotId: successorPolicyId, contentHash: origPolicy.contentHash },
+        payload: { policySnapshotId: successorPolicyId, contentHash: narrowedPolicyContentHash },
       },
       { type: 'budget.reserved', payload: { reservedCents: ceiling, periodKey } },
     ];
@@ -537,7 +629,7 @@ export class MissionCommandService {
 
   // -- helpers --------------------------------------------------------------
 
-  private async lookupCommand(companyId: string, runId: string, key: string) {
+  private async lookupCommand(companyId: string, projectId: string, runId: string, key: string) {
     const schema = this.db.schema;
     const [row] = await this.db.drizzle
       .select()
@@ -545,6 +637,7 @@ export class MissionCommandService {
       .where(
         and(
           eq(schema.runCommands.companyId, companyId),
+          eq(schema.runCommands.projectId, projectId),
           eq(schema.runCommands.runId, runId),
           eq(schema.runCommands.idempotencyKey, key),
         ),
@@ -553,12 +646,46 @@ export class MissionCommandService {
     return row ?? null;
   }
 
-  private async loadRun(companyId: string, runId: string): Promise<MissionRunRow> {
+  /** In-transaction idempotency recheck after locking (HIGH-RISK REPAIR). */
+  private async lookupCommandInTx(
+    tx: Tx,
+    companyId: string,
+    projectId: string,
+    runId: string,
+    key: string,
+  ) {
+    const schema = this.db.schema;
+    const [row] = await tx
+      .select()
+      .from(schema.runCommands)
+      .where(
+        and(
+          eq(schema.runCommands.companyId, companyId),
+          eq(schema.runCommands.projectId, projectId),
+          eq(schema.runCommands.runId, runId),
+          eq(schema.runCommands.idempotencyKey, key),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  private async loadRun(
+    companyId: string,
+    projectId: string,
+    runId: string,
+  ): Promise<MissionRunRow> {
     const schema = this.db.schema;
     const [row] = await this.db.drizzle
       .select()
       .from(schema.missionRuns)
-      .where(and(eq(schema.missionRuns.companyId, companyId), eq(schema.missionRuns.id, runId)))
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, companyId),
+          eq(schema.missionRuns.projectId, projectId),
+          eq(schema.missionRuns.id, runId),
+        ),
+      )
       .limit(1);
     if (!row) {
       throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
@@ -566,12 +693,23 @@ export class MissionCommandService {
     return row;
   }
 
-  private async lockRun(tx: Tx, companyId: string, runId: string): Promise<MissionRunRow> {
+  private async lockRun(
+    tx: Tx,
+    companyId: string,
+    projectId: string,
+    runId: string,
+  ): Promise<MissionRunRow> {
     const schema = this.db.schema;
     const [row] = await tx
       .select()
       .from(schema.missionRuns)
-      .where(and(eq(schema.missionRuns.companyId, companyId), eq(schema.missionRuns.id, runId)))
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, companyId),
+          eq(schema.missionRuns.projectId, projectId),
+          eq(schema.missionRuns.id, runId),
+        ),
+      )
       .for('update')
       .limit(1);
     if (!row) {

@@ -14,7 +14,7 @@ import {
 import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
 import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
-import { validateIdempotencyKey } from '../services/mission/idempotency.js';
+import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -297,10 +297,13 @@ export function missionRunsRouter(db: DbInstance): Router {
 
     const service = new MissionCommandService(db);
     const type = body.type as RunCommandType;
+    // Normalize the logical body by stripping undefined values so that
+    // canonical and convenience routes produce the same hash for omitted
+    // optional fields (HIGH-RISK REPAIR: route equivalence).
     const logicalBody =
       body.type === 'run.cancel'
-        ? { reason: body.reason }
-        : { limits: body.limits, request: body.request };
+        ? normalizeCommandBody({ reason: body.reason })
+        : normalizeCommandBody({ limits: body.limits, request: body.request });
     const result = await service.submit({
       companyId,
       projectId,
@@ -333,7 +336,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       projectId,
       runId,
       type: 'run.cancel',
-      body,
+      body: normalizeCommandBody(body),
       idempotencyKey,
       ifMatch,
       actorType: 'user',
@@ -360,7 +363,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       projectId,
       runId,
       type: 'run.retry',
-      body,
+      body: normalizeCommandBody(body),
       idempotencyKey,
       ifMatch,
       actorType: 'user',

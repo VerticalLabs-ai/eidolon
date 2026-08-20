@@ -2,12 +2,10 @@ import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
-import {
-  resolvePolicy,
-  policyContentHash,
-  requestContentHash,
-  type ResolvedPolicy,
-} from './policy.js';
+import { resolvePolicy, policyContentHash, canonicalHash, type ResolvedPolicy } from './policy.js';
+// requestContentHash is no longer used; start hashes the complete canonical
+// request body (mode, limits, projectThreadId, initiatingAgentId, request)
+// so different mode/limits with the same request text conflict.
 import type { BuiltInMode } from './modes.js';
 
 /**
@@ -149,7 +147,16 @@ export class MissionStartService {
       userLimits: body.limits,
     });
 
-    const reqHash = requestContentHash(body.request);
+    // Hash the COMPLETE canonical request body (mode, limits, projectThreadId,
+    // initiatingAgentId, request) so that different mode/limits with the same
+    // request text conflict (HIGH-RISK REPAIR: complete-body start hash).
+    const reqHash = canonicalHash({
+      mode: body.mode,
+      projectThreadId: body.projectThreadId,
+      initiatingAgentId: body.initiatingAgentId ?? null,
+      request: body.request,
+      limits: body.limits ?? null,
+    });
     const policyHash = policyContentHash(policy);
     const ceiling = policy.limits.costCents;
 
@@ -247,7 +254,11 @@ export class MissionStartService {
 
         this.fireFailpoint('after_reservation');
 
-        // 5d. Applied start command.
+        // 5d. Applied start command with a placeholder result_body; the
+        //     exact replayable result is stored at the end of the tx after
+        //     all writes are committed (HIGH-RISK REPAIR: atomic replay
+        //     persistence — the result_body is persisted atomically with the
+        //     initial aggregate, not after the tx commits).
         const [commandRow] = await tx
           .insert(schema.runCommands)
           .values({
@@ -311,17 +322,39 @@ export class MissionStartService {
 
         this.fireFailpoint('after_events');
 
-        return { runId, commandId: commandRow.id, policySnapshotId };
+        // 5g. Build the exact replayable result snapshot from the
+        //     in-transaction data and persist it in the command's
+        //     result_body within the same transaction. This ensures the
+        //     replayable status, headers, and body are committed atomically
+        //     with the initial aggregate (HIGH-RISK REPAIR: atomic replay
+        //     persistence). A crash between the tx commit and a post-tx
+        //     update can no longer leave a command without its replayable
+        //     result.
+        const built = this.buildStartResultFromTx({
+          runId,
+          commandId: commandRow.id,
+          companyId,
+          projectId,
+          projectThreadId: body.projectThreadId,
+          policySnapshotId,
+          policyHash,
+          reqHash,
+          resolvedMode: policy.resolvedMode,
+          ceiling,
+          lastEventSequence: seq,
+          now,
+          commandCreatedAt: commandRow.createdAt,
+          commandIdempotencyKey: idempotencyKey,
+        });
+        await tx
+          .update(schema.runCommands)
+          .set({ resultBody: built as unknown as Record<string, unknown> })
+          .where(eq(schema.runCommands.id, commandRow.id));
+
+        return built;
       });
 
-      // 6. Read back the committed aggregate for the response snapshot, then
-      //    persist the exact replayable result so a later same-key replay
-      //    (possibly after the run advanced) returns the original status,
-      //    headers, and body rather than a re-read current snapshot
-      //    (VAL-RUN-052, VAL-RUN-116).
-      const built = await this.buildResult(result.runId, result.commandId, policyHash, ceiling);
-      await this.storeStartResult(built);
-      return built;
+      return result;
     } catch (err) {
       // A unique-violation on the start idempotency index means a concurrent
       // identical start won; re-read and replay/conflict.
@@ -335,61 +368,59 @@ export class MissionStartService {
     }
   }
 
-  private async buildResult(
-    runId: string,
-    commandId: string,
-    policyHash: string,
-    ceiling: number,
-  ): Promise<StartResult> {
-    const schema = this.db.schema;
-    const [run] = await this.db.drizzle
-      .select()
-      .from(schema.missionRuns)
-      .where(eq(schema.missionRuns.id, runId))
-      .limit(1);
-    const [reservation] = await this.db.drizzle
-      .select()
-      .from(schema.budgetReservations)
-      .where(eq(schema.budgetReservations.runId, runId))
-      .limit(1);
-    const [command] = await this.db.drizzle
-      .select()
-      .from(schema.runCommands)
-      .where(eq(schema.runCommands.id, commandId))
-      .limit(1);
-
+  /**
+   * Build the exact replayable StartResult from in-transaction data without
+   * re-reading from the database. This is called inside the start
+   * transaction so the result_body is persisted atomically with the
+   * initial aggregate (HIGH-RISK REPAIR: atomic replay persistence).
+   */
+  private buildStartResultFromTx(input: {
+    runId: string;
+    commandId: string;
+    companyId: string;
+    projectId: string;
+    projectThreadId: string;
+    policySnapshotId: string;
+    policyHash: string;
+    reqHash: string;
+    resolvedMode: string;
+    ceiling: number;
+    lastEventSequence: number;
+    now: Date;
+    commandCreatedAt: Date;
+    commandIdempotencyKey: string;
+  }): StartResult {
+    const nowIso = input.now.toISOString();
     return {
       run: {
-        id: run.id,
-        companyId: run.companyId,
-        projectId: run.projectId,
-        projectThreadId: run.projectThreadId,
-        status: run.status,
-        stateVersion: run.stateVersion,
-        lastEventSequence: Number(run.lastEventSequence),
-        resolvedMode: run.resolvedMode,
-        policySnapshotId: run.policySnapshotId,
-        policyContentHash: policyHash,
-        requestContentHash: run.requestContentHash,
-        createdAt: run.createdAt.toISOString(),
-        updatedAt: run.updatedAt.toISOString(),
+        id: input.runId,
+        companyId: input.companyId,
+        projectId: input.projectId,
+        projectThreadId: input.projectThreadId,
+        status: 'draft',
+        stateVersion: 1,
+        lastEventSequence: input.lastEventSequence,
+        resolvedMode: input.resolvedMode,
+        policySnapshotId: input.policySnapshotId,
+        policyContentHash: input.policyHash,
+        requestContentHash: input.reqHash,
+        createdAt: nowIso,
+        updatedAt: nowIso,
         budget: {
-          reservedCents: reservation.reservedCents,
-          settledCents: reservation.settledCents,
-          releasedCents: reservation.releasedCents,
-          costCentsCeiling: ceiling,
+          reservedCents: input.ceiling,
+          settledCents: 0,
+          releasedCents: 0,
+          costCentsCeiling: input.ceiling,
         },
       },
       command: {
-        id: command.id,
-        type: command.type,
-        idempotencyKey: command.idempotencyKey,
-        status: command.status,
-        resultStatusCode: command.resultStatusCode ?? 202,
-        createdAt: command.createdAt.toISOString(),
-        appliedAt: command.appliedAt
-          ? command.appliedAt.toISOString()
-          : command.createdAt.toISOString(),
+        id: input.commandId,
+        type: 'run.start',
+        idempotencyKey: input.commandIdempotencyKey,
+        status: 'applied',
+        resultStatusCode: 202,
+        createdAt: input.commandCreatedAt.toISOString(),
+        appliedAt: input.commandCreatedAt.toISOString(),
       },
     };
   }
@@ -423,7 +454,13 @@ export class MissionStartService {
     },
     body: StartRequestBody,
   ): Promise<StartResult> {
-    const reqHash = requestContentHash(body.request);
+    const reqHash = canonicalHash({
+      mode: body.mode,
+      projectThreadId: body.projectThreadId,
+      initiatingAgentId: body.initiatingAgentId ?? null,
+      request: body.request,
+      limits: body.limits ?? null,
+    });
     if (existing.requestHash !== reqHash) {
       throw new AppError(
         409,
@@ -498,16 +535,6 @@ export class MissionStartService {
           : existing.createdAt.toISOString(),
       },
     };
-  }
-
-  /** Persist the exact start response in the command's `result_body` so a
-   *  later same-key replay returns the original result verbatim. */
-  private async storeStartResult(result: StartResult): Promise<void> {
-    const schema = this.db.schema;
-    await this.db.drizzle
-      .update(schema.runCommands)
-      .set({ resultBody: result as unknown as Record<string, unknown> })
-      .where(eq(schema.runCommands.id, result.command.id));
   }
 
   private async validateThread(

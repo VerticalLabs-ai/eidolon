@@ -46,12 +46,45 @@ export function validateIdempotencyKey(raw: string | undefined): string {
 }
 
 /**
+ * Normalize a command body by recursively stripping `undefined` values so
+ * that omitted optional fields produce the same canonical form regardless
+ * of whether the key is present with `undefined` or absent entirely. This
+ * ensures canonical and convenience routes normalize omitted optional
+ * fields identically before hashing.
+ */
+export function normalizeCommandBody(body: unknown): Record<string, unknown> {
+  if (body === null || body === undefined || typeof body !== 'object' || Array.isArray(body)) {
+    return {};
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const nested = normalizeCommandBody(value);
+      // Only include the nested object if it has keys after normalization.
+      if (Object.keys(nested).length > 0) {
+        result[key] = nested;
+      }
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
  * The canonical SHA-256 hash of a run-scoped command's logical content
  * `{type, body}`. The canonical and convenience routes map to the same
  * logical `{type, body}` shape, so identical logical content produces the
  * same hash and replays; changed discriminated content under the same key
  * returns `409 IDEMPOTENCY_KEY_REUSED` (VAL-RUN-115).
+ *
+ * The body is normalized (undefined values stripped) before hashing so that
+ * omitted optional fields produce the same hash across routes.
  */
 export function commandRequestHash(type: string, body: unknown): string {
-  return canonicalHash({ type, body });
+  const normalized = normalizeCommandBody(body);
+  return canonicalHash({ type, body: normalized });
 }

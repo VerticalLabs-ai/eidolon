@@ -127,17 +127,25 @@ export function resolvePolicy(input: {
 
 /**
  * Canonical JSON serialization: recursively lexicographically sorted keys,
- * preserved array order, UTF-8, no whitespace. This is the stable basis for
- * content hashing.
+ * preserved array order, UTF-8, no whitespace. `undefined` values are
+ * stripped from objects so that `{ a: 1, b: undefined }` and `{ a: 1 }`
+ * produce the same canonical form. This is the stable basis for content
+ * hashing and ensures canonical and convenience routes normalize omitted
+ * optional fields identically before hashing.
  */
 export function canonicalStringify(value: unknown): string {
+  if (value === undefined) {
+    return 'null';
+  }
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
     return `[${value.map(canonicalStringify).join(',')}]`;
   }
-  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const keys = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .filter((k) => (value as Record<string, unknown>)[k] !== undefined);
   const entries = keys.map(
     (k) => `${JSON.stringify(k)}:${canonicalStringify((value as Record<string, unknown>)[k])}`,
   );

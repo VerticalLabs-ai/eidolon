@@ -24,6 +24,7 @@ export * from './types/mfa.js';
 export * from './types/search.js';
 export * from './types/diff.js';
 export * from './types/links.js';
+export * from './types/mission.js';
 export * from './coedit-ops.js';
 
 // Validators (re-exports schemas + common helpers) -----------------------
