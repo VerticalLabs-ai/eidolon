@@ -314,8 +314,14 @@ export class MissionStartService {
         return { runId, commandId: commandRow.id, policySnapshotId };
       });
 
-      // 6. Read back the committed aggregate for the response snapshot.
-      return await this.buildResult(result.runId, result.commandId, policyHash, ceiling);
+      // 6. Read back the committed aggregate for the response snapshot, then
+      //    persist the exact replayable result so a later same-key replay
+      //    (possibly after the run advanced) returns the original status,
+      //    headers, and body rather than a re-read current snapshot
+      //    (VAL-RUN-052, VAL-RUN-116).
+      const built = await this.buildResult(result.runId, result.commandId, policyHash, ceiling);
+      await this.storeStartResult(built);
+      return built;
     } catch (err) {
       // A unique-violation on the start idempotency index means a concurrent
       // identical start won; re-read and replay/conflict.
@@ -413,6 +419,7 @@ export class MissionStartService {
       idempotencyKey: string;
       createdAt: Date;
       appliedAt: Date | null;
+      resultBody: Record<string, unknown> | null;
     },
     body: StartRequestBody,
   ): Promise<StartResult> {
@@ -427,9 +434,17 @@ export class MissionStartService {
     if (!existing.runId) {
       throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency key already used');
     }
-    // Replay: re-read the committed aggregate so the caller gets the same
-    // run/command identity. The full byte-identical durable replay is a
-    // later feature; milestone 1 returns the same run id and snapshot.
+    // Durable replay: return the exact stored result so a replay (even after
+    // the run advanced) returns the original status, headers, and body
+    // (VAL-RUN-052, VAL-RUN-116). Fall back to re-reading only if a legacy
+    // command row predates stored results.
+    const stored = existing.resultBody as {
+      run?: StartResult['run'];
+      command?: StartResult['command'];
+    } | null;
+    if (stored?.run && stored?.command) {
+      return { run: stored.run, command: stored.command };
+    }
     const [run] = await this.db.drizzle
       .select()
       .from(this.db.schema.missionRuns)
@@ -483,6 +498,16 @@ export class MissionStartService {
           : existing.createdAt.toISOString(),
       },
     };
+  }
+
+  /** Persist the exact start response in the command's `result_body` so a
+   *  later same-key replay returns the original result verbatim. */
+  private async storeStartResult(result: StartResult): Promise<void> {
+    const schema = this.db.schema;
+    await this.db.drizzle
+      .update(schema.runCommands)
+      .set({ resultBody: result as unknown as Record<string, unknown> })
+      .where(eq(schema.runCommands.id, result.command.id));
   }
 
   private async validateThread(

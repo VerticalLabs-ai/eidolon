@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -13,6 +13,8 @@ import {
 } from '../services/mission/snapshot.js';
 import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
+import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
+import { validateIdempotencyKey } from '../services/mission/idempotency.js';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -56,33 +58,64 @@ const StreamQuery = z.object({
   after: z.coerce.number().int().min(0).optional(),
 });
 
-/** Validate the Idempotency-Key header: 1-128 safe chars, no controls, no
- *  leading/trailing whitespace. Missing or invalid → 400 VALIDATION_ERROR. */
+/** Shared optional lower-limit override shape for retry. */
+const RetryLimits = z
+  .object({
+    costCents: z.number().int().positive().optional(),
+    totalTokens: z.number().int().positive().optional(),
+    durationSeconds: z.number().int().positive().optional(),
+    providerCalls: z.number().int().positive().optional(),
+    steps: z.number().int().positive().optional(),
+    outputBytes: z.number().int().positive().optional(),
+  })
+  .optional();
+
+const RetryRequest = z
+  .object({
+    text: z.string().trim().min(1).max(20_000).optional(),
+    attachments: z.array(z.string().uuid()).max(20).optional(),
+    context: z.record(z.unknown()).optional(),
+  })
+  .optional();
+
+/** Canonical discriminated command body. The canonical endpoint and each
+ *  convenience route map to the same logical `{type, body}` so they share one
+ *  idempotency namespace (VAL-RUN-115). */
+const CommandBody = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('run.cancel'), reason: z.string().trim().max(2000).optional() }),
+  z.object({ type: z.literal('run.retry'), limits: RetryLimits, request: RetryRequest }),
+]);
+
+const CancelBody = z.object({ reason: z.string().trim().max(2000).optional() });
+const RetryBody = z.object({ limits: RetryLimits, request: RetryRequest });
+
+/** Validate the Idempotency-Key header (shared contract: 1-128 safe chars,
+ *  no controls, no leading/trailing whitespace). Missing or invalid →
+ *  400 VALIDATION_ERROR before any command/state/event change (VAL-RUN-114). */
 function requireIdempotencyKey(req: { get: (h: string) => string | undefined }): string {
-  const raw = req.get('Idempotency-Key');
-  if (!raw || raw.length === 0) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'Idempotency-Key header is required');
+  return validateIdempotencyKey(req.get('Idempotency-Key'));
+}
+
+/**
+ * Parse a strong quoted `If-Match` ETag (`"<state_version>"`) into the
+ * integer state version. Returns null when the header is absent. A
+ * present-but-malformed header is rejected with 400 VALIDATION_ERROR so a
+ * client cannot accidentally bypass the precondition with garbage.
+ */
+function parseIfMatch(req: { get: (h: string) => string | undefined }): number | null {
+  const header = req.get('If-Match');
+  if (!header) {
+    return null;
   }
-  const key = raw;
-  if (key.length > 128) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'Idempotency-Key must be at most 128 characters');
-  }
-  if (key !== key.trim()) {
+  const match = /^"(\d+)"$/.exec(header.trim());
+  if (!match) {
     throw new AppError(
       400,
       'VALIDATION_ERROR',
-      'Idempotency-Key must not have leading or trailing whitespace',
+      'If-Match must be a quoted state version, e.g. "3"',
     );
   }
-  // eslint-disable-next-line no-control-regex -- intentional: reject control chars in the idempotency key
-  if (/[\u0000-\u001F\u007F]/.test(key)) {
-    throw new AppError(
-      400,
-      'VALIDATION_ERROR',
-      'Idempotency-Key must not contain control characters',
-    );
-  }
-  return key;
+  return Number(match[1]);
 }
 
 function requireMissionEnabled(companyId: string): void {
@@ -250,5 +283,115 @@ export function missionRunsRouter(db: DbInstance): Router {
     await service.stream({ companyId, projectId, runId, after, lastEventId }, req, res);
   });
 
+  // POST /:runId/commands — canonical discriminated command endpoint for
+  // run-scoped mutations. Shares one (company, runId, idempotencyKey)
+  // namespace with the convenience routes (VAL-RUN-115).
+  router.post('/:runId/commands', validate(CommandBody), async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    const body = req.body as z.infer<typeof CommandBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+    const idempotencyKey = requireIdempotencyKey(req);
+    const ifMatch = parseIfMatch(req);
+
+    const service = new MissionCommandService(db);
+    const type = body.type as RunCommandType;
+    const logicalBody =
+      body.type === 'run.cancel'
+        ? { reason: body.reason }
+        : { limits: body.limits, request: body.request };
+    const result = await service.submit({
+      companyId,
+      projectId,
+      runId,
+      type,
+      body: logicalBody,
+      idempotencyKey,
+      ifMatch,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // POST /:runId/cancel — convenience mapping to run.cancel.
+  router.post('/:runId/cancel', validate(CancelBody), async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    const body = req.body as z.infer<typeof CancelBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+    const idempotencyKey = requireIdempotencyKey(req);
+    const ifMatch = parseIfMatch(req);
+
+    const service = new MissionCommandService(db);
+    const result = await service.submit({
+      companyId,
+      projectId,
+      runId,
+      type: 'run.cancel',
+      body,
+      idempotencyKey,
+      ifMatch,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // POST /:runId/retry — convenience mapping to run.retry.
+  router.post('/:runId/retry', validate(RetryBody), async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    const body = req.body as z.infer<typeof RetryBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+    const idempotencyKey = requireIdempotencyKey(req);
+    const ifMatch = parseIfMatch(req);
+
+    const service = new MissionCommandService(db);
+    const result = await service.submit({
+      companyId,
+      projectId,
+      runId,
+      type: 'run.retry',
+      body,
+      idempotencyKey,
+      ifMatch,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    sendCommandResponse(res, companyId, projectId, result);
+  });
+
   return router;
+}
+
+/** Emit a command response: status, ETag, optional Location (retry), body. */
+function sendCommandResponse(
+  res: Response,
+  companyId: string,
+  projectId: string,
+  result: {
+    statusCode: number;
+    etag: number;
+    run: { id: string };
+    command: unknown;
+    successorRunId?: string;
+  },
+): void {
+  res.status(result.statusCode).setHeader('ETag', `"${result.etag}"`);
+  if (result.successorRunId) {
+    res.location(
+      `/api/companies/${companyId}/projects/${projectId}/mission-runs/${result.successorRunId}`,
+    );
+  }
+  res.json({ data: { run: result.run, command: result.command } });
 }
