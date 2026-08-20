@@ -204,6 +204,13 @@
       "when": 1786635777069,
       "tag": "0028_slippery_king_cobra",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1787258048219,
+      "tag": "0029_pretty_vulture",
+      "breakpoints": true
     }
   ]
 }

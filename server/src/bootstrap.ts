@@ -75,6 +75,12 @@ import {
   companyMembers,
   companyInvitations,
   agentApiKeys,
+  runPolicySnapshots,
+  missionRuns,
+  budgetReservations,
+  budgetAllocations,
+  runCommands,
+  runEvents,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -147,6 +153,12 @@ const SCHEMA_BUNDLE = {
   companyMembers,
   companyInvitations,
   agentApiKeys,
+  runPolicySnapshots,
+  missionRuns,
+  budgetReservations,
+  budgetAllocations,
+  runCommands,
+  runEvents,
 } as const;
 
 export interface BootstrapOptions {

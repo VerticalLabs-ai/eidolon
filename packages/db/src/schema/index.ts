@@ -57,3 +57,11 @@ export { localTrustedSessions } from './local_trusted_sessions.js';
 export { companyMembers } from './company_members.js';
 export { companyInvitations } from './company_invitations.js';
 export { agentApiKeys } from './agent_api_keys.js';
+
+// Mission orchestration (Phase 1 — durable runs)
+export { runPolicySnapshots } from './run_policy_snapshots.js';
+export { missionRuns } from './mission_runs.js';
+export { budgetReservations } from './budget_reservations.js';
+export { budgetAllocations } from './budget_allocations.js';
+export { runCommands } from './run_commands.js';
+export { runEvents } from './run_events.js';

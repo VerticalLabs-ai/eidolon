@@ -30,7 +30,8 @@ export type Permission =
   | 'skills.manage'
   | 'environments.manage'
   | 'apikeys.manage'
-  | 'privacy.manage';
+  | 'privacy.manage'
+  | 'mission.approve';
 
 const ALL_ROLES: Role[] = ['owner', 'admin', 'member', 'viewer'];
 const CONTRIBUTOR_ROLES: Role[] = ['owner', 'admin', 'member'];
@@ -69,6 +70,9 @@ export const PERMISSION_MATRIX: Record<Permission, Role[]> = {
   // Owner only. Subject export returns personal data and erasure is
   // irreversible, so neither belongs to a role that can be granted casually.
   'privacy.manage': ['owner'],
+  // Additive Mission plan-governance permission: only owner/admin may approve
+  // or reject a Mission plan. Start/answer/cancel use existing content perms.
+  'mission.approve': ADMIN_ROLES,
 };
 
 export function hasPermission(role: Role, permission: Permission): boolean {

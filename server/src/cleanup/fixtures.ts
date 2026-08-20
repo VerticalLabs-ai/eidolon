@@ -138,6 +138,18 @@ const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
   'project_outcomes',
   'project_plan_steps',
   'project_plans',
+  // Mission tables — must be deleted before project_threads (mission_runs
+  // .project_thread_id CASCADE), before run_policy_snapshots (mission_runs
+  // .policy_snapshot_id NO ACTION), and before agents (mission_runs /
+  // budget_*.billing_agent_id NO ACTION). Children deleted before parents:
+  // run_events → run_commands → budget_allocations → budget_reservations →
+  // mission_runs → run_policy_snapshots.
+  'run_events',
+  'run_commands',
+  'budget_allocations',
+  'budget_reservations',
+  'mission_runs',
+  'run_policy_snapshots',
   'project_threads',
   'agent_executions',
   // artifacts must be deleted before agents (created_by_agent_id /
@@ -225,7 +237,7 @@ async function deleteArtifactFoldersReverseHierarchical(
        RETURNING id`,
     );
     totalDeleted += rows.length;
-    if (rows.length === 0) break;
+    if (rows.length === 0) {break;}
   }
   return totalDeleted;
 }
@@ -270,10 +282,7 @@ export async function findFixtures(
  * Dry-run: count rows per table that *would* be deleted. No modifications.
  * @internal
  */
-async function countDryRun(
-  runner: SqlRunner,
-  staleHours?: number,
-): Promise<TableCount[]> {
+async function countDryRun(runner: SqlRunner, staleHours?: number): Promise<TableCount[]> {
   const sub = fixtureSubquery(staleHours);
   const counts: TableCount[] = [];
 
@@ -312,10 +321,7 @@ async function countDryRun(
  * Rolls back on any error.
  * @internal
  */
-async function executeDeletion(
-  runner: SqlRunner,
-  staleHours?: number,
-): Promise<TableCount[]> {
+async function executeDeletion(runner: SqlRunner, staleHours?: number): Promise<TableCount[]> {
   const sub = fixtureSubquery(staleHours);
   const counts: TableCount[] = [];
 
