@@ -1,0 +1,539 @@
+import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import request from 'supertest';
+import { sql, eq } from 'drizzle-orm';
+import { createTestDb, createTestServer } from '../test-utils.js';
+import { MissionStartService } from '../services/mission/start.js';
+
+type AnyDb = Awaited<ReturnType<typeof createTestDb>>;
+
+function enableMissionFlag() {
+  vi.stubEnv(
+    'EIDOLON_FEATURE_FLAGS',
+    JSON.stringify({ missionAgentIntelligence: { enabled: true } }),
+  );
+}
+
+/** Start a run through the service and return its id + snapshot. */
+async function startRun(
+  db: AnyDb,
+  companyId: string,
+  projectId: string,
+  threadId: string,
+  key: string,
+  text = 'Do work',
+) {
+  const service = new MissionStartService(db);
+  return service.start({
+    companyId,
+    projectId,
+    idempotencyKey: key,
+    body: { projectThreadId: threadId, mode: 'fast', request: { text } },
+    actorType: 'user',
+    actorId: 'dev-user-000',
+  });
+}
+
+/**
+ * Append `count` synthetic journal events to a run, simulating what a later
+ * feature's command transaction would do. Locks the run row, computes
+ * sequence = last_event_sequence + 1..+count, inserts the events, and
+ * advances the run's last_event_sequence in one transaction.
+ */
+async function appendEvents(
+  db: AnyDb,
+  companyId: string,
+  projectId: string,
+  runId: string,
+  count: number,
+): Promise<void> {
+  const schema = db.schema;
+  await db.drizzle.transaction(async (tx) => {
+    const [run] = await tx
+      .select({ lastEventSequence: schema.missionRuns.lastEventSequence })
+      .from(schema.missionRuns)
+      .where(sql`"id" = ${runId} AND "company_id" = ${companyId} AND "project_id" = ${projectId}`)
+      .limit(1);
+    if (!run) {
+      throw new Error('appendEvents: run not found');
+    }
+    let seq = Number(run.lastEventSequence);
+    const now = new Date();
+    for (let i = 0; i < count; i++) {
+      seq += 1;
+      await tx.insert(schema.runEvents).values({
+        companyId,
+        projectId,
+        runId,
+        sequence: seq,
+        type: 'execution.progress',
+        schemaVersion: 1,
+        payload: { n: i } as Record<string, unknown>,
+        actorType: 'system',
+        actorId: null,
+        traceId: null,
+        occurredAt: now,
+      });
+    }
+    await tx
+      .update(schema.missionRuns)
+      .set({ lastEventSequence: seq, updatedAt: now })
+      .where(eq(schema.missionRuns.id, runId));
+  });
+}
+
+const eventsUrl = (companyId: string, projectId: string, runId: string) =>
+  `/api/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/events`;
+
+// ---------------------------------------------------------------------------
+// VAL-RUN-022: JSON replay is complete through bounded pages
+// ---------------------------------------------------------------------------
+
+describe('Mission JSON event replay (VAL-RUN-022)', () => {
+  let db: AnyDb;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
+  let companyId: string;
+  let projectId: string;
+  let threadId: string;
+
+  beforeAll(async () => {
+    db = await createTestDb();
+    app = await createTestServer(db);
+  });
+
+  beforeEach(async () => {
+    enableMissionFlag();
+    const company = await request(app)
+      .post('/api/companies')
+      .send({ name: '__mtest__ replay pages', settings: { testFixture: true } })
+      .expect(201);
+    companyId = company.body.data.id;
+    const project = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Replay Project' })
+      .expect(201);
+    projectId = project.body.data.id;
+    const thread = await request(app)
+      .post(`/api/companies/${companyId}/projects/${projectId}/threads`)
+      .send({ title: 'Replay Thread' })
+      .expect(201);
+    threadId = thread.body.data.id;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('reconstructs every committed event through bounded pages in order with no duplicates', async () => {
+    // Start creates 4 events (sequences 1..4). Append 6 more (5..10) → 10 total.
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-pages-001');
+    await appendEvents(db, companyId, projectId, start.run.id, 6);
+    const expectedTotal = 10;
+
+    // Page through with limit=1 (the tightest bound). Every sequence 1..10
+    // must appear exactly once, in strictly increasing order.
+    const seen: number[] = [];
+    const types: string[] = [];
+    let cursor = 0;
+    for (let page = 0; page < expectedTotal + 2; page++) {
+      const res = await request(app)
+        .get(eventsUrl(companyId, projectId, start.run.id))
+        .query({ after: cursor, limit: 1 })
+        .expect(200);
+      const events = res.body.data.events as { sequence: number; type: string }[];
+      for (const e of events) {
+        seen.push(e.sequence);
+        types.push(e.type);
+      }
+      cursor = res.body.data.nextCursor;
+      if (events.length === 0) {
+        break;
+      }
+    }
+
+    // Complete coverage, strict order, uniqueness, beginning with creation.
+    expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(new Set(seen).size).toBe(expectedTotal);
+    expect(types[0]).toBe('run.created');
+    expect(cursor).toBe(expectedTotal);
+  });
+
+  it('returns a bounded page with stable nextCursor and no duplicate sequence', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-stable-001');
+    await appendEvents(db, companyId, projectId, start.run.id, 6); // 10 total
+
+    const page1 = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 0, limit: 3 })
+      .expect(200);
+    const e1 = page1.body.data.events as { sequence: number }[];
+    expect(e1.map((e) => e.sequence)).toEqual([1, 2, 3]);
+    expect(page1.body.data.nextCursor).toBe(3);
+    expect(page1.body.data.latestSequence).toBe(10);
+
+    const page2 = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 3, limit: 3 })
+      .expect(200);
+    const e2 = page2.body.data.events as { sequence: number }[];
+    expect(e2.map((e) => e.sequence)).toEqual([4, 5, 6]);
+    expect(page2.body.data.nextCursor).toBe(6);
+
+    const page3 = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 6, limit: 3 })
+      .expect(200);
+    const e3 = page3.body.data.events as { sequence: number }[];
+    expect(e3.map((e) => e.sequence)).toEqual([7, 8, 9]);
+    expect(page3.body.data.nextCursor).toBe(9);
+
+    const page4 = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 9, limit: 3 })
+      .expect(200);
+    const e4 = page4.body.data.events as { sequence: number }[];
+    expect(e4.map((e) => e.sequence)).toEqual([10]);
+    expect(page4.body.data.nextCursor).toBe(10);
+
+    // Following cursors until an empty page reconstructs every event.
+    const finalPage = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 10, limit: 3 })
+      .expect(200);
+    expect(finalPage.body.data.events).toEqual([]);
+    expect(finalPage.body.data.nextCursor).toBe(10);
+
+    const all = [...e1, ...e2, ...e3, ...e4].map((e) => e.sequence);
+    expect(all).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(new Set(all).size).toBe(10);
+  });
+
+  it('exercises limit boundaries 1 and 100', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-limit-001');
+    await appendEvents(db, companyId, projectId, start.run.id, 6); // 10 total
+
+    // limit=1 returns exactly one event.
+    const one = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 0, limit: 1 })
+      .expect(200);
+    expect(one.body.data.events).toHaveLength(1);
+    expect(one.body.data.events[0].sequence).toBe(1);
+
+    // limit=100 returns all events in one page.
+    const big = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 0, limit: 100 })
+      .expect(200);
+    expect(big.body.data.events).toHaveLength(10);
+    expect(big.body.data.nextCursor).toBe(10);
+  });
+
+  it('rejects limit 0 and 101 with 400 VALIDATION_ERROR', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-limit-bad-001');
+    const zero = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ limit: 0 })
+      .expect(400);
+    expect(zero.body.code).toBe('VALIDATION_ERROR');
+
+    const over = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ limit: 101 })
+      .expect(400);
+    expect(over.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('defaults after to 0 for a complete initial replay', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-default-001');
+    // No `after` query → default 0 → all 4 creation events.
+    const res = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .expect(200);
+    expect(res.body.data.events.map((e: { sequence: number }) => e.sequence)).toEqual([1, 2, 3, 4]);
+    expect(res.body.data.nextCursor).toBe(4);
+    expect(res.body.data.latestSequence).toBe(4);
+  });
+
+  it('returns 404 RUN_NOT_FOUND for a cross-scope run id without revealing existence', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-xscope-001');
+
+    const otherCompany = await request(app)
+      .post('/api/companies')
+      .send({ name: '__mtest__ replay other', settings: { testFixture: true } })
+      .expect(201);
+    const otherCompanyId = otherCompany.body.data.id;
+    const otherProject = await request(app)
+      .post(`/api/companies/${otherCompanyId}/projects`)
+      .send({ name: 'Other' })
+      .expect(201);
+    const otherProjectId = otherProject.body.data.id;
+
+    const res = await request(app)
+      .get(eventsUrl(otherCompanyId, otherProjectId, start.run.id))
+      .expect(404);
+    expect(res.body.code).toBe('RUN_NOT_FOUND');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-RUN-023: JSON replay resumes after a cursor
+// ---------------------------------------------------------------------------
+
+describe('Mission JSON replay resumes after a cursor (VAL-RUN-023)', () => {
+  let db: AnyDb;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
+  let companyId: string;
+  let projectId: string;
+  let threadId: string;
+
+  beforeAll(async () => {
+    db = await createTestDb();
+    app = await createTestServer(db);
+  });
+
+  beforeEach(async () => {
+    enableMissionFlag();
+    const company = await request(app)
+      .post('/api/companies')
+      .send({ name: '__mtest__ replay resume', settings: { testFixture: true } })
+      .expect(201);
+    companyId = company.body.data.id;
+    const project = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Resume Project' })
+      .expect(201);
+    projectId = project.body.data.id;
+    const thread = await request(app)
+      .post(`/api/companies/${companyId}/projects/${projectId}/threads`)
+      .send({ title: 'Resume Thread' })
+      .expect(201);
+    threadId = thread.body.data.id;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('returns only events with greater sequence, in order, with a usable next cursor', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-resume-001');
+    await appendEvents(db, companyId, projectId, start.run.id, 6); // 10 total
+
+    // Baseline: observe up to sequence 4 (the creation events).
+    const baseline = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 0, limit: 4 })
+      .expect(200);
+    const baselineSeqs = baseline.body.data.events.map((e: { sequence: number }) => e.sequence);
+    expect(baselineSeqs).toEqual([1, 2, 3, 4]);
+
+    // Resume after the previously observed sequence (4).
+    const resumed = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 4, limit: 100 })
+      .expect(200);
+    const resumedSeqs = resumed.body.data.events.map((e: { sequence: number }) => e.sequence);
+    // Only events with sequence > 4, in strict order.
+    expect(resumedSeqs).toEqual([5, 6, 7, 8, 9, 10]);
+    for (const s of resumedSeqs) {
+      expect(s).toBeGreaterThan(4);
+    }
+    // Strictly increasing.
+    for (let i = 1; i < resumedSeqs.length; i++) {
+      expect(resumedSeqs[i]).toBeGreaterThan(resumedSeqs[i - 1]);
+    }
+    // Usable next cursor equals the last returned sequence.
+    expect(resumed.body.data.nextCursor).toBe(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-RUN-024: Replay at latest sequence is empty
+// ---------------------------------------------------------------------------
+
+describe('Mission JSON replay at latest sequence is empty (VAL-RUN-024)', () => {
+  let db: AnyDb;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
+  let companyId: string;
+  let projectId: string;
+  let threadId: string;
+
+  beforeAll(async () => {
+    db = await createTestDb();
+    app = await createTestServer(db);
+  });
+
+  beforeEach(async () => {
+    enableMissionFlag();
+    const company = await request(app)
+      .post('/api/companies')
+      .send({ name: '__mtest__ replay empty', settings: { testFixture: true } })
+      .expect(201);
+    companyId = company.body.data.id;
+    const project = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Empty Project' })
+      .expect(201);
+    projectId = project.body.data.id;
+    const thread = await request(app)
+      .post(`/api/companies/${companyId}/projects/${projectId}/threads`)
+      .send({ title: 'Empty Thread' })
+      .expect(201);
+    threadId = thread.body.data.id;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('returns an empty event page and the same next cursor at the latest sequence (terminal)', async () => {
+    // Start (4 events) then move the run to a terminal state directly.
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-empty-term-001');
+    await db.drizzle.execute(sql`
+      UPDATE "mission_runs" SET "status" = 'completed', "terminal_at" = ${new Date()},
+        "state_version" = "state_version" + 1, "updated_at" = ${new Date()}
+      WHERE "id" = ${start.run.id}
+    `);
+
+    const latest = 4;
+    const res = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: latest, limit: 50 })
+      .expect(200);
+    expect(res.body.data.events).toEqual([]);
+    expect(res.body.data.nextCursor).toBe(latest);
+    expect(res.body.data.latestSequence).toBe(latest);
+
+    // A later snapshot proves no intervening event was committed.
+    const snap = await request(app)
+      .get(`/api/companies/${companyId}/projects/${projectId}/mission-runs/${start.run.id}`)
+      .expect(200);
+    expect(snap.body.data.run.lastEventSequence).toBe(latest);
+    expect(snap.body.data.run.status).toBe('completed');
+  });
+
+  it('returns an empty event page and the same next cursor at the latest sequence (waiting)', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-empty-wait-001');
+    // Hold the run in a waiting state (awaiting_input) without appending events.
+    await db.drizzle.execute(sql`
+      UPDATE "mission_runs" SET "status" = 'awaiting_input', "waiting_from_status" = 'planning',
+        "state_version" = "state_version" + 1, "updated_at" = ${new Date()}
+      WHERE "id" = ${start.run.id}
+    `);
+
+    const latest = 4;
+    const first = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 0, limit: 50 })
+      .expect(200);
+    expect(first.body.data.events.map((e: { sequence: number }) => e.sequence)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(first.body.data.latestSequence).toBe(latest);
+
+    const res = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: latest, limit: 50 })
+      .expect(200);
+    expect(res.body.data.events).toEqual([]);
+    expect(res.body.data.nextCursor).toBe(latest);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-RUN-025: Cursor ahead is rejected
+// ---------------------------------------------------------------------------
+
+describe('Mission JSON replay rejects a cursor ahead (VAL-RUN-025)', () => {
+  let db: AnyDb;
+  let app: Awaited<ReturnType<typeof createTestServer>>;
+  let companyId: string;
+  let projectId: string;
+  let threadId: string;
+
+  beforeAll(async () => {
+    db = await createTestDb();
+    app = await createTestServer(db);
+  });
+
+  beforeEach(async () => {
+    enableMissionFlag();
+    const company = await request(app)
+      .post('/api/companies')
+      .send({ name: '__mtest__ replay ahead', settings: { testFixture: true } })
+      .expect(201);
+    companyId = company.body.data.id;
+    const project = await request(app)
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: 'Ahead Project' })
+      .expect(201);
+    projectId = project.body.data.id;
+    const thread = await request(app)
+      .post(`/api/companies/${companyId}/projects/${projectId}/threads`)
+      .send({ title: 'Ahead Thread' })
+      .expect(201);
+    threadId = thread.body.data.id;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('rejects a cursor greater than the latest committed sequence with 409 CURSOR_AHEAD', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-ahead-001');
+    await appendEvents(db, companyId, projectId, start.run.id, 2); // 6 total
+
+    // Confirm the latest sequence first.
+    const probe = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 6, limit: 50 })
+      .expect(200);
+    expect(probe.body.data.latestSequence).toBe(6);
+
+    // A cursor intentionally higher than the latest sequence.
+    const res = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 7, limit: 50 })
+      .expect(409);
+    expect(res.body.status).toBe(409);
+    expect(res.body.code).toBe('CURSOR_AHEAD');
+    expect(res.body.message).toBeTruthy();
+  });
+
+  it('does not change run state or append an event when rejecting a cursor ahead', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-ahead-inert-001');
+    await appendEvents(db, companyId, projectId, start.run.id, 2); // 6 total
+    const beforeSeq = 6;
+
+    await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: 999, limit: 50 })
+      .expect(409);
+
+    const snap = await request(app)
+      .get(`/api/companies/${companyId}/projects/${projectId}/mission-runs/${start.run.id}`)
+      .expect(200);
+    expect(snap.body.data.run.lastEventSequence).toBe(beforeSeq);
+  });
+
+  it('treats after == latest as caught-up (empty), not cursor-ahead', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-ahead-eq-001');
+    await appendEvents(db, companyId, projectId, start.run.id, 2); // 6 total
+    const latest = 6;
+
+    const res = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: latest, limit: 50 })
+      .expect(200);
+    expect(res.body.data.events).toEqual([]);
+    expect(res.body.data.nextCursor).toBe(latest);
+  });
+
+  it('rejects a negative after with 400 VALIDATION_ERROR', async () => {
+    const start = await startRun(db, companyId, projectId, threadId, 'replay-ahead-neg-001');
+    const res = await request(app)
+      .get(eventsUrl(companyId, projectId, start.run.id))
+      .query({ after: -1, limit: 50 })
+      .expect(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+  });
+});

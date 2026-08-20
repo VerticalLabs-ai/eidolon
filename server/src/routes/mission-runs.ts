@@ -11,6 +11,7 @@ import {
   isValidStatus,
   decodeCursor,
 } from '../services/mission/snapshot.js';
+import { MissionReplayService } from '../services/mission/replay.js';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -40,6 +41,12 @@ const ListQuery = z.object({
   status: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().max(512).optional(),
+});
+
+const EventsQuery = z.object({
+  /** Run-local sequence cursor; default 0 replays from creation. */
+  after: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
 /** Validate the Idempotency-Key header: 1-128 safe chars, no controls, no
@@ -177,6 +184,32 @@ export function missionRunsRouter(db: DbInstance): Router {
     }
 
     res.json({ data: { run: snapshot, links: snapshot.links } });
+  });
+
+  // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId/events
+  // Bounded JSON journal replay for tests/recovery. Returns ordered committed
+  // events and a stable next cursor; rejects an impossible cursor with 409.
+  router.get('/:runId/events', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const parsed = EventsQuery.safeParse(req.query);
+    if (!parsed.success) {
+      throw parsed.error; // caught by errorHandler as ZodError → 400 VALIDATION_ERROR
+    }
+    const { after, limit } = parsed.data;
+
+    const service = new MissionReplayService(db);
+    const result = await service.replay({ companyId, projectId, runId, after, limit });
+
+    res.json({
+      data: {
+        events: result.events,
+        nextCursor: result.nextCursor,
+        latestSequence: result.latestSequence,
+      },
+    });
   });
 
   return router;
