@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { eq, and } from 'drizzle-orm';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
@@ -7,6 +6,11 @@ import { isFeatureEnabled } from '../services/feature-flags.js';
 import { routeParams } from '../utils/route-params.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
 import { MissionStartService } from '../services/mission/start.js';
+import {
+  MissionSnapshotService,
+  isValidStatus,
+  decodeCursor,
+} from '../services/mission/snapshot.js';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -30,6 +34,12 @@ const StartBody = z.object({
       outputBytes: z.number().int().positive().optional(),
     })
     .optional(),
+});
+
+const ListQuery = z.object({
+  status: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
 });
 
 /** Validate the Idempotency-Key header: 1-128 safe chars, no controls, no
@@ -71,9 +81,47 @@ function requireMissionEnabled(companyId: string): void {
   }
 }
 
+/**
+ * Parse a strong quoted ETag from an If-None-Match header. Returns the
+ * unquoted state-version string, or null when the header is absent or does
+ * not match the `"<version>"` strong-ETag shape used by Mission snapshots.
+ */
+function parseIfNoneMatch(header: string | undefined): string | null {
+  if (!header) {
+    return null;
+  }
+  // Accept a single strong quoted ETag. Weak prefixes (W/) are not used by
+  // Mission snapshots and are not treated as a match.
+  const match = /^"([^"]+)"$/.exec(header.trim());
+  return match ? match[1] : null;
+}
+
 export function missionRunsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const schema = db.schema;
+
+  // GET /api/companies/:companyId/projects/:projectId/mission-runs
+  // Scoped run list with stable opaque keyset pagination and status filter.
+  router.get('/', async (req, res) => {
+    const { companyId, projectId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const parsed = ListQuery.safeParse(req.query);
+    if (!parsed.success) {
+      throw parsed.error; // caught by errorHandler as ZodError → 400 VALIDATION_ERROR
+    }
+    const { status, limit, cursor } = parsed.data;
+    if (status !== undefined && !isValidStatus(status)) {
+      throw new AppError(400, 'VALIDATION_ERROR', `Unknown status filter: ${status}`);
+    }
+    // Decode the cursor early so a malformed cursor is a 400, not a 500.
+    decodeCursor(cursor);
+
+    const service = new MissionSnapshotService(db);
+    const result = await service.listRuns({ companyId, projectId, status, limit, cursor });
+
+    res.json({ data: { runs: result.runs, nextCursor: result.nextCursor } });
+  });
 
   // POST /api/companies/:companyId/projects/:projectId/mission-runs
   router.post('/', validate(StartBody), async (req, res) => {
@@ -92,7 +140,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       body,
       actorType: 'user',
       actorId: req.user?.id ?? null,
-      traceId: (req as any).traceId ?? null,
+      traceId: req.traceId ?? null,
     });
 
     const location = `/api/companies/${companyId}/projects/${projectId}/mission-runs/${result.run.id}`;
@@ -109,74 +157,26 @@ export function missionRunsRouter(db: DbInstance): Router {
   });
 
   // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId
+  // Authoritative complete snapshot with strong ETag and conditional refresh.
   router.get('/:runId', async (req, res) => {
     const { companyId, projectId, runId } = routeParams(req);
 
     await validateProjectOwnership(db, companyId, projectId);
 
-    const [run] = await db.drizzle
-      .select()
-      .from(schema.missionRuns)
-      .where(
-        and(
-          eq(schema.missionRuns.id, runId),
-          eq(schema.missionRuns.companyId, companyId),
-          eq(schema.missionRuns.projectId, projectId),
-        ),
-      )
-      .limit(1);
+    const service = new MissionSnapshotService(db);
+    const snapshot = await service.getSnapshot(companyId, projectId, runId);
 
-    if (!run) {
-      throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    const etag = `"${snapshot.stateVersion}"`;
+    res.setHeader('ETag', etag);
+
+    // Conditional refresh: a matching strong ETag returns 304 with no body.
+    const ifNoneMatch = parseIfNoneMatch(req.get('If-None-Match'));
+    if (ifNoneMatch !== null && ifNoneMatch === String(snapshot.stateVersion)) {
+      res.status(304).end();
+      return;
     }
 
-    const [reservation] = await db.drizzle
-      .select()
-      .from(schema.budgetReservations)
-      .where(eq(schema.budgetReservations.runId, run.id))
-      .limit(1);
-
-    let policyContentHash: string | null = null;
-    if (run.policySnapshotId) {
-      const [policy] = await db.drizzle
-        .select({ contentHash: schema.runPolicySnapshots.contentHash })
-        .from(schema.runPolicySnapshots)
-        .where(eq(schema.runPolicySnapshots.id, run.policySnapshotId))
-        .limit(1);
-      policyContentHash = policy?.contentHash ?? null;
-    }
-
-    res.setHeader('ETag', `"${run.stateVersion}"`);
-    res.json({
-      data: {
-        run: {
-          id: run.id,
-          companyId: run.companyId,
-          projectId: run.projectId,
-          projectThreadId: run.projectThreadId,
-          status: run.status,
-          stateVersion: run.stateVersion,
-          lastEventSequence: Number(run.lastEventSequence),
-          resolvedMode: run.resolvedMode,
-          policySnapshotId: run.policySnapshotId,
-          policyContentHash: policyContentHash,
-          requestContentHash: run.requestContentHash,
-          createdAt: run.createdAt.toISOString(),
-          updatedAt: run.updatedAt.toISOString(),
-          budget: reservation
-            ? {
-                reservedCents: reservation.reservedCents,
-                settledCents: reservation.settledCents,
-                releasedCents: reservation.releasedCents,
-                costCentsCeiling: reservation.reservedCents,
-              }
-            : null,
-        },
-        links: {
-          ui: `/companies/${companyId}/projects/${projectId}?thread=${run.projectThreadId}&run=${run.id}`,
-        },
-      },
-    });
+    res.json({ data: { run: snapshot, links: snapshot.links } });
   });
 
   return router;
