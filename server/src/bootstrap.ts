@@ -83,6 +83,7 @@ import {
   runCommands,
   runEvents,
   runToolInvocations,
+  runProjectionLinks,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,7 @@ const SCHEMA_BUNDLE = {
   runCommands,
   runEvents,
   runToolInvocations,
+  runProjectionLinks,
 } as const;
 
 export interface BootstrapOptions {

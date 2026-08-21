@@ -239,6 +239,13 @@
       "when": 1787330512861,
       "tag": "0033_ordinary_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1787331830206,
+      "tag": "0034_new_warbird",
+      "breakpoints": true
     }
   ]
 }

@@ -12,6 +12,7 @@ import {
   incrementMissionRunStarted,
   incrementMissionBudgetDenial,
 } from '../../middleware/observability.js';
+import type { ProjectionSurface } from './projection.js';
 
 /**
  * Mission start service.
@@ -100,6 +101,10 @@ export interface MissionStartDeps {
   clock?: () => Date;
   /** Test-only: throw from the named hook to prove atomic rollback. */
   failpoint?: { at: FailpointHook; throw: () => Error };
+  /** Test-only: fail the projection to the named surface after the
+   *  authoritative transaction commits. The run remains intact; the
+   *  projection is recorded as failed and retryable. */
+  projectionFailpoint?: { surface: ProjectionSurface };
 }
 
 export class MissionStartService {
@@ -350,6 +355,13 @@ export class MissionStartService {
       // Increment the run-started counter only for new runs, not replays
       // (VAL-RUN-078: idempotent replay must not count as a second run).
       incrementMissionRunStarted(policy.resolvedMode);
+
+      // Project the run.created event to mutable surfaces (thread items,
+      // activity log). Projection failure does NOT roll back the
+      // authoritative state — it records a retryable error
+      // (VAL-CROSS-075, VAL-RUN-099).
+      await this.projectRunCreated(result, companyId, projectId, traceId ?? null);
+
       return result;
     } catch (err) {
       // Increment budget denial counter when budget is unavailable
@@ -427,6 +439,73 @@ export class MissionStartService {
         traceId: input.traceId,
       },
     };
+  }
+
+  /**
+   * Project the run.created event to mutable surfaces after the
+   * authoritative transaction commits. Projection failure is caught and
+   * recorded as a retryable error — it never rolls back the run.
+   *
+   * The test-only projectionFailpoint throws during a specific surface's
+   * projection to exercise the failure/repair path.
+   */
+  private async projectRunCreated(
+    result: StartResult,
+    companyId: string,
+    projectId: string,
+    traceId: string | null,
+  ): Promise<void> {
+    const now = this.now();
+    const event = {
+      runId: result.run.id,
+      companyId,
+      projectId,
+      sequence: 1,
+      type: 'run.created',
+      payload: { runId: result.run.id, status: 'draft' },
+      actorType: 'user' as const,
+      actorId: null,
+      traceId,
+      occurredAt: now,
+    };
+
+    const failSurface = this.deps.projectionFailpoint?.surface;
+    const { MissionProjectionService } = await import('./projection.js');
+    const projService = new MissionProjectionService(this.db, { clock: () => now });
+
+    // Thread item projection.
+    if (failSurface === 'thread_item') {
+      await projService.recordProjectionFailure(
+        this.db,
+        event,
+        'thread_item',
+        new Error('Projection failpoint: thread_item'),
+        now,
+      );
+    } else {
+      try {
+        await projService.projectThreadItem(event, now);
+      } catch (err) {
+        await projService.recordProjectionFailure(this.db, event, 'thread_item', err, now);
+      }
+    }
+
+    // Activity log projection.
+    if (failSurface === 'activity_log') {
+      await projService.recordProjectionFailure(
+        this.db,
+        event,
+        'activity_log',
+        new Error('Projection failpoint: activity_log'),
+        now,
+      );
+    } else {
+      try {
+        await projService.projectActivityLog(event, now);
+      } catch (err) {
+        await projService.recordProjectionFailure(this.db, event, 'activity_log', err, now);
+      }
+    }
   }
 
   private async lookupStartCommand(companyId: string, projectId: string, key: string) {
