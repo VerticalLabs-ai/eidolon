@@ -423,4 +423,68 @@ describe('ChatMissionComposer', () => {
     const values = Array.from(selector.options).map((o) => o.value);
     expect(values).toEqual(expect.arrayContaining(['auto', 'fast', 'deep_work', 'analyst']));
   });
+
+  it('shows a provisional finite budget preview before Auto resolves', () => {
+    mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole('radio', { name: /mission/i }));
+
+    expect(screen.getByText(/provisional hard ceiling/i)).toBeInTheDocument();
+    expect(screen.getByText(/\$100\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/auto will resolve/i)).toBeInTheDocument();
+  });
+
+  it('resolves the preview for a concrete mode and preserves a lowered limit in the start payload', () => {
+    mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
+    const mutate = vi.fn();
+    mocks.useStartMissionRun.mockReturnValue({
+      mutate,
+      isPending: false,
+      isSuccess: false,
+      isError: false,
+      reset: vi.fn(),
+    });
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole('radio', { name: /mission/i }));
+    fireEvent.change(screen.getByLabelText(/mission mode/i), { target: { value: 'fast' } });
+
+    expect(screen.getByText(/effective hard ceiling/i)).toBeInTheDocument();
+    expect(screen.getByText(/\$5\.00/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/maximum mission cost/i), {
+      target: { value: '2.50' },
+    });
+    expect(screen.getByText(/\$2\.50/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/mission request/i), {
+      target: { value: 'Bounded request' },
+    });
+    fireEvent.keyDown(screen.getByLabelText(/mission request/i), { key: 'Enter', code: 'Enter' });
+    fireEvent.submit(screen.getByRole('button', { name: /start mission/i }).closest('form')!);
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate.mock.calls[0][0].body.limits).toEqual({ costCents: 250 });
+  });
+
+  it('focuses the first invalid field, preserves inputs, and does not submit invalid limits', () => {
+    mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
+    const mutate = vi.fn();
+    mocks.useStartMissionRun.mockReturnValue({
+      mutate,
+      isPending: false,
+      isSuccess: false,
+      isError: false,
+      reset: vi.fn(),
+    });
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole('radio', { name: /mission/i }));
+    const request = screen.getByLabelText(/mission request/i);
+    fireEvent.change(request, { target: { value: 'Keep this request' } });
+    fireEvent.change(screen.getByLabelText(/maximum mission cost/i), { target: { value: '0' } });
+    fireEvent.click(screen.getByRole('button', { name: /start mission/i }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/greater than zero/i);
+    expect(screen.getByLabelText(/maximum mission cost/i)).toHaveFocus();
+    expect(request).toHaveValue('Keep this request');
+    expect(mutate).not.toHaveBeenCalled();
+  });
 });

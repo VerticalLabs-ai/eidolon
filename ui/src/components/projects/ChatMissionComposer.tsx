@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Send, Rocket } from 'lucide-react';
 import {
   useFeatureFlags,
@@ -17,6 +17,27 @@ const MISSION_MODES: { value: MissionMode; label: string }[] = [
   { value: 'deep_work', label: 'Deep Work' },
   { value: 'analyst', label: 'Analyst' },
 ];
+
+const MODE_COST_CEILINGS: Record<MissionMode, number> = {
+  auto: 10_000,
+  fast: 500,
+  deep_work: 5_000,
+  analyst: 5_000,
+};
+
+function resolvePreviewMode(mode: MissionMode, request: string): MissionMode {
+  if (mode !== 'auto') {
+    return mode;
+  }
+  const normalized = request.toLowerCase();
+  if (/\b(research|sources?|citations?|web)\b/.test(normalized)) {
+    return 'analyst';
+  }
+  if (/\b(and|then|compare|multiple|dependencies?)\b/.test(normalized)) {
+    return 'deep_work';
+  }
+  return 'fast';
+}
 
 /** Chat form: posts a comment to the selected thread through the legacy path. */
 function ChatForm({
@@ -95,6 +116,9 @@ function MissionForm({
   selectedThreadId: string;
   startMission: ReturnType<typeof useStartMissionRun>;
 }) {
+  const [costLimit, setCostLimit] = useState('');
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const costLimitRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (startMission.isSuccess) {
       onDraftChange('');
@@ -108,6 +132,30 @@ function MissionForm({
     if (!trimmed || !selectedThreadId || startMission.isPending) {
       return;
     }
+    const ceiling = MODE_COST_CEILINGS[resolvePreviewMode(missionMode, trimmed)];
+    let requestedCost: number | undefined;
+    if (costLimit.trim()) {
+      const parsed = Number(costLimit);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setValidationError('Maximum mission cost must be greater than zero.');
+        costLimitRef.current?.focus();
+        return;
+      }
+      if (!Number.isInteger(parsed * 100)) {
+        setValidationError('Maximum mission cost must use cents (up to two decimals).');
+        costLimitRef.current?.focus();
+        return;
+      }
+      requestedCost = Math.round(parsed * 100);
+      if (requestedCost > ceiling) {
+        setValidationError(
+          `Maximum mission cost cannot exceed the effective hard ceiling of $${(ceiling / 100).toFixed(2)}.`,
+        );
+        costLimitRef.current?.focus();
+        return;
+      }
+    }
+    setValidationError(null);
     const idempotencyKey = `mission-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     startMission.mutate({
       idempotencyKey,
@@ -115,11 +163,16 @@ function MissionForm({
         projectThreadId: selectedThreadId,
         mode: missionMode,
         request: { text: trimmed },
+        ...(requestedCost === undefined ? {} : { limits: { costCents: requestedCost } }),
       },
     });
   }
 
   const trimmedDraft = draft.trim();
+  const resolvedMode = resolvePreviewMode(missionMode, trimmedDraft);
+  const isProvisional = missionMode === 'auto' && !trimmedDraft;
+  const ceiling = MODE_COST_CEILINGS[isProvisional ? 'auto' : resolvedMode];
+  const displayedCost = costLimit.trim() ? Number(costLimit) * 100 : ceiling;
 
   return (
     <form onSubmit={submit} className="space-y-3">
@@ -148,6 +201,47 @@ function MissionForm({
           ))}
         </select>
       </div>
+      <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2.5">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-xs font-medium text-text-secondary">
+            {isProvisional ? 'Provisional hard ceiling' : 'Effective hard ceiling'}
+          </p>
+          <p className="text-sm font-semibold tabular-nums text-text-primary">
+            ${(displayedCost / 100).toFixed(2)}
+          </p>
+        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+          {isProvisional
+            ? 'Auto will resolve to a concrete mode after you describe the request.'
+            : `Resolved ${resolvedMode.replace('_', ' ')} mode. A lower limit narrows the run; it never adds headroom.`}
+        </p>
+        <label
+          className="mt-2 block text-xs font-medium text-text-secondary"
+          htmlFor="mission-cost-limit"
+        >
+          Maximum mission cost
+          <input
+            ref={costLimitRef}
+            id="mission-cost-limit"
+            aria-label="Maximum mission cost"
+            inputMode="decimal"
+            type="number"
+            min="0"
+            step="0.01"
+            value={costLimit}
+            onChange={(event) => {
+              setCostLimit(event.target.value);
+              if (validationError) {
+                setValidationError(null);
+              }
+            }}
+            aria-invalid={validationError ? 'true' : undefined}
+            aria-describedby={validationError ? 'mission-validation-error' : undefined}
+            placeholder={(ceiling / 100).toFixed(2)}
+            className="mt-1 h-9 w-full rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:border-accent/60"
+          />
+        </label>
+      </div>
       <div>
         <label
           className="block text-xs font-medium text-text-secondary mb-1"
@@ -163,6 +257,12 @@ function MissionForm({
           placeholder="Describe what you want the agent to do…"
           rows={3}
           className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:border-accent/60 resize-y"
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
         />
       </div>
       <Button
@@ -174,6 +274,11 @@ function MissionForm({
       >
         Start Mission
       </Button>
+      {validationError && (
+        <p id="mission-validation-error" role="alert" className="text-sm text-error">
+          {validationError}
+        </p>
+      )}
       {startMission.isError && (
         <p role="alert" className="text-sm text-error">
           Could not start the Mission. Your request is preserved so you can try again.
