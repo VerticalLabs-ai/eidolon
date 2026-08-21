@@ -411,7 +411,13 @@ export function missionRunsRouter(db: DbInstance): Router {
     const body = req.body as z.infer<typeof CommandBody>;
 
     await validateProjectOwnership(db, companyId, projectId);
-    requireMissionEnabled(companyId);
+    // Cancel is exempt from the feature-flag check: authorized operators may
+    // cancel existing runs during a kill switch so work is stoppable
+    // (VAL-RUN-087, VAL-RUN-102, VAL-CROSS-055). All other command types
+    // (retry, and future answer/plan commands) require the flag enabled.
+    if (body.type !== 'run.cancel') {
+      requireMissionEnabled(companyId);
+    }
     const idempotencyKey = requireIdempotencyKey(req);
     const ifMatch = parseIfMatch(req);
 
@@ -443,12 +449,14 @@ export function missionRunsRouter(db: DbInstance): Router {
   });
 
   // POST /:runId/cancel — convenience mapping to run.cancel.
+  // Cancel is exempt from the feature-flag check so authorized operators
+  // can stop work during a kill switch (VAL-RUN-087, VAL-RUN-102,
+  // VAL-CROSS-055). Reads and cancel remain available while disabled.
   router.post('/:runId/cancel', validate(CancelBody), async (req, res) => {
     const { companyId, projectId, runId } = routeParams(req);
     const body = req.body as z.infer<typeof CancelBody>;
 
     await validateProjectOwnership(db, companyId, projectId);
-    requireMissionEnabled(companyId);
     const idempotencyKey = requireIdempotencyKey(req);
     const ifMatch = parseIfMatch(req);
 
