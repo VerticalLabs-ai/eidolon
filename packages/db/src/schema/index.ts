@@ -66,3 +66,4 @@ export { budgetAllocations } from './budget_allocations.js';
 export { budgetSettlements } from './budget_settlements.js';
 export { runCommands } from './run_commands.js';
 export { runEvents } from './run_events.js';
+export { runToolInvocations } from './run_tool_invocations.js';

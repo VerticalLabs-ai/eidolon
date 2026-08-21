@@ -82,6 +82,7 @@ import {
   budgetSettlements,
   runCommands,
   runEvents,
+  runToolInvocations,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -161,6 +162,7 @@ const SCHEMA_BUNDLE = {
   budgetSettlements,
   runCommands,
   runEvents,
+  runToolInvocations,
 } as const;
 
 export interface BootstrapOptions {
