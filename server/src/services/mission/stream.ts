@@ -46,6 +46,14 @@ export interface StreamInput {
   after: number | null;
   /** Last-Event-ID header value. null = absent. */
   lastEventId: number | null;
+  /**
+   * Optional periodic access re-check. When provided, the stream service
+   * calls this at each poll interval and gracefully closes the SSE
+   * connection if it returns `false`. This enables live revocation: a
+   * role downgrade or membership removal invalidates an open SSE
+   * connection within the poll interval (VAL-CROSS-088).
+   */
+  accessChecker?: () => Promise<boolean>;
 }
 
 export class MissionStreamService {
@@ -315,6 +323,31 @@ export class MissionStreamService {
     const poll = async (): Promise<void> => {
       if (closed) {
         return;
+      }
+
+      // Live revocation re-check: if the access checker returns false,
+      // the user's membership or role has been revoked/downgraded since
+      // the connection opened. Gracefully close the SSE stream so the
+      // client reconnects and hits the fresh permission check
+      // (VAL-CROSS-088).
+      if (input.accessChecker) {
+        try {
+          const hasAccess = await input.accessChecker();
+          if (!hasAccess) {
+            cleanup();
+            if (!res.writableEnded) {
+              res.end();
+            }
+            return;
+          }
+        } catch {
+          // On error, fail closed: close the connection.
+          cleanup();
+          if (!res.writableEnded) {
+            res.end();
+          }
+          return;
+        }
       }
 
       const ok = await sendNewEvents();

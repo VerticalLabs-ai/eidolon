@@ -1,10 +1,12 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
+import { eq, and } from 'drizzle-orm';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import { isFeatureEnabled } from '../services/feature-flags.js';
 import { routeParams } from '../utils/route-params.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
+import { hasPermission, type Permission } from '../middleware/permissions.js';
 import { MissionStartService } from '../services/mission/start.js';
 import {
   MissionSnapshotService,
@@ -157,6 +159,81 @@ function parseIfNoneMatch(header: string | undefined): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * Create a periodic access checker for an SSE stream connection. The
+ * checker re-resolves the user's membership and permission on each call
+ * so that a role downgrade or membership removal invalidates an open
+ * connection within the poll interval (VAL-CROSS-088).
+ *
+ * In `local_trusted` mode the checker first consults
+ * `local_trusted_sessions` (server-side mutable role/active flag), then
+ * falls back to `company_members`. In authenticated mode it queries
+ * `company_members` directly.
+ *
+ * Returns `true` when the user still holds the required `permission` for
+ * `companyId`, `false` otherwise.
+ */
+export function createStreamAccessChecker(
+  db: DbInstance,
+  req: { get: (h: string) => string | undefined; user?: { id?: string } },
+  companyId: string,
+  permission: Permission,
+): () => Promise<boolean> {
+  return async (): Promise<boolean> => {
+    const schema = db.schema;
+
+    // 1. Check the session token first (highest priority — server-side
+    //    mutable for live revocation). This works in any auth mode: if a
+    //    session token is present, it's the authoritative role source.
+    const sessionToken = req.get('X-Eidolon-Test-Session-Id');
+    if (sessionToken) {
+      try {
+        const [session] = await db.drizzle
+          .select()
+          .from(schema.localTrustedSessions)
+          .where(eq(schema.localTrustedSessions.id, sessionToken))
+          .limit(1);
+        if (!session || session.companyId !== companyId) {
+          return false;
+        }
+        if (!session.active) {
+          return false;
+        }
+        return hasPermission(session.role as 'owner' | 'admin' | 'member' | 'viewer', permission);
+      } catch {
+        return false;
+      }
+    }
+
+    // 2. Resolve the user ID from the authenticated request.
+    const userId = req.user?.id;
+    if (!userId) {
+      return false;
+    }
+
+    // 3. Query company_members for the current role.
+    try {
+      const [member] = await db.drizzle
+        .select({ role: schema.companyMembers.role })
+        .from(schema.companyMembers)
+        .where(
+          and(
+            eq(schema.companyMembers.companyId, companyId),
+            eq(schema.companyMembers.userId, userId),
+          ),
+        )
+        .limit(1);
+
+      if (!member) {
+        return false;
+      }
+      return hasPermission(member.role as 'owner' | 'admin' | 'member' | 'viewer', permission);
+    } catch {
+      return false;
+    }
+  };
+}
+
 export function missionRunsRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
 
@@ -294,7 +371,12 @@ export function missionRunsRouter(db: DbInstance): Router {
     }
 
     const service = new MissionStreamService(db);
-    await service.stream({ companyId, projectId, runId, after, lastEventId }, req, res);
+    const accessChecker = createStreamAccessChecker(db, req, companyId, 'company.view');
+    await service.stream(
+      { companyId, projectId, runId, after, lastEventId, accessChecker },
+      req,
+      res,
+    );
   });
 
   // POST /:runId/commands — canonical discriminated command endpoint for
