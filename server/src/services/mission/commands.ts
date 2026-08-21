@@ -44,6 +44,22 @@ class IdempotencyReplayError extends Error {
   }
 }
 
+/** Sentinel for stale version (412) inside tx; catch records rejected row (VAL-RUN-075). */
+class StaleVersionSentinel extends Error {
+  constructor() {
+    super('Stale version detected inside transaction');
+    this.name = 'StaleVersionSentinel';
+  }
+}
+
+/** Sentinel for invalid state (409) inside tx; same pattern as StaleVersionSentinel. */
+class InvalidStateSentinel extends Error {
+  constructor() {
+    super('Invalid run state detected inside transaction');
+    this.name = 'InvalidStateSentinel';
+  }
+}
+
 export type RunCommandType = 'run.cancel' | 'run.retry';
 
 export interface CancelBody {
@@ -179,7 +195,10 @@ export class MissionCommandService {
     const run = await this.loadRun(companyId, projectId, runId);
 
     // 3. Precondition presence + state guard (before the transaction so a
-    //    rejection leaves no command row, state, or event change).
+    //    rejection leaves no state or event change). Domain-rejected
+    //    commands are recorded as rejected rows so they remain visible in
+    //    history without changing state, events, budget, or output
+    //    (VAL-RUN-075).
     if (type === 'run.cancel') {
       if (TERMINAL_STATUSES.has(run.status)) {
         // Already-terminal: return 200 with the current snapshot, no event,
@@ -189,13 +208,49 @@ export class MissionCommandService {
         );
       }
       if (ifMatch === null) {
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          428,
+          'PRECONDITION_REQUIRED',
+          'If-Match is required for this action',
+          actorType,
+          actorId,
+          ifMatch,
+        );
         throw new AppError(428, 'PRECONDITION_REQUIRED', 'If-Match is required for this action');
       }
     } else if (type === 'run.retry') {
       if (ifMatch === null) {
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          428,
+          'PRECONDITION_REQUIRED',
+          'If-Match is required for this action',
+          actorType,
+          actorId,
+          ifMatch,
+        );
         throw new AppError(428, 'PRECONDITION_REQUIRED', 'If-Match is required for this action');
       }
       if (!RETRY_LEGAL.has(run.status)) {
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          409,
+          'INVALID_RUN_STATE',
+          'Retry is only allowed from a failed or cancelled run',
+          actorType,
+          actorId,
+          ifMatch,
+        );
         throw new AppError(
           409,
           'INVALID_RUN_STATE',
@@ -232,7 +287,7 @@ export class MissionCommandService {
 
         if (type === 'run.cancel') {
           if (locked.stateVersion !== ifMatch) {
-            throw new AppError(412, 'RUN_VERSION_MISMATCH', 'Run state version mismatch');
+            throw new StaleVersionSentinel();
           }
           // A concurrent cancel already recorded the request: idempotent
           // no-op (no duplicate cancellation event).
@@ -243,25 +298,52 @@ export class MissionCommandService {
         }
         // run.retry
         if (locked.stateVersion !== ifMatch) {
-          throw new AppError(412, 'RUN_VERSION_MISMATCH', 'Run state version mismatch');
+          throw new StaleVersionSentinel();
         }
         if (!RETRY_LEGAL.has(locked.status)) {
-          throw new AppError(
-            409,
-            'INVALID_RUN_STATE',
-            'Retry is only allowed from a failed or cancelled run',
-          );
+          throw new InvalidStateSentinel();
         }
         return this.applyRetry(tx, locked, body, idempotencyKey, actorType, actorId, traceId);
       });
       return this.toResult(outcome);
     } catch (err) {
-      // A concurrent duplicate was detected after locking: replay/conflict.
       if (err instanceof IdempotencyReplayError) {
         return this.replayOrConflict(err.row, type, body);
       }
-      // A unique-violation on the run idempotency index means a concurrent
-      // identical command won; re-read and replay/conflict.
+      if (err instanceof StaleVersionSentinel) {
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          412,
+          'RUN_VERSION_MISMATCH',
+          'Run state version mismatch',
+          actorType,
+          actorId,
+          ifMatch,
+        );
+        throw new AppError(412, 'RUN_VERSION_MISMATCH', 'Run state version mismatch');
+      }
+      if (err instanceof InvalidStateSentinel) {
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          409,
+          'INVALID_RUN_STATE',
+          'Retry is only allowed from a failed or cancelled run',
+          actorType,
+          actorId,
+          ifMatch,
+        );
+        throw new AppError(
+          409,
+          'INVALID_RUN_STATE',
+          'Retry is only allowed from a failed or cancelled run',
+        );
+      }
       if (this.isUniqueViolation(err)) {
         const ex = await this.lookupCommand(companyId, projectId, runId, idempotencyKey);
         if (ex) {
@@ -812,6 +894,59 @@ export class MissionCommandService {
     return payload;
   }
 
+  /** Record a domain-rejected command as a `status='rejected'` row so it
+   *  remains visible in history without changing state/events/budget/output
+   *  (VAL-RUN-075). A unique-violation (concurrent identical key) is silently
+   *  ignored — the concurrent command is authoritative. */
+  private async recordRejected(
+    run: MissionRunRow,
+    type: RunCommandType,
+    body: unknown,
+    idempotencyKey: string,
+    statusCode: number,
+    errorCode: string,
+    errorMessage: string,
+    actorType: 'user' | 'agent' | 'system',
+    actorId: string | null,
+    ifMatch: number | null,
+  ): Promise<void> {
+    const schema = this.db.schema;
+    const now = this.now();
+    const payload =
+      type === 'run.cancel'
+        ? this.encryptCancelPayload(body)
+        : { ...(body as Record<string, unknown>) };
+    try {
+      await this.db.drizzle.insert(schema.runCommands).values({
+        companyId: run.companyId,
+        projectId: run.projectId,
+        runId: run.id,
+        type,
+        idempotencyKey,
+        requestHash: commandRequestHash(type, body),
+        payload,
+        actorType,
+        actorId,
+        expectedStateVersion: ifMatch,
+        status: 'rejected',
+        resultStatusCode: statusCode,
+        resultBody: { statusCode, code: errorCode, message: errorMessage } as Record<
+          string,
+          unknown
+        >,
+        errorCode,
+        createdAt: now,
+      });
+    } catch (err) {
+      // A concurrent command with the same key won; the concurrent command
+      // is the authoritative one and will be replayed on the next call.
+      if (this.isUniqueViolation(err)) {
+        return;
+      }
+      throw err;
+    }
+  }
+
   private commandSummary(row: MissionCommandRow): CommandSummary {
     return {
       id: row.id,
@@ -847,6 +982,20 @@ export class MissionCommandService {
         'Idempotency key already used for different content',
       );
     }
+    // If the command was rejected, re-throw the stored rejection so a
+    // replay returns the same domain error (VAL-RUN-075).
+    if (existing.status === 'rejected') {
+      const stored = existing.resultBody as {
+        statusCode: number;
+        code: string;
+        message: string;
+      } | null;
+      if (stored?.statusCode && stored?.code) {
+        throw new AppError(stored.statusCode, stored.code, stored.message ?? 'Command rejected');
+      }
+      throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency key already used');
+    }
+    // Applied command: return the stored result.
     const stored = existing.resultBody as unknown as StoredResult | null;
     if (!stored || !stored.run) {
       throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency key already used');

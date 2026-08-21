@@ -17,6 +17,7 @@ import {
 import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
 import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
+import { MissionCommandHistoryService } from '../services/mission/command-history.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import { redactCanaries } from '../services/mission/reason-security.js';
 import type { DbInstance } from '../types.js';
@@ -60,6 +61,12 @@ const EventsQuery = z.object({
  *  Last-Event-ID header; default 0 replays from creation). */
 const StreamQuery = z.object({
   after: z.coerce.number().int().min(0).optional(),
+});
+
+/** Command history query: bounded page with opaque keyset cursor. */
+const CommandsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
 });
 
 /** Shared optional lower-limit override shape for retry. */
@@ -471,6 +478,44 @@ export function missionRunsRouter(db: DbInstance): Router {
     });
 
     sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // GET /:runId/commands — scoped, bounded command history with opaque
+  // keyset cursors, actor/result metadata, and redacted payload access by
+  // permission. Domain-rejected commands remain visible; middleware 401/403
+  // attempts create no user-readable command row. Reads do not require the
+  // mission flag (VAL-RUN-075).
+  router.get('/:runId/commands', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const parsed = CommandsQuery.safeParse(req.query);
+    if (!parsed.success) {
+      throw parsed.error;
+    }
+    const { limit, cursor } = parsed.data;
+
+    // Decode the cursor early so a malformed cursor is a 400, not a 500.
+    decodeCursor(cursor);
+
+    // Determine payload access by permission: viewers (company.view only)
+    // receive redacted payloads; contributors (content.create) see payloads.
+    const role = (req.organizationMembership?.role ?? 'viewer') as
+      'owner' | 'admin' | 'member' | 'viewer';
+    const includePayload = hasPermission(role, 'content.create');
+
+    const service = new MissionCommandHistoryService(db);
+    const result = await service.listCommands({
+      companyId,
+      projectId,
+      runId,
+      limit,
+      cursor,
+      includePayload,
+    });
+
+    res.json({ data: { commands: result.commands, nextCursor: result.nextCursor } });
   });
 
   // Mission error sanitizer: converts any error thrown by a Mission route
