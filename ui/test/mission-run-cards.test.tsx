@@ -270,7 +270,9 @@ describe('MissionRunList and MissionRunCard', () => {
       render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
         wrapper,
       });
-      expect(screen.getByText(pattern)).toBeInTheDocument();
+      // The status badge is a <span>; the cancelled card also adds an
+      // explicit cancellation detail, so target the badge element.
+      expect(screen.getByText(pattern, { selector: 'span' })).toBeInTheDocument();
     });
   }
 

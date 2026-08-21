@@ -4,6 +4,7 @@ import {
   useMissionRunEvents,
   useMissionRequestText,
   useMissionRunStream,
+  useCancelMissionRun,
 } from '@/lib/hooks';
 import type { MissionRunSummary, MissionRunSnapshot, MissionReplayEvent } from '@/lib/api';
 import {
@@ -15,7 +16,9 @@ import {
   DollarSign,
   RefreshCw,
   WifiOff,
+  Ban,
 } from 'lucide-react';
+import { MissionCancelDialog } from './MissionCancelDialog';
 
 /** Map a status string to human-readable text (VAL-RUN-018). */
 function statusToText(status: string): string {
@@ -176,6 +179,28 @@ export function MissionRunCard({
   const statusText = statusToText(run.status);
   const announcement = useBatchedStatusAnnouncement(run.id, run.status);
 
+  // Cancellation confirmation state (VAL-RUN-035, VAL-RUN-036). The cancel
+  // control is shown only for nonterminal runs that have not already
+  // requested cancellation. Once requested, the authoritative indicator
+  // takes over (VAL-RUN-035).
+  const cancelMutation = useCancelMissionRun(companyId, projectId, run.id);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const cancelBtnRef = useRef<HTMLButtonElement>(null);
+  const cancelRequested =
+    snapshot?.cancelRequestedAt !== null && snapshot?.cancelRequestedAt !== undefined;
+  const canCancel = !isTerminal && !cancelRequested;
+
+  // When the confirmation dialog closes, restore focus to the originating
+  // Cancel control so focus is never lost to the document body
+  // (VAL-RUN-090). Native <dialog> restoration handles real browsers; this
+  // makes the behavior deterministic across environments.
+  const handleCancelClose = () => {
+    setCancelOpen(false);
+    // Focus synchronously while the originating control is still mounted
+    // (it remains for a still-running, not-yet-cancelled run).
+    cancelBtnRef.current?.focus();
+  };
+
   // Scroll into view when highlighted (deep-link target).
   const cardRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -213,7 +238,32 @@ export function MissionRunCard({
       <RunCardBudget snapshot={snapshot} />
       <RunCardFailure snapshot={snapshot} status={run.status} />
       <RunCardOutput snapshot={snapshot} status={run.status} />
+      <RunCardCancelledDetail snapshot={snapshot} status={run.status} />
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
+      {canCancel && (
+        <div className="mt-3">
+          <button
+            ref={cancelBtnRef}
+            type="button"
+            onClick={() => setCancelOpen(true)}
+            aria-label={`Cancel ${run.id}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 bg-error/10 px-3 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/20 focus-visible:ring-2 focus-visible:ring-error/40 focus-visible:outline-none motion-reduce:transition-none"
+          >
+            <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+            Cancel Mission
+          </button>
+        </div>
+      )}
+      {canCancel && (
+        <MissionCancelDialog
+          run={run}
+          open={cancelOpen}
+          onClose={handleCancelClose}
+          onSubmit={async (args) => {
+            await cancelMutation.mutateAsync(args);
+          }}
+        />
+      )}
     </article>
   );
 }
@@ -525,6 +575,45 @@ function RunCardOutput({ snapshot, status }: { snapshot?: MissionRunSnapshot; st
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** Cancelled card detail: explicit cancellation with when/by whom and no
+ * false completion or failure (VAL-RUN-110). Active-work indicators (Cancel
+ * control, stream status, output links) are already suppressed for terminal
+ * runs; this section makes cancellation explicit and attributable. */
+function RunCardCancelledDetail({
+  snapshot,
+  status,
+}: {
+  snapshot?: MissionRunSnapshot;
+  status: string;
+}) {
+  if (status !== 'cancelled' || !snapshot) {
+    return null;
+  }
+  const requestedAt = snapshot.cancelRequestedAt;
+  const requestedBy = snapshot.cancelRequestedBy;
+  return (
+    <div className="mb-3 rounded-lg border border-warning/20 bg-warning/5 px-3 py-2">
+      <p className="text-xs font-medium text-warning mb-1">Cancellation</p>
+      <p className="text-sm text-text-primary">
+        This Mission was cancelled
+        {requestedBy ? (
+          <>
+            {' '}
+            by <span className="font-medium">{requestedBy}</span>
+          </>
+        ) : null}
+        {requestedAt ? (
+          <>
+            {' '}
+            on <time dateTime={requestedAt}>{formatTime(requestedAt)}</time>
+          </>
+        ) : null}
+        .
+      </p>
     </div>
   );
 }

@@ -3723,3 +3723,45 @@ export function getMissionRunEvents(
     `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/events?after=${after}&limit=${limit}`,
   );
 }
+
+// ── Mission Run Cancellation ──────────────────────────────────────────────
+
+/** Convenience cancel response. The convenience `/cancel` route maps to the
+ * canonical `run.cancel` command and returns the applied/accepted command
+ * result plus the current run snapshot. */
+export interface MissionCancelResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/**
+ * Submit an idempotent cancellation request for a Mission run
+ * (`POST /:runId/cancel`). The reason is 1–2000 Unicode code points (the
+ * server normalizes to NFC). An optional `ifMatch` state version sends a
+ * strong quoted `If-Match` ETag so a stale action is rejected by the server
+ * rather than overwriting newer state (VAL-RUN-055).
+ *
+ * The browser never advances state optimistically; the authoritative
+ * snapshot/event refetch reveals cancellation requested → cancelled.
+ */
+export function cancelMissionRun(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  body: { reason: string },
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionCancelResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers,
+    },
+  );
+}

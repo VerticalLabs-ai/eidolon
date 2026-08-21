@@ -2836,3 +2836,44 @@ export function useMissionRunsPaginated(companyId: string, projectId: string) {
     staleTime: 5_000,
   });
 }
+
+/**
+ * Idempotent Mission cancellation mutation
+ * (`POST /:runId/cancel` → canonical `run.cancel` command).
+ *
+ * The caller supplies the typed reason, a stable idempotency key (reused
+ * across recoverable retries so duplicate/retry submissions are idempotent),
+ * and an optional `ifMatch` state version for stale-action protection
+ * (VAL-RUN-055).
+ *
+ * The browser never advances status optimistically. On success the snapshot,
+ * events, and run-list caches are invalidated so the authoritative server
+ * state reveals `cancellation requested` → `cancelled` (VAL-RUN-035).
+ *
+ * Recoverable errors (stale version `412 RUN_VERSION_MISMATCH` or a network
+ * failure) are surfaced through the returned `error` so the caller can
+ * preserve the typed reason for resubmission (VAL-RUN-038).
+ */
+export function useCancelMissionRun(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { reason: string; idempotencyKey: string; ifMatch?: number }) => {
+      const res = await api.cancelMissionRun(
+        companyId,
+        projectId,
+        runId,
+        { reason: args.reason },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+      return res;
+    },
+    onSuccess: () => {
+      // Invalidate authoritative caches so the card refetches server state.
+      qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+    },
+    retry: false,
+  });
+}
