@@ -122,6 +122,20 @@ export const missionRuns = pgTable(
       withTimezone: true,
     }),
     cancelRequestedBy: text('cancel_requested_by'),
+    /**
+     * Bounded convergence deadline for cancellation (VAL-RUN-136).
+     *
+     * No later than the earlier of the root run deadline and 60 seconds
+     * after `cancel_requested_at`. Worker outage, waiting states, retry
+     * waits, and non-cancellable/unknown external calls must be fenced,
+     * reconciled, or conservatively accounted, descendants terminalized,
+     * and the run cancelled by this deadline with no later effect commit.
+     */
+    cancellationDeadlineAt: timestamp('cancellation_deadline_at', {
+      mode: 'date',
+      precision: 3,
+      withTimezone: true,
+    }),
     failureCategory: text('failure_category'),
     failureCode: text('failure_code'),
     safeErrorMessage: text('safe_error_message'),

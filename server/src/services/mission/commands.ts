@@ -5,6 +5,7 @@ import type { DbInstance } from '../../types.js';
 import { commandRequestHash } from './idempotency.js';
 import { canonicalHash } from './policy.js';
 import { BudgetService } from './budget.js';
+import { MissionCancellationService } from './cancellation.js';
 
 /**
  * Canonical command ingress and shared idempotency for run-scoped Mission
@@ -87,6 +88,7 @@ export interface CommandRunSnapshot {
   requestContentHash: string;
   cancelRequestedAt: string | null;
   cancelRequestedBy: string | null;
+  cancellationDeadlineAt: string | null;
   retryOfRunId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -280,27 +282,31 @@ export class MissionCommandService {
     actorId: string | null,
     traceId: string | null,
   ): Promise<ApplyOutcome> {
-    const schema = this.db.schema;
-    const now = this.now();
-    const newVersion = run.stateVersion + 1;
-    const seq = run.lastEventSequence + 1;
+    // Delegate to the cancellation service which records the request,
+    // computes the bounded deadline, cascades to descendants, and
+    // terminalizes immediately for non-lease states (VAL-RUN-117,
+    // VAL-RUN-136).
+    const cancelService = new MissionCancellationService(this.db, {
+      clock: () => this.now(),
+    });
+    const cancelResult = await cancelService.requestCancellation(tx, run, {
+      companyId: run.companyId,
+      projectId: run.projectId,
+      runId: run.id,
+      actorType,
+      actorId,
+      traceId,
+    });
 
-    await tx
-      .update(schema.missionRuns)
-      .set({
-        cancelRequestedAt: now,
-        cancelRequestedBy: actorId,
-        stateVersion: newVersion,
-        lastEventSequence: seq,
-        updatedAt: now,
-      })
-      .where(eq(schema.missionRuns.id, run.id));
-
-    // Build the response snapshot BEFORE inserting the command so the
-    // replayable result_body carries the exact applied state.
+    // Build the response snapshot AFTER the cancellation service has
+    // applied all state/event/budget changes.
     const snapshot = await this.buildSnapshot(tx, run.id);
 
-    const stored: StoredResult = { statusCode: 202, etag: snapshot.stateVersion, run: snapshot };
+    const stored: StoredResult = {
+      statusCode: cancelResult.statusCode,
+      etag: snapshot.stateVersion,
+      run: snapshot,
+    };
     const commandRow = await this.insertCommand(tx, {
       companyId: run.companyId,
       projectId: run.projectId,
@@ -312,26 +318,16 @@ export class MissionCommandService {
       actorType,
       actorId,
       expectedStateVersion: run.stateVersion,
-      resultStatusCode: 202,
+      resultStatusCode: cancelResult.statusCode,
       stored,
     });
 
-    await tx.insert(schema.runEvents).values({
-      companyId: run.companyId,
-      projectId: run.projectId,
-      runId: run.id,
-      sequence: seq,
-      type: 'run.cancel_requested',
-      schemaVersion: 1,
-      payload: { requestedBy: actorId },
-      commandId: commandRow.id,
-      actorType,
-      actorId,
-      traceId,
-      occurredAt: now,
-    });
-
-    return { statusCode: 202, etag: snapshot.stateVersion, run: snapshot, commandRow };
+    return {
+      statusCode: cancelResult.statusCode,
+      etag: snapshot.stateVersion,
+      run: snapshot,
+      commandRow,
+    };
   }
 
   private async recordCancelNoop(
@@ -786,6 +782,9 @@ export class MissionCommandService {
       requestContentHash: run.requestContentHash,
       cancelRequestedAt: run.cancelRequestedAt ? run.cancelRequestedAt.toISOString() : null,
       cancelRequestedBy: run.cancelRequestedBy,
+      cancellationDeadlineAt: run.cancellationDeadlineAt
+        ? run.cancellationDeadlineAt.toISOString()
+        : null,
       retryOfRunId: run.retryOfRunId,
       createdAt: run.createdAt.toISOString(),
       updatedAt: run.updatedAt.toISOString(),

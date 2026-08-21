@@ -46,6 +46,7 @@ export interface RunSnapshot {
   partialResultPolicy: string;
   cancelRequestedAt: string | null;
   cancelRequestedBy: string | null;
+  cancellationDeadlineAt: string | null;
   failureCategory: string | null;
   failureCode: string | null;
   safeErrorMessage: string | null;
@@ -389,6 +390,9 @@ export class MissionSnapshotService {
       partialResultPolicy: run.partialResultPolicy,
       cancelRequestedAt: run.cancelRequestedAt ? run.cancelRequestedAt.toISOString() : null,
       cancelRequestedBy: run.cancelRequestedBy,
+      cancellationDeadlineAt: run.cancellationDeadlineAt
+        ? run.cancellationDeadlineAt.toISOString()
+        : null,
       failureCategory: run.failureCategory,
       failureCode: run.failureCode,
       safeErrorMessage: run.safeErrorMessage,

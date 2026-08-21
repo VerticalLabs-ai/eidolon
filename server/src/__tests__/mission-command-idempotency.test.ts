@@ -392,7 +392,18 @@ describe('Mission command preconditions (VAL-RUN-054, VAL-RUN-055)', () => {
 
   it('rejects a cancel with a stale If-Match (412 RUN_VERSION_MISMATCH)', async () => {
     const ctx = await freshRun('__mtest__ precond-stale');
-    const staleVersion = ctx.stateVersion;
+    // Move to a lease state (running) so cancel records the request without
+    // terminalizing immediately (non-lease states terminalize at once).
+    const now = new Date();
+    await ctx.db.drizzle.execute(sql`
+      UPDATE "mission_runs"
+      SET "status" = 'running', "terminal_at" = NULL, "updated_at" = ${now},
+          "lease_owner" = 'test-worker', "lease_token" = ${randomUUID()},
+          "lease_expires_at" = ${new Date(now.getTime() + 30000)},
+          "heartbeat_at" = ${now}, "started_at" = ${now}
+      WHERE "id" = ${ctx.runId}
+    `);
+    const staleVersion = await getRunVersion(ctx.db, ctx.runId);
     await request(ctx.app)
       .post(`${ctx.base}/${ctx.runId}/cancel`)
       .set('Idempotency-Key', 'cancel-advance-001')
