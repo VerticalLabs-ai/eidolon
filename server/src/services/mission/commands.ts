@@ -7,6 +7,7 @@ import { canonicalHash } from './policy.js';
 import { BudgetService } from './budget.js';
 import { MissionCancellationService } from './cancellation.js';
 import { encryptReason } from './reason-security.js';
+import { encryptEnvelope } from './ingress.js';
 import {
   incrementMissionCommand,
   incrementMissionIdempotentReplay,
@@ -549,8 +550,28 @@ export class MissionCommandService {
     });
 
     const retryBody = (body ?? {}) as RetryBody;
-    const requestEnvelope = retryBody.request ?? (run.requestEnvelope as Record<string, unknown>);
-    const reqHash = canonicalHash(requestEnvelope);
+    // The original run's request envelope is now encrypted text (VAL-RUN-135).
+    // If the retry provides a new request, build a fresh encrypted envelope;
+    // otherwise copy the existing encrypted ciphertext directly (it's already
+    // encrypted, so no re-encryption needed and no plaintext is exposed).
+    let encryptedEnvelope: string;
+    let reqHash: string;
+    if (retryBody.request) {
+      // New request provided: encrypt it at rest.
+      const envelope: Record<string, unknown> = {
+        text: retryBody.request.text ?? '',
+        attachments: retryBody.request.attachments ?? [],
+        context: retryBody.request.context ?? {},
+      };
+      encryptedEnvelope = encryptEnvelope(envelope);
+      reqHash = canonicalHash(envelope);
+    } else {
+      // No new request: copy the existing encrypted envelope.
+      encryptedEnvelope = run.requestEnvelope as unknown as string;
+      // Hash the original request for idempotency. The requestContentHash
+      // from the run is already the canonical hash of the original request.
+      reqHash = run.requestContentHash;
+    }
 
     // Narrow the original policy limits with the retry body's limits
     // (minimum wins — retry may only lower, never raise). Recompute the
@@ -615,7 +636,7 @@ export class MissionCommandService {
       initiatingAgentId: run.initiatingAgentId,
       billingAgentId: run.billingAgentId,
       routingKind: 'company_agent',
-      requestEnvelope,
+      requestEnvelope: encryptedEnvelope,
       requestContentHash: reqHash,
       resolvedMode: run.resolvedMode,
       policySnapshotId: successorPolicyId,

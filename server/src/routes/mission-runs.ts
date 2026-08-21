@@ -33,7 +33,11 @@ const StartBody = z.object({
   mode: z.enum(MODES),
   initiatingAgentId: z.string().uuid().optional(),
   request: z.object({
-    text: z.string().trim().min(1).max(20_000),
+    // No semantic trimming (VAL-RUN-134): the ingress module counts Unicode
+    // code points without trimming, so whitespace is preserved. The Zod
+    // schema only validates structural shape; exact bounds are enforced
+    // by the ingress module after decoding.
+    text: z.string().min(1),
     attachments: z.array(z.string().uuid()).max(20).optional(),
     context: z.record(z.unknown()).optional(),
   }),
@@ -87,7 +91,7 @@ const RetryLimits = z
 
 const RetryRequest = z
   .object({
-    text: z.string().trim().min(1).max(20_000).optional(),
+    text: z.string().min(1).optional(),
     attachments: z.array(z.string().uuid()).max(20).optional(),
     context: z.record(z.unknown()).optional(),
   })

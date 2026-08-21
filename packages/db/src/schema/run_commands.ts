@@ -38,8 +38,11 @@ export const runCommands = pgTable(
     }).notNull(),
     idempotencyKey: text('idempotency_key').notNull(),
     requestHash: text('request_hash').notNull(),
-    // Encrypted/redacted payload. Encryption-at-rest hardening is a later
-    // feature; the column exists now so the aggregate contract is complete.
+    // Encrypted/redacted payload. Start command payloads have their `request`
+    // sub-object encrypted at rest (VAL-RUN-135). Cancel payloads have their
+    // `reason` field encrypted (VAL-RUN-138). Non-sensitive fields (mode,
+    // limits) remain plaintext for queryability. The column is jsonb so
+    // encrypted fields appear as base64 strings within the JSON structure.
     payload: jsonb('payload').notNull().$type<Record<string, unknown>>(),
     actorType: text('actor_type', {
       enum: ['user', 'agent', 'system'],

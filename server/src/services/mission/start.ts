@@ -13,6 +13,7 @@ import {
   incrementMissionBudgetDenial,
 } from '../../middleware/observability.js';
 import type { ProjectionSurface } from './projection.js';
+import { validateAndEncryptIngress, encryptStartPayload } from './ingress.js';
 
 /**
  * Mission start service.
@@ -138,12 +139,27 @@ export class MissionStartService {
     // 2. Validate thread ownership (same company + project). Non-enumerating 404.
     await this.validateThread(companyId, projectId, body.projectThreadId);
 
-    // 3. Resolve the initiating agent (provider/model/tools) if provided.
+    // 3. Ingress hardening: structural bounds + reference validation +
+    //    encryption (VAL-RUN-133, VAL-RUN-134, VAL-RUN-135). Runs BEFORE any
+    //    database writes so a validation failure creates no run, applied
+    //    command, reservation, projection, provider/tool call, or metadata
+    //    leak. All references (attachments, context UUIDs) are validated
+    //    against the database for same-company, same-project, present, and
+    //    accessible. The request envelope is encrypted at rest.
+    const ingress = await validateAndEncryptIngress(this.db, {
+      companyId,
+      projectId,
+      text: body.request.text,
+      attachments: body.request.attachments,
+      context: body.request.context,
+    });
+
+    // 4. Resolve the initiating agent (provider/model/tools) if provided.
     const agent = body.initiatingAgentId
       ? await this.lookupAgent(companyId, body.initiatingAgentId)
       : undefined;
 
-    // 4. Resolve the effective policy.
+    // 5. Resolve the effective policy.
     const policy = resolvePolicy({
       mode: body.mode,
       agent: agent
@@ -217,8 +233,9 @@ export class MissionStartService {
           initiatingAgentId: body.initiatingAgentId ?? null,
           billingAgentId: body.initiatingAgentId ?? null,
           routingKind: 'company_agent',
-          requestEnvelope: body.request as Record<string, unknown>,
+          requestEnvelope: ingress.encryptedEnvelope,
           requestContentHash: reqHash,
+          requestSafeSummary: ingress.safeSummary,
           resolvedMode: policy.resolvedMode,
           policySnapshotId,
           status: 'draft',
@@ -263,11 +280,11 @@ export class MissionStartService {
             type: 'run.start',
             idempotencyKey,
             requestHash: reqHash,
-            payload: {
+            payload: encryptStartPayload({
               request: body.request,
               mode: body.mode,
               limits: body.limits ?? null,
-            } as Record<string, unknown>,
+            } as Record<string, unknown>),
             actorType,
             actorId: actorId ?? null,
             status: 'applied',

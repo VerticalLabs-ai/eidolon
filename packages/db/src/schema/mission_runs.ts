@@ -1,13 +1,4 @@
-import {
-  pgTable,
-  text,
-  integer,
-  bigint,
-  jsonb,
-  timestamp,
-  index,
-  uniqueIndex,
-} from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, bigint, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 import { projects } from './projects.js';
@@ -59,11 +50,19 @@ export const missionRuns = pgTable(
     })
       .notNull()
       .default('company_agent'),
-    // Encrypted/redactable structured request envelope. Encryption-at-rest
-    // hardening is a later feature; the column exists now so the aggregate
-    // contract is complete.
-    requestEnvelope: jsonb('request_envelope').notNull().$type<Record<string, unknown>>(),
+    // Encrypted request envelope at rest (VAL-RUN-135). Stores AES-256-GCM
+    // ciphertext as text, never plaintext. Authorized service paths decrypt
+    // via `decryptEnvelope()` from `mission/ingress.ts`. Plaintext canaries
+    // are absent from ordinary database text/JSON fields.
+    requestEnvelope: text('request_envelope').notNull(),
     requestContentHash: text('request_content_hash').notNull(),
+    /**
+     * Inert NFC-normalized safe summary, capped at 500 Unicode code points
+     * (VAL-RUN-134). Hostile markup is escaped to inert text. This field
+     * is NOT a content oracle — it cannot be used to reconstruct the
+     * original request.
+     */
+    requestSafeSummary: text('request_safe_summary'),
     // Nullable text; FK to mode_profiles added when that table is created.
     modeProfileId: text('mode_profile_id'),
     resolvedMode: text('resolved_mode', {
