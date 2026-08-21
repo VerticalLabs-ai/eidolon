@@ -1,6 +1,7 @@
 import { and, eq, gt, asc } from 'drizzle-orm';
 import type { Request, Response } from 'express';
 import { AppError } from '../../middleware/error-handler.js';
+import { sanitizeEventPayload } from './sanitize.js';
 import type { DbInstance } from '../../types.js';
 
 /**
@@ -165,11 +166,14 @@ export class MissionStreamService {
       traceId: string | null;
       occurredAt: string;
     }): void => {
+      // Sanitize the payload to ensure no credentials, prompts, provider
+      // bodies, retrieved content, or raw diagnostics leak through the SSE
+      // stream surface (VAL-RUN-073).
       const data = JSON.stringify({
         sequence: row.sequence,
         type: row.type,
         schemaVersion: row.schemaVersion,
-        payload: row.payload,
+        payload: sanitizeEventPayload(row.payload),
         commandId: row.commandId,
         actorType: row.actorType,
         actorId: row.actorId,

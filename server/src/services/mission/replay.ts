@@ -1,5 +1,6 @@
 import { and, asc, eq, gt } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
+import { sanitizeEventPayload } from './sanitize.js';
 import type { DbInstance } from '../../types.js';
 
 /**
@@ -124,7 +125,10 @@ export class MissionReplayService {
       sequence: Number(r.sequence),
       type: r.type,
       schemaVersion: r.schemaVersion,
-      payload: r.payload,
+      // Sanitize the payload to ensure no credentials, prompts, provider
+      // bodies, retrieved content, or raw diagnostics leak through the
+      // JSON replay surface (VAL-RUN-073).
+      payload: sanitizeEventPayload(r.payload) as Record<string, unknown>,
       commandId: r.commandId,
       actorType: r.actorType,
       actorId: r.actorId,

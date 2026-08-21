@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
+import { missionErrorSanitizer } from '../middleware/mission-error-sanitizer.js';
 import { isFeatureEnabled } from '../services/feature-flags.js';
 import { routeParams } from '../utils/route-params.js';
 import { validateProjectOwnership } from '../utils/project-validation.js';
@@ -471,6 +472,13 @@ export function missionRunsRouter(db: DbInstance): Router {
 
     sendCommandResponse(res, companyId, projectId, result);
   });
+
+  // Mission error sanitizer: converts any error thrown by a Mission route
+  // handler into a safe AppError before it reaches the global errorHandler.
+  // This ensures raw credentials, prompts, provider bodies, retrieved
+  // content, and raw diagnostics never appear in a Mission API error
+  // response (VAL-RUN-046).
+  router.use(missionErrorSanitizer);
 
   return router;
 }
