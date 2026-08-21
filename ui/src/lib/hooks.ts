@@ -2679,3 +2679,40 @@ export function useResolvePermission(
     enabled: !!companyId && !!resourceType && !!resourceId,
   });
 }
+
+// ── Feature Flags (evaluated for the caller's company) ───────────────────
+
+/**
+ * Fetch the evaluated feature flags for the caller's company. The server
+ * returns declared flag names with a boolean outcome and nothing else.
+ * The `missionAgentIntelligence` flag defaults to off; absent, malformed,
+ * or unparseable configuration leaves it off (fail-closed).
+ */
+export function useFeatureFlags(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ['feature-flags', companyId],
+    queryFn: async () => unwrap<api.FeatureFlagsResponse>(await api.getFeatureFlags(companyId!)),
+    enabled: !!companyId,
+    staleTime: 30_000,
+    retry: false,
+    // On error, keep `data` undefined so callers treat it as fail-closed.
+    placeholderData: (prev) => prev,
+    // Don't refetch on window focus — flag state is server-authoritative.
+    refetchOnWindowFocus: false,
+  });
+}
+
+// ── Mission Runs ─────────────────────────────────────────────────────────
+
+export function useStartMissionRun(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { body: api.MissionStartBody; idempotencyKey: string }) => {
+      const res = await api.startMissionRun(companyId, projectId, args.body, args.idempotencyKey);
+      return res;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+    },
+  });
+}

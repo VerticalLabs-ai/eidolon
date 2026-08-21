@@ -3513,3 +3513,66 @@ export const transferArtifactOwnership = (
       body: JSON.stringify({ projectId }),
     },
   );
+
+// ── Feature Flags (evaluated for the caller's company) ───────────────────
+
+export interface FeatureFlagsResponse {
+  subject: string;
+  flags: Record<string, boolean>;
+}
+
+export const getFeatureFlags = (companyId: string) =>
+  request<{ data: FeatureFlagsResponse }>(`/companies/${companyId}/flags`);
+
+// ── Mission Runs ─────────────────────────────────────────────────────────
+
+export type MissionMode = 'auto' | 'fast' | 'deep_work' | 'analyst';
+
+export interface MissionStartBody {
+  projectThreadId: string;
+  mode: MissionMode;
+  initiatingAgentId?: string;
+  request: {
+    text: string;
+    attachments?: string[];
+    context?: Record<string, unknown>;
+  };
+  limits?: {
+    costCents?: number;
+    totalTokens?: number;
+    durationSeconds?: number;
+    providerCalls?: number;
+    steps?: number;
+    outputBytes?: number;
+  };
+}
+
+export interface MissionRun {
+  id: string;
+  companyId: string;
+  projectId: string;
+  projectThreadId: string;
+  status: string;
+  stateVersion: number;
+  lastEventSequence: number;
+  mode: MissionMode;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MissionStartResult {
+  data: { run: MissionRun; command: { id: string } };
+  links: { ui: string };
+}
+
+export const startMissionRun = (
+  companyId: string,
+  projectId: string,
+  body: MissionStartBody,
+  idempotencyKey: string,
+) =>
+  request<MissionStartResult>(`/companies/${companyId}/projects/${projectId}/mission-runs`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'Idempotency-Key': idempotencyKey },
+  });
