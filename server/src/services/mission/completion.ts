@@ -76,6 +76,13 @@ export class MissionCompletionService {
       actorType?: 'user' | 'agent' | 'system';
       actorId?: string | null;
       traceId?: string | null;
+      /**
+       * Lease token for fenced worker mutations. When provided, the method
+       * verifies the token matches the run's current lease. A stale worker
+       * whose lease was stolen by another worker cannot commit
+       * (VAL-RUN-119, VAL-RUN-120).
+       */
+      leaseToken?: string;
     } = {},
   ): Promise<CompletionResult> {
     const schema = this.db.schema;
@@ -100,6 +107,13 @@ export class MissionCompletionService {
 
     if (!run) {
       throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    }
+
+    // Fenced mutation: verify the lease token matches the run's current
+    // lease. A stale worker whose lease was stolen by another worker
+    // cannot commit (VAL-RUN-119, VAL-RUN-120).
+    if (opts.leaseToken !== undefined && run.leaseToken !== opts.leaseToken) {
+      throw new AppError(409, 'LEASE_NOT_HELD', 'Lease is no longer held by this worker');
     }
 
     // Terminal runs are immutable — no-op (VAL-RUN-043).

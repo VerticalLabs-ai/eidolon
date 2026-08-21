@@ -266,6 +266,11 @@ export interface HandleFailureInput {
   traceId?: string | null;
   actorType?: 'user' | 'agent' | 'system';
   actorId?: string | null;
+  /**
+   * Lease token for fenced worker mutations. When provided, verifies the
+   * token matches the run's current lease (VAL-RUN-119, VAL-RUN-120).
+   */
+  leaseToken?: string;
 }
 
 export type RetryOutcomeKind = 'requeue' | 'fail' | 'superseded' | 'terminal_noop';
@@ -320,6 +325,13 @@ export class MissionRetryService {
 
     return this.db.drizzle.transaction(async (tx) => {
       const run = await this.lockRun(tx, companyId, projectId, runId);
+
+      // Fenced mutation: verify lease token when provided (worker path).
+      // A stale worker whose lease was stolen cannot requeue or fail the
+      // run (VAL-RUN-119, VAL-RUN-120).
+      if (input.leaseToken !== undefined && run.leaseToken !== input.leaseToken) {
+        throw new AppError(409, 'LEASE_NOT_HELD', 'Lease is no longer held by this worker');
+      }
 
       // Terminal runs are immutable: a late failure report changes nothing.
       if (TERMINAL_STATUSES.has(run.status)) {

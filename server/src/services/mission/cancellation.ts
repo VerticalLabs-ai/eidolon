@@ -191,6 +191,11 @@ export class MissionCancellationService {
       /** Internal: version/sequence after requestCancellation, to avoid a re-read. */
       fromVersion?: number;
       fromSequence?: number;
+      /**
+       * Lease token for fenced worker mutations. When provided, verifies
+       * the token matches the run's current lease (VAL-RUN-119, VAL-RUN-120).
+       */
+      leaseToken?: string;
     },
   ): Promise<CancellationResult> {
     const schema = this.db.schema;
@@ -201,6 +206,11 @@ export class MissionCancellationService {
 
     // Lock the run.
     const run = await this.lockRun(tx, companyId, projectId, runId);
+
+    // Fenced mutation: verify lease token when provided (worker path).
+    if (opts.leaseToken !== undefined && run.leaseToken !== opts.leaseToken) {
+      throw new AppError(409, 'LEASE_NOT_HELD', 'Lease is no longer held by this worker');
+    }
 
     // Terminal runs are immutable.
     if (TERMINAL_STATUSES.has(run.status)) {

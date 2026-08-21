@@ -59,7 +59,7 @@ const SENSITIVE_FIELD_NAMES = new Set([
   'credential',
   'credentials',
   'leasekey',
-  'lecasetoken',
+  'leasetoken',
   'idempotencysecret',
   'adapterkey',
 ]);
