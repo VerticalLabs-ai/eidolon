@@ -44,11 +44,16 @@ vi.mock('@/lib/hooks', () => ({
     reset: vi.fn(),
   }),
   useStartMissionRun: () => ({ mutate: vi.fn(), isPending: false }),
-  useMissionRuns: () => ({
-    data: { runs: [], nextCursor: null },
+  useMissionRunsPaginated: () => ({
+    data: { pages: [{ runs: [], nextCursor: null }], pageParams: [undefined] },
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
     isLoading: false,
     isError: false,
+    refetch: vi.fn(),
   }),
+  useMissionRunStream: () => ({ status: 'connected', lastSequence: 0, gapDetected: false }),
   useMissionRunSnapshot: () => ({ data: undefined, isLoading: false, isError: false }),
   useMissionRunEvents: () => ({
     data: { events: [], nextCursor: 0, latestSequence: 0 },

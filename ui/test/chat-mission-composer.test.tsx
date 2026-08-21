@@ -91,6 +91,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 describe('ChatMissionComposer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
     mocks.useFeatureFlags.mockReturnValue(flagsResult(false));
     mocks.useProjectThreads.mockReturnValue(threadsResult());
     mocks.useCreateThreadItem.mockReturnValue(createThreadItemResult());

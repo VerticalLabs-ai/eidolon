@@ -8,7 +8,7 @@ import { useMissionRunStream as useMissionRunStreamReal } from '../src/lib/missi
 // ── Mocks ────────────────────────────────────────────────────────────────
 
 const mocks = vi.hoisted(() => ({
-  useMissionRuns: vi.fn(),
+  useMissionRunsPaginated: vi.fn(),
   useMissionRunSnapshot: vi.fn(),
   useMissionRunEvents: vi.fn(),
   useStartMissionRun: vi.fn(),
@@ -19,7 +19,7 @@ vi.mock('@/lib/hooks', async () => {
   const actual = await vi.importActual('@/lib/hooks');
   return {
     ...actual,
-    useMissionRuns: mocks.useMissionRuns,
+    useMissionRunsPaginated: mocks.useMissionRunsPaginated,
     useMissionRunSnapshot: mocks.useMissionRunSnapshot,
     useMissionRunEvents: mocks.useMissionRunEvents,
     useStartMissionRun: mocks.useStartMissionRun,
@@ -126,7 +126,15 @@ function evt(sequence: number, type: string, overrides: Partial<Record<string, u
 }
 
 function listResult(runs: ReturnType<typeof runSummary>[] = [runSummary()]) {
-  return { data: { runs, nextCursor: null }, isLoading: false, isError: false };
+  return {
+    data: { pages: [{ runs, nextCursor: null }], pageParams: [undefined] },
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  };
 }
 
 function snapshotResult(snapshot: ReturnType<typeof runSnapshot> = runSnapshot()) {
@@ -172,7 +180,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 describe('Mission realtime recovery UI', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.useMissionRuns.mockReturnValue(listResult());
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult());
     mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult());
     mocks.useMissionRunEvents.mockReturnValue(eventsResult());
     mocks.useStartMissionRun.mockReturnValue(startResult());
@@ -252,7 +260,7 @@ describe('Mission realtime recovery UI', () => {
 
   // ── VAL-RUN-032: Reload reconstructs an active run ─────────────────────
   it('reconstructs an active run card from server state on mount', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ id: 'run-active', status: 'running', stateVersion: 5 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -279,7 +287,7 @@ describe('Mission realtime recovery UI', () => {
 
   // ── VAL-RUN-033: Reload reconstructs a terminal run ────────────────────
   it('reconstructs a completed terminal run card on mount', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ id: 'run-done', status: 'completed', stateVersion: 10 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -318,7 +326,7 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('reconstructs a failed terminal run card on mount', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ id: 'run-fail', status: 'failed', stateVersion: 8 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -343,7 +351,7 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('reconstructs a cancelled terminal run card on mount', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ id: 'run-cancel', status: 'cancelled', stateVersion: 6 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -388,7 +396,7 @@ describe('Mission realtime recovery UI', () => {
 
   // ── VAL-RUN-088: Waiting and no-worker states are explicit ─────────────
   it('shows worker unavailable when queueHealth is unavailable', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(runSnapshot({ status: 'queued', queueHealth: 'unavailable' })),
     );
@@ -399,7 +407,7 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('does not show worker unavailable when queueHealth is available', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(runSnapshot({ status: 'queued', queueHealth: 'available' })),
     );
@@ -410,7 +418,7 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('does not show worker unavailable when queueHealth is absent', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(runSnapshot({ status: 'queued', queueHealth: undefined })),
     );
@@ -424,7 +432,7 @@ describe('Mission realtime recovery UI', () => {
     // Even with a queued run and no stream, the card should not show
     // "worker unavailable" unless the server says so.
     mocks.useMissionRunStream.mockReturnValue(streamResult({ status: 'connected' }));
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(runSnapshot({ status: 'queued', queueHealth: undefined })),
     );
@@ -438,8 +446,11 @@ describe('Mission realtime recovery UI', () => {
   // ── VAL-RUN-131: Authoritative read failures remain recoverable ───────
   it('keeps existing cards visible when the list refetch fails', () => {
     // First render with data
-    mocks.useMissionRuns.mockReturnValue({
-      data: { runs: [runSummary({ id: 'run-stale' })], nextCursor: null },
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: {
+        pages: [{ runs: [runSummary({ id: 'run-stale' })], nextCursor: null }],
+        pageParams: [undefined],
+      },
       isLoading: false,
       isError: false,
       isPreviousData: true,
@@ -452,7 +463,7 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('shows a stale indicator and retry when the list fails to load', () => {
-    mocks.useMissionRuns.mockReturnValue({
+    mocks.useMissionRunsPaginated.mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
@@ -466,7 +477,7 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('keeps existing snapshot visible when the snapshot refetch fails', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ id: 'run-snap', status: 'running' })]),
     );
     // Snapshot has previous data but is in error state (refetch failed)
@@ -508,8 +519,11 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('does not render as no Missions on a list failure with previous data', () => {
-    mocks.useMissionRuns.mockReturnValue({
-      data: { runs: [runSummary({ id: 'run-prev' })], nextCursor: null },
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: {
+        pages: [{ runs: [runSummary({ id: 'run-prev' })], nextCursor: null }],
+        pageParams: [undefined],
+      },
       isLoading: false,
       isError: true,
       isPreviousData: true,
@@ -556,7 +570,7 @@ describe('Mission realtime recovery UI', () => {
   });
 
   it('does not optimistically advance state during a gap', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ status: 'queued', stateVersion: 2 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -587,7 +601,9 @@ describe('Mission realtime recovery UI', () => {
 
   // ── Stream status: idle (no active stream for terminal runs) ──────────
   it('does not show reconnecting for a terminal run with closed stream', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'completed' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(
+      listResult([runSummary({ status: 'completed' })]),
+    );
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(runSnapshot({ status: 'completed', terminalAt: '2026-08-20T10:10:00.000Z' })),
     );

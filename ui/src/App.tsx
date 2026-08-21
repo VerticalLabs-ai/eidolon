@@ -4,6 +4,9 @@ import {
   createRoutesFromElements,
   Route,
   RouterProvider,
+  Navigate,
+  useParams,
+  useSearchParams,
 } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import { AuthGuard } from '@/components/auth/AuthGuard';
@@ -80,6 +83,12 @@ const router = createBrowserRouter(
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
 
+      {/* Redirect: server links.ui uses plural /companies/ path but the app
+       * route uses singular /company/. Redirect preserving all query params
+       * so deep links from start responses and snapshots resolve correctly
+       * (VAL-RUN-097). */}
+      <Route path="/companies/:companyId/projects/:projectId" element={<PluralCompanyRedirect />} />
+
       {/* Protected routes */}
       <Route
         path="/"
@@ -140,4 +149,18 @@ export function App() {
       <RouterProvider router={router} />
     </ErrorBoundary>
   );
+}
+
+/**
+ * Redirect from the plural `/companies/:companyId/projects/:projectId` path
+ * (used by server-generated `links.ui`) to the singular
+ * `/company/:companyId/projects/:projectId` app route, preserving all query
+ * params (thread, run, tab) so deep links restore context (VAL-RUN-097).
+ */
+function PluralCompanyRedirect() {
+  const { companyId, projectId } = useParams();
+  const [searchParams] = useSearchParams();
+  const qs = searchParams.toString();
+  const target = `/company/${companyId}/projects/${projectId}${qs ? `?${qs}` : ''}`;
+  return <Navigate to={target} replace />;
 }

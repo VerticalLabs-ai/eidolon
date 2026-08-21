@@ -374,3 +374,19 @@ h1, h2, h3, .font-display {
   text-align: center;
   color: #e8eaed;
 }
+
+/* ── Reduced motion (VAL-RUN-093) ────────────────────────────────────── */
+/* Global safety net: when the user prefers reduced motion, disable all
+ * non-essential animations and transitions. Component-level motion-reduce
+ * Tailwind variants provide the primary mechanism; this rule is a
+ * catch-all for any animated element that does not use the variant. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

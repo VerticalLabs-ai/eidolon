@@ -5,20 +5,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MissionRunList } from '../src/components/projects/MissionRunList';
 
 const mocks = vi.hoisted(() => ({
-  useMissionRuns: vi.fn(),
+  useMissionRunsPaginated: vi.fn(),
   useMissionRunSnapshot: vi.fn(),
   useMissionRunEvents: vi.fn(),
   useStartMissionRun: vi.fn(),
+  useMissionRunStream: vi.fn(),
 }));
 
 vi.mock('@/lib/hooks', async () => {
   const actual = await vi.importActual('@/lib/hooks');
   return {
     ...actual,
-    useMissionRuns: mocks.useMissionRuns,
+    useMissionRunsPaginated: mocks.useMissionRunsPaginated,
     useMissionRunSnapshot: mocks.useMissionRunSnapshot,
     useMissionRunEvents: mocks.useMissionRunEvents,
     useStartMissionRun: mocks.useStartMissionRun,
+    useMissionRunStream: mocks.useMissionRunStream,
   };
 });
 
@@ -121,7 +123,15 @@ function evt(sequence: number, type: string, overrides: Partial<Record<string, u
 }
 
 function listResult(runs: ReturnType<typeof runSummary>[] = [runSummary()]) {
-  return { data: { runs, nextCursor: null }, isLoading: false, isError: false };
+  return {
+    data: { pages: [{ runs, nextCursor: null }], pageParams: [undefined] },
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  };
 }
 
 function snapshotResult(snapshot: ReturnType<typeof runSnapshot> = runSnapshot()) {
@@ -156,15 +166,20 @@ function wrapper({ children }: { children: React.ReactNode }) {
 describe('MissionRunList and MissionRunCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.useMissionRuns.mockReturnValue(listResult());
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult());
     mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult());
     mocks.useMissionRunEvents.mockReturnValue(eventsResult());
     mocks.useStartMissionRun.mockReturnValue(startResult());
+    mocks.useMissionRunStream.mockReturnValue({
+      status: 'connected',
+      lastSequence: 4,
+      gapDetected: false,
+    });
   });
 
   // ── VAL-RUN-014: Successful start creates one run card ───────────────
   it('renders exactly one run card when the list has one run', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary()]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary()]));
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
     });
@@ -173,7 +188,7 @@ describe('MissionRunList and MissionRunCard', () => {
   });
 
   it('renders no run cards when the list is empty', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([]));
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
     });
@@ -182,7 +197,7 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── VAL-RUN-015: Run card identifies the request and run ─────────────
   it('shows the run ID, mode, creation time, and request text', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ id: 'run-abc', resolvedMode: 'deep_work' })]),
     );
     render(
@@ -205,7 +220,7 @@ describe('MissionRunList and MissionRunCard', () => {
   });
 
   it('shows the request content hash when request text is unavailable', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary()]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary()]));
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
     });
@@ -214,7 +229,7 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── VAL-RUN-017: Run status is textual and authoritative ─────────────
   it('displays the textual status from the authoritative snapshot', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'running' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'running' })]));
     mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult(runSnapshot({ status: 'running' })));
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
@@ -223,7 +238,7 @@ describe('MissionRunList and MissionRunCard', () => {
   });
 
   it('does not advance status without a newer server state version', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ status: 'queued', stateVersion: 2 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -250,7 +265,7 @@ describe('MissionRunList and MissionRunCard', () => {
   ];
   for (const [status, pattern] of statuses) {
     it(`renders "${status}" as explicit text`, () => {
-      mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status })]));
+      mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status })]));
       mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult(runSnapshot({ status })));
       render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
         wrapper,
@@ -260,7 +275,7 @@ describe('MissionRunList and MissionRunCard', () => {
   }
 
   it('shows cancellation requested as a separate indicator, not an invented status', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ status: 'running', stateVersion: 3 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -282,7 +297,7 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── VAL-RUN-044: Completed card exposes the outcome ──────────────────
   it('shows completion, output links, completion time, and budget on a completed card', () => {
-    mocks.useMissionRuns.mockReturnValue(
+    mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ status: 'completed', stateVersion: 5 })]),
     );
     mocks.useMissionRunSnapshot.mockReturnValue(
@@ -317,7 +332,7 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── VAL-RUN-060: Active card shows budget status ──────────────────────
   it('exposes reserved/ceiling and settled cost as nonnegative currency', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'running' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'running' })]));
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(
         runSnapshot({
@@ -342,7 +357,7 @@ describe('MissionRunList and MissionRunCard', () => {
   });
 
   it('never shows spending above the run ceiling', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary()]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary()]));
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(
         runSnapshot({
@@ -368,7 +383,9 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── VAL-RUN-074: Auditable lifecycle outcomes are visible ─────────────
   it('shows event journal entries in the timeline with type and timestamp', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ lastEventSequence: 4 })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(
+      listResult([runSummary({ lastEventSequence: 4 })]),
+    );
     mocks.useMissionRunEvents.mockReturnValue(
       eventsResult([
         evt(1, 'run.created', { payload: { runId: 'run-1', status: 'draft' } }),
@@ -391,7 +408,7 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── VAL-RUN-095: Run landmarks and chronology are semantic ───────────
   it('has a meaningful heading/landmark for the Mission runs area', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult());
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult());
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
     });
@@ -399,7 +416,7 @@ describe('MissionRunList and MissionRunCard', () => {
   });
 
   it('each run card has a discernible heading', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ id: 'run-xyz' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ id: 'run-xyz' })]));
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
     });
@@ -408,7 +425,9 @@ describe('MissionRunList and MissionRunCard', () => {
   });
 
   it('exposes event history in chronological semantic order matching event sequence', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ lastEventSequence: 3 })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(
+      listResult([runSummary({ lastEventSequence: 3 })]),
+    );
     mocks.useMissionRunEvents.mockReturnValue(
       eventsResult([evt(1, 'run.created'), evt(2, 'mode.resolved'), evt(3, 'budget.reserved')]),
     );
@@ -437,7 +456,7 @@ describe('MissionRunList and MissionRunCard', () => {
       requestContentHash: 'hash-bbb',
       createdAt: '2026-08-20T10:00:00.000Z',
     });
-    mocks.useMissionRuns.mockReturnValue(listResult([run1, run2]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([run1, run2]));
     render(
       <MissionRunList
         companyId="company-1"
@@ -473,7 +492,7 @@ describe('MissionRunList and MissionRunCard', () => {
       status: 'completed',
       requestContentHash: 'hash-bbb',
     });
-    mocks.useMissionRuns.mockReturnValue(listResult([run1, run2]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([run1, run2]));
     render(
       <MissionRunList
         companyId="company-1"
@@ -493,7 +512,7 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── Failed card ──────────────────────────────────────────────────────
   it('shows a safe error message on a failed card without exposing secrets', () => {
-    mocks.useMissionRuns.mockReturnValue(listResult([runSummary({ status: 'failed' })]));
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'failed' })]));
     mocks.useMissionRunSnapshot.mockReturnValue(
       snapshotResult(
         runSnapshot({
@@ -520,7 +539,11 @@ describe('MissionRunList and MissionRunCard', () => {
 
   // ── Loading and error states ─────────────────────────────────────────
   it('shows a loading indicator while runs are loading', () => {
-    mocks.useMissionRuns.mockReturnValue({ data: undefined, isLoading: true, isError: false });
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    });
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
     });
@@ -528,7 +551,11 @@ describe('MissionRunList and MissionRunCard', () => {
   });
 
   it('shows an error state with retry option when the list fails to load', () => {
-    mocks.useMissionRuns.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    });
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
       wrapper,
     });

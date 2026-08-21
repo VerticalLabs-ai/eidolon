@@ -2810,3 +2810,29 @@ export function useMissionRequestText(runId: string | undefined): string | undef
     }).data ?? undefined
   );
 }
+
+/**
+ * Cursor-based paginated fetch of Mission runs ordered by
+ * (createdAt DESC, id DESC). Uses `useInfiniteQuery` so pages are
+ * accumulated — each page's opaque `nextCursor` drives `fetchNextPage`.
+ * The cursor carries an anchor so runs inserted or changing status during
+ * traversal do not duplicate or skip the anchored result set (VAL-RUN-132).
+ *
+ * Preserves previous data on refetch error so existing cards remain visible
+ * as stale rather than disappearing (VAL-RUN-131).
+ */
+export function useMissionRunsPaginated(companyId: string, projectId: string) {
+  return useInfiniteQuery({
+    queryKey: ['mission-runs', companyId, projectId, 'paginated'],
+    queryFn: async ({ pageParam }) =>
+      unwrap<{ runs: api.MissionRunSummary[]; nextCursor: string | null }>(
+        await api.listMissionRuns(companyId, projectId, {
+          cursor: (pageParam as string | undefined) ?? undefined,
+        }),
+      ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: !!companyId && !!projectId,
+    staleTime: 5_000,
+  });
+}

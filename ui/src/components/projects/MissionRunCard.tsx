@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   useMissionRunSnapshot,
   useMissionRunEvents,
@@ -97,6 +98,34 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 /**
+ * Batched status announcement region (VAL-RUN-089).
+ *
+ * Tracks the previous lifecycle status and announces meaningful changes
+ * through a polite `aria-live` region. High-frequency progress events
+ * (execution.progress, heartbeats) do not trigger announcements — only
+ * lifecycle status transitions (queued → running → completed, etc.) and
+ * error/cancellation indicators are announced. This avoids one announcement
+ * per token or progress event.
+ */
+function useBatchedStatusAnnouncement(runId: string, status: string): string {
+  const [announcement, setAnnouncement] = useState('');
+  const prevStatusRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    // Only announce on a lifecycle status change, not on every re-render
+    // or progress event. The first mount sets the baseline without
+    // announcing (the user can already see the card).
+    if (prev !== null && prev !== status) {
+      setAnnouncement(`Run ${runId}: ${statusToText(status)}`);
+    }
+    prevStatusRef.current = status;
+  }, [runId, status]);
+
+  return announcement;
+}
+
+/**
  * Render an authoritative Mission run card with stable identity, textual
  * lifecycle status, chronological event timeline, budget state, and
  * terminal outcome details.
@@ -105,17 +134,29 @@ function StatusIcon({ status }: { status: string }) {
  * budget, terminal details, and cancellation indicator come from the full
  * snapshot. The event timeline comes from the journal replay. The browser
  * never infers or advances status; every visible field is server-authoritative.
+ *
+ * Accessibility:
+ * - A batched polite live region announces lifecycle status changes
+ *   (VAL-RUN-089).
+ * - Status is conveyed with text and an icon, never color alone
+ *   (VAL-RUN-092).
+ * - Animated indicators respect `prefers-reduced-motion` (VAL-RUN-093).
+ * - The card layout is responsive at narrow mobile viewports (VAL-RUN-094).
+ * - The card has a scroll anchor id for deep-link navigation (VAL-RUN-097).
  */
 export function MissionRunCard({
   companyId,
   projectId,
   run,
   requestText,
+  highlighted,
 }: {
   companyId: string;
   projectId: string;
   run: MissionRunSummary;
   requestText?: string;
+  /** Whether this card is the deep-link target (VAL-RUN-097). */
+  highlighted?: boolean;
 }) {
   const snapshotQuery = useMissionRunSnapshot(companyId, projectId, run.id);
   const eventsQuery = useMissionRunEvents(companyId, projectId, run.id);
@@ -133,12 +174,30 @@ export function MissionRunCard({
   const events = (eventsQuery.data?.events ?? []) as MissionReplayEvent[];
 
   const statusText = statusToText(run.status);
+  const announcement = useBatchedStatusAnnouncement(run.id, run.status);
+
+  // Scroll into view when highlighted (deep-link target).
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (highlighted && cardRef.current && typeof cardRef.current.scrollIntoView === 'function') {
+      cardRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [highlighted]);
 
   return (
     <article
+      ref={cardRef}
+      id={`mission-run-${run.id}`}
       aria-labelledby={`run-heading-${run.id}`}
-      className="rounded-xl border border-white/[0.06] bg-surface p-4"
+      data-highlighted={highlighted ? 'true' : undefined}
+      className={`rounded-xl border bg-surface p-4 w-full max-w-full break-words ${
+        highlighted ? 'border-accent/40 ring-2 ring-accent/20' : 'border-white/[0.06]'
+      }`}
     >
+      {/* Batched polite live region for status announcements (VAL-RUN-089) */}
+      <span role="status" aria-label="Mission status" aria-live="polite" className="sr-only">
+        {announcement}
+      </span>
       <RunCardHeader run={run} statusText={statusText} />
       <RunCardRequest displayRequestText={displayRequestText} run={run} />
       <RunCardMeta run={run} snapshot={snapshot} />
@@ -162,11 +221,11 @@ export function MissionRunCard({
 /** Header with status icon, run ID heading, and textual status badge. */
 function RunCardHeader({ run, statusText }: { run: MissionRunSummary; statusText: string }) {
   return (
-    <div className="mb-3 flex items-center gap-2">
+    <div className="mb-3 flex flex-wrap items-center gap-2">
       <StatusIcon status={run.status} />
       <h3
         id={`run-heading-${run.id}`}
-        className="text-sm font-semibold text-text-primary font-display"
+        className="text-sm font-semibold text-text-primary font-display break-all"
       >
         {run.id}
       </h3>
@@ -231,7 +290,9 @@ function RunCardMeta({ run, snapshot }: { run: MissionRunSummary; snapshot?: Mis
   );
 }
 
-/** Stream status indicator: reconnecting, gap recovery, or stream error (VAL-RUN-031, VAL-RUN-030, VAL-CROSS-052). */
+/** Stream status indicator: reconnecting, gap recovery, or stream error (VAL-RUN-031, VAL-RUN-030, VAL-CROSS-052).
+ * Each state has visible text alongside any color treatment (VAL-RUN-092).
+ * Animated icons respect prefers-reduced-motion (VAL-RUN-093). */
 function RunCardStreamStatus({
   stream,
   isTerminal,
@@ -249,7 +310,10 @@ function RunCardStreamStatus({
         role="status"
         aria-live="polite"
       >
-        <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        <RefreshCw
+          className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+          aria-hidden="true"
+        />
         Replaying missing events…
       </p>
     );
@@ -332,7 +396,7 @@ function RunCardStaleRead({
       <p className="text-xs text-warning mb-1.5" role="status" aria-live="polite">
         Some data may be outdated due to a connection issue.
       </p>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {snapshotError && (
           <button
             type="button"
@@ -391,7 +455,7 @@ function RunCardBudget({ snapshot }: { snapshot?: MissionRunSnapshot }) {
   return (
     <div
       data-testid="budget-status"
-      className="mb-3 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2"
+      className="mb-3 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2 w-full"
     >
       <div className="flex items-center gap-1.5 mb-1">
         <DollarSign className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />
@@ -432,7 +496,7 @@ function RunCardFailure({ snapshot, status }: { snapshot?: MissionRunSnapshot; s
   return (
     <div className="mb-3 rounded-lg border border-error/20 bg-error/10 px-3 py-2">
       <p className="text-xs font-medium text-error mb-0.5">Failure</p>
-      <p className="text-sm text-text-primary">{snapshot.safeErrorMessage}</p>
+      <p className="text-sm text-text-primary break-words">{snapshot.safeErrorMessage}</p>
       {snapshot.failureCategory && (
         <p className="mt-1 text-xs text-text-muted">Category: {snapshot.failureCategory}</p>
       )}
@@ -455,7 +519,7 @@ function RunCardOutput({ snapshot, status }: { snapshot?: MissionRunSnapshot; st
       <p className="text-xs font-medium text-text-secondary mb-1">Output</p>
       <ul className="space-y-1">
         {snapshot.artifacts.map((a: unknown, i: number) => (
-          <li key={i} className="text-sm text-accent">
+          <li key={i} className="text-sm text-accent break-words">
             {/* Artifacts are never[] in Phase 1; placeholder for future */}
             {String(a)}
           </li>
@@ -493,8 +557,8 @@ function RunCardTimeline({
               <span className="tabular-nums text-text-secondary w-6 shrink-0">
                 {event.sequence}
               </span>
-              <span className="text-text-primary">{event.type}</span>
-              <time dateTime={event.occurredAt} className="ml-auto text-text-muted">
+              <span className="text-text-primary break-words">{event.type}</span>
+              <time dateTime={event.occurredAt} className="ml-auto text-text-muted shrink-0">
                 {formatTime(event.occurredAt)}
               </time>
             </li>

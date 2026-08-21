@@ -128,9 +128,15 @@ export function ProjectDetail() {
   const [templateDescription, setTemplateDescription] = useState('');
 
   const rawTab = searchParams.get('tab');
+  // Deep-link: when ?run= is present (from a start response or snapshot
+  // links.ui), auto-switch to the Work tab so the run card is visible and
+  // highlighted (VAL-RUN-097). An explicit tab param still wins.
+  const deepLinkRunId = searchParams.get('run');
   const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
     ? (rawTab as ValidTab)
-    : 'home';
+    : deepLinkRunId
+      ? 'work'
+      : 'home';
 
   const handleTabChange = (id: string) => {
     // Update only the `tab` query param, preserving any other query params.
@@ -295,7 +301,11 @@ export function ProjectDetail() {
             <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4">
               <ChatMissionComposer companyId={companyId ?? ''} projectId={project.id} />
             </div>
-            <MissionRunList companyId={companyId ?? ''} projectId={project.id} />
+            <MissionRunList
+              companyId={companyId ?? ''}
+              projectId={project.id}
+              highlightRunId={deepLinkRunId ?? undefined}
+            />
           </div>
         )}
         {activeTab === 'drive' && (

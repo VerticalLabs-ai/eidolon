@@ -339,10 +339,37 @@ export function ChatMissionComposer({
     }
   }, [missionEnabled, mode]);
 
-  // Independent drafts for each mode (lifted up so they survive mode switches).
-  const [chatDraft, setChatDraft] = useState('');
-  const [missionDraft, setMissionDraft] = useState('');
+  // Independent drafts for each mode, persisted to sessionStorage so they
+  // survive tab navigation within Project Work (VAL-RUN-112). The storage
+  // key is scoped by company/project so switching scope does not leak
+  // drafts from another company/project (VAL-CROSS-069, VAL-CROSS-070).
+  const draftStorageKey = `mission-drafts:${companyId}:${projectId}`;
+  const [chatDraft, setChatDraft] = useState(() => {
+    try {
+      const stored = sessionStorage.getItem(draftStorageKey);
+      return stored ? (JSON.parse(stored).chatDraft ?? '') : '';
+    } catch {
+      return '';
+    }
+  });
+  const [missionDraft, setMissionDraft] = useState(() => {
+    try {
+      const stored = sessionStorage.getItem(draftStorageKey);
+      return stored ? (JSON.parse(stored).missionDraft ?? '') : '';
+    } catch {
+      return '';
+    }
+  });
   const [missionMode, setMissionMode] = useState<MissionMode>('auto');
+
+  // Persist drafts to sessionStorage whenever they change.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(draftStorageKey, JSON.stringify({ chatDraft, missionDraft }));
+    } catch {
+      // sessionStorage may be unavailable (private mode); ignore.
+    }
+  }, [draftStorageKey, chatDraft, missionDraft]);
 
   // Thread item creation (legacy Chat path).
   const createThreadItem = useCreateThreadItem(companyId, projectId, selectedThreadId);
