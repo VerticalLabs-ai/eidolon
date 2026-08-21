@@ -54,6 +54,7 @@ export const runCommands = pgTable(
     resultStatusCode: integer('result_status_code'),
     resultBody: jsonb('result_body').$type<Record<string, unknown>>(),
     errorCode: text('error_code'),
+    traceId: text('trace_id'),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),

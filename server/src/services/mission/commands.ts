@@ -7,6 +7,10 @@ import { canonicalHash } from './policy.js';
 import { BudgetService } from './budget.js';
 import { MissionCancellationService } from './cancellation.js';
 import { encryptReason } from './reason-security.js';
+import {
+  incrementMissionCommand,
+  incrementMissionIdempotentReplay,
+} from '../../middleware/observability.js';
 
 /**
  * Canonical command ingress and shared idempotency for run-scoped Mission
@@ -125,6 +129,7 @@ export interface CommandSummary {
   resultStatusCode: number;
   createdAt: string;
   appliedAt: string;
+  traceId: string | null;
 }
 
 export interface CommandResult {
@@ -203,8 +208,17 @@ export class MissionCommandService {
       if (TERMINAL_STATUSES.has(run.status)) {
         // Already-terminal: return 200 with the current snapshot, no event,
         // no state change (matrix alreadyTerminalBehavior).
+        // Already-terminal cancel is a new applied command (200, no state change).
+        incrementMissionCommand('run.cancel', 'applied');
         return this.toResult(
-          await this.applyCancelAlreadyTerminal(run, body, idempotencyKey, actorType, actorId),
+          await this.applyCancelAlreadyTerminal(
+            run,
+            body,
+            idempotencyKey,
+            actorType,
+            actorId,
+            traceId,
+          ),
         );
       }
       if (ifMatch === null) {
@@ -292,7 +306,15 @@ export class MissionCommandService {
           // A concurrent cancel already recorded the request: idempotent
           // no-op (no duplicate cancellation event).
           if (locked.cancelRequestedAt !== null) {
-            return this.recordCancelNoop(tx, locked, body, idempotencyKey, actorType, actorId);
+            return this.recordCancelNoop(
+              tx,
+              locked,
+              body,
+              idempotencyKey,
+              actorType,
+              actorId,
+              traceId,
+            );
           }
           return this.applyCancel(tx, locked, body, idempotencyKey, actorType, actorId, traceId);
         }
@@ -305,6 +327,8 @@ export class MissionCommandService {
         }
         return this.applyRetry(tx, locked, body, idempotencyKey, actorType, actorId, traceId);
       });
+      // Increment command counter for a newly applied command (not a replay).
+      incrementMissionCommand(type, 'applied');
       return this.toResult(outcome);
     } catch (err) {
       if (err instanceof IdempotencyReplayError) {
@@ -403,6 +427,7 @@ export class MissionCommandService {
       expectedStateVersion: run.stateVersion,
       resultStatusCode: cancelResult.statusCode,
       stored,
+      traceId,
     });
 
     return {
@@ -420,6 +445,7 @@ export class MissionCommandService {
     idempotencyKey: string,
     actorType: 'user' | 'agent' | 'system',
     actorId: string | null,
+    traceId?: string | null,
   ): Promise<ApplyOutcome> {
     // A cancel was already requested; record this command as an applied,
     // inert 200 with the current snapshot and no new event.
@@ -438,6 +464,7 @@ export class MissionCommandService {
       expectedStateVersion: run.stateVersion,
       resultStatusCode: 200,
       stored,
+      traceId,
     });
     return { statusCode: 200, etag: snapshot.stateVersion, run: snapshot, commandRow };
   }
@@ -448,6 +475,7 @@ export class MissionCommandService {
     idempotencyKey: string,
     actorType: 'user' | 'agent' | 'system',
     actorId: string | null,
+    traceId?: string | null,
   ): Promise<ApplyOutcome> {
     const now = this.now();
     const snapshot = await this.buildSnapshot(this.db.drizzle, run.id);
@@ -466,6 +494,7 @@ export class MissionCommandService {
       resultStatusCode: 200,
       stored,
       now,
+      traceId,
     });
     return { statusCode: 200, etag: snapshot.stateVersion, run: snapshot, commandRow };
   }
@@ -643,6 +672,7 @@ export class MissionCommandService {
       expectedStateVersion: run.stateVersion,
       resultStatusCode: 202,
       stored,
+      traceId,
     });
 
     // Ordered initial events on the successor run.
@@ -797,6 +827,7 @@ export class MissionCommandService {
       resultStatusCode: number;
       stored: StoredResult;
       now?: Date;
+      traceId?: string | null;
     },
   ): Promise<MissionCommandRow> {
     const schema = this.db.schema;
@@ -817,6 +848,7 @@ export class MissionCommandService {
         status: 'applied',
         resultStatusCode: input.resultStatusCode,
         resultBody: input.stored as unknown as Record<string, unknown>,
+        traceId: input.traceId ?? null,
         createdAt: now,
         appliedAt: now,
       })
@@ -910,6 +942,8 @@ export class MissionCommandService {
     actorId: string | null,
     ifMatch: number | null,
   ): Promise<void> {
+    // Increment the rejected command counter (VAL-RUN-078).
+    incrementMissionCommand(type, 'rejected');
     const schema = this.db.schema;
     const now = this.now();
     const payload =
@@ -956,6 +990,7 @@ export class MissionCommandService {
       resultStatusCode: row.resultStatusCode ?? 0,
       createdAt: row.createdAt.toISOString(),
       appliedAt: row.appliedAt ? row.appliedAt.toISOString() : row.createdAt.toISOString(),
+      traceId: row.traceId ?? null,
     };
   }
 
@@ -1000,6 +1035,9 @@ export class MissionCommandService {
     if (!stored || !stored.run) {
       throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency key already used');
     }
+    // Increment idempotent replay counter (not counted as a new command).
+    incrementMissionIdempotentReplay();
+    incrementMissionCommand(type, 'replayed');
     return {
       statusCode: stored.statusCode,
       etag: stored.etag,

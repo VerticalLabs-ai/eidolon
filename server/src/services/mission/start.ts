@@ -8,6 +8,10 @@ import { resolvePolicy, policyContentHash, canonicalHash, type ResolvedPolicy } 
 // so different mode/limits with the same request text conflict.
 import type { BuiltInMode } from './modes.js';
 import { BudgetService } from './budget.js';
+import {
+  incrementMissionRunStarted,
+  incrementMissionBudgetDenial,
+} from '../../middleware/observability.js';
 
 /**
  * Mission start service.
@@ -85,6 +89,7 @@ export interface CommandSummary {
   resultStatusCode: number;
   createdAt: string;
   appliedAt: string;
+  traceId: string | null;
 }
 
 /** Test-only failpoint hook. Throwing aborts the transaction. */
@@ -263,6 +268,7 @@ export class MissionStartService {
             status: 'applied',
             resultStatusCode: 202,
             resultBody: { runId } as Record<string, unknown>,
+            traceId: traceId ?? null,
             createdAt: now,
             appliedAt: now,
           })
@@ -331,6 +337,7 @@ export class MissionStartService {
           now,
           commandCreatedAt: commandRow.createdAt,
           commandIdempotencyKey: idempotencyKey,
+          traceId: traceId ?? null,
         });
         await tx
           .update(schema.runCommands)
@@ -340,8 +347,16 @@ export class MissionStartService {
         return built;
       });
 
+      // Increment the run-started counter only for new runs, not replays
+      // (VAL-RUN-078: idempotent replay must not count as a second run).
+      incrementMissionRunStarted(policy.resolvedMode);
       return result;
     } catch (err) {
+      // Increment budget denial counter when budget is unavailable
+      // (VAL-RUN-078). The error propagates after the counter is incremented.
+      if (err instanceof AppError && err.code === 'BUDGET_UNAVAILABLE') {
+        incrementMissionBudgetDenial();
+      }
       // A unique-violation on the start idempotency index means a concurrent
       // identical start won; re-read and replay/conflict.
       if (this.isUniqueViolation(err)) {
@@ -376,6 +391,7 @@ export class MissionStartService {
     now: Date;
     commandCreatedAt: Date;
     commandIdempotencyKey: string;
+    traceId: string | null;
   }): StartResult {
     const nowIso = input.now.toISOString();
     return {
@@ -408,6 +424,7 @@ export class MissionStartService {
         resultStatusCode: 202,
         createdAt: input.commandCreatedAt.toISOString(),
         appliedAt: input.commandCreatedAt.toISOString(),
+        traceId: input.traceId,
       },
     };
   }
@@ -438,6 +455,7 @@ export class MissionStartService {
       createdAt: Date;
       appliedAt: Date | null;
       resultBody: Record<string, unknown> | null;
+      traceId: string | null;
     },
     body: StartRequestBody,
   ): Promise<StartResult> {
@@ -467,7 +485,7 @@ export class MissionStartService {
       command?: StartResult['command'];
     } | null;
     if (stored?.run && stored?.command) {
-      return { run: stored.run, command: stored.command };
+      return { run: stored.run, command: { ...stored.command, traceId: existing.traceId ?? null } };
     }
     const [run] = await this.db.drizzle
       .select()
@@ -520,6 +538,7 @@ export class MissionStartService {
         appliedAt: existing.appliedAt
           ? existing.appliedAt.toISOString()
           : existing.createdAt.toISOString(),
+        traceId: existing.traceId ?? null,
       },
     };
   }

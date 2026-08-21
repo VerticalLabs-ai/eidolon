@@ -1,6 +1,6 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import { missionErrorSanitizer } from '../middleware/mission-error-sanitizer.js';
@@ -20,6 +20,10 @@ import { MissionCommandService, type RunCommandType } from '../services/mission/
 import { MissionCommandHistoryService } from '../services/mission/command-history.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import { redactCanaries } from '../services/mission/reason-security.js';
+import {
+  incrementMissionSseConnection,
+  incrementMissionSseReplay,
+} from '../middleware/observability.js';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -380,6 +384,14 @@ export function missionRunsRouter(db: DbInstance): Router {
 
     const service = new MissionStreamService(db);
     const accessChecker = createStreamAccessChecker(db, req, companyId, 'company.view');
+    // Increment SSE connection counter (VAL-RUN-078).
+    incrementMissionSseConnection();
+    // If the client is reconnecting from a non-zero cursor, count it as a replay.
+    if (after !== null && after > 0) {
+      incrementMissionSseReplay();
+    } else if (lastEventId !== null && lastEventId > 0) {
+      incrementMissionSseReplay();
+    }
     await service.stream(
       { companyId, projectId, runId, after, lastEventId, accessChecker },
       req,
@@ -515,7 +527,26 @@ export function missionRunsRouter(db: DbInstance): Router {
       includePayload,
     });
 
-    res.json({ data: { commands: result.commands, nextCursor: result.nextCursor } });
+    // Enrich command history entries with traceId from the run_commands
+    // table. This is done in the route handler rather than in listCommands
+    // to avoid modifying the HIGH-risk listCommands method (VAL-RUN-076).
+    const commandIds = result.commands.map((c) => c.id);
+    const traceById = new Map<string, string | null>();
+    if (commandIds.length > 0) {
+      const traceRows = await db.drizzle
+        .select({ id: db.schema.runCommands.id, traceId: db.schema.runCommands.traceId })
+        .from(db.schema.runCommands)
+        .where(inArray(db.schema.runCommands.id, commandIds));
+      for (const row of traceRows) {
+        traceById.set(row.id, row.traceId);
+      }
+    }
+    const commands = result.commands.map((c) => ({
+      ...c,
+      traceId: traceById.get(c.id) ?? null,
+    }));
+
+    res.json({ data: { commands, nextCursor: result.nextCursor } });
   });
 
   // Mission error sanitizer: converts any error thrown by a Mission route

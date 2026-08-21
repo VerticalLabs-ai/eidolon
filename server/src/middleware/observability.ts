@@ -181,6 +181,125 @@ void activeCompaniesGauge;
 void agentsByStatusGauge;
 void tasksByStatusGauge;
 
+// ---------------------------------------------------------------------------
+// Mission operational metrics (VAL-RUN-077, VAL-RUN-078).
+//
+// All labels are bounded and safe: `status`, `resolved_mode`, `type`,
+// `result`. No company, project, run, URL, prompt, user, or tenant IDs
+// appear as labels or label values.
+// ---------------------------------------------------------------------------
+
+/** Mission run statuses tracked by the by-status gauge. */
+const MISSION_RUN_STATUSES = [
+  'draft',
+  'awaiting_input',
+  'planning',
+  'awaiting_approval',
+  'queued',
+  'running',
+  'synthesizing',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+
+const missionRunsStartedCounter = new client.Counter({
+  name: 'eidolon_mission_runs_started_total',
+  help: 'Total Mission runs started (new runs only; idempotent replays do not increment).',
+  labelNames: ['resolved_mode'] as const,
+  registers: [register],
+});
+
+const missionRunsByStatusGauge = new client.Gauge({
+  name: 'eidolon_mission_runs_by_status',
+  help: 'Number of Mission runs, grouped by status.',
+  labelNames: ['status'] as const,
+  registers: [register],
+  async collect() {
+    if (!businessMetricsDb) {
+      return;
+    }
+    try {
+      const rows = (await businessMetricsDb.drizzle.execute(sql`
+        SELECT status, count(*)::int AS count FROM mission_runs GROUP BY status
+      `)) as unknown as Array<{ status: string; count: number }>;
+      const counts = new Map<string, number>(MISSION_RUN_STATUSES.map((s) => [s, 0]));
+      for (const row of rows) {
+        counts.set(row.status, Number(row.count));
+      }
+      for (const [status, count] of counts) {
+        this.set({ status }, count);
+      }
+    } catch {
+      // Leave the gauge at its last value on transient DB errors.
+    }
+  },
+});
+
+const missionCommandsCounter = new client.Counter({
+  name: 'eidolon_mission_commands_total',
+  help: 'Total Mission commands, grouped by type and result.',
+  labelNames: ['type', 'result'] as const,
+  registers: [register],
+});
+
+const missionCommandIdempotentReplaysCounter = new client.Counter({
+  name: 'eidolon_mission_command_idempotent_replays_total',
+  help: 'Total Mission command idempotent replays (not counted as new commands).',
+  registers: [register],
+});
+
+const missionBudgetDenialsCounter = new client.Counter({
+  name: 'eidolon_mission_budget_denials_total',
+  help: 'Total Mission budget denials.',
+  registers: [register],
+});
+
+const missionSseConnectionsCounter = new client.Counter({
+  name: 'eidolon_mission_sse_connections_total',
+  help: 'Total Mission SSE stream connections opened.',
+  registers: [register],
+});
+
+const missionSseReplaysCounter = new client.Counter({
+  name: 'eidolon_mission_sse_replays_total',
+  help: 'Total Mission SSE stream replays (initial event delivery).',
+  registers: [register],
+});
+
+// Touch metrics so they are not tree-shaken in production builds.
+void missionRunsByStatusGauge;
+
+/** Increment the run-started counter (new runs only, not replays). */
+export function incrementMissionRunStarted(resolvedMode: string): void {
+  missionRunsStartedCounter.inc({ resolved_mode: resolvedMode });
+}
+
+/** Increment the command counter by type and result. */
+export function incrementMissionCommand(type: string, result: string): void {
+  missionCommandsCounter.inc({ type, result });
+}
+
+/** Increment the idempotent replay counter. */
+export function incrementMissionIdempotentReplay(): void {
+  missionCommandIdempotentReplaysCounter.inc();
+}
+
+/** Increment the budget denial counter. */
+export function incrementMissionBudgetDenial(): void {
+  missionBudgetDenialsCounter.inc();
+}
+
+/** Increment the SSE connections counter. */
+export function incrementMissionSseConnection(): void {
+  missionSseConnectionsCounter.inc();
+}
+
+/** Increment the SSE replays counter. */
+export function incrementMissionSseReplay(): void {
+  missionSseReplaysCounter.inc();
+}
+
 function safeRequestId(candidate: string | undefined): string {
   if (candidate && /^[A-Za-z0-9._:-]{1,128}$/.test(candidate)) {
     return candidate;
