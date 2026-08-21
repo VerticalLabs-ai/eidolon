@@ -2711,8 +2711,83 @@ export function useStartMissionRun(companyId: string, projectId: string) {
       const res = await api.startMissionRun(companyId, projectId, args.body, args.idempotencyKey);
       return res;
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
       qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+      // Store request text for the run card so it survives until the list
+      // refetches. The server snapshot carries requestContentHash but not
+      // the request text; encrypted ingress (later feature) will add a
+      // server-side safe summary. Until then, the card shows the text from
+      // the start mutation, or the hash as a stable identifier.
+      const runId = data.data?.run?.id;
+      if (runId && variables.body.request.text) {
+        qc.setQueryData(['mission-request-text', runId], variables.body.request.text);
+      }
     },
   });
+}
+
+/** Scoped run list ordered by (createdAt DESC, id DESC) with stable pagination. */
+export function useMissionRuns(companyId: string, projectId: string) {
+  return useQuery({
+    queryKey: ['mission-runs', companyId, projectId],
+    queryFn: async () =>
+      unwrap<{ runs: api.MissionRunSummary[]; nextCursor: string | null }>(
+        await api.listMissionRuns(companyId, projectId),
+      ),
+    enabled: !!companyId && !!projectId,
+    staleTime: 5_000,
+  });
+}
+
+/** Authoritative single-run snapshot with strong ETag. */
+export function useMissionRunSnapshot(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-run-snapshot', companyId, projectId, runId],
+    queryFn: async () => {
+      const res = await api.getMissionRunSnapshot(companyId, projectId, runId!);
+      const data = unwrap<{ run: api.MissionRunSnapshot; links: { ui: string } }>(res);
+      return data.run;
+    },
+    enabled: !!companyId && !!projectId && !!runId,
+    staleTime: 5_000,
+  });
+}
+
+/** Bounded journal event replay for the run timeline. */
+export function useMissionRunEvents(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-run-events', companyId, projectId, runId],
+    queryFn: async () =>
+      unwrap<{
+        events: api.MissionReplayEvent[];
+        nextCursor: number;
+        latestSequence: number;
+      }>(await api.getMissionRunEvents(companyId, projectId, runId!)),
+    enabled: !!companyId && !!projectId && !!runId,
+    staleTime: 5_000,
+  });
+}
+
+/** Read the request text stored from a start mutation, if available. */
+export function useMissionRequestText(runId: string | undefined): string | undefined {
+  const qc = useQueryClient();
+  return (
+    useQuery({
+      queryKey: ['mission-request-text', runId],
+      queryFn: () => qc.getQueryData<string>(['mission-request-text', runId!]) ?? null,
+      enabled: !!runId,
+      staleTime: Infinity,
+      gcTime: Infinity,
+      // Read-only from cache; no network.
+      retry: false,
+    }).data ?? undefined
+  );
 }

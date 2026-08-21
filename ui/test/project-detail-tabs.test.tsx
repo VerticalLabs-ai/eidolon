@@ -44,6 +44,18 @@ vi.mock('@/lib/hooks', () => ({
     reset: vi.fn(),
   }),
   useStartMissionRun: () => ({ mutate: vi.fn(), isPending: false }),
+  useMissionRuns: () => ({
+    data: { runs: [], nextCursor: null },
+    isLoading: false,
+    isError: false,
+  }),
+  useMissionRunSnapshot: () => ({ data: undefined, isLoading: false, isError: false }),
+  useMissionRunEvents: () => ({
+    data: { events: [], nextCursor: 0, latestSequence: 0 },
+    isLoading: false,
+    isError: false,
+  }),
+  useMissionRequestText: () => undefined,
   useProject: () => ({
     data: project,
     isLoading: false,

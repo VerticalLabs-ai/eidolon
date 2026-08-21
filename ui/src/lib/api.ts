@@ -3576,3 +3576,148 @@ export const startMissionRun = (
     body: JSON.stringify(body),
     headers: { 'Idempotency-Key': idempotencyKey },
   });
+
+// ── Mission Run Snapshot, List, and Events ──────────────────────────────
+
+/** Authoritative run snapshot from the server (RunSnapshot in snapshot.ts). */
+export interface MissionRunSnapshot {
+  id: string;
+  companyId: string;
+  projectId: string;
+  projectThreadId: string;
+  rootRunId: string;
+  parentRunId: string | null;
+  retryOfRunId: string | null;
+  depth: number;
+  childOrdinal: number | null;
+  routingKind: string;
+  status: string;
+  stateVersion: number;
+  lastEventSequence: number;
+  resolvedMode: string;
+  modeProfileId: string | null;
+  policySnapshotId: string | null;
+  policyContentHash: string | null;
+  requestContentHash: string;
+  currentQuestionSetId: string | null;
+  currentPlanRevisionId: string | null;
+  approvedPlanRevisionId: string | null;
+  waitingFromStatus: string | null;
+  partialResultPolicy: string;
+  cancelRequestedAt: string | null;
+  cancelRequestedBy: string | null;
+  cancellationDeadlineAt: string | null;
+  failureCategory: string | null;
+  failureCode: string | null;
+  safeErrorMessage: string | null;
+  startedAt: string | null;
+  terminalAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  attemptCount: number;
+  providerCallCount: number;
+  descendantCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  outputBytes: number;
+  actualCostCents: number;
+  budget: {
+    reservedCents: number;
+    settledCents: number;
+    releasedCents: number;
+    costCentsCeiling: number;
+    actualCostCents: number;
+  };
+  childSummary: {
+    running: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+    total: number;
+  };
+  artifacts: never[];
+  links: { ui: string };
+}
+
+/** Lean run summary from the scoped list endpoint. */
+export interface MissionRunSummary {
+  id: string;
+  companyId: string;
+  projectId: string;
+  status: string;
+  stateVersion: number;
+  lastEventSequence: number;
+  resolvedMode: string;
+  policyContentHash: string | null;
+  requestContentHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Sanitized replay event from the journal. */
+export interface MissionReplayEvent {
+  sequence: number;
+  type: string;
+  schemaVersion: number;
+  payload: Record<string, unknown>;
+  commandId: string | null;
+  actorType: string | null;
+  actorId: string | null;
+  traceId: string | null;
+  occurredAt: string;
+}
+
+export interface MissionRunListResult {
+  data: { runs: MissionRunSummary[]; nextCursor: string | null };
+}
+
+export interface MissionRunSnapshotResult {
+  data: { run: MissionRunSnapshot; links: { ui: string } };
+}
+
+export interface MissionRunEventsResult {
+  data: {
+    events: MissionReplayEvent[];
+    nextCursor: number;
+    latestSequence: number;
+  };
+}
+
+export function listMissionRuns(
+  companyId: string,
+  projectId: string,
+  opts?: { status?: string; limit?: number; cursor?: string },
+) {
+  const params = new URLSearchParams();
+  if (opts?.status) {
+    params.set('status', opts.status);
+  }
+  if (opts?.limit) {
+    params.set('limit', String(opts.limit));
+  }
+  if (opts?.cursor) {
+    params.set('cursor', opts.cursor);
+  }
+  const qs = params.toString();
+  return request<MissionRunListResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export function getMissionRunSnapshot(companyId: string, projectId: string, runId: string) {
+  return request<MissionRunSnapshotResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}`,
+  );
+}
+
+export function getMissionRunEvents(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  after = 0,
+  limit = 100,
+) {
+  return request<MissionRunEventsResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/events?after=${after}&limit=${limit}`,
+  );
+}

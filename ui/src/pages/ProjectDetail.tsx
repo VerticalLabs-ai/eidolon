@@ -26,6 +26,7 @@ import { ProjectArtifacts } from '@/pages/ProjectArtifacts';
 import { ProjectMeetings } from '@/components/projects/ProjectMeetings';
 import { ProjectThreadComposer } from '@/components/projects/ProjectThreadComposer';
 import { ChatMissionComposer } from '@/components/projects/ChatMissionComposer';
+import { MissionRunList } from '@/components/projects/MissionRunList';
 import { ProjectPlansPanel } from '@/components/projects/ProjectPlansPanel';
 import { ProjectDecisionsPanel } from '@/components/projects/ProjectDecisionsPanel';
 import { ProjectOutcomesPanel } from '@/components/projects/ProjectOutcomesPanel';
@@ -294,6 +295,7 @@ export function ProjectDetail() {
             <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4">
               <ChatMissionComposer companyId={companyId ?? ''} projectId={project.id} />
             </div>
+            <MissionRunList companyId={companyId ?? ''} projectId={project.id} />
           </div>
         )}
         {activeTab === 'drive' && (
