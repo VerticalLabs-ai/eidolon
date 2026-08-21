@@ -2877,3 +2877,51 @@ export function useCancelMissionRun(companyId: string, projectId: string, runId:
     retry: false,
   });
 }
+
+/**
+ * Idempotent Mission retry mutation
+ * (`POST /:runId/retry` → canonical `run.retry` command).
+ *
+ * Creates a new linked run with a fresh reservation and policy snapshot.
+ * The original terminal run remains immutable (VAL-CROSS-074, VAL-CROSS-096).
+ *
+ * The caller supplies a stable idempotency key (reused across recoverable
+ * retries so duplicate/retry submissions are idempotent) and an optional
+ * `ifMatch` state version for stale-action protection (VAL-RUN-056).
+ *
+ * The browser never advances status optimistically. On success the
+ * snapshot, events, and run-list caches are invalidated so the
+ * authoritative server state reveals the new successor run.
+ *
+ * Recoverable errors (stale version `412 RUN_VERSION_MISMATCH` or a network
+ * failure) are surfaced through the returned `error` so the caller can
+ * distinguish acceptance from rejection (VAL-RUN-130).
+ */
+export function useRetryMissionRun(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      body?: api.MissionRetryBody;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      const res = await api.retryMissionRun(
+        companyId,
+        projectId,
+        runId,
+        args.body ?? {},
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+      return res;
+    },
+    onSuccess: () => {
+      // Invalidate authoritative caches so the card and list refetch
+      // server state, revealing the new successor run.
+      qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+    },
+    retry: false,
+  });
+}

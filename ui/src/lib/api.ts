@@ -3765,3 +3765,69 @@ export function cancelMissionRun(
     },
   );
 }
+
+// ── Mission Run Retry ──────────────────────────────────────────────────────
+
+/** Convenience retry response. The convenience `/retry` route maps to the
+ * canonical `run.retry` command and returns the accepted command result
+ * plus the new successor run snapshot. The server returns 202 with a
+ * Location header pointing to the successor run. */
+export interface MissionRetryResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/** Optional lower-limit overrides and optional request text for a retry.
+ * Limits may only lower the original run's effective ceiling; the server
+ * rejects broadening. Request text, if supplied, replaces the original
+ * request for the successor run. */
+export interface MissionRetryBody {
+  limits?: {
+    costCents?: number;
+    totalTokens?: number;
+    durationSeconds?: number;
+    providerCalls?: number;
+    steps?: number;
+    outputBytes?: number;
+  };
+  request?: {
+    text?: string;
+    attachments?: string[];
+    context?: Record<string, unknown>;
+  };
+}
+
+/**
+ * Submit an idempotent retry for a terminal Mission run
+ * (`POST /:runId/retry`). Creates a new linked run with a fresh
+ * reservation and policy snapshot. The original run remains terminal and
+ * immutable (VAL-CROSS-074, VAL-CROSS-096).
+ *
+ * An optional `ifMatch` state version sends a strong quoted `If-Match` ETag
+ * so a stale action is rejected by the server (VAL-RUN-056). The body may
+ * include optional lower limits or a replacement request.
+ *
+ * The browser never advances state optimistically; the authoritative
+ * snapshot/event refetch reveals the new successor run.
+ */
+export function retryMissionRun(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  body: MissionRetryBody,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionRetryResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/retry`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers,
+    },
+  );
+}

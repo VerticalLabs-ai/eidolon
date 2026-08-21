@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   useMissionRunSnapshot,
   useMissionRunEvents,
   useMissionRequestText,
   useMissionRunStream,
   useCancelMissionRun,
+  useRetryMissionRun,
 } from '@/lib/hooks';
 import type { MissionRunSummary, MissionRunSnapshot, MissionReplayEvent } from '@/lib/api';
 import {
@@ -17,6 +19,7 @@ import {
   RefreshCw,
   WifiOff,
   Ban,
+  RotateCcw,
 } from 'lucide-react';
 import { MissionCancelDialog } from './MissionCancelDialog';
 
@@ -190,6 +193,14 @@ export function MissionRunCard({
     snapshot?.cancelRequestedAt !== null && snapshot?.cancelRequestedAt !== undefined;
   const canCancel = !isTerminal && !cancelRequested;
 
+  // Retry control (VAL-RUN-045, VAL-CROSS-073, VAL-CROSS-074, VAL-CROSS-096).
+  // Retry is shown only for terminal root runs (failed or cancelled, depth 0).
+  // Completed runs and child runs (depth > 0) do not get a retry control.
+  // The browser never advances state optimistically; the authoritative
+  // snapshot/event refetch reveals the new successor run.
+  const isRootRun = !snapshot || (snapshot.depth ?? 0) === 0;
+  const canRetry = (run.status === 'failed' || run.status === 'cancelled') && isRootRun;
+
   // When the confirmation dialog closes, restore focus to the originating
   // Cancel control so focus is never lost to the document body
   // (VAL-RUN-090). Native <dialog> restoration handles real browsers; this
@@ -235,11 +246,20 @@ export function MissionRunCard({
         onRetryEvents={() => eventsQuery.refetch()}
       />
       <RunCardCancellationIndicator snapshot={snapshot} status={run.status} />
+      <RunCardRetryLineage snapshot={snapshot} companyId={companyId} projectId={projectId} />
       <RunCardBudget snapshot={snapshot} />
       <RunCardFailure snapshot={snapshot} status={run.status} />
       <RunCardOutput snapshot={snapshot} status={run.status} />
       <RunCardCancelledDetail snapshot={snapshot} status={run.status} />
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
+      <RunCardRetryControl
+        companyId={companyId}
+        projectId={projectId}
+        runId={run.id}
+        canRetry={canRetry}
+        stateVersion={snapshot?.stateVersion}
+        onRefreshSnapshot={() => snapshotQuery.refetch()}
+      />
       {canCancel && (
         <div className="mt-3">
           <button
@@ -490,6 +510,137 @@ function RunCardCancellationIndicator({
       Cancellation requested
       {snapshot?.cancelRequestedBy ? ` by ${snapshot.cancelRequestedBy}` : ''}
     </p>
+  );
+}
+
+/** Retry lineage link: shows when this run is a retry of another run
+ * (VAL-CROSS-074, VAL-CROSS-096). The link navigates to the original run
+ * so the user can trace the retry history as a distinct lineage. */
+function RunCardRetryLineage({
+  snapshot,
+  companyId,
+  projectId,
+}: {
+  snapshot?: MissionRunSnapshot;
+  companyId: string;
+  projectId: string;
+}) {
+  const retryOfRunId = snapshot?.retryOfRunId;
+  if (!retryOfRunId) {
+    return null;
+  }
+  const linkPath = `/companies/${companyId}/projects/${projectId}/work?mission=${retryOfRunId}`;
+  return (
+    <p className="mb-3 text-xs text-text-muted">
+      <span>Retry of </span>
+      <Link
+        to={linkPath}
+        className="text-accent underline hover:text-accent/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none rounded"
+      >
+        {retryOfRunId}
+      </Link>
+    </p>
+  );
+}
+
+/** Retry control for terminal root runs (VAL-RUN-045, VAL-CROSS-073,
+ * VAL-CROSS-074, VAL-CROSS-096, VAL-RUN-056, VAL-RUN-130).
+ *
+ * Shows a Retry Mission button for failed/cancelled terminal root runs.
+ * Handles stale-version errors (412 RUN_VERSION_MISMATCH) by showing a
+ * "Mission changed" message with a refresh control, and lost network
+ * responses by showing a recovering state. The browser never advances
+ * state optimistically; the authoritative snapshot/event refetch reveals
+ * the new successor run. */
+function RunCardRetryControl({
+  companyId,
+  projectId,
+  runId,
+  canRetry,
+  stateVersion,
+  onRefreshSnapshot,
+}: {
+  companyId: string;
+  projectId: string;
+  runId: string;
+  canRetry: boolean;
+  stateVersion?: number;
+  onRefreshSnapshot: () => void;
+}) {
+  const retryMutation = useRetryMissionRun(companyId, projectId, runId);
+  const [retryError, setRetryError] = useState<'stale' | 'network' | null>(null);
+
+  async function handleRetry() {
+    if (retryMutation.isPending) {
+      return;
+    }
+    const idempotencyKey = `retry-${runId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    setRetryError(null);
+    try {
+      await retryMutation.mutateAsync({
+        idempotencyKey,
+        ifMatch: stateVersion,
+      });
+    } catch (err) {
+      const apiErr = err as { status?: number; body?: { code?: string } };
+      if (apiErr?.status === 412 || apiErr?.body?.code === 'RUN_VERSION_MISMATCH') {
+        setRetryError('stale');
+      } else {
+        // Network error or lost response — the server may have applied the
+        // command but the response was lost. Show a recovering state
+        // (VAL-RUN-130).
+        setRetryError('network');
+      }
+    }
+  }
+
+  function handleRefreshAfterStale() {
+    onRefreshSnapshot();
+    setRetryError(null);
+  }
+
+  if (!canRetry) {
+    return null;
+  }
+
+  return (
+    <>
+      {retryError === 'stale' && (
+        <div className="mt-3 rounded-lg border border-warning/20 bg-warning/5 px-3 py-2">
+          <p className="text-xs text-warning mb-1.5" role="alert">
+            Mission changed. Refresh to see the latest state.
+          </p>
+          <button
+            type="button"
+            onClick={handleRefreshAfterStale}
+            aria-label="Refresh run snapshot"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/20 focus-visible:ring-2 focus-visible:ring-warning/40 focus-visible:outline-none motion-reduce:transition-none"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            Refresh
+          </button>
+        </div>
+      )}
+      {retryError === 'network' && (
+        <p className="mt-3 text-xs text-warning" role="status" aria-live="polite">
+          Recovering — the retry may have been accepted. The run list will update shortly.
+        </p>
+      )}
+      {retryError !== 'stale' && (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={retryMutation.isPending}
+            aria-label={`Retry Mission ${runId}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed motion-reduce:transition-none"
+          >
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+            Retry Mission
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 
