@@ -1,6 +1,20 @@
-import { useMissionRunSnapshot, useMissionRunEvents, useMissionRequestText } from '@/lib/hooks';
+import {
+  useMissionRunSnapshot,
+  useMissionRunEvents,
+  useMissionRequestText,
+  useMissionRunStream,
+} from '@/lib/hooks';
 import type { MissionRunSummary, MissionRunSnapshot, MissionReplayEvent } from '@/lib/api';
-import { CheckCircle2, XCircle, AlertTriangle, Clock, Activity, DollarSign } from 'lucide-react';
+import {
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  Clock,
+  Activity,
+  DollarSign,
+  RefreshCw,
+  WifiOff,
+} from 'lucide-react';
 
 /** Map a status string to human-readable text (VAL-RUN-018). */
 function statusToText(status: string): string {
@@ -109,6 +123,12 @@ export function MissionRunCard({
   const cachedRequestText = useMissionRequestText(run.id);
   const displayRequestText = requestText ?? cachedRequestText;
 
+  // SSE stream for real-time updates. Only connect for nonterminal runs.
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(run.status);
+  const stream = useMissionRunStream(companyId, projectId, run.id, {
+    enabled: !isTerminal,
+  });
+
   const snapshot = snapshotQuery.data as MissionRunSnapshot | undefined;
   const events = (eventsQuery.data?.events ?? []) as MissionReplayEvent[];
 
@@ -122,11 +142,19 @@ export function MissionRunCard({
       <RunCardHeader run={run} statusText={statusText} />
       <RunCardRequest displayRequestText={displayRequestText} run={run} />
       <RunCardMeta run={run} snapshot={snapshot} />
+      <RunCardStreamStatus stream={stream} isTerminal={isTerminal} />
+      <RunCardQueueHealth snapshot={snapshot} status={run.status} />
+      <RunCardStaleRead
+        snapshotError={snapshotQuery.isError && !!snapshotQuery.data}
+        eventsError={eventsQuery.isError && !!eventsQuery.data}
+        onRetrySnapshot={() => snapshotQuery.refetch()}
+        onRetryEvents={() => eventsQuery.refetch()}
+      />
       <RunCardCancellationIndicator snapshot={snapshot} status={run.status} />
       <RunCardBudget snapshot={snapshot} />
       <RunCardFailure snapshot={snapshot} status={run.status} />
       <RunCardOutput snapshot={snapshot} status={run.status} />
-      <RunCardTimeline events={events} />
+      <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
     </article>
   );
 }
@@ -199,6 +227,133 @@ function RunCardMeta({ run, snapshot }: { run: MissionRunSummary; snapshot?: Mis
           <time dateTime={snapshot.terminalAt}>{formatTime(snapshot.terminalAt)}</time>
         </span>
       )}
+    </div>
+  );
+}
+
+/** Stream status indicator: reconnecting, gap recovery, or stream error (VAL-RUN-031, VAL-RUN-030, VAL-CROSS-052). */
+function RunCardStreamStatus({
+  stream,
+  isTerminal,
+}: {
+  stream: { status: string; gapDetected: boolean };
+  isTerminal: boolean;
+}) {
+  if (isTerminal) {
+    return null;
+  }
+  if (stream.gapDetected) {
+    return (
+      <p
+        className="mb-3 text-xs text-warning flex items-center gap-1.5"
+        role="status"
+        aria-live="polite"
+      >
+        <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        Replaying missing events…
+      </p>
+    );
+  }
+  if (stream.status === 'reconnecting') {
+    return (
+      <p
+        className="mb-3 text-xs text-warning flex items-center gap-1.5"
+        role="status"
+        aria-live="polite"
+      >
+        <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
+        Reconnecting…
+      </p>
+    );
+  }
+  if (stream.status === 'error') {
+    return (
+      <p
+        className="mb-3 text-xs text-error flex items-center gap-1.5"
+        role="status"
+        aria-live="polite"
+      >
+        <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
+        Stream error. Updates may be delayed — refresh to see latest.
+      </p>
+    );
+  }
+  return null;
+}
+
+/** Queue health indicator: worker unavailable (VAL-RUN-088).
+ * Only shown when the server reports queueHealth: "unavailable".
+ * The browser never infers worker unavailability from a local timer. */
+function RunCardQueueHealth({
+  snapshot,
+  status,
+}: {
+  snapshot?: MissionRunSnapshot;
+  status: string;
+}) {
+  if (snapshot?.queueHealth !== 'unavailable') {
+    return null;
+  }
+  // Only show for nonterminal waiting/queued states where worker
+  // unavailability is meaningful.
+  const showForStatus = ['queued', 'planning', 'running', 'synthesizing'].includes(status);
+  if (!showForStatus) {
+    return null;
+  }
+  return (
+    <p
+      className="mb-3 text-xs text-warning flex items-center gap-1.5"
+      role="status"
+      aria-live="polite"
+    >
+      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+      Worker unavailable. The run will continue when a worker recovers.
+    </p>
+  );
+}
+
+/** Stale-read indicator: snapshot or events refetch failed but previous data is shown (VAL-RUN-131). */
+function RunCardStaleRead({
+  snapshotError,
+  eventsError,
+  onRetrySnapshot,
+  onRetryEvents,
+}: {
+  snapshotError: boolean;
+  eventsError: boolean;
+  onRetrySnapshot: () => void;
+  onRetryEvents: () => void;
+}) {
+  if (!snapshotError && !eventsError) {
+    return null;
+  }
+  return (
+    <div className="mb-3 rounded-lg border border-warning/20 bg-warning/5 px-3 py-2">
+      <p className="text-xs text-warning mb-1.5" role="status" aria-live="polite">
+        Some data may be outdated due to a connection issue.
+      </p>
+      <div className="flex gap-2">
+        {snapshotError && (
+          <button
+            type="button"
+            onClick={onRetrySnapshot}
+            className="text-xs text-accent underline hover:text-accent/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none rounded"
+            aria-label="Retry loading run snapshot"
+          >
+            Retry snapshot
+          </button>
+        )}
+        {eventsError && (
+          <button
+            type="button"
+            onClick={onRetryEvents}
+            className="text-xs text-accent underline hover:text-accent/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none rounded"
+            aria-label="Retry loading event timeline"
+          >
+            Retry timeline
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -311,24 +466,41 @@ function RunCardOutput({ snapshot, status }: { snapshot?: MissionRunSnapshot; st
 }
 
 /** Chronological event timeline as a semantic ordered list (VAL-RUN-074, VAL-RUN-095). */
-function RunCardTimeline({ events }: { events: MissionReplayEvent[] }) {
-  if (events.length === 0) {
+function RunCardTimeline({
+  events,
+  eventsError,
+}: {
+  events: MissionReplayEvent[];
+  eventsError?: boolean;
+}) {
+  if (events.length === 0 && !eventsError) {
     return null;
   }
   return (
     <div className="mb-1">
-      <p className="text-xs font-medium text-text-secondary mb-1">Timeline</p>
-      <ol aria-label="Event timeline" className="space-y-1">
-        {events.map((event) => (
-          <li key={event.sequence} className="flex items-baseline gap-2 text-xs text-text-muted">
-            <span className="tabular-nums text-text-secondary w-6 shrink-0">{event.sequence}</span>
-            <span className="text-text-primary">{event.type}</span>
-            <time dateTime={event.occurredAt} className="ml-auto text-text-muted">
-              {formatTime(event.occurredAt)}
-            </time>
-          </li>
-        ))}
-      </ol>
+      <p className="text-xs font-medium text-text-secondary mb-1">
+        Timeline
+        {eventsError && (
+          <span className="ml-2 text-warning font-normal" aria-live="polite">
+            (may be outdated)
+          </span>
+        )}
+      </p>
+      {events.length > 0 && (
+        <ol aria-label="Event timeline" className="space-y-1">
+          {events.map((event) => (
+            <li key={event.sequence} className="flex items-baseline gap-2 text-xs text-text-muted">
+              <span className="tabular-nums text-text-secondary w-6 shrink-0">
+                {event.sequence}
+              </span>
+              <span className="text-text-primary">{event.type}</span>
+              <time dateTime={event.occurredAt} className="ml-auto text-text-muted">
+                {formatTime(event.occurredAt)}
+              </time>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

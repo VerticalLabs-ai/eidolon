@@ -3637,6 +3637,8 @@ export interface MissionRunSnapshot {
   };
   artifacts: never[];
   links: { ui: string };
+  /** Server-derived queue health: "unavailable" when no worker heartbeat for >= 30s. */
+  queueHealth?: 'available' | 'unavailable';
 }
 
 /** Lean run summary from the scoped list endpoint. */

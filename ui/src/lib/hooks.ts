@@ -9,6 +9,8 @@ import {
 } from '@tanstack/react-query';
 import * as api from './api';
 import { toast } from 'sonner';
+export { useMissionRunStream } from './mission-stream';
+export type { StreamStatus, UseMissionRunStreamResult } from './mission-stream';
 import { useServerEvents } from './ws';
 import type { GoalFilters, TaskFilters, FileFilters } from './api';
 
@@ -2726,7 +2728,9 @@ export function useStartMissionRun(companyId: string, projectId: string) {
   });
 }
 
-/** Scoped run list ordered by (createdAt DESC, id DESC) with stable pagination. */
+/** Scoped run list ordered by (createdAt DESC, id DESC) with stable pagination.
+ * Preserves previous data on refetch error so existing cards remain visible
+ * (stale) rather than disappearing (VAL-RUN-131). */
 export function useMissionRuns(companyId: string, projectId: string) {
   return useQuery({
     queryKey: ['mission-runs', companyId, projectId],
@@ -2736,10 +2740,17 @@ export function useMissionRuns(companyId: string, projectId: string) {
       ),
     enabled: !!companyId && !!projectId,
     staleTime: 5_000,
+    // Keep previous data when refetching or on error so existing cards
+    // remain visible as stale rather than disappearing (VAL-RUN-131).
+    placeholderData: (
+      prev: { runs: api.MissionRunSummary[]; nextCursor: string | null } | undefined,
+    ) => prev,
   });
 }
 
-/** Authoritative single-run snapshot with strong ETag. */
+/** Authoritative single-run snapshot with strong ETag.
+ * Preserves previous data on refetch error so the card remains visible
+ * (stale) rather than disappearing (VAL-RUN-131). */
 export function useMissionRunSnapshot(
   companyId: string,
   projectId: string,
@@ -2754,10 +2765,13 @@ export function useMissionRunSnapshot(
     },
     enabled: !!companyId && !!projectId && !!runId,
     staleTime: 5_000,
+    placeholderData: (prev: api.MissionRunSnapshot | undefined) => prev,
   });
 }
 
-/** Bounded journal event replay for the run timeline. */
+/** Bounded journal event replay for the run timeline.
+ * Preserves previous data on refetch error so the timeline remains visible
+ * (stale) rather than disappearing (VAL-RUN-131). */
 export function useMissionRunEvents(
   companyId: string,
   projectId: string,
@@ -2773,6 +2787,11 @@ export function useMissionRunEvents(
       }>(await api.getMissionRunEvents(companyId, projectId, runId!)),
     enabled: !!companyId && !!projectId && !!runId,
     staleTime: 5_000,
+    placeholderData: (
+      prev:
+        | { events: api.MissionReplayEvent[]; nextCursor: number; latestSequence: number }
+        | undefined,
+    ) => prev,
   });
 }
 
