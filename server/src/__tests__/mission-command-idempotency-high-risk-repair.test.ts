@@ -470,14 +470,16 @@ describe('HIGH-RISK REPAIR: route equivalence with omitted optional fields', () 
   afterEach(() => vi.unstubAllEnvs());
 
   it('canonical cancel with omitted reason and convenience cancel with empty body produce the same hash', () => {
-    // Canonical: { type: 'run.cancel' } → logical body { reason: undefined }
-    // Convenience: {} → body { reason: undefined }
-    // After normalization (strip undefined), both should be {}.
+    // Reason is now required (VAL-RUN-138), so test with a provided reason
+    // that both routes normalize identically.
     const canonicalHash = commandRequestHash(
       'run.cancel',
-      normalizeCommandBody({ reason: undefined }),
+      normalizeCommandBody({ reason: 'test reason' }),
     );
-    const convenienceHash = commandRequestHash('run.cancel', normalizeCommandBody({}));
+    const convenienceHash = commandRequestHash(
+      'run.cancel',
+      normalizeCommandBody({ reason: 'test reason' }),
+    );
     expect(canonicalHash).toBe(convenienceHash);
   });
 
@@ -490,22 +492,22 @@ describe('HIGH-RISK REPAIR: route equivalence with omitted optional fields', () 
     expect(canonicalHash).toBe(convenienceHash);
   });
 
-  it('replays a cancel across canonical and convenience routes when reason is omitted (one command)', async () => {
+  it('replays a cancel across canonical and convenience routes with same reason (one command)', async () => {
     const ctx = await freshRun('__mtest__ xroute-omitted');
-    // Canonical route: cancel with no reason field.
+    // Canonical route: cancel with reason.
     const canonical = await request(ctx.app)
       .post(`${ctx.base}/${ctx.runId}/commands`)
       .set('Idempotency-Key', 'xroute-omitted-001')
       .set('If-Match', etag(ctx.stateVersion))
-      .send({ type: 'run.cancel' })
+      .send({ type: 'run.cancel', reason: 'test reason' })
       .expect(202);
 
-    // Convenience route: cancel with empty body, same key.
+    // Convenience route: cancel with same reason, same key.
     const convenience = await request(ctx.app)
       .post(`${ctx.base}/${ctx.runId}/cancel`)
       .set('Idempotency-Key', 'xroute-omitted-001')
       .set('If-Match', etag(ctx.stateVersion))
-      .send({})
+      .send({ reason: 'test reason' })
       .expect(202);
 
     expect(convenience.body.data.command.id).toBe(canonical.body.data.command.id);

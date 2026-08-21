@@ -6,6 +6,7 @@ import { commandRequestHash } from './idempotency.js';
 import { canonicalHash } from './policy.js';
 import { BudgetService } from './budget.js';
 import { MissionCancellationService } from './cancellation.js';
+import { encryptReason } from './reason-security.js';
 
 /**
  * Canonical command ingress and shared idempotency for run-scoped Mission
@@ -314,7 +315,7 @@ export class MissionCommandService {
       type: 'run.cancel',
       idempotencyKey,
       requestHash: commandRequestHash('run.cancel', body),
-      payload: { ...(body as Record<string, unknown>) },
+      payload: this.encryptCancelPayload(body),
       actorType,
       actorId,
       expectedStateVersion: run.stateVersion,
@@ -349,7 +350,7 @@ export class MissionCommandService {
       type: 'run.cancel',
       idempotencyKey,
       requestHash: commandRequestHash('run.cancel', body),
-      payload: { ...(body as Record<string, unknown>) },
+      payload: this.encryptCancelPayload(body),
       actorType,
       actorId,
       expectedStateVersion: run.stateVersion,
@@ -376,7 +377,7 @@ export class MissionCommandService {
       type: 'run.cancel',
       idempotencyKey,
       requestHash: commandRequestHash('run.cancel', body),
-      payload: { ...(body as Record<string, unknown>) },
+      payload: this.encryptCancelPayload(body),
       actorType,
       actorId,
       expectedStateVersion: run.stateVersion,
@@ -795,6 +796,20 @@ export class MissionCommandService {
         costCentsCeiling: reservation?.requestedCents ?? 0,
       },
     };
+  }
+
+  /**
+   * Encrypt the `reason` field in a cancel command payload before storage
+   * so the plaintext reason is not visible in the raw database column
+   * (VAL-RUN-138). The request hash is computed from the plaintext body
+   * (before encryption) so idempotent replay is consistent.
+   */
+  private encryptCancelPayload(body: unknown): Record<string, unknown> {
+    const payload = { ...(body as Record<string, unknown>) };
+    if (typeof payload.reason === 'string' && payload.reason.length > 0) {
+      payload.reason = encryptReason(payload.reason);
+    }
+    return payload;
   }
 
   private commandSummary(row: MissionCommandRow): CommandSummary {

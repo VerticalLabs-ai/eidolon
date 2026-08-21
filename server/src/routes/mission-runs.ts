@@ -15,6 +15,7 @@ import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
 import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
+import { redactCanaries } from '../services/mission/reason-security.js';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -78,15 +79,28 @@ const RetryRequest = z
   })
   .optional();
 
+/**
+ * Cancellation reason schema: required, NFC-normalized, 1–2,000 Unicode code
+ * points (counted as spread code points, not UTF-16 code units). No semantic
+ * trimming — whitespace is preserved (VAL-RUN-138).
+ */
+const ReasonSchema = z
+  .string()
+  .transform((s) => s.normalize('NFC'))
+  .refine((s) => {
+    const codepoints = [...s].length;
+    return codepoints >= 1 && codepoints <= 2000;
+  }, 'Cancellation reason must be 1–2000 Unicode code points');
+
 /** Canonical discriminated command body. The canonical endpoint and each
  *  convenience route map to the same logical `{type, body}` so they share one
  *  idempotency namespace (VAL-RUN-115). */
 const CommandBody = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('run.cancel'), reason: z.string().trim().max(2000).optional() }),
+  z.object({ type: z.literal('run.cancel'), reason: ReasonSchema }),
   z.object({ type: z.literal('run.retry'), limits: RetryLimits, request: RetryRequest }),
 ]);
 
-const CancelBody = z.object({ reason: z.string().trim().max(2000).optional() });
+const CancelBody = z.object({ reason: ReasonSchema });
 const RetryBody = z.object({ limits: RetryLimits, request: RetryRequest });
 
 /** Validate the Idempotency-Key header (shared contract: 1-128 safe chars,
@@ -300,9 +314,11 @@ export function missionRunsRouter(db: DbInstance): Router {
     // Normalize the logical body by stripping undefined values so that
     // canonical and convenience routes produce the same hash for omitted
     // optional fields (HIGH-RISK REPAIR: route equivalence).
+    // For cancel, redact credential/header canaries from the reason before
+    // hashing so the plaintext is safe for idempotency comparison (VAL-RUN-138).
     const logicalBody =
       body.type === 'run.cancel'
-        ? normalizeCommandBody({ reason: body.reason })
+        ? normalizeCommandBody({ reason: redactCanaries(body.reason).redacted })
         : normalizeCommandBody({ limits: body.limits, request: body.request });
     const result = await service.submit({
       companyId,
@@ -336,7 +352,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       projectId,
       runId,
       type: 'run.cancel',
-      body: normalizeCommandBody(body),
+      body: normalizeCommandBody({ reason: redactCanaries(body.reason).redacted }),
       idempotencyKey,
       ifMatch,
       actorType: 'user',
