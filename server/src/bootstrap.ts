@@ -79,6 +79,7 @@ import {
   missionRuns,
   budgetReservations,
   budgetAllocations,
+  budgetSettlements,
   runCommands,
   runEvents,
 } from '@eidolon/db';
@@ -157,6 +158,7 @@ const SCHEMA_BUNDLE = {
   missionRuns,
   budgetReservations,
   budgetAllocations,
+  budgetSettlements,
   runCommands,
   runEvents,
 } as const;

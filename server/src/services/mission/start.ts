@@ -7,6 +7,7 @@ import { resolvePolicy, policyContentHash, canonicalHash, type ResolvedPolicy } 
 // request body (mode, limits, projectThreadId, initiatingAgentId, request)
 // so different mode/limits with the same request text conflict.
 import type { BuiltInMode } from './modes.js';
+import { BudgetService } from './budget.js';
 
 /**
  * Mission start service.
@@ -220,37 +221,21 @@ export class MissionStartService {
 
         this.fireFailpoint('after_run');
 
-        // 5c. Finite root budget reservation + initial allocation.
+        // 5c. Finite root budget reservation + initial allocation. The
+        //     budget module locks company + billing agent in stable order,
+        //     checks headroom, and creates the reservation + allocation
+        //     atomically. Throws 409 BUDGET_UNAVAILABLE when headroom is
+        //     insufficient (VAL-RUN-061, VAL-CROSS-061).
         const periodKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-        const [reservation] = await tx
-          .insert(schema.budgetReservations)
-          .values({
-            companyId,
-            runId,
-            billingAgentId: body.initiatingAgentId ?? null,
-            requestedCents: ceiling,
-            reservedCents: ceiling,
-            settledCents: 0,
-            releasedCents: 0,
-            periodKey,
-            status: 'held',
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning({ id: schema.budgetReservations.id });
-
-        await tx.insert(schema.budgetAllocations).values({
+        const budgetService = new BudgetService(this.db, { clock: () => now });
+        const budgetResult = await budgetService.reserveRoot(tx, {
           companyId,
-          rootReservationId: reservation.id,
           runId,
           billingAgentId: body.initiatingAgentId ?? null,
-          allocatedCents: ceiling,
-          settledCents: 0,
-          releasedCents: 0,
-          status: 'held',
-          createdAt: now,
-          updatedAt: now,
+          requestedCents: ceiling,
+          periodKey,
         });
+        const reservedCents = budgetResult.reservedCents;
 
         this.fireFailpoint('after_reservation');
 
@@ -293,7 +278,7 @@ export class MissionStartService {
             payload: { mode: body.mode, resolvedMode: policy.resolvedMode },
           },
           { type: 'policy.snapshotted', payload: { policySnapshotId, contentHash: policyHash } },
-          { type: 'budget.reserved', payload: { reservedCents: ceiling, periodKey } },
+          { type: 'budget.reserved', payload: { reservedCents, periodKey } },
         ];
         let seq = 0;
         for (const event of events) {
@@ -341,6 +326,7 @@ export class MissionStartService {
           reqHash,
           resolvedMode: policy.resolvedMode,
           ceiling,
+          reservedCents,
           lastEventSequence: seq,
           now,
           commandCreatedAt: commandRow.createdAt,
@@ -385,6 +371,7 @@ export class MissionStartService {
     reqHash: string;
     resolvedMode: string;
     ceiling: number;
+    reservedCents: number;
     lastEventSequence: number;
     now: Date;
     commandCreatedAt: Date;
@@ -407,7 +394,7 @@ export class MissionStartService {
         createdAt: nowIso,
         updatedAt: nowIso,
         budget: {
-          reservedCents: input.ceiling,
+          reservedCents: input.reservedCents,
           settledCents: 0,
           releasedCents: 0,
           costCentsCeiling: input.ceiling,

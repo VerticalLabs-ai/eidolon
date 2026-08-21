@@ -63,5 +63,6 @@ export { runPolicySnapshots } from './run_policy_snapshots.js';
 export { missionRuns } from './mission_runs.js';
 export { budgetReservations } from './budget_reservations.js';
 export { budgetAllocations } from './budget_allocations.js';
+export { budgetSettlements } from './budget_settlements.js';
 export { runCommands } from './run_commands.js';
 export { runEvents } from './run_events.js';

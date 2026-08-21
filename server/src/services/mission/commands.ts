@@ -4,6 +4,7 @@ import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
 import { commandRequestHash } from './idempotency.js';
 import { canonicalHash } from './policy.js';
+import { BudgetService } from './budget.js';
 
 /**
  * Canonical command ingress and shared idempotency for run-scoped Mission
@@ -520,6 +521,8 @@ export class MissionCommandService {
 
     // Fresh finite root budget reservation + allocation with the narrowed
     // ceiling (HIGH-RISK REPAIR: reserve the authoritative narrowed budget).
+    // The budget module checks headroom and throws 409 BUDGET_UNAVAILABLE
+    // when insufficient (VAL-RUN-061, VAL-CROSS-061).
     const [origReservation] = await tx
       .select()
       .from(schema.budgetReservations)
@@ -528,34 +531,15 @@ export class MissionCommandService {
     const origCeiling = origReservation?.requestedCents ?? 0;
     const ceiling = Math.min(origCeiling, narrowedLimits['costCents'] ?? origCeiling);
     const periodKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-    const [reservation] = await tx
-      .insert(schema.budgetReservations)
-      .values({
-        companyId: run.companyId,
-        runId: successorId,
-        billingAgentId: run.billingAgentId,
-        requestedCents: ceiling,
-        reservedCents: ceiling,
-        settledCents: 0,
-        releasedCents: 0,
-        periodKey,
-        status: 'held',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning({ id: schema.budgetReservations.id });
-    await tx.insert(schema.budgetAllocations).values({
+    const budgetService = new BudgetService(this.db, { clock: () => now });
+    const budgetResult = await budgetService.reserveRoot(tx, {
       companyId: run.companyId,
-      rootReservationId: reservation.id,
       runId: successorId,
       billingAgentId: run.billingAgentId,
-      allocatedCents: ceiling,
-      settledCents: 0,
-      releasedCents: 0,
-      status: 'held',
-      createdAt: now,
-      updatedAt: now,
+      requestedCents: ceiling,
+      periodKey,
     });
+    const reservedCents = budgetResult.reservedCents;
 
     // Build the successor response snapshot before recording the command.
     const snapshot = await this.buildSnapshot(tx, successorId);
@@ -593,7 +577,7 @@ export class MissionCommandService {
         type: 'policy.snapshotted',
         payload: { policySnapshotId: successorPolicyId, contentHash: narrowedPolicyContentHash },
       },
-      { type: 'budget.reserved', payload: { reservedCents: ceiling, periodKey } },
+      { type: 'budget.reserved', payload: { reservedCents, periodKey } },
     ];
     let seq = 0;
     for (const event of events) {

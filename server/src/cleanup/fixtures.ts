@@ -146,6 +146,7 @@ const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
   // mission_runs → run_policy_snapshots.
   'run_events',
   'run_commands',
+  'budget_settlements',
   'budget_allocations',
   'budget_reservations',
   'mission_runs',
@@ -237,7 +238,9 @@ async function deleteArtifactFoldersReverseHierarchical(
        RETURNING id`,
     );
     totalDeleted += rows.length;
-    if (rows.length === 0) {break;}
+    if (rows.length === 0) {
+      break;
+    }
   }
   return totalDeleted;
 }
