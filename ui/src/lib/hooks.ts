@@ -2828,6 +2828,7 @@ export function useMissionRunsPaginated(companyId: string, projectId: string) {
       unwrap<{ runs: api.MissionRunSummary[]; nextCursor: string | null }>(
         await api.listMissionRuns(companyId, projectId, {
           cursor: (pageParam as string | undefined) ?? undefined,
+          limit: 10,
         }),
       ),
     initialPageParam: undefined as string | undefined,

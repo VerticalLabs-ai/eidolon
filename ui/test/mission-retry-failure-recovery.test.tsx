@@ -507,8 +507,12 @@ describe('Mission retry, failure, and recovery UI', () => {
       const retryBtn = screen.getByRole('button', { name: /retry mission/i });
       await user.click(retryBtn);
 
-      // The stale-action message should appear (role=alert)
-      expect(screen.getByRole('alert')).toBeInTheDocument();
+      // The stale-action message should appear (role=alert). The failure
+      // card also uses role=alert (VAL-RUN-089), so find the alert that
+      // contains the stale-action "changed" message specifically.
+      const alerts = screen.getAllByRole('alert');
+      expect(alerts.length).toBeGreaterThanOrEqual(1);
+      expect(alerts.some((el) => /changed/i.test(el.textContent ?? ''))).toBe(true);
       expect(screen.getByText(/changed/i)).toBeInTheDocument();
       // A refresh control should be available
       expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument();

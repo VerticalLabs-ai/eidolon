@@ -626,4 +626,206 @@ describe('MissionRunList and MissionRunCard', () => {
     });
     expect(screen.getByText(/could not load/i)).toBeInTheDocument();
   });
+
+  // ── VAL-RUN-089: Failure errors use role=alert ───────────────────────
+  it('renders role=alert on the failure element of a failed card', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'failed' })]));
+    mocks.useMissionRunSnapshot.mockReturnValue(
+      snapshotResult(
+        runSnapshot({
+          status: 'failed',
+          terminalAt: '2026-08-20T10:03:00.000Z',
+          failureCategory: 'provider_error',
+          failureCode: 'PROVIDER_TIMEOUT',
+          safeErrorMessage: 'The provider timed out. Please retry.',
+        }),
+      ),
+    );
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    const card = screen.getByRole('article');
+    // The failure section must use role=alert for assistive technologies
+    const alert = within(card).getByRole('alert');
+    expect(alert).toBeInTheDocument();
+    expect(within(alert).getByText(/provider timed out/i)).toBeInTheDocument();
+  });
+
+  // ── VAL-RUN-111: Category/failure-code text meets WCAG AA contrast ───
+  it('renders category and failure-code text with high-contrast color (not text-muted)', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'failed' })]));
+    mocks.useMissionRunSnapshot.mockReturnValue(
+      snapshotResult(
+        runSnapshot({
+          status: 'failed',
+          terminalAt: '2026-08-20T10:03:00.000Z',
+          failureCategory: 'provider_error',
+          failureCode: 'PROVIDER_TIMEOUT',
+          safeErrorMessage: 'The provider timed out. Please retry.',
+        }),
+      ),
+    );
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    const card = screen.getByRole('article');
+    // Category text must not use the low-contrast text-muted class
+    const categoryText = within(card).getByText(/provider_error/i);
+    expect(categoryText).toBeInTheDocument();
+    expect(categoryText.className).not.toContain('text-text-muted');
+    // Failure code text must also be high-contrast
+    const codeText = within(card).getByText(/PROVIDER_TIMEOUT/i);
+    expect(codeText).toBeInTheDocument();
+    expect(codeText.className).not.toContain('text-text-muted');
+  });
+
+  // ── VAL-RUN-131: Stale indicator + retry for failed snapshot reads ───
+  it('shows a stale indicator and retry button when snapshot refetch fails with cached data', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'running' })]));
+    // Simulate refetch failure with previous data still available
+    mocks.useMissionRunSnapshot.mockReturnValue({
+      data: runSnapshot({ status: 'running' }),
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    });
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    // Stale indicator text is visible (connection issue message)
+    expect(screen.getByText(/connection issue/i)).toBeInTheDocument();
+    // Retry button is present and accessible
+    expect(screen.getByRole('button', { name: /retry loading run snapshot/i })).toBeInTheDocument();
+  });
+
+  it('shows a stale indicator and retry button when events refetch fails with cached data', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'running' })]));
+    mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult(runSnapshot({ status: 'running' })));
+    // Simulate events refetch failure with previous data
+    mocks.useMissionRunEvents.mockReturnValue({
+      data: { events: [evt(1, 'run.created')], nextCursor: 0, latestSequence: 1 },
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    });
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    // Stale indicator text is visible (connection issue message)
+    expect(screen.getByText(/connection issue/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /retry loading event timeline/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a stale banner and retry when the run list refetch fails with cached data', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      ...listResult([runSummary({ status: 'running' })]),
+      isError: true,
+    });
+    mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult(runSnapshot({ status: 'running' })));
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    // Stale banner is visible (connection issue message)
+    expect(screen.getByText(/connection issue/i)).toBeInTheDocument();
+    // Retry button for the list is present
+    expect(screen.getByRole('button', { name: /retry loading mission runs/i })).toBeInTheDocument();
+    // Existing card is still visible (not disappeared)
+    expect(screen.getByRole('article')).toBeInTheDocument();
+  });
+
+  // ── VAL-RUN-132: Pagination controls for mission run list ────────────
+  it('shows a Load more button when there is a next page', () => {
+    const fetchNextPage = vi.fn();
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: {
+        pages: [{ runs: [runSummary()], nextCursor: 'cursor-abc' }],
+        pageParams: [undefined],
+      },
+      fetchNextPage,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    const loadMore = screen.getByRole('button', { name: /load more runs/i });
+    expect(loadMore).toBeInTheDocument();
+    expect(loadMore).not.toBeDisabled();
+  });
+
+  it('calls fetchNextPage when Load more is activated', () => {
+    const fetchNextPage = vi.fn();
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: {
+        pages: [{ runs: [runSummary()], nextCursor: 'cursor-abc' }],
+        pageParams: [undefined],
+      },
+      fetchNextPage,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    const loadMore = screen.getByRole('button', { name: /load more runs/i });
+    loadMore.click();
+    expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables Load more while fetching the next page', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: {
+        pages: [{ runs: [runSummary()], nextCursor: 'cursor-abc' }],
+        pageParams: [undefined],
+      },
+      fetchNextPage: vi.fn(),
+      hasNextPage: true,
+      isFetchingNextPage: true,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    const loadMore = screen.getByRole('button', { name: /loading more runs/i });
+    expect(loadMore).toBeDisabled();
+  });
+
+  it('does not show Load more when there is no next page', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary()]));
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument();
+  });
+
+  it('Load more button is keyboard focusable', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue({
+      data: {
+        pages: [{ runs: [runSummary()], nextCursor: 'cursor-abc' }],
+        pageParams: [undefined],
+      },
+      fetchNextPage: vi.fn(),
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    const loadMore = screen.getByRole('button', { name: /load more runs/i });
+    loadMore.focus();
+    expect(document.activeElement).toBe(loadMore);
+  });
 });

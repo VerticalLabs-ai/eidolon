@@ -800,17 +800,23 @@ function RunCardBudget({ snapshot }: { snapshot?: MissionRunSnapshot }) {
   );
 }
 
-/** Failed card: safe error message without secrets (VAL-RUN-045). */
+/** Failed card: safe error message without secrets (VAL-RUN-045).
+ * Uses role=alert so assistive technologies announce failure information
+ * assertively (VAL-RUN-089). Category and failure-code text use
+ * high-contrast color to meet WCAG AA 4.5:1 (VAL-RUN-111). */
 function RunCardFailure({ snapshot, status }: { snapshot?: MissionRunSnapshot; status: string }) {
   if (status !== 'failed' || !snapshot?.safeErrorMessage) {
     return null;
   }
   return (
-    <div className="mb-3 rounded-lg border border-error/20 bg-error/10 px-3 py-2">
+    <div role="alert" className="mb-3 rounded-lg border border-error/20 bg-error/10 px-3 py-2">
       <p className="text-xs font-medium text-error mb-0.5">Failure</p>
       <p className="text-sm text-text-primary break-words">{snapshot.safeErrorMessage}</p>
       {snapshot.failureCategory && (
-        <p className="mt-1 text-xs text-text-muted">Category: {snapshot.failureCategory}</p>
+        <p className="mt-1 text-xs text-text-primary">Category: {snapshot.failureCategory}</p>
+      )}
+      {snapshot.failureCode && (
+        <p className="mt-0.5 text-xs text-text-primary">Code: {snapshot.failureCode}</p>
       )}
     </div>
   );
