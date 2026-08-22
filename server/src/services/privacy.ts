@@ -260,6 +260,22 @@ export const PERSONAL_DATA_RULES: PersonalDataRule[] = [
     exportable: true,
     why: 'Audit rows are never deleted. The actor id is replaced so the trail stays intact without identifying the person.',
   },
+  {
+    table: 'run_commands',
+    column: 'actor_id',
+    strategy: 'pseudonymise',
+    scope: { kind: 'direct' },
+    exportable: true,
+    why: 'The immutable command ingress ledger is Mission audit evidence. The actor id is pseudonymised so the command trail stays intact without identifying the person.',
+  },
+  {
+    table: 'run_events',
+    column: 'actor_id',
+    strategy: 'pseudonymise',
+    scope: { kind: 'direct' },
+    exportable: true,
+    why: 'The append-only event journal is Mission audit evidence. The actor id is pseudonymised so the event trail stays intact without identifying the person.',
+  },
 ];
 
 /**
