@@ -7,7 +7,7 @@ import { canonicalHash } from './policy.js';
 import { BudgetService } from './budget.js';
 import { MissionCancellationService } from './cancellation.js';
 import { encryptReason } from './reason-security.js';
-import { encryptEnvelope } from './ingress.js';
+import { validateAndEncryptIngress, decryptEnvelope, generateSafeSummary } from './ingress.js';
 import {
   incrementMissionCommand,
   incrementMissionIdempotentReplay,
@@ -164,6 +164,20 @@ interface ApplyOutcome {
   successorRunId?: string;
 }
 
+/**
+ * Pre-computed ingress hardening result for the retry branch. When a new
+ * request is provided, the envelope is validated (reference isolation +
+ * structural bounds), encrypted, and a safe summary is generated. When no
+ * new request is provided, the existing encrypted envelope and safe summary
+ * are copied from the original run (VAL-RUN-133, VAL-RUN-134, VAL-RUN-135,
+ * Normative Boundary 3).
+ */
+interface RetryIngressResult {
+  encryptedEnvelope: string;
+  safeSummary: string;
+  reqHash: string;
+}
+
 export interface MissionCommandDeps {
   clock?: () => Date;
 }
@@ -205,6 +219,7 @@ export class MissionCommandService {
     //    commands are recorded as rejected rows so they remain visible in
     //    history without changing state, events, budget, or output
     //    (VAL-RUN-075).
+    let retryIngress: RetryIngressResult | undefined;
     if (type === 'run.cancel') {
       if (TERMINAL_STATUSES.has(run.status)) {
         // Already-terminal: return 200 with the current snapshot, no event,
@@ -272,6 +287,14 @@ export class MissionCommandService {
           'Retry is only allowed from a failed or cancelled run',
         );
       }
+      // Ingress hardening: route the retry request envelope through
+      // validateAndEncryptIngress so retry successors get reference
+      // isolation, structural bounds, NFC-normalized safe summary, and
+      // encryption-at-rest — matching MissionStartService.start
+      // (VAL-RUN-133, VAL-RUN-134, Normative Boundary 3). A validation
+      // failure throws before the transaction so no successor, command,
+      // reservation, or projection is created.
+      retryIngress = await this.validateRetryIngress(run, body);
     }
 
     // 4. Locked transaction: re-check durable idempotency under the lock,
@@ -326,7 +349,21 @@ export class MissionCommandService {
         if (!RETRY_LEGAL.has(locked.status)) {
           throw new InvalidStateSentinel();
         }
-        return this.applyRetry(tx, locked, body, idempotencyKey, actorType, actorId, traceId);
+        // run.retry — retryIngress is guaranteed to be set here because it
+        // was computed in the pre-transaction retry block above.
+        if (!retryIngress) {
+          throw new Error('retryIngress not computed for run.retry');
+        }
+        return this.applyRetry(
+          tx,
+          locked,
+          body,
+          idempotencyKey,
+          actorType,
+          actorId,
+          traceId,
+          retryIngress,
+        );
       });
       // Increment command counter for a newly applied command (not a replay).
       incrementMissionCommand(type, 'applied');
@@ -500,6 +537,70 @@ export class MissionCommandService {
     return { statusCode: 200, etag: snapshot.stateVersion, run: snapshot, commandRow };
   }
 
+  /**
+   * Validate and encrypt the retry request envelope, or copy the existing
+   * encrypted envelope + safe summary when no new request is provided
+   * (VAL-RUN-133, VAL-RUN-134, VAL-RUN-135, Normative Boundary 3).
+   *
+   * When a new request is provided, this routes through
+   * `validateAndEncryptIngress` so the successor gets the same reference
+   * isolation, structural bounds, NFC-normalized safe summary, and
+   * encryption-at-rest as `MissionStartService.start`. A validation failure
+   * throws before the transaction so no successor, command, reservation, or
+   * projection is created.
+   *
+   * When no new request is provided, the original encrypted envelope is
+   * copied directly (it is already encrypted at rest) and the safe summary
+   * is copied from the original run's `request_safe_summary` column. If the
+   * original run predates the safe summary column (legacy), the envelope is
+   * decrypted and a fresh safe summary is generated.
+   */
+  private async validateRetryIngress(
+    run: MissionRunRow,
+    body: unknown,
+  ): Promise<RetryIngressResult> {
+    const retryBody = (body ?? {}) as RetryBody;
+
+    if (retryBody.request) {
+      // New request: validate reference isolation + structural bounds,
+      // generate a safe summary, and encrypt at rest.
+      const ingress = await validateAndEncryptIngress(this.db, {
+        companyId: run.companyId,
+        projectId: run.projectId,
+        text: retryBody.request.text ?? '',
+        attachments: retryBody.request.attachments,
+        context: retryBody.request.context,
+      });
+      // Hash the original (pre-normalization) request for the run's
+      // request_content_hash, consistent with the existing retry hash
+      // semantics.
+      const reqHash = canonicalHash({
+        text: retryBody.request.text ?? '',
+        attachments: retryBody.request.attachments ?? [],
+        context: retryBody.request.context ?? {},
+      });
+      return {
+        encryptedEnvelope: ingress.encryptedEnvelope,
+        safeSummary: ingress.safeSummary,
+        reqHash,
+      };
+    }
+
+    // No new request: copy the existing encrypted envelope and safe summary.
+    const encryptedEnvelope = run.requestEnvelope as unknown as string;
+    let safeSummary = run.requestSafeSummary;
+    if (!safeSummary) {
+      // Legacy run without a safe summary: decrypt and regenerate.
+      const envelope = decryptEnvelope(encryptedEnvelope);
+      safeSummary = generateSafeSummary(envelope.text as string);
+    }
+    return {
+      encryptedEnvelope,
+      safeSummary,
+      reqHash: run.requestContentHash,
+    };
+  }
+
   // -- retry ----------------------------------------------------------------
 
   private async applyRetry(
@@ -510,6 +611,7 @@ export class MissionCommandService {
     actorType: 'user' | 'agent' | 'system',
     actorId: string | null,
     traceId: string | null,
+    retryIngress: RetryIngressResult,
   ): Promise<ApplyOutcome> {
     const schema = this.db.schema;
     const now = this.now();
@@ -550,28 +652,13 @@ export class MissionCommandService {
     });
 
     const retryBody = (body ?? {}) as RetryBody;
-    // The original run's request envelope is now encrypted text (VAL-RUN-135).
-    // If the retry provides a new request, build a fresh encrypted envelope;
-    // otherwise copy the existing encrypted ciphertext directly (it's already
-    // encrypted, so no re-encryption needed and no plaintext is exposed).
-    let encryptedEnvelope: string;
-    let reqHash: string;
-    if (retryBody.request) {
-      // New request provided: encrypt it at rest.
-      const envelope: Record<string, unknown> = {
-        text: retryBody.request.text ?? '',
-        attachments: retryBody.request.attachments ?? [],
-        context: retryBody.request.context ?? {},
-      };
-      encryptedEnvelope = encryptEnvelope(envelope);
-      reqHash = canonicalHash(envelope);
-    } else {
-      // No new request: copy the existing encrypted envelope.
-      encryptedEnvelope = run.requestEnvelope as unknown as string;
-      // Hash the original request for idempotency. The requestContentHash
-      // from the run is already the canonical hash of the original request.
-      reqHash = run.requestContentHash;
-    }
+    // The retry request envelope has already been validated and encrypted
+    // (or copied from the original) by validateRetryIngress in the
+    // pre-transaction phase (VAL-RUN-133, VAL-RUN-134, VAL-RUN-135,
+    // Normative Boundary 3). Use the pre-computed encrypted envelope,
+    // safe summary, and request hash directly.
+    const encryptedEnvelope = retryIngress.encryptedEnvelope;
+    const reqHash = retryIngress.reqHash;
 
     // Narrow the original policy limits with the retry body's limits
     // (minimum wins — retry may only lower, never raise). Recompute the
@@ -638,6 +725,7 @@ export class MissionCommandService {
       routingKind: 'company_agent',
       requestEnvelope: encryptedEnvelope,
       requestContentHash: reqHash,
+      requestSafeSummary: retryIngress.safeSummary,
       resolvedMode: run.resolvedMode,
       policySnapshotId: successorPolicyId,
       status: 'draft',
