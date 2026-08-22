@@ -670,4 +670,126 @@ describe('Mission cancellation UI', () => {
       expect(screen.getByRole('button', { name: /cancel run-1/i })).toBeInTheDocument();
     });
   });
+
+  // ── Normative Boundary 4 / VAL-RUN-130: If-Match is sent ─────────────
+  describe('Normative Boundary 4: If-Match is sent with snapshot.stateVersion', () => {
+    it('forwards snapshot.stateVersion as ifMatch to cancelMissionRun', async () => {
+      const user = userEvent.setup();
+      const cm = cancelMock();
+      mocks.useCancelMissionRun.mockReturnValue(cm);
+      mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult(runSnapshot({ stateVersion: 7 })));
+      render(
+        <MissionRunCard companyId="company-1" projectId="project-1" run={runSummary() as never} />,
+        { wrapper },
+      );
+      await user.click(screen.getByRole('button', { name: /cancel run-1/i }));
+      await user.type(screen.getByRole('textbox', { name: /reason/i }), 'Done');
+      await user.click(screen.getByRole('button', { name: /confirm cancellation/i }));
+      expect(cm.mutateAsync).toHaveBeenCalledTimes(1);
+      const args = cm.mutateAsync.mock.calls[0][0];
+      expect(args.ifMatch).toBe(7);
+    });
+
+    it('does not send ifMatch when the snapshot has no stateVersion', async () => {
+      const user = userEvent.setup();
+      const cm = cancelMock();
+      mocks.useCancelMissionRun.mockReturnValue(cm);
+      // Snapshot still loading: no data yet.
+      mocks.useMissionRunSnapshot.mockReturnValue({
+        data: undefined,
+        isLoading: true,
+        isError: false,
+      });
+      render(
+        <MissionRunCard companyId="company-1" projectId="project-1" run={runSummary() as never} />,
+        { wrapper },
+      );
+      await user.click(screen.getByRole('button', { name: /cancel run-1/i }));
+      await user.type(screen.getByRole('textbox', { name: /reason/i }), 'Done');
+      await user.click(screen.getByRole('button', { name: /confirm cancellation/i }));
+      expect(cm.mutateAsync).toHaveBeenCalledTimes(1);
+      const args = cm.mutateAsync.mock.calls[0][0];
+      expect(args.ifMatch).toBeUndefined();
+    });
+  });
+
+  // ── Normative Boundary 4 / VAL-RUN-130: all error categories surfaced ─
+  describe('Normative Boundary 4: all non-recoverable errors are surfaced', () => {
+    const nonRecoverableCases: Array<{ status: number; code: string }> = [
+      { status: 400, code: 'VALIDATION_ERROR' },
+      { status: 401, code: 'UNAUTHENTICATED' },
+      { status: 403, code: 'INSUFFICIENT_PERMISSION' },
+      { status: 404, code: 'RUN_NOT_FOUND' },
+      { status: 409, code: 'INVALID_RUN_STATE' },
+      { status: 422, code: 'VALIDATION_ERROR' },
+      { status: 428, code: 'PRECONDITION_REQUIRED' },
+    ];
+
+    for (const { status, code } of nonRecoverableCases) {
+      it(`surfaces an accessible alert for HTTP ${status} ${code}`, async () => {
+        const user = userEvent.setup();
+        const cm = cancelMock();
+        cm.mutateAsync.mockRejectedValueOnce(
+          Object.assign(new Error(`${status}`), { status, body: { code } }),
+        );
+        mocks.useCancelMissionRun.mockReturnValue(cm);
+        render(
+          <MissionRunCard
+            companyId="company-1"
+            projectId="project-1"
+            run={runSummary() as never}
+          />,
+          { wrapper },
+        );
+        await user.click(screen.getByRole('button', { name: /cancel run-1/i }));
+        await user.type(screen.getByRole('textbox', { name: /reason/i }), 'X');
+        await user.click(screen.getByRole('button', { name: /confirm cancellation/i }));
+        // An accessible alert is shown for the non-recoverable error.
+        const alert = await screen.findByRole('alert');
+        expect(alert).toBeInTheDocument();
+        // The error code or status is conveyed to the user.
+        expect(alert.textContent).toMatch(new RegExp(`${code}|${status}`, 'i'));
+      });
+    }
+
+    it('moves focus to the alert after a non-recoverable error', async () => {
+      const user = userEvent.setup();
+      const cm = cancelMock();
+      cm.mutateAsync.mockRejectedValueOnce(
+        Object.assign(new Error('403'), { status: 403, body: { code: 'INSUFFICIENT_PERMISSION' } }),
+      );
+      mocks.useCancelMissionRun.mockReturnValue(cm);
+      render(
+        <MissionRunCard companyId="company-1" projectId="project-1" run={runSummary() as never} />,
+        { wrapper },
+      );
+      await user.click(screen.getByRole('button', { name: /cancel run-1/i }));
+      await user.type(screen.getByRole('textbox', { name: /reason/i }), 'X');
+      await user.click(screen.getByRole('button', { name: /confirm cancellation/i }));
+      const alert = await screen.findByRole('alert');
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toContainElement(alert);
+      // Focus is within the dialog, not lost to the body.
+      expect(dialog).toContainElement(document.activeElement);
+    });
+
+    it('keeps the dialog open after a non-recoverable error so the user can dismiss', async () => {
+      const user = userEvent.setup();
+      const cm = cancelMock();
+      cm.mutateAsync.mockRejectedValueOnce(
+        Object.assign(new Error('409'), { status: 409, body: { code: 'INVALID_RUN_STATE' } }),
+      );
+      mocks.useCancelMissionRun.mockReturnValue(cm);
+      render(
+        <MissionRunCard companyId="company-1" projectId="project-1" run={runSummary() as never} />,
+        { wrapper },
+      );
+      await user.click(screen.getByRole('button', { name: /cancel run-1/i }));
+      await user.type(screen.getByRole('textbox', { name: /reason/i }), 'X');
+      await user.click(screen.getByRole('button', { name: /confirm cancellation/i }));
+      await screen.findByRole('alert');
+      // Dialog remains open for the user to read the error and back out.
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+  });
 });

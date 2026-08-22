@@ -35,6 +35,42 @@ export function isRecoverableCancelError(error: unknown): boolean {
 }
 
 /**
+ * Produce a user-safe, actionable message for any cancel error category.
+ * Every error category — including non-recoverable 4xx (400/401/403/404/
+ * 409/422/428) — is surfaced to the user with focus management, not only
+ * recoverable errors (Normative Boundary 4 / VAL-RUN-038 / VAL-RUN-130).
+ * The message never includes credentials, raw provider bodies, prompts, or
+ * stack traces; it conveys only a safe status/code-derived explanation.
+ */
+export function describeCancelError(error: unknown): string {
+  if (!error) {
+    return 'Cancellation could not be applied.';
+  }
+  const status = (error as { status?: number }).status;
+  const code = (error as { body?: { code?: string } }).body?.code;
+  const safeCode = code ?? 'ERROR';
+  // Recoverable: stale version or network failure (VAL-RUN-038).
+  if (status === 412 || code === 'RUN_VERSION_MISMATCH') {
+    return 'Cancellation could not be applied right now. The Mission may have changed or the connection failed. Your reason is preserved — refresh and try again.';
+  }
+  if (status === undefined && code === undefined) {
+    return 'Cancellation could not be applied right now. The connection failed. Your reason is preserved — refresh and try again.';
+  }
+  // Non-recoverable categories: surface a safe, actionable message that
+  // includes the stable error code so the user can act on it.
+  const messages: Record<number, string> = {
+    400: `The cancellation request was rejected (${code ?? 'VALIDATION_ERROR'}). Check your reason and try again.`,
+    422: `The cancellation request was rejected (${code ?? 'VALIDATION_ERROR'}). Check your reason and try again.`,
+    401: `You are not signed in (${code ?? 'UNAUTHENTICATED'}). Sign in and try again.`,
+    403: `You don't have permission to cancel this Mission (${code ?? 'INSUFFICIENT_PERMISSION'}).`,
+    404: `This Mission could not be found (${code ?? 'RUN_NOT_FOUND'}). It may have been removed.`,
+    409: `This Mission can no longer be cancelled (${code ?? 'INVALID_RUN_STATE'}). It may have already finished.`,
+    428: `The Mission state could not be verified (${code ?? 'PRECONDITION_REQUIRED'}). Refresh and try again.`,
+  };
+  return messages[status ?? -1] ?? `Cancellation could not be applied (${safeCode}).`;
+}
+
+/**
  * Accessible cancellation confirmation dialog for a Mission run.
  *
  * Cancellation is a destructive action that requires explicit confirmation
@@ -70,6 +106,7 @@ export function MissionCancelDialog({
   open,
   onClose,
   onSubmit,
+  ifMatch,
 }: {
   run: MissionRunSummary;
   open: boolean;
@@ -77,6 +114,12 @@ export function MissionCancelDialog({
   /** Submit the cancellation. Resolves on success; rejects on error so the
    * dialog can preserve the reason and show a recoverable error. */
   onSubmit: (args: { reason: string; idempotencyKey: string; ifMatch?: number }) => Promise<void>;
+  /** The authoritative snapshot's `stateVersion`, forwarded as the strong
+   * quoted `If-Match` ETag so revision-sensitive cancel requests are
+   * protected against stale-version overwrites (Normative Boundary 4 /
+   * VAL-RUN-055). When undefined (snapshot still loading), no If-Match is
+   * sent. */
+  ifMatch?: number;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -137,7 +180,7 @@ export function MissionCancelDialog({
     setSubmitError(null);
     setSubmitting(true);
     try {
-      await onSubmit({ reason: trimmed, idempotencyKey, ifMatch: undefined });
+      await onSubmit({ reason: trimmed, idempotencyKey, ifMatch });
       // Success: clear and close. The authoritative snapshot refetch
       // reveals the cancellation state (VAL-RUN-035).
       setReason('');
@@ -153,8 +196,12 @@ export function MissionCancelDialog({
     }
   };
 
-  const recoverable = isRecoverableCancelError(submitError);
-  const showError = !!submitError && recoverable;
+  // Surface every error category to the user with focus management, not
+  // only recoverable errors (Normative Boundary 4 / VAL-RUN-130). The
+  // message distinguishes recoverable (reason preserved, retry) from
+  // non-recoverable (safe actionable error with code/status).
+  const showError = !!submitError;
+  const errorMessage = showError ? describeCancelError(submitError) : '';
   const trimmedReason = reason.trim();
   const canConfirm = trimmedReason.length >= 1 && !submitting;
 
@@ -229,8 +276,7 @@ export function MissionCancelDialog({
               tabIndex={-1}
               className="mb-4 rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-sm text-error focus-visible:outline-none"
             >
-              Cancellation could not be applied right now. The Mission may have changed or the
-              connection failed. Your reason is preserved — refresh and try again.
+              {errorMessage}
             </p>
           )}
 

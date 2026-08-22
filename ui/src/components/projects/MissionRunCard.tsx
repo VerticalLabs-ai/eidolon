@@ -325,6 +325,7 @@ export function MissionRunCard({
           run={run}
           open={cancelOpen}
           onClose={handleCancelClose}
+          ifMatch={snapshot?.stateVersion}
           onSubmit={async (args) => {
             await cancelMutation.mutateAsync(args);
           }}
