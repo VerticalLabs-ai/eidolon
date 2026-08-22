@@ -100,7 +100,7 @@ function runSnapshot(overrides: Partial<Record<string, unknown>> = {}) {
     childSummary: { running: 0, completed: 0, failed: 0, cancelled: 0, total: 0 },
     artifacts: [],
     links: {
-      ui: '/companies/company-1/projects/project-1/work?thread=thread-1&mission=run-1',
+      ui: '/company/company-1/projects/project-1?tab=work&thread=thread-1&mission=run-1',
     },
     ...overrides,
   };

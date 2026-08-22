@@ -52,16 +52,19 @@ describe('isMissionLinkUuid', () => {
 // ── Builder ──────────────────────────────────────────────────────────────
 
 describe('buildMissionUiLink', () => {
-  it('builds the canonical run link with /work and thread+mission query', () => {
+  it('builds the canonical run link with singular /company path and tab=work query', () => {
     const url = buildMissionUiLink(baseInput());
     expect(url).toBe(
-      `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}`,
+      `/company/${COMPANY}/projects/${PROJECT}?tab=work&thread=${THREAD}&mission=${RUN}`,
     );
   });
 
-  it('places /work after the project segment, not before the query', () => {
+  it('uses the singular /company segment and ?tab=work query, not plural /companies or /work subpath', () => {
     const url = buildMissionUiLink(baseInput());
-    expect(url).toMatch(/\/work\?/);
+    expect(url).toMatch(/^\/company\//);
+    expect(url).not.toMatch(/\/companies\//);
+    expect(url).not.toMatch(/\/work/);
+    expect(url).toContain('tab=work');
   });
 
   it('throws on a non-UUID company id', () => {
@@ -176,67 +179,62 @@ describe('parseMissionUiLink', () => {
   });
 
   it('returns null for a non-mission path', () => {
-    expect(parseMissionUiLink('/companies/c/p/projects/p?thread=x&mission=y')).toBeNull();
+    expect(parseMissionUiLink('/company/c/projects/p?thread=x&mission=y')).toBeNull();
   });
 
-  it('returns null when /work subpath is missing', () => {
+  it('returns null when the path is not the canonical singular route', () => {
+    // Legacy plural /work subpath is handled by the UI redirect, not this parser.
     expect(
       parseMissionUiLink(
-        `/companies/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}`,
+        `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}`,
       ),
     ).toBeNull();
   });
 
   it('returns null when thread is missing', () => {
-    expect(
-      parseMissionUiLink(`/companies/${COMPANY}/projects/${PROJECT}/work?mission=${RUN}`),
-    ).toBeNull();
+    expect(parseMissionUiLink(`/company/${COMPANY}/projects/${PROJECT}?mission=${RUN}`)).toBeNull();
   });
 
   it('returns null when mission is missing', () => {
     expect(
-      parseMissionUiLink(`/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}`),
+      parseMissionUiLink(`/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}`),
     ).toBeNull();
   });
 
   it('returns null when thread is not a UUID', () => {
     expect(
-      parseMissionUiLink(
-        `/companies/${COMPANY}/projects/${PROJECT}/work?thread=thread-1&mission=${RUN}`,
-      ),
+      parseMissionUiLink(`/company/${COMPANY}/projects/${PROJECT}?thread=thread-1&mission=${RUN}`),
     ).toBeNull();
   });
 
   it('returns null when mission is not a UUID', () => {
     expect(
-      parseMissionUiLink(
-        `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=run-1`,
-      ),
+      parseMissionUiLink(`/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=run-1`),
     ).toBeNull();
   });
 
   it('rejects two target kinds at once', () => {
-    const url = `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}&question=${QUESTION}&planRevision=${PLAN_REV}`;
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&question=${QUESTION}&planRevision=${PLAN_REV}`;
     expect(parseMissionUiLink(url)).toBeNull();
   });
 
   it('rejects artifactVersion without artifact', () => {
-    const url = `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}&artifactVersion=${ARTIFACT_VER}`;
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&artifactVersion=${ARTIFACT_VER}`;
     expect(parseMissionUiLink(url)).toBeNull();
   });
 
   it('rejects citation without version', () => {
-    const url = `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}&citation=${CITATION}&artifact=${ARTIFACT}`;
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&citation=${CITATION}&artifact=${ARTIFACT}`;
     expect(parseMissionUiLink(url)).toBeNull();
   });
 
   it('rejects citation without artifact', () => {
-    const url = `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}&citation=${CITATION}&version=${ARTIFACT_VER}`;
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&citation=${CITATION}&version=${ARTIFACT_VER}`;
     expect(parseMissionUiLink(url)).toBeNull();
   });
 
   it('rejects a non-UUID target id', () => {
-    const url = `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}&question=not-a-uuid`;
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&question=not-a-uuid`;
     expect(parseMissionUiLink(url)).toBeNull();
   });
 

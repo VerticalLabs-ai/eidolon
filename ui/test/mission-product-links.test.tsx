@@ -2,11 +2,12 @@
  * Product link grammar and responsive history restoration UI tests
  * (VAL-CROSS-076, VAL-CROSS-077, VAL-CROSS-078, VAL-CROSS-083, VAL-CROSS-101).
  *
- * These tests cover the canonical `links.ui` grammar: the app redirect maps
- * `/companies/:c/p/:p/work?thread=:t&mission=:r[&<target>]` to the singular
- * app route, ProjectDetail parses the surviving query params, and the
+ * These tests cover the canonical `links.ui` grammar: `buildMissionUiLink`
+ * emits the singular app route `/company/:c/projects/:p?tab=work&thread=:t&mission=:r[&<target>]`
+ * directly, ProjectDetail parses the surviving query params, and the
  * highlighted MissionRunCard restores focus and target semantics across
- * reload and history navigation.
+ * reload and history navigation. A legacy `PluralCompanyRedirect` remains
+ * registered for older `/companies/.../work` URLs.
  */
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -331,7 +332,7 @@ describe('Mission product link grammar (VAL-CROSS-101)', () => {
     }
   });
 
-  it('builds the canonical /work subpath with thread and mission params', () => {
+  it('builds the canonical singular route with tab=work and thread+mission params', () => {
     const url = buildMissionUiLink({
       companyId: COMPANY,
       projectId: PROJECT,
@@ -339,12 +340,12 @@ describe('Mission product link grammar (VAL-CROSS-101)', () => {
       runId: RUN,
     });
     expect(url).toBe(
-      `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}`,
+      `/company/${COMPANY}/projects/${PROJECT}?tab=work&thread=${THREAD}&mission=${RUN}`,
     );
   });
 
   it('rejects two target kinds in the same URL', () => {
-    const url = `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}&question=${QUESTION}&planRevision=00000000-0000-4000-8000-000000000011`;
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&question=${QUESTION}&planRevision=00000000-0000-4000-8000-000000000011`;
     expect(parseMissionUiLink(url)).toBeNull();
   });
 });
@@ -507,7 +508,7 @@ describe('MissionRunCard focus restoration (VAL-CROSS-076, VAL-CROSS-083)', () =
       runId: RUN,
     });
     expect(expected).toBe(
-      `/companies/${COMPANY}/projects/${PROJECT}/work?thread=${THREAD}&mission=${RUN}`,
+      `/company/${COMPANY}/projects/${PROJECT}?tab=work&thread=${THREAD}&mission=${RUN}`,
     );
   });
 });

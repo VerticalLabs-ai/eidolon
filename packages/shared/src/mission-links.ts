@@ -4,8 +4,9 @@
  *
  * The closed grammar is:
  *
- *   /companies/:companyId/projects/:projectId/work
- *     ?thread=:threadId
+ *   /company/:companyId/projects/:projectId
+ *     ?tab=work
+ *     &thread=:threadId
  *     &mission=:runId
  *     [&<target>]
  *
@@ -29,6 +30,11 @@
  * The API `Location` header remains under `/api/.../mission-runs/:runId` and
  * is NOT produced here; this module only owns the browser `links.ui` URL.
  *
+ * The canonical `links.ui` URL uses the singular `/company/...` app route
+ * directly with `?tab=work` so product links resolve without a redirect
+ * (VAL-CROSS-076). A UI-level `PluralCompanyRedirect` remains registered for
+ * legacy `/companies/.../work` URLs emitted by older API builds.
+ *
  * Thread selection derives only from the target run's authoritative thread
  * ID (VAL-CROSS-083): the `thread` query parameter is a hint for initial
  * thread selection before the snapshot loads; once the authoritative run
@@ -39,6 +45,7 @@
 
 /** Stable query-parameter names for the closed Mission link grammar. */
 export const MISSION_LINK_PARAM = {
+  tab: 'tab',
   thread: 'thread',
   mission: 'mission',
   question: 'question',
@@ -52,13 +59,14 @@ export const MISSION_LINK_PARAM = {
   version: 'version',
 } as const;
 
-/** Path prefix for the canonical plural company/project route. The UI
- * redirect maps this to the singular app route and adds `tab=work`. */
-export const MISSION_LINK_PATH_PREFIX = '/companies';
+/** Path prefix for the canonical singular company/project app route. The
+ * UI app router serves this route directly; no redirect is needed for links
+ * built by the current API. Legacy plural `/companies/.../work` URLs are
+ * still redirected by the UI `PluralCompanyRedirect`. */
+export const MISSION_LINK_PATH_PREFIX = '/company';
 
-/** Subpath appended to the company/project path. The redirect strips this
- * and replaces it with `?tab=work` on the singular app route. */
-export const MISSION_LINK_WORK_SUBPATH = 'work';
+/** Query value that selects the Work tab on the singular app route. */
+export const MISSION_LINK_TAB_WORK = 'work';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -93,8 +101,8 @@ export interface MissionLinkInput {
   target?: MissionLinkTarget;
 }
 
-/** Subset of `MissionLinkInput` available from URL query params after the
- * app redirect maps `/companies/:c/p/:p/work` to `/company/:c/p/:p?tab=work`.
+/** Subset of `MissionLinkInput` available from URL query params on the
+ * singular app route `/company/:companyId/projects/:projectId?tab=work`.
  * The route params supply `companyId`/`projectId`; the query supplies the
  * rest. Used by the UI parser. */
 export interface MissionLinkParams {
@@ -128,10 +136,11 @@ function requireUuid(value: string, name: string): void {
  * Throws on invalid UUIDs or invalid target combinations so the server
  * cannot emit a malformed deep link.
  *
- * The returned URL is a path-only string starting with `/companies/...` so
- * it is origin-agnostic and survives any loopback UI host. The API
- * `Location` header is separately produced by the route and always
- * remains under `/api/.../mission-runs/:runId`.
+ * The returned URL is a path-only string starting with `/company/...` so it
+ * is origin-agnostic and survives any loopback UI host. It uses the singular
+ * app route directly with `?tab=work` so the link resolves without a
+ * redirect (VAL-CROSS-076). The API `Location` header is separately produced
+ * by the route and always remains under `/api/.../mission-runs/:runId`.
  */
 export function buildMissionUiLink(input: MissionLinkInput): string {
   requireUuid(input.companyId, 'companyId');
@@ -140,13 +149,14 @@ export function buildMissionUiLink(input: MissionLinkInput): string {
   requireUuid(input.runId, 'runId');
 
   const params = new URLSearchParams();
+  params.set(MISSION_LINK_PARAM.tab, MISSION_LINK_TAB_WORK);
   params.set(MISSION_LINK_PARAM.thread, input.threadId);
   params.set(MISSION_LINK_PARAM.mission, input.runId);
   if (input.target) {
     addTargetParams(params, input.target);
   }
   const qs = params.toString();
-  return `${MISSION_LINK_PATH_PREFIX}/${input.companyId}/projects/${input.projectId}/${MISSION_LINK_WORK_SUBPATH}${qs ? `?${qs}` : ''}`;
+  return `${MISSION_LINK_PATH_PREFIX}/${input.companyId}/projects/${input.projectId}${qs ? `?${qs}` : ''}`;
 }
 
 function addTargetParams(params: URLSearchParams, target: MissionLinkTarget): void {
@@ -193,17 +203,17 @@ function addTargetParams(params: URLSearchParams, target: MissionLinkTarget): vo
 
 // ── Parser ───────────────────────────────────────────────────────────────
 
-/** Match the canonical path `/companies/:companyId/projects/:projectId/work`
+/** Match the canonical path `/company/:companyId/projects/:projectId`
  * with URL-encoded UUID segments. UUIDs are validated after decode. */
-const PATH_RE = /^\/companies\/([^/]+)\/projects\/([^/]+)\/work$/;
+const PATH_RE = /^\/company\/([^/]+)\/projects\/([^/]+)$/;
 
 /**
  * Parse a canonical `links.ui` URL or path into structured form. Returns
  * `null` for any URL that does not match the closed grammar, has non-UUID
  * ids, or carries an invalid target combination.
  *
- * Accepts both absolute URLs (e.g. `http://127.0.0.1:5174/companies/...`)
- * and path-only strings (e.g. `/companies/.../work?thread=...`).
+ * Accepts both absolute URLs (e.g. `http://127.0.0.1:5174/company/...`)
+ * and path-only strings (e.g. `/company/.../projects/...?thread=...`).
  */
 export function parseMissionUiLink(urlOrPath: string): MissionLinkInput | null {
   let url: URL;
@@ -257,10 +267,10 @@ function parseMissionUiLinkUrl(url: URL): MissionLinkInput | null {
 }
 
 /**
- * Extract the link target (thread/run/target) from URLSearchParams after the
- * app redirect maps `/companies/:c/p/:p/work` to `/company/:c/p/:p?tab=work`.
+ * Extract the link target (thread/run/target) from URLSearchParams on the
+ * singular app route `/company/:c/projects/:p?tab=work&thread=...&mission=...`.
  * The route params supply `companyId`/`projectId`; this helper reads only the
- * query params that survive the redirect.
+ * query params (it ignores `tab`).
  *
  * Returns `null` when required params are missing or the target combination
  * is invalid. Returns the default `{ kind: 'run' }` target when no target
