@@ -19,6 +19,7 @@ import { Modal } from '@/components/ui/Modal';
 import { ProjectFormModal } from '@/components/projects/ProjectFormModal';
 import { ProjectActivity } from '@/components/projects/ProjectActivity';
 import { isHttpUrl } from '@/lib/urls';
+import { extractMissionLinkParams, type MissionLinkTarget } from '@eidolon/shared';
 import { TaskBoard } from '@/pages/TaskBoard';
 import { ProjectHome } from '@/pages/ProjectHome';
 import { ProjectDrive } from '@/pages/ProjectDrive';
@@ -113,6 +114,33 @@ function WorkArtifactsPanel({
   );
 }
 
+/**
+ * Resolve the active Project Work tab plus any canonical `links.ui` Mission
+ * deep-link target from the surviving search params (VAL-RUN-097,
+ * VAL-CROSS-076, VAL-CROSS-083, VAL-CROSS-101). An explicit `tab` param
+ * wins; otherwise a `mission=` deep link auto-selects the Work tab so the
+ * targeted run card is visible and highlighted. Extracted from
+ * `ProjectDetail` so its cyclomatic complexity stays bounded.
+ */
+function resolveMissionDeepLink(
+  rawTab: string | null,
+  searchParams: URLSearchParams,
+): {
+  activeTab: ValidTab;
+  deepLinkRunId: string | undefined;
+  deepLinkTarget: MissionLinkTarget | undefined;
+} {
+  const linkParams = extractMissionLinkParams(searchParams);
+  const deepLinkRunId = linkParams?.runId;
+  const deepLinkTarget: MissionLinkTarget | undefined = linkParams?.target;
+  const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
+    ? (rawTab as ValidTab)
+    : deepLinkRunId
+      ? 'work'
+      : 'home';
+  return { activeTab, deepLinkRunId, deepLinkTarget };
+}
+
 export function ProjectDetail() {
   const { companyId, projectId } = useParams();
   const navigate = useNavigate();
@@ -128,15 +156,16 @@ export function ProjectDetail() {
   const [templateDescription, setTemplateDescription] = useState('');
 
   const rawTab = searchParams.get('tab');
-  // Deep-link: when ?run= is present (from a start response or snapshot
-  // links.ui), auto-switch to the Work tab so the run card is visible and
-  // highlighted (VAL-RUN-097). An explicit tab param still wins.
-  const deepLinkRunId = searchParams.get('run');
-  const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
-    ? (rawTab as ValidTab)
-    : deepLinkRunId
-      ? 'work'
-      : 'home';
+  // Deep-link: the canonical `links.ui` grammar is
+  // `/companies/:c/p/:p/work?thread=:t&mission=:r[&<target>]`. The app
+  // redirect strips `/work` and adds `tab=work`, so by the time this
+  // component renders, the canonical params are `?tab=work&thread=...&mission=...[&<target>]`.
+  // We parse the closed grammar from the search params: an explicit `tab`
+  // still wins; otherwise a `mission=` deep link auto-selects the Work tab so
+  // the run card is visible and highlighted (VAL-RUN-097, VAL-CROSS-076,
+  // VAL-CROSS-083, VAL-CROSS-101). The resolution lives in a helper so this
+  // component's cyclomatic complexity stays bounded.
+  const { activeTab, deepLinkRunId, deepLinkTarget } = resolveMissionDeepLink(rawTab, searchParams);
 
   const handleTabChange = (id: string) => {
     // Update only the `tab` query param, preserving any other query params.
@@ -305,6 +334,7 @@ export function ProjectDetail() {
               companyId={companyId ?? ''}
               projectId={project.id}
               highlightRunId={deepLinkRunId ?? undefined}
+              highlightTarget={deepLinkTarget}
             />
           </div>
         )}

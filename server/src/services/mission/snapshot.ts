@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
+import { buildMissionUiLink } from '@eidolon/shared';
 import type { DbInstance, EidolonDbSchema } from '../../types.js';
 
 /** Inferred row types for the authoritative tables read by snapshots. */
@@ -417,7 +418,12 @@ export class MissionSnapshotService {
       childSummary,
       artifacts: [],
       links: {
-        ui: `/companies/${companyId}/projects/${projectId}?thread=${run.projectThreadId}&run=${run.id}`,
+        ui: buildMissionUiLink({
+          companyId,
+          projectId,
+          threadId: run.projectThreadId,
+          runId: run.id,
+        }),
       },
     };
   }

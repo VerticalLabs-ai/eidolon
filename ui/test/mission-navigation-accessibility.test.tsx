@@ -36,6 +36,14 @@ vi.mock('@/lib/hooks', async () => {
       error: null,
       reset: vi.fn(),
     }),
+    useRetryMissionRun: () => ({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn().mockResolvedValue(undefined),
+      isPending: false,
+      isError: false,
+      error: null,
+      reset: vi.fn(),
+    }),
     useMissionRequestText: () => undefined,
     useArchiveProject: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false }),
     useSaveProjectTemplate: () => ({ mutate: vi.fn(), isPending: false }),
@@ -150,7 +158,7 @@ function runSnapshot(overrides: Partial<Record<string, unknown>> = {}) {
     childSummary: { running: 0, completed: 0, failed: 0, cancelled: 0, total: 0 },
     artifacts: [],
     links: {
-      ui: '/companies/company-1/projects/project-1?thread=thread-1&run=run-1',
+      ui: '/companies/company-1/projects/project-1/work?thread=thread-1&mission=run-1',
     },
     ...overrides,
   };
@@ -639,14 +647,14 @@ describe('ProjectDetail deep-link navigation (VAL-RUN-097)', () => {
     mocks.useStartMissionRun.mockReturnValue({ mutate: vi.fn(), isPending: false });
   });
 
-  it('defaults to Home tab without a run param', () => {
+  it('defaults to Home tab without a mission param', () => {
     renderDetail('/company/company-1/projects/project-1');
     expect(screen.getByTestId('project-home')).toBeInTheDocument();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
   });
 
-  it('switches to Work tab and highlights the run when ?run= is present', () => {
-    renderDetail('/company/company-1/projects/project-1?run=run-1');
+  it('switches to Work tab and highlights the run when ?thread=&mission= is present', () => {
+    renderDetail('/company/company-1/projects/project-1?thread=thread-1&mission=run-1');
     // Work tab content (TaskBoard) is rendered
     expect(screen.getByTestId('task-board')).toBeInTheDocument();
     // The run card is rendered with the highlight indicator
@@ -656,12 +664,12 @@ describe('ProjectDetail deep-link navigation (VAL-RUN-097)', () => {
   });
 
   it('does not switch to Work tab when an explicit tab is present', () => {
-    // An explicit ?tab=home should keep Home even with ?run= present
-    renderDetail('/company/company-1/projects/project-1?tab=home&run=run-1');
+    // An explicit ?tab=home should keep Home even with ?mission= present
+    renderDetail('/company/company-1/projects/project-1?tab=home&thread=thread-1&mission=run-1');
     expect(screen.getByTestId('project-home')).toBeInTheDocument();
   });
 
-  it('renders Work tab when ?tab=work is present without ?run=', () => {
+  it('renders Work tab when ?tab=work is present without ?mission=', () => {
     renderDetail('/company/company-1/projects/project-1?tab=work');
     expect(screen.getByTestId('task-board')).toBeInTheDocument();
     // No highlight

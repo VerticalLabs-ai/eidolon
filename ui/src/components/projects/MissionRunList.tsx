@@ -1,5 +1,6 @@
 import { useMissionRunsPaginated } from '@/lib/hooks';
 import type { MissionRunSummary } from '@/lib/api';
+import type { MissionLinkTarget } from '@eidolon/shared';
 import { MissionRunCard } from './MissionRunCard';
 
 /**
@@ -43,9 +44,9 @@ function flattenPages(
  * keyboard user can discover historical Missions beyond page one and return
  * with list position preserved (VAL-RUN-132).
  *
- * When `highlightRunId` is set (from a deep-link `?run=` query param), the
- * matching card receives a highlight indicator and scroll anchor
- * (VAL-RUN-097).
+ * When `highlightRunId` is set (from a canonical `?thread=&mission=` deep
+ * link), the matching card receives a highlight indicator, scroll anchor,
+ * and focus restoration (VAL-RUN-097, VAL-CROSS-076, VAL-CROSS-083).
  *
  * On refetch failure, previous data is preserved so existing cards remain
  * visible as stale rather than disappearing (VAL-RUN-131).
@@ -55,12 +56,18 @@ export function MissionRunList({
   projectId,
   requestTexts = {},
   highlightRunId,
+  highlightTarget,
 }: {
   companyId: string;
   projectId: string;
   requestTexts?: Record<string, string>;
-  /** Run ID to highlight from a deep link (VAL-RUN-097). */
+  /** Run ID to highlight from a deep link (VAL-RUN-097, VAL-CROSS-076). */
   highlightRunId?: string;
+  /** Optional target from the canonical `links.ui` grammar. When the target
+   * is not `run`, the highlighted card focuses the matching sub-element
+   * (question, plan, child, source, artifact, citation) so reload and
+   * Back/Forward restore exact target/focus (VAL-CROSS-076, VAL-CROSS-083). */
+  highlightTarget?: MissionLinkTarget;
 }) {
   const runsQuery = useMissionRunsPaginated(companyId, projectId);
   const runs = flattenPages(runsQuery.data?.pages ?? []);
@@ -134,6 +141,7 @@ export function MissionRunList({
             run={run}
             requestText={requestTexts[run.id]}
             highlighted={highlightRunId === run.id}
+            target={highlightRunId === run.id ? highlightTarget : undefined}
           />
         ))}
       </div>

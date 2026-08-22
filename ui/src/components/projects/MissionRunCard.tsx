@@ -9,6 +9,7 @@ import {
   useRetryMissionRun,
 } from '@/lib/hooks';
 import type { MissionRunSummary, MissionRunSnapshot, MissionReplayEvent } from '@/lib/api';
+import { type MissionLinkTarget } from '@eidolon/shared';
 import {
   CheckCircle2,
   XCircle,
@@ -156,6 +157,7 @@ export function MissionRunCard({
   run,
   requestText,
   highlighted,
+  target,
 }: {
   companyId: string;
   projectId: string;
@@ -163,6 +165,14 @@ export function MissionRunCard({
   requestText?: string;
   /** Whether this card is the deep-link target (VAL-RUN-097). */
   highlighted?: boolean;
+  /** Optional canonical `links.ui` target. When the target is not `run`,
+   * the highlighted card focuses the matching sub-element so reload and
+   * Back/Forward restore exact target/focus (VAL-CROSS-076, VAL-CROSS-083).
+   * In Phase 1 only the run-level focus target is rendered; sub-element
+   * targets (question/plan/child/source/artifact/citation) fall back to
+   * focusing the run card itself, which is the Phase 1 surface for those
+   * future targets. */
+  target?: MissionLinkTarget;
 }) {
   const snapshotQuery = useMissionRunSnapshot(companyId, projectId, run.id);
   const eventsQuery = useMissionRunEvents(companyId, projectId, run.id);
@@ -199,7 +209,7 @@ export function MissionRunCard({
   // The browser never advances state optimistically; the authoritative
   // snapshot/event refetch reveals the new successor run.
   const isRootRun = !snapshot || (snapshot.depth ?? 0) === 0;
-  const canRetry = (run.status === 'failed' || run.status === 'cancelled') && isRootRun;
+  const canRetry = isRetryEligible(run.status, isRootRun);
 
   // When the confirmation dialog closes, restore focus to the originating
   // Cancel control so focus is never lost to the document body
@@ -212,13 +222,11 @@ export function MissionRunCard({
     cancelBtnRef.current?.focus();
   };
 
-  // Scroll into view when highlighted (deep-link target).
-  const cardRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (highlighted && cardRef.current && typeof cardRef.current.scrollIntoView === 'function') {
-      cardRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-  }, [highlighted]);
+  // Scroll into view and restore focus when highlighted (deep-link target).
+  // For Phase 1, the run card is the focus surface for every target kind.
+  // When a more specific sub-element id is available (future milestones),
+  // focus that element instead of the card (VAL-CROSS-076, VAL-CROSS-083).
+  const cardRef = useRunCardHighlight(highlighted, run.id, target);
 
   return (
     <article
@@ -226,6 +234,7 @@ export function MissionRunCard({
       id={`mission-run-${run.id}`}
       aria-labelledby={`run-heading-${run.id}`}
       data-highlighted={highlighted ? 'true' : undefined}
+      data-target-kind={highlighted ? highlightTargetKind(target) : undefined}
       className={`rounded-xl border bg-surface p-4 w-full max-w-full break-words ${
         highlighted ? 'border-accent/40 ring-2 ring-accent/20' : 'border-white/[0.06]'
       }`}
@@ -529,6 +538,15 @@ function RunCardRetryLineage({
   if (!retryOfRunId) {
     return null;
   }
+  // Use the canonical plural `/companies/.../work` path so the link is
+  // routed by the app redirect (VAL-CROSS-101). The retry-of run is a
+  // distinct run whose authoritative thread is not known here; per
+  // VAL-CROSS-083 thread selection derives from the target run's
+  // authoritative snapshot, so we do not fabricate a `thread` hint. The
+  // closed-grammar parser requires `thread` to fire a deep-link highlight,
+  // so this link navigates to the project Work tab without highlighting a
+  // specific run; the retry-of run's own `links.ui` (carried in its
+  // snapshot) is the canonical deep link for that run.
   const linkPath = `/companies/${companyId}/projects/${projectId}/work?mission=${retryOfRunId}`;
   return (
     <p className="mb-3 text-xs text-text-muted">
@@ -823,4 +841,109 @@ function badgeClass(variant: 'default' | 'success' | 'warning' | 'error' | 'info
     default:
       return 'bg-white/[0.06] text-text-secondary border-white/[0.08]';
   }
+}
+
+/**
+ * Resolve the stable DOM element id for a canonical `links.ui` target inside
+ * a run card. Returns `null` for the default `run` target so the caller
+ * focuses the card itself. In Phase 1 only the run-level surface is
+ * rendered; the question/plan/child/source/artifact/citation element ids
+ * are reserved for future milestones and fall back to the card heading.
+ * (VAL-CROSS-076, VAL-CROSS-083, VAL-CROSS-101).
+ */
+export function targetElementId(runId: string, target: MissionLinkTarget): string | null {
+  switch (target.kind) {
+    case 'run':
+      return null;
+    case 'question':
+      return `mission-question-${target.questionSetId}`;
+    case 'planRevision':
+      return `mission-plan-revision-${target.revisionId}`;
+    case 'approval':
+      return `mission-approval-${target.approvalId}`;
+    case 'childThread':
+      return `mission-child-thread-${target.childThreadId}`;
+    case 'sourceRevision':
+      return `mission-source-revision-${target.sourceRevisionId}`;
+    case 'artifactVersion':
+      return `mission-artifact-${target.artifactId}-version-${target.version}`;
+    case 'citation':
+      return `mission-citation-${target.citationId}`;
+  }
+}
+
+/**
+ * Scroll the highlighted run card into view and restore focus to the
+ * target-specific anchor (or the card itself as the Phase 1 fallback).
+ * Extracted from the highlight `useEffect` so the card's cyclomatic
+ * complexity stays bounded (VAL-CROSS-076, VAL-CROSS-083).
+ */
+function restoreHighlightFocus(
+  cardEl: HTMLElement,
+  runId: string,
+  target: MissionLinkTarget | undefined,
+): void {
+  if (typeof cardEl.scrollIntoView === 'function') {
+    cardEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  // Resolve a target-specific anchor if present. Future milestones render
+  // question/plan/child/source/artifact/citation elements with stable ids;
+  // until then we fall back to focusing the card heading.
+  const targetId = target ? targetElementId(runId, target) : null;
+  const focusEl = (targetId && document.getElementById(targetId)) || cardEl;
+  if (!focusEl || typeof focusEl.focus !== 'function') {
+    return;
+  }
+  // Make the element focusable programmatically without losing its
+  // semantics: focus then leave the tabindex for the lifetime of the
+  // highlight so repeated reloads/Back-Forward can re-focus without
+  // re-patching the DOM.
+  const hadTabIndex = focusEl.hasAttribute('tabindex');
+  if (!hadTabIndex) {
+    focusEl.setAttribute('tabindex', '-1');
+  }
+  focusEl.focus({ preventScroll: false });
+}
+
+/**
+ * Custom hook backing the deep-link highlight: owns the card ref and the
+ * effect that scrolls the card into view and restores focus to the
+ * target-specific anchor on reload/Back-Forward (VAL-CROSS-076,
+ * VAL-CROSS-083). Extracted as a hook so `MissionRunCard`'s cyclomatic
+ * complexity stays bounded.
+ */
+function useRunCardHighlight(
+  highlighted: boolean | undefined,
+  runId: string,
+  target: MissionLinkTarget | undefined,
+): React.Ref<HTMLElement> {
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!highlighted) {
+      return;
+    }
+    const cardEl = cardRef.current;
+    if (cardEl) {
+      restoreHighlightFocus(cardEl, runId, target);
+    }
+  }, [highlighted, target, runId]);
+  return cardRef;
+}
+
+/**
+ * Resolve the `data-target-kind` value for a highlighted card. Returns the
+ * target kind discriminator, defaulting to `'run'` when no specific target
+ * is present (VAL-CROSS-076, VAL-CROSS-083).
+ */
+function highlightTargetKind(target: MissionLinkTarget | undefined): string {
+  return target?.kind ?? 'run';
+}
+
+/**
+ * Whether a Retry control should be shown: only for terminal root runs that
+ * failed or were cancelled (VAL-RUN-045). Extracted so `MissionRunCard`'s
+ * cyclomatic complexity stays bounded.
+ */
+function isRetryEligible(status: string, isRootRun: boolean): boolean {
+  return (status === 'failed' || status === 'cancelled') && isRootRun;
 }

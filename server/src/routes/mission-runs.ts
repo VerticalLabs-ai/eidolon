@@ -24,6 +24,7 @@ import {
   incrementMissionSseConnection,
   incrementMissionSseReplay,
 } from '../middleware/observability.js';
+import { buildMissionUiLink } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 
 const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
@@ -298,7 +299,12 @@ export function missionRunsRouter(db: DbInstance): Router {
     });
 
     const location = `/api/companies/${companyId}/projects/${projectId}/mission-runs/${result.run.id}`;
-    const linksUi = `/companies/${companyId}/projects/${projectId}?thread=${body.projectThreadId}&run=${result.run.id}`;
+    const linksUi = buildMissionUiLink({
+      companyId,
+      projectId,
+      threadId: body.projectThreadId,
+      runId: result.run.id,
+    });
 
     res
       .status(202)
