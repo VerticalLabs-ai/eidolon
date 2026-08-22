@@ -50,6 +50,15 @@ export interface WorkerDeps {
    * signal and abort cancellable work.
    */
   advance: (claim: Claim, signal: AbortSignal) => Promise<void>;
+  /**
+   * Optional periodic sweep called at the beginning of each poll cycle,
+   * before attempting to claim a run. Used to wire the kill-switch sweep
+   * (sweepAllDisabled + enforceDeadlines) into the worker poll loop so
+   * disabled companies and abandoned runs are handled without a separate
+   * cron process. Errors are caught and logged — the worker continues
+   * polling after a sweep failure.
+   */
+  sweep?: () => Promise<void>;
 }
 
 export class OrchestrationWorker {
@@ -59,6 +68,7 @@ export class OrchestrationWorker {
   private readonly renewalIntervalMs: number;
   private readonly shutdownCommitWindowMs: number;
   private readonly advanceFn: (claim: Claim, signal: AbortSignal) => Promise<void>;
+  private readonly sweepFn: (() => Promise<void>) | null;
 
   private shuttingDown = false;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,6 +84,7 @@ export class OrchestrationWorker {
     this.renewalIntervalMs = deps.renewalIntervalMs ?? RENEWAL_INTERVAL_MS;
     this.shutdownCommitWindowMs = deps.shutdownCommitWindowMs ?? 5000;
     this.advanceFn = deps.advance;
+    this.sweepFn = deps.sweep ?? null;
   }
 
   get isShuttingDown(): boolean {
@@ -168,6 +179,22 @@ export class OrchestrationWorker {
 
   private async poll(): Promise<void> {
     if (this.shuttingDown || this.processing) {
+      this.schedulePoll();
+      return;
+    }
+
+    // Run the periodic sweep (kill-switch + deadline enforcement) before
+    // attempting to claim. Errors are caught so the worker continues
+    // polling after a sweep failure.
+    if (this.sweepFn) {
+      try {
+        await this.sweepFn();
+      } catch {
+        // Sweep failure is non-fatal — the next poll cycle will retry.
+      }
+    }
+
+    if (this.shuttingDown) {
       this.schedulePoll();
       return;
     }
