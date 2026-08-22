@@ -237,6 +237,48 @@ describe('MissionRunList and MissionRunCard', () => {
     expect(screen.getByText(/running/i)).toBeInTheDocument();
   });
 
+  // ── VAL-RUN-017 (Normative Boundary 1): badge/flags derive from the
+  //    authoritative snapshot, not the stale list row.
+  it('derives the status badge from snapshot.status when it diverges from run.status', () => {
+    // Stale list row says queued, authoritative snapshot says running.
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'queued' })]));
+    mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult(runSnapshot({ status: 'running' })));
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    // Badge must show the authoritative snapshot status, not the stale row.
+    expect(screen.getByText(/^running$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^queued$/i)).not.toBeInTheDocument();
+  });
+
+  it('hides the Cancel control when the snapshot is terminal even if the list row is not', () => {
+    // Stale list row says running, authoritative snapshot says completed.
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'running' })]));
+    mocks.useMissionRunSnapshot.mockReturnValue(
+      snapshotResult(runSnapshot({ status: 'completed', terminalAt: '2026-08-20T10:05:00.000Z' })),
+    );
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    // isTerminal derived from snapshot suppresses the Cancel control.
+    expect(screen.queryByRole('button', { name: /cancel mission/i })).not.toBeInTheDocument();
+    // Badge reflects the authoritative terminal status.
+    expect(screen.getAllByText(/^completed$/i).length).toBeGreaterThan(0);
+  });
+
+  it('hides the Retry control when the snapshot is nonterminal even if the list row is terminal', () => {
+    // Stale list row says failed, authoritative snapshot says running.
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary({ status: 'failed' })]));
+    mocks.useMissionRunSnapshot.mockReturnValue(snapshotResult(runSnapshot({ status: 'running' })));
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    // canRetry derived from snapshot is false; no Retry button.
+    expect(screen.queryByRole('button', { name: /retry mission/i })).not.toBeInTheDocument();
+    // Badge reflects the authoritative nonterminal status.
+    expect(screen.getByText(/^running$/i)).toBeInTheDocument();
+  });
+
   it('does not advance status without a newer server state version', () => {
     mocks.useMissionRunsPaginated.mockReturnValue(
       listResult([runSummary({ status: 'queued', stateVersion: 2 })]),
@@ -459,6 +501,17 @@ describe('MissionRunList and MissionRunCard', () => {
       createdAt: '2026-08-20T10:00:00.000Z',
     });
     mocks.useMissionRunsPaginated.mockReturnValue(listResult([run1, run2]));
+    // The badge derives from the authoritative snapshot, so mock a
+    // per-run snapshot whose status matches each list row.
+    mocks.useMissionRunSnapshot.mockImplementation((_c: string, _p: string, runId: string) =>
+      snapshotResult(
+        runSnapshot({
+          id: runId,
+          status: runId === 'run-aaa' ? 'running' : 'completed',
+          terminalAt: runId === 'run-bbb' ? '2026-08-20T10:10:00.000Z' : null,
+        }),
+      ),
+    );
     render(
       <MissionRunList
         companyId="company-1"
@@ -480,7 +533,7 @@ describe('MissionRunList and MissionRunCard', () => {
     expect(within(cards[1]).getByText(/Second mission request/i)).toBeInTheDocument();
     // Each has its own status
     expect(within(cards[0]).getByText(/running/i)).toBeInTheDocument();
-    expect(within(cards[1]).getByText(/completed/i)).toBeInTheDocument();
+    expect(within(cards[1]).getAllByText(/completed/i).length).toBeGreaterThan(0);
   });
 
   it('acting on one card does not affect another card display', () => {
@@ -495,6 +548,16 @@ describe('MissionRunList and MissionRunCard', () => {
       requestContentHash: 'hash-bbb',
     });
     mocks.useMissionRunsPaginated.mockReturnValue(listResult([run1, run2]));
+    // Badge derives from the authoritative snapshot; mock per-run snapshots.
+    mocks.useMissionRunSnapshot.mockImplementation((_c: string, _p: string, runId: string) =>
+      snapshotResult(
+        runSnapshot({
+          id: runId,
+          status: runId === 'run-aaa' ? 'queued' : 'completed',
+          terminalAt: runId === 'run-bbb' ? '2026-08-20T10:10:00.000Z' : null,
+        }),
+      ),
+    );
     render(
       <MissionRunList
         companyId="company-1"

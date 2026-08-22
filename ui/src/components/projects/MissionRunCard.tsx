@@ -24,6 +24,28 @@ import {
 } from 'lucide-react';
 import { MissionCancelDialog } from './MissionCancelDialog';
 
+/** Terminal run statuses. */
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+/** Whether a status is terminal. */
+function isTerminalRunStatus(status: string): boolean {
+  return TERMINAL_RUN_STATUSES.has(status);
+}
+
+/**
+ * Resolve the authoritative run status for badge/flag derivation. The list
+ * row's `status` is a projection that can lag the authoritative snapshot
+ * during live lifecycle transitions; prefer the snapshot and fall back to
+ * the list row only while the snapshot is still loading.
+ * (Normative Boundary 1 / VAL-RUN-017.)
+ */
+function resolveAuthoritativeStatus(
+  snapshot: MissionRunSnapshot | undefined,
+  fallback: string,
+): string {
+  return snapshot?.status ?? fallback;
+}
+
 /** Map a status string to human-readable text (VAL-RUN-018). */
 function statusToText(status: string): string {
   const map: Record<string, string> = {
@@ -180,22 +202,35 @@ export function MissionRunCard({
   const cachedRequestText = useMissionRequestText(run.id);
   const displayRequestText = requestText ?? cachedRequestText;
 
-  // SSE stream for real-time updates. Only connect for nonterminal runs.
-  const isTerminal = ['completed', 'failed', 'cancelled'].includes(run.status);
+  const snapshot = snapshotQuery.data as MissionRunSnapshot | undefined;
+  const events = (eventsQuery.data?.events ?? []) as MissionReplayEvent[];
+
+  // Status badge and all derived flags (isTerminal, canCancel, canRetry)
+  // derive from the authoritative snapshot, falling back to the list row
+  // only while the snapshot is still loading. The list row's `status` is a
+  // projection that can lag the authoritative snapshot during live
+  // lifecycle transitions (queued → running → completed); deriving from
+  // `snapshot?.status ?? run.status` keeps the badge and action
+  // availability authoritative. (Normative Boundary 1 / VAL-RUN-017.)
+  const authoritativeStatus = resolveAuthoritativeStatus(snapshot, run.status);
+  const isTerminal = isTerminalRunStatus(authoritativeStatus);
+
+  // SSE stream for real-time updates. Only connect for nonterminal runs,
+  // determined from the authoritative snapshot status so a stale list row
+  // cannot keep (or drop) a stream for an actually-terminal run.
   const stream = useMissionRunStream(companyId, projectId, run.id, {
     enabled: !isTerminal,
   });
 
-  const snapshot = snapshotQuery.data as MissionRunSnapshot | undefined;
-  const events = (eventsQuery.data?.events ?? []) as MissionReplayEvent[];
-
-  const statusText = statusToText(run.status);
-  const announcement = useBatchedStatusAnnouncement(run.id, run.status);
+  const statusText = statusToText(authoritativeStatus);
+  const announcement = useBatchedStatusAnnouncement(run.id, authoritativeStatus);
 
   // Cancellation confirmation state (VAL-RUN-035, VAL-RUN-036). The cancel
   // control is shown only for nonterminal runs that have not already
   // requested cancellation. Once requested, the authoritative indicator
-  // takes over (VAL-RUN-035).
+  // takes over (VAL-RUN-035). isTerminal derives from the authoritative
+  // snapshot status so a stale list row cannot keep an actually-terminal
+  // run cancellable (Normative Boundary 1).
   const cancelMutation = useCancelMissionRun(companyId, projectId, run.id);
   const [cancelOpen, setCancelOpen] = useState(false);
   const cancelBtnRef = useRef<HTMLButtonElement>(null);
@@ -207,9 +242,11 @@ export function MissionRunCard({
   // Retry is shown only for terminal root runs (failed or cancelled, depth 0).
   // Completed runs and child runs (depth > 0) do not get a retry control.
   // The browser never advances state optimistically; the authoritative
-  // snapshot/event refetch reveals the new successor run.
+  // snapshot/event refetch reveals the new successor run. canRetry derives
+  // from the authoritative snapshot status so a stale list row cannot make
+  // an actually-nonterminal run retryable (Normative Boundary 1).
   const isRootRun = !snapshot || (snapshot.depth ?? 0) === 0;
-  const canRetry = isRetryEligible(run.status, isRootRun);
+  const canRetry = isRetryEligible(authoritativeStatus, isRootRun);
 
   // When the confirmation dialog closes, restore focus to the originating
   // Cancel control so focus is never lost to the document body
@@ -243,23 +280,23 @@ export function MissionRunCard({
       <span role="status" aria-label="Mission status" aria-live="polite" className="sr-only">
         {announcement}
       </span>
-      <RunCardHeader run={run} statusText={statusText} />
+      <RunCardHeader run={run} status={authoritativeStatus} statusText={statusText} />
       <RunCardRequest displayRequestText={displayRequestText} run={run} />
-      <RunCardMeta run={run} snapshot={snapshot} />
+      <RunCardMeta run={run} snapshot={snapshot} status={authoritativeStatus} />
       <RunCardStreamStatus stream={stream} isTerminal={isTerminal} />
-      <RunCardQueueHealth snapshot={snapshot} status={run.status} />
+      <RunCardQueueHealth snapshot={snapshot} status={authoritativeStatus} />
       <RunCardStaleRead
         snapshotError={snapshotQuery.isError && !!snapshotQuery.data}
         eventsError={eventsQuery.isError && !!eventsQuery.data}
         onRetrySnapshot={() => snapshotQuery.refetch()}
         onRetryEvents={() => eventsQuery.refetch()}
       />
-      <RunCardCancellationIndicator snapshot={snapshot} status={run.status} />
+      <RunCardCancellationIndicator snapshot={snapshot} status={authoritativeStatus} />
       <RunCardRetryLineage snapshot={snapshot} companyId={companyId} projectId={projectId} />
       <RunCardBudget snapshot={snapshot} />
-      <RunCardFailure snapshot={snapshot} status={run.status} />
-      <RunCardOutput snapshot={snapshot} status={run.status} />
-      <RunCardCancelledDetail snapshot={snapshot} status={run.status} />
+      <RunCardFailure snapshot={snapshot} status={authoritativeStatus} />
+      <RunCardOutput snapshot={snapshot} status={authoritativeStatus} />
+      <RunCardCancelledDetail snapshot={snapshot} status={authoritativeStatus} />
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
       <RunCardRetryControl
         companyId={companyId}
@@ -297,11 +334,22 @@ export function MissionRunCard({
   );
 }
 
-/** Header with status icon, run ID heading, and textual status badge. */
-function RunCardHeader({ run, statusText }: { run: MissionRunSummary; statusText: string }) {
+/** Header with status icon, run ID heading, and textual status badge.
+ * The icon and badge variant derive from the authoritative `status`
+ * (snapshot?.status ?? run.status), not the stale list row
+ * (Normative Boundary 1 / VAL-RUN-017). */
+function RunCardHeader({
+  run,
+  status,
+  statusText,
+}: {
+  run: MissionRunSummary;
+  status: string;
+  statusText: string;
+}) {
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2">
-      <StatusIcon status={run.status} />
+      <StatusIcon status={status} />
       <h3
         id={`run-heading-${run.id}`}
         className="text-sm font-semibold text-text-primary font-display break-all"
@@ -309,7 +357,7 @@ function RunCardHeader({ run, statusText }: { run: MissionRunSummary; statusText
         {run.id}
       </h3>
       <span
-        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${badgeClass(statusBadgeVariant(run.status))}`}
+        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${badgeClass(statusBadgeVariant(status))}`}
       >
         {statusText}
       </span>
@@ -335,15 +383,24 @@ function RunCardRequest({
   );
 }
 
-/** Meta row: mode, creation time, and terminal timestamps. */
-function RunCardMeta({ run, snapshot }: { run: MissionRunSummary; snapshot?: MissionRunSnapshot }) {
-  const isTerminal = ['completed', 'failed', 'cancelled'].includes(run.status);
+/** Meta row: mode, creation time, and terminal timestamps.
+ * `status` is the authoritative status (snapshot?.status ?? run.status). */
+function RunCardMeta({
+  run,
+  snapshot,
+  status,
+}: {
+  run: MissionRunSummary;
+  snapshot?: MissionRunSnapshot;
+  status: string;
+}) {
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(status);
   const terminalLabel =
-    run.status === 'completed'
+    status === 'completed'
       ? 'Completed at: '
-      : run.status === 'failed'
+      : status === 'failed'
         ? 'Failed at: '
-        : run.status === 'cancelled'
+        : status === 'cancelled'
           ? 'Cancelled at: '
           : '';
   return (

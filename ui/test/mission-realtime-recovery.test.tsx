@@ -836,4 +836,48 @@ describe('useMissionRunStream hook', () => {
     unmount();
     expect(MockEventSourceClass.lastInstance?.closeFn).toHaveBeenCalled();
   });
+
+  // ── Normative Boundary 1: SSE invalidates the mission-runs list key ───
+  it('invalidates the mission-runs list query key on an SSE event', async () => {
+    global.EventSource = MockEventSourceClass as unknown as typeof EventSource;
+    hookQc.clear();
+
+    // Spy on the shared QueryClient's invalidateQueries to observe the
+    // exact query keys invalidated by the SSE event handler.
+    const invalidateSpy = vi.spyOn(hookQc, 'invalidateQueries');
+
+    tlRenderHook(() => useMissionRunStreamReal('company-1', 'project-1', 'run-1'), {
+      wrapper: hookWrapper,
+    });
+
+    await act(async () => {
+      MockEventSourceClass.lastInstance?.simulateOpen();
+    });
+
+    invalidateSpy.mockClear();
+
+    const es = MockEventSourceClass.lastInstance!;
+    await act(async () => {
+      es.simulateEvent(
+        'run.status_changed',
+        JSON.stringify({ sequence: 1, type: 'run.status_changed' }),
+        '1',
+      );
+    });
+
+    // The mission-runs list query key must be invalidated so the list row
+    // refreshes from authoritative server state on SSE events. Both the
+    // paginated and plain list keys share the ['mission-runs', company,
+    // project] prefix, so a prefix invalidation covers both.
+    const listInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+      const key = (arg as { queryKey?: unknown[] }).queryKey;
+      return (
+        Array.isArray(key) &&
+        key[0] === 'mission-runs' &&
+        key[1] === 'company-1' &&
+        key[2] === 'project-1'
+      );
+    });
+    expect(listInvalidated).toBe(true);
+  });
 });

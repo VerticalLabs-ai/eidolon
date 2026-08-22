@@ -202,6 +202,11 @@ describe('Mission cancellation UI', () => {
     });
 
     it('does not show a Cancel control for a terminal run', () => {
+      mocks.useMissionRunSnapshot.mockReturnValue(
+        snapshotResult(
+          runSnapshot({ status: 'completed', terminalAt: '2026-08-20T10:10:00.000Z' }),
+        ),
+      );
       render(
         <MissionRunCard
           companyId="company-1"

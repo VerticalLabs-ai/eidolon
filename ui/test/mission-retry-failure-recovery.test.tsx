@@ -259,6 +259,9 @@ describe('Mission retry, failure, and recovery UI', () => {
   // ── VAL-RUN-045 / VAL-CROSS-073: Failed card exposes safe actionable error ─
   describe('VAL-RUN-045 / VAL-CROSS-073: failed card safe error and retry', () => {
     it('shows a Retry control for a failed terminal root run', () => {
+      mocks.useMissionRunSnapshot.mockReturnValue(
+        snapshotResult(runSnapshot({ status: 'failed', terminalAt: '2026-08-20T10:05:00.000Z' })),
+      );
       render(
         <MissionRunCard
           companyId="company-1"
@@ -303,6 +306,11 @@ describe('Mission retry, failure, and recovery UI', () => {
     });
 
     it('does not show Retry for a completed run', () => {
+      mocks.useMissionRunSnapshot.mockReturnValue(
+        snapshotResult(
+          runSnapshot({ status: 'completed', terminalAt: '2026-08-20T10:10:00.000Z' }),
+        ),
+      );
       render(
         <MissionRunCard
           companyId="company-1"
@@ -320,6 +328,11 @@ describe('Mission retry, failure, and recovery UI', () => {
   // ── VAL-CROSS-074 / VAL-CROSS-096: Terminal retry preserves history and lineage ──
   describe('VAL-CROSS-074 / VAL-CROSS-096: retry lineage', () => {
     it('shows Retry for a cancelled terminal root run', () => {
+      mocks.useMissionRunSnapshot.mockReturnValue(
+        snapshotResult(
+          runSnapshot({ status: 'cancelled', terminalAt: '2026-08-20T10:03:00.000Z' }),
+        ),
+      );
       render(
         <MissionRunCard
           companyId="company-1"

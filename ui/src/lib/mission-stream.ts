@@ -121,6 +121,21 @@ export function useMissionRunStream(
         queryKey: ['mission-run-events', companyId, projectId, runId],
       });
 
+      // Invalidate the paginated mission-runs list query so the list row
+      // (including its status badge and derived action availability)
+      // refreshes from authoritative server state on every SSE event.
+      // The list row's `status` is a projection that can lag the
+      // authoritative snapshot during live lifecycle transitions; without
+      // this invalidation the row (and any consumer that reads
+      // `run.status`) stays stale until the next polling/refetch window.
+      // Both `useMissionRuns` (`['mission-runs', company, project]`) and
+      // `useMissionRunsPaginated` (`['mission-runs', company, project,
+      // 'paginated']`) share this prefix, so a prefix invalidation covers
+      // both. (Normative Boundary 1 / VAL-RUN-017.)
+      qc.invalidateQueries({
+        queryKey: ['mission-runs', companyId, projectId],
+      });
+
       // Close the stream on terminal events.
       if (TERMINAL_EVENT_TYPES.has(eventType)) {
         closedRef.current = true;
