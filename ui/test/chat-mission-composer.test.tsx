@@ -466,6 +466,32 @@ describe('ChatMissionComposer', () => {
     expect(mutate.mock.calls[0][0].body.limits).toEqual({ costCents: 250 });
   });
 
+  // VAL-RUN-016: rapid double activation of the Start button must fire only
+  // one POST request. The synchronous submit guard blocks a second activation
+  // before TanStack Query flips `isPending` (which is async/batched).
+  it('fires only one start mutation on rapid double activation of the Start button', () => {
+    mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
+    const mutate = vi.fn();
+    mocks.useStartMissionRun.mockReturnValue({
+      mutate,
+      isPending: false,
+      isSuccess: false,
+      isError: false,
+      reset: vi.fn(),
+    });
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+    fireEvent.click(screen.getByRole('radio', { name: /mission/i }));
+    fireEvent.change(screen.getByLabelText(/mission request/i), {
+      target: { value: 'Rapid double start' },
+    });
+    const startButton = screen.getByRole('button', { name: /start mission/i });
+    // Two activations in immediate succession, before any re-render can flip
+    // isPending. Only one POST should be issued.
+    fireEvent.click(startButton);
+    fireEvent.click(startButton);
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+
   // VAL-RUN-130 / Normative Boundary 2: a lost network response followed by
   // a second activation must replay the SAME logical start command, not a
   // fresh one, so the server's exactly-one-outcome guarantee holds and no

@@ -17,13 +17,20 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
+  // Merge headers explicitly so a caller-supplied `headers` field does not
+  // overwrite the default Content-Type. Previously `...options` was spread
+  // after `headers`, which replaced the merged headers object with the raw
+  // caller headers and dropped Content-Type on every POST that supplied
+  // headers (e.g. Mission start with Idempotency-Key), causing 400
+  // VALIDATION_ERROR (VAL-RUN-126, VAL-CROSS-002).
+  const { headers: callerHeaders, ...rest } = options;
   const res = await fetch(url, {
     credentials: 'include',
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...(callerHeaders as Record<string, string> | undefined),
     },
-    ...options,
   });
 
   // Redirect to login on 401

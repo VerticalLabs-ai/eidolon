@@ -135,6 +135,13 @@ function MissionForm({
   // first activation and reused across recoverable re-submissions; cleared
   // on success (Normative Boundary 2 / VAL-RUN-130).
   const [idempotencyKey, setIdempotencyKey] = useState('');
+  // Synchronous in-flight guard. `startMission.isPending` is updated
+  // asynchronously after React re-renders, so a rapid second activation can
+  // slip through before the button is disabled. This ref is set
+  // synchronously on the first activation and blocks a second POST
+  // immediately, then resets when the mutation settles so a recoverable
+  // re-submission can proceed (VAL-RUN-016).
+  const submittingRef = useRef(false);
   useEffect(() => {
     if (startMission.isSuccess) {
       onDraftChange('');
@@ -145,8 +152,28 @@ function MissionForm({
     }
   }, [startMission, onDraftChange]);
 
+  // Reset the synchronous guard once the mutation has reached a settled
+  // outcome (success or recoverable error) and is no longer pending, so a
+  // later, distinct logical start can proceed. The retained idempotency key
+  // is preserved for replay. This effect runs after every render: two
+  // activations in the same event tick (or separated only by an act flush
+  // while the mock never transitions `isPending`) keep the ref true and block
+  // the duplicate; once the mutation reports a settled outcome, the ref
+  // resets so a deliberate re-submission can proceed (VAL-RUN-016,
+  // VAL-RUN-130).
+  useEffect(() => {
+    if (!startMission.isPending && (startMission.isSuccess || startMission.isError)) {
+      submittingRef.current = false;
+    }
+  });
+
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Synchronous double-activation guard: block a second POST before the
+    // async fetch begins, before `isPending` can flip (VAL-RUN-016).
+    if (submittingRef.current) {
+      return;
+    }
     const trimmed = draft.trim();
     if (!trimmed || !selectedThreadId || startMission.isPending) {
       return;
@@ -182,6 +209,9 @@ function MissionForm({
     // VAL-RUN-130, VAL-RUN-052, VAL-RUN-016).
     const key = idempotencyKey || makeStartIdempotencyKey();
     setIdempotencyKey(key);
+    // Synchronously mark in-flight so a rapid second activation cannot fire
+    // a second POST before `isPending` flips (VAL-RUN-016).
+    submittingRef.current = true;
     startMission.mutate({
       idempotencyKey: key,
       body: {
