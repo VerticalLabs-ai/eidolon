@@ -1,5 +1,5 @@
 import { ZodError } from 'zod';
-import { AppError } from '../../middleware/error-handler.js';
+import { AppError, isBodyParseError } from '../../middleware/error-handler.js';
 
 /**
  * Mission error and event envelope sanitization (VAL-RUN-046, VAL-RUN-073).
@@ -186,6 +186,12 @@ export function toSafeMissionError(err: unknown): Error {
     const safeMessage = sanitizeErrorMessage(err.message);
     const safeDetails = err.details !== undefined ? sanitizeEventPayload(err.details) : undefined;
     return new AppError(err.status, err.code, safeMessage, safeDetails);
+  }
+  // Body-parser / JSON parse errors are client errors (400), not server
+  // errors. Without this check the raw V8 JSON.parse message would be
+  // sanitized but still returned as 500 INTERNAL_SERVER_ERROR (VAL-RUN-012).
+  if (isBodyParseError(err)) {
+    return new AppError(400, 'VALIDATION_ERROR', 'Malformed JSON body');
   }
   if (err instanceof Error) {
     const safeMessage = sanitizeErrorMessage(err.message);
