@@ -100,6 +100,18 @@ function ChatForm({
   );
 }
 
+/** Generate a stable random idempotency key for a logical Mission start.
+ * Reused across recoverable re-submissions so the server's
+ * exactly-one-outcome guarantee holds after a lost network response
+ * (Normative Boundary 2 / VAL-RUN-130). Matches MissionCancelDialog's
+ * key-retention pattern. */
+function makeStartIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `mission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 /** Mission form: starts an asynchronous durable Mission run. */
 function MissionForm({
   draft,
@@ -119,9 +131,16 @@ function MissionForm({
   const [costLimit, setCostLimit] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const costLimitRef = useRef<HTMLInputElement>(null);
+  // Stable idempotency key for the current logical start. Generated on the
+  // first activation and reused across recoverable re-submissions; cleared
+  // on success (Normative Boundary 2 / VAL-RUN-130).
+  const [idempotencyKey, setIdempotencyKey] = useState('');
   useEffect(() => {
     if (startMission.isSuccess) {
       onDraftChange('');
+      // Success: the server confirmed the outcome. Clear the retained key
+      // so a later, distinct start is a fresh logical command.
+      setIdempotencyKey('');
       startMission.reset();
     }
   }, [startMission, onDraftChange]);
@@ -156,9 +175,15 @@ function MissionForm({
       }
     }
     setValidationError(null);
-    const idempotencyKey = `mission-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // Reuse the retained key across recoverable re-submissions; generate a
+    // fresh key only for a new logical start (after a confirmed success
+    // cleared the retained key). This preserves the exactly-one-outcome
+    // contract when a network response is lost (Normative Boundary 2 /
+    // VAL-RUN-130, VAL-RUN-052, VAL-RUN-016).
+    const key = idempotencyKey || makeStartIdempotencyKey();
+    setIdempotencyKey(key);
     startMission.mutate({
-      idempotencyKey,
+      idempotencyKey: key,
       body: {
         projectThreadId: selectedThreadId,
         mode: missionMode,

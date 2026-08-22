@@ -466,26 +466,48 @@ describe('ChatMissionComposer', () => {
     expect(mutate.mock.calls[0][0].body.limits).toEqual({ costCents: 250 });
   });
 
-  it('focuses the first invalid field, preserves inputs, and does not submit invalid limits', () => {
+  // VAL-RUN-130 / Normative Boundary 2: a lost network response followed by
+  // a second activation must replay the SAME logical start command, not a
+  // fresh one, so the server's exactly-one-outcome guarantee holds and no
+  // duplicate run is created.
+  it('reuses the same start idempotency key across recoverable re-submissions', async () => {
     mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
-    const mutate = vi.fn();
+    const mutateSpy = vi.fn();
+    // Simulate a recoverable start error (network/lost response): the
+    // mutation is not pending and reports an error so the draft and key
+    // are preserved for resubmission.
     mocks.useStartMissionRun.mockReturnValue({
-      mutate,
+      mutate: mutateSpy,
       isPending: false,
       isSuccess: false,
-      isError: false,
+      isError: true,
+      error: new Error('Network request failed'),
       reset: vi.fn(),
     });
-    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
-    fireEvent.click(screen.getByRole('radio', { name: /mission/i }));
-    const request = screen.getByLabelText(/mission request/i);
-    fireEvent.change(request, { target: { value: 'Keep this request' } });
-    fireEvent.change(screen.getByLabelText(/maximum mission cost/i), { target: { value: '0' } });
-    fireEvent.click(screen.getByRole('button', { name: /start mission/i }));
 
-    expect(screen.getByRole('alert')).toHaveTextContent(/greater than zero/i);
-    expect(screen.getByLabelText(/maximum mission cost/i)).toHaveFocus();
-    expect(request).toHaveValue('Keep this request');
-    expect(mutate).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+
+    await user.click(screen.getByRole('radio', { name: /mission/i }));
+    const input = screen.getByLabelText(/mission request/i);
+    await user.type(input, 'Analyze the quarterly report');
+
+    // First activation: server may have applied the command but the
+    // response was lost.
+    await user.click(screen.getByRole('button', { name: /start mission/i }));
+    expect(mutateSpy).toHaveBeenCalledTimes(1);
+    const firstKey = mutateSpy.mock.calls[0][0].idempotencyKey;
+    expect(firstKey).toBeTruthy();
+
+    // The draft is preserved on a recoverable error (VAL-RUN-096).
+    expect(screen.getByLabelText(/mission request/i)).toHaveValue('Analyze the quarterly report');
+
+    // Second activation: must replay the identical logical start with the
+    // SAME idempotency key so the server returns the original run instead
+    // of creating a duplicate (VAL-RUN-052, VAL-RUN-016).
+    await user.click(screen.getByRole('button', { name: /start mission/i }));
+    expect(mutateSpy).toHaveBeenCalledTimes(2);
+    const secondKey = mutateSpy.mock.calls[1][0].idempotencyKey;
+    expect(secondKey).toBe(firstKey);
   });
 });

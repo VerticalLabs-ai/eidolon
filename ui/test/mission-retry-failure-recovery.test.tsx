@@ -560,6 +560,60 @@ describe('Mission retry, failure, and recovery UI', () => {
       expect(callArgs.idempotencyKey).toBeTruthy();
       expect(callArgs.idempotencyKey.length).toBeGreaterThan(0);
     });
+
+    // Normative Boundary 2 / VAL-RUN-130: a lost network response followed
+    // by a second activation must replay the SAME logical command, not a
+    // fresh one, so the server's exactly-one-outcome guarantee holds.
+    it('reuses the same idempotency key across recoverable retry re-submissions', async () => {
+      const networkError = new Error('Network request failed');
+      const mutateAsyncSpy = vi.fn().mockRejectedValue(networkError);
+      mocks.useRetryMissionRun.mockReturnValue(
+        retryMock({
+          mutateAsync: mutateAsyncSpy,
+          isPending: false,
+        }),
+      );
+      mocks.useMissionRunSnapshot.mockReturnValue(
+        snapshotResult(
+          runSnapshot({
+            status: 'failed',
+            failureCategory: 'provider_permanent',
+            safeErrorMessage: 'Mission failed due to a provider error.',
+            terminalAt: '2026-08-20T10:05:00.000Z',
+          }),
+        ),
+      );
+
+      const user = userEvent.setup();
+      render(
+        <MissionRunCard
+          companyId="company-1"
+          projectId="project-1"
+          run={runSummary({ status: 'failed' }) as never}
+        />,
+        { wrapper },
+      );
+
+      const retryBtn = screen.getByRole('button', { name: /retry mission/i });
+
+      // First activation: server applies the command but the response is
+      // lost (network error).
+      await user.click(retryBtn);
+      expect(mutateAsyncSpy).toHaveBeenCalledTimes(1);
+      const firstKey = mutateAsyncSpy.mock.calls[0][0].idempotencyKey;
+      expect(firstKey).toBeTruthy();
+
+      // The recovering state should be shown (VAL-RUN-130).
+      expect(screen.getByText(/recovering/i)).toBeInTheDocument();
+
+      // Second activation: must replay the identical logical command with
+      // the SAME idempotency key so the server returns the original
+      // successor instead of creating a duplicate (VAL-RUN-050).
+      await user.click(retryBtn);
+      expect(mutateAsyncSpy).toHaveBeenCalledTimes(2);
+      const secondKey = mutateAsyncSpy.mock.calls[1][0].idempotencyKey;
+      expect(secondKey).toBe(firstKey);
+    });
   });
 
   // ── VAL-RUN-016: Submission cannot create accidental duplicates ──

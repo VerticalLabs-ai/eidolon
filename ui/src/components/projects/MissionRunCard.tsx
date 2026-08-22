@@ -619,6 +619,17 @@ function RunCardRetryLineage({
   );
 }
 
+/** Generate a stable random idempotency key for a logical retry command.
+ * Reused across recoverable retries so the server's exactly-one-outcome
+ * guarantee holds after a lost network response (Normative Boundary 2 /
+ * VAL-RUN-130). Matches MissionCancelDialog's key-retention pattern. */
+function makeRetryIdempotencyKey(runId: string): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `retry-${runId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 /** Retry control for terminal root runs (VAL-RUN-045, VAL-CROSS-073,
  * VAL-CROSS-074, VAL-CROSS-096, VAL-RUN-056, VAL-RUN-130).
  *
@@ -627,7 +638,17 @@ function RunCardRetryLineage({
  * "Mission changed" message with a refresh control, and lost network
  * responses by showing a recovering state. The browser never advances
  * state optimistically; the authoritative snapshot/event refetch reveals
- * the new successor run. */
+ * the new successor run.
+ *
+ * Idempotency key retention (Normative Boundary 2 / VAL-RUN-130): the
+ * retry idempotency key is generated on the first activation and retained
+ * in component state across recoverable retries (network failure / lost
+ * response) until the server confirms the outcome. This mirrors
+ * MissionCancelDialog's key-retention pattern so a second activation after
+ * a lost response replays the identical logical command and the server
+ * returns the original successor instead of creating a duplicate
+ * (VAL-RUN-050). The key is cleared on success so a subsequent, distinct
+ * retry attempt is a fresh logical command. */
 function RunCardRetryControl({
   companyId,
   projectId,
@@ -645,26 +666,40 @@ function RunCardRetryControl({
 }) {
   const retryMutation = useRetryMissionRun(companyId, projectId, runId);
   const [retryError, setRetryError] = useState<'stale' | 'network' | null>(null);
+  // Stable idempotency key for the current logical retry. Generated on the
+  // first activation and reused across recoverable retries; cleared on
+  // success (Normative Boundary 2 / VAL-RUN-130).
+  const [idempotencyKey, setIdempotencyKey] = useState('');
 
   async function handleRetry() {
     if (retryMutation.isPending) {
       return;
     }
-    const idempotencyKey = `retry-${runId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // Reuse the retained key across recoverable retries; generate a fresh
+    // key only for a new logical retry (after a confirmed success cleared
+    // the retained key).
+    const key = idempotencyKey || makeRetryIdempotencyKey(runId);
+    setIdempotencyKey(key);
     setRetryError(null);
     try {
       await retryMutation.mutateAsync({
-        idempotencyKey,
+        idempotencyKey: key,
         ifMatch: stateVersion,
       });
+      // Success: the server confirmed the outcome. Clear the retained key
+      // so a later, distinct retry attempt is a fresh logical command.
+      setIdempotencyKey('');
     } catch (err) {
       const apiErr = err as { status?: number; body?: { code?: string } };
       if (apiErr?.status === 412 || apiErr?.body?.code === 'RUN_VERSION_MISMATCH') {
+        // Recoverable stale-version error: retain the key so the user can
+        // refresh and replay the identical command (VAL-RUN-056).
         setRetryError('stale');
       } else {
         // Network error or lost response — the server may have applied the
-        // command but the response was lost. Show a recovering state
-        // (VAL-RUN-130).
+        // command but the response was lost. Retain the key so the next
+        // activation replays the identical command (VAL-RUN-130). Show a
+        // recovering state.
         setRetryError('network');
       }
     }
