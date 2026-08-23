@@ -59,6 +59,14 @@ export interface WorkerDeps {
    * polling after a sweep failure.
    */
   sweep?: () => Promise<void>;
+  /**
+   * Optional periodic heartbeat called at the beginning of each poll cycle
+   * (after the sweep, before claiming) so the snapshot service can derive
+   * `queueHealth` from the most recent heartbeat age (VAL-RUN-088). Errors
+   * are caught and logged — the worker continues polling after a heartbeat
+   * write failure.
+   */
+  heartbeat?: () => Promise<void>;
 }
 
 export class OrchestrationWorker {
@@ -69,6 +77,7 @@ export class OrchestrationWorker {
   private readonly shutdownCommitWindowMs: number;
   private readonly advanceFn: (claim: Claim, signal: AbortSignal) => Promise<void>;
   private readonly sweepFn: (() => Promise<void>) | null;
+  private readonly heartbeatFn: (() => Promise<void>) | null;
 
   private shuttingDown = false;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -85,6 +94,7 @@ export class OrchestrationWorker {
     this.shutdownCommitWindowMs = deps.shutdownCommitWindowMs ?? 5000;
     this.advanceFn = deps.advance;
     this.sweepFn = deps.sweep ?? null;
+    this.heartbeatFn = deps.heartbeat ?? null;
   }
 
   get isShuttingDown(): boolean {
@@ -191,6 +201,18 @@ export class OrchestrationWorker {
         await this.sweepFn();
       } catch {
         // Sweep failure is non-fatal — the next poll cycle will retry.
+      }
+    }
+
+    // Record a worker heartbeat so the snapshot service can derive
+    // queueHealth from the most recent heartbeat age (VAL-RUN-088).
+    // Errors are caught so a heartbeat write failure does not stop the
+    // worker from claiming and advancing runs.
+    if (this.heartbeatFn) {
+      try {
+        await this.heartbeatFn();
+      } catch {
+        // Heartbeat failure is non-fatal — the next poll cycle will retry.
       }
     }
 

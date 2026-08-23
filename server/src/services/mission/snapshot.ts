@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
 import { buildMissionUiLink } from '@eidolon/shared';
 import type { DbInstance, EidolonDbSchema } from '../../types.js';
+import { MissionWorkerHealthService, type QueueHealth } from './worker-health.js';
 
 /** Inferred row types for the authoritative tables read by snapshots. */
 type MissionRunRow = EidolonDbSchema['missionRuns']['$inferSelect'];
@@ -79,6 +80,14 @@ export interface RunSnapshot {
   /** Output links. Empty until the artifact/provenance feature populates them. */
   artifacts: never[];
   links: { ui: string };
+  /**
+   * Worker availability derived from the most recent worker heartbeat age
+   * (VAL-RUN-088). `"unavailable"` when no worker heartbeat has been
+   * recorded for at least 30 seconds; otherwise `"available"`. The browser
+   * never infers worker unavailability from a local timer — it reads this
+   * authoritative field.
+   */
+  queueHealth: QueueHealth;
 }
 
 /** A lean summary used by the scoped run list. */
@@ -170,7 +179,14 @@ export function encodeCursor(createdAt: Date | string, id: string): string {
 }
 
 export class MissionSnapshotService {
-  constructor(private db: DbInstance) {}
+  private readonly healthService: MissionWorkerHealthService;
+
+  constructor(
+    private db: DbInstance,
+    healthService?: MissionWorkerHealthService,
+  ) {
+    this.healthService = healthService ?? new MissionWorkerHealthService(db);
+  }
 
   /**
    * Read the complete authoritative snapshot for one run, scoped to the
@@ -213,7 +229,9 @@ export class MissionSnapshotService {
 
     const childSummary = await this.computeChildSummary(companyId, projectId, run.id);
 
-    return this.toSnapshot(run, reservation, policyContentHash, childSummary);
+    const queueHealth = await this.healthService.queueHealth();
+
+    return this.toSnapshot(run, reservation, policyContentHash, childSummary, queueHealth);
   }
 
   /**
@@ -363,6 +381,7 @@ export class MissionSnapshotService {
     reservation: BudgetReservationRow | undefined,
     policyContentHash: string | null,
     childSummary: RunSnapshot['childSummary'],
+    queueHealth: QueueHealth,
   ): RunSnapshot {
     const { companyId, projectId } = run;
     return {
@@ -425,6 +444,7 @@ export class MissionSnapshotService {
           runId: run.id,
         }),
       },
+      queueHealth,
     };
   }
 }

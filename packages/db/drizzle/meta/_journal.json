@@ -253,6 +253,13 @@
       "when": 1787344252711,
       "tag": "0035_encrypted_ingress",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1787430000000,
+      "tag": "0036_worker_heartbeat",
+      "breakpoints": true
     }
   ]
 }

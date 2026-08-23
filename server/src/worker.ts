@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import './env.js'; // must be first — loads .env from monorepo root
 import './utils/tracing.js'; // OTel SDK init — must precede instrumented module loads
 
@@ -6,6 +7,7 @@ import { RunCoordinator } from './services/mission/coordinator.js';
 import { OrchestrationWorker } from './services/mission/worker.js';
 import { RunProcessor } from './services/mission/run-processor.js';
 import { MissionKillSwitchService } from './services/mission/kill-switch.js';
+import { MissionWorkerHealthService } from './services/mission/worker-health.js';
 import logger from './utils/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,8 @@ async function main(): Promise<void> {
   const coordinator = new RunCoordinator(db);
   const processor = new RunProcessor(db);
   const killSwitch = new MissionKillSwitchService(db);
+  const workerHealth = new MissionWorkerHealthService(db);
+  const workerId = `worker-${randomUUID().slice(0, 8)}`;
 
   // Wire the kill-switch sweep into the worker poll loop. This runs on
   // every poll cycle (before claiming) so disabled companies and abandoned
@@ -46,12 +50,20 @@ async function main(): Promise<void> {
     await killSwitch.enforceDeadlines();
   };
 
+  // Record a worker heartbeat on every poll cycle so the snapshot service
+  // can derive queueHealth from the most recent heartbeat age (VAL-RUN-088).
+  const heartbeat = async (): Promise<void> => {
+    await workerHealth.recordHeartbeat(workerId);
+  };
+
   const worker = new OrchestrationWorker({
     coordinator,
+    workerId,
     pollIntervalMs: POLL_INTERVAL_MS,
     renewalIntervalMs: RENEWAL_INTERVAL_MS,
     advance: (claim, signal) => processor.advance(claim, signal),
     sweep,
+    heartbeat,
   });
 
   logger.info(
