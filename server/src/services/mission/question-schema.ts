@@ -1,4 +1,15 @@
 import { z } from 'zod';
+import {
+  countCodePoints,
+  isAlignedToStep,
+  normalizeTextNFC,
+  validatePatternSafety,
+  validateValidationJson,
+  validateQuestionSetBounds,
+  MAX_OPTIONS_PER_QUESTION,
+  MAX_TEXT_ANSWER_CODEPOINTS,
+  MAX_QUESTIONS_PER_SET,
+} from './question-bounds.js';
 
 /**
  * Closed, bounded Zod schemas for every Mission question and answer type.
@@ -17,23 +28,19 @@ import { z } from 'zod';
  * The definition schemas are discriminated unions with `.strict()` per-type
  * validation objects, so unknown types and unknown validation properties are
  * rejected. Every configured default must pass the same answer validator as a
- * submitted answer. This module owns only the closed schema/contract layer;
- * publication, atomic answer submission, cardinality caps, content
- * canonicalization, and persistence are owned by later features.
+ * submitted answer. Cardinality caps, content bounds, resource-safe patterns,
+ * payload bounds, NFC canonicalization, exact decimal step alignment, and
+ * optional default/empty-value semantics are enforced here and in
+ * `question-bounds.ts` (VAL-MODEQ-058, 060, 061, 137, 138, 139, 140).
  */
 
 // ---------------------------------------------------------------------------
 // Shared primitives
 // ---------------------------------------------------------------------------
 
-/** Count Unicode code points (not UTF-16 code units). */
-function codepointCount(s: string): number {
-  return [...s].length;
-}
-
 function codepointRange(min: number, max: number) {
   return (s: string) => {
-    const n = codepointCount(s);
+    const n = countCodePoints(s);
     return n >= min && n <= max;
   };
 }
@@ -165,7 +172,10 @@ const BooleanQuestionDef = z
 const SingleChoiceQuestionDef = z
   .object({
     type: z.literal('single_choice'),
-    options: z.array(OptionDefinition).min(2, 'Single-choice requires at least 2 options'),
+    options: z
+      .array(OptionDefinition)
+      .min(2, 'Single-choice requires at least 2 options')
+      .max(MAX_OPTIONS_PER_QUESTION, `Options must not exceed ${MAX_OPTIONS_PER_QUESTION}`),
     validation: z.undefined().optional(),
   })
   .strict()
@@ -175,7 +185,10 @@ const SingleChoiceQuestionDef = z
 const MultipleChoiceQuestionDef = z
   .object({
     type: z.literal('multiple_choice'),
-    options: z.array(OptionDefinition).min(2, 'Multiple-choice requires at least 2 options'),
+    options: z
+      .array(OptionDefinition)
+      .min(2, 'Multiple-choice requires at least 2 options')
+      .max(MAX_OPTIONS_PER_QUESTION, `Options must not exceed ${MAX_OPTIONS_PER_QUESTION}`),
     validation: z
       .object({
         minSelections: NonNegInt.optional(),
@@ -244,7 +257,10 @@ const ScaleQuestionDef = z
 const OrderingQuestionDef = z
   .object({
     type: z.literal('ordering'),
-    options: z.array(OptionDefinition).min(2, 'Ordering requires at least 2 options'),
+    options: z
+      .array(OptionDefinition)
+      .min(2, 'Ordering requires at least 2 options')
+      .max(MAX_OPTIONS_PER_QUESTION, `Options must not exceed ${MAX_OPTIONS_PER_QUESTION}`),
     validation: z.undefined().optional(),
   })
   .strict()
@@ -309,13 +325,13 @@ function validateMultipleChoiceBounds(
   }
 }
 
-/** Validate text length bounds and pattern compilability. */
+/** Validate text length bounds and pattern safety (VAL-MODEQ-060, 137). */
 function validateTextDefinition(
   validation: { minLength?: number; maxLength?: number; pattern?: string } | undefined,
   ctx: z.RefinementCtx,
 ): void {
   const min = validation?.minLength ?? 0;
-  const max = validation?.maxLength ?? 20_000;
+  const max = validation?.maxLength ?? MAX_TEXT_ANSWER_CODEPOINTS;
   if (min > max) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -323,14 +339,22 @@ function validateTextDefinition(
       message: 'minLength must not exceed maxLength',
     });
   }
+  // Cap maxLength at the platform hard limit (VAL-MODEQ-060).
+  if (validation?.maxLength !== undefined && validation.maxLength > MAX_TEXT_ANSWER_CODEPOINTS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['validation', 'maxLength'],
+      message: `maxLength must not exceed ${MAX_TEXT_ANSWER_CODEPOINTS}`,
+    });
+  }
   if (validation?.pattern !== undefined) {
-    try {
-      new RegExp(validation.pattern);
-    } catch {
+    // Resource-safe pattern validation (VAL-MODEQ-137).
+    const safety = validatePatternSafety(validation.pattern);
+    if (!safety.safe) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['validation', 'pattern'],
-        message: 'pattern must compile to a valid RegExp',
+        message: `pattern is not resource-safe: ${safety.reason}`,
       });
     }
   }
@@ -368,6 +392,18 @@ function validateScaleDefinition(
 
 /** Dispatch cross-field definition validation by question type. */
 function validateDefinitionCrossField(def: QuestionDefinition, ctx: z.RefinementCtx): void {
+  // Validation JSON depth and size bounds (VAL-MODEQ-138).
+  if (def.validation !== undefined) {
+    const result = validateValidationJson(def.validation);
+    for (const err of result.errors) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['validation'],
+        message: err,
+      });
+    }
+  }
+
   switch (def.type) {
     case 'single_choice':
     case 'ordering': {
@@ -428,16 +464,6 @@ export type QuestionDefinition = z.infer<typeof QuestionDefinition>;
 // Answer validation
 // ---------------------------------------------------------------------------
 
-/** Floating-point tolerance for step alignment. */
-const STEP_EPSILON = 1e-9;
-
-/** True when `v` is aligned to `step` from `min` within tolerance. */
-function alignedToStep(v: number, min: number, step: number): boolean {
-  const quotient = (v - min) / step;
-  const rounded = Math.round(quotient);
-  return Math.abs(quotient - rounded) <= STEP_EPSILON;
-}
-
 export interface AnswerValidationResult {
   success: boolean;
   /** Present when `success` is false. */
@@ -458,19 +484,22 @@ export interface AnswerValidationResult {
  * - `single_choice`: exactly one listed option key; rejects labels, unknown
  *   keys, multiple keys, non-strings.
  * - `multiple_choice`: unique array of listed option keys within min/max.
- * - `text`: string within min/max code-point length, optional pattern.
- * - `number`/`scale`: finite number within [min,max] aligned to step; rejects
- *   numeric strings, NaN/infinity, out-of-range, step mismatches.
+ * - `text`: string within min/max code-point length, optional pattern; the
+ *   returned value is NFC-normalized without implicit trimming (VAL-MODEQ-139).
+ * - `number`/`scale`: finite number within [min,max] aligned to step using
+ *   exact decimal arithmetic (VAL-MODEQ-139); rejects numeric strings,
+ *   NaN/infinity, out-of-range, step mismatches.
  * - `ordering`: array containing every listed option key exactly once.
  *
  * `undefined` is treated as "not answered"; required questions reject it.
+ * Omitted optional values create no answer (VAL-MODEQ-140).
  */
 export function validateAnswer(question: QuestionDefinition, raw: unknown): AnswerValidationResult {
   if (raw === undefined || raw === null) {
     if (question.required) {
       return { success: false, error: 'answer is required' };
     }
-    // Optional and omitted: valid (no value).
+    // Optional and omitted: valid (no value). VAL-MODEQ-140.
     return { success: true, value: undefined };
   }
 
@@ -555,7 +584,8 @@ function validateMultipleChoiceAnswer(
   return { success: true, value: raw };
 }
 
-/** Text answer: string within min/max code-point length, optional pattern. */
+/** Text answer: string within min/max code-point length, optional pattern.
+ * Returns the NFC-normalized text without implicit trimming (VAL-MODEQ-139). */
 function validateTextAnswer(
   raw: unknown,
   validation: { minLength?: number; maxLength?: number; pattern?: string } | undefined,
@@ -563,9 +593,11 @@ function validateTextAnswer(
   if (typeof raw !== 'string') {
     return { success: false, error: 'text answer must be a string' };
   }
+  // NFC normalization without implicit trimming (VAL-MODEQ-139).
+  const normalized = normalizeTextNFC(raw);
   const min = validation?.minLength ?? 0;
-  const max = validation?.maxLength ?? 20_000;
-  const len = codepointCount(raw);
+  const max = validation?.maxLength ?? MAX_TEXT_ANSWER_CODEPOINTS;
+  const len = countCodePoints(normalized);
   if (len < min) {
     return { success: false, error: `text answer must be at least ${min} code points` };
   }
@@ -574,17 +606,18 @@ function validateTextAnswer(
   }
   if (validation?.pattern !== undefined) {
     try {
-      if (!new RegExp(validation.pattern).test(raw)) {
+      if (!new RegExp(validation.pattern).test(normalized)) {
         return { success: false, error: 'text answer does not match the required pattern' };
       }
     } catch {
       return { success: false, error: 'text pattern is invalid' };
     }
   }
-  return { success: true, value: raw };
+  return { success: true, value: normalized };
 }
 
-/** Number/scale answer: finite number within [min,max] aligned to step. */
+/** Number/scale answer: finite number within [min,max] aligned to step.
+ * Uses exact decimal arithmetic for step alignment (VAL-MODEQ-139). */
 function validateNumberAnswer(
   raw: unknown,
   validation: { min?: number; max?: number; step?: number } | undefined,
@@ -605,7 +638,8 @@ function validateNumberAnswer(
   }
   if (validation?.step !== undefined) {
     const base = validation.min ?? 0;
-    if (!alignedToStep(raw, base, validation.step)) {
+    // Exact decimal arithmetic for step alignment (VAL-MODEQ-139).
+    if (!isAlignedToStep(base, validation.step, raw)) {
       return {
         success: false,
         error: `number answer must be aligned to step ${validation.step}`,
@@ -670,19 +704,30 @@ export type AnswerValue = z.infer<typeof AnswerValue>;
 
 /**
  * A question set: an ordered collection of question definitions with unique
- * question keys. Cardinality/content caps are owned by the bounds feature
- * (m2-f08); this schema enforces only the closed per-question shape and key
- * uniqueness.
+ * question keys. Enforces cardinality (1–12 questions per set, VAL-MODEQ-058),
+ * unique question keys (VAL-MODEQ-061), and total payload size
+ * (VAL-MODEQ-138).
  */
 export const QuestionSet = z
   .array(QuestionDefinition)
   .min(1, 'A question set must contain at least one question')
+  .max(MAX_QUESTIONS_PER_SET, `A question set must not exceed ${MAX_QUESTIONS_PER_SET} questions`)
   .superRefine((questions, ctx) => {
+    // Unique question keys (VAL-MODEQ-061).
     const keys = questions.map((q) => q.questionKey);
     if (new Set(keys).size !== keys.length) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'question keys must be unique within a set',
+      });
+    }
+
+    // Total set payload size (VAL-MODEQ-138).
+    const boundsResult = validateQuestionSetBounds(questions);
+    for (const err of boundsResult.errors) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: err,
       });
     }
   });
