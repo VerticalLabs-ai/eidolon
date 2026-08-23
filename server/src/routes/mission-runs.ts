@@ -18,6 +18,7 @@ import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
 import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
 import { MissionCommandHistoryService } from '../services/mission/command-history.js';
+import { MissionProjectionRepairService } from '../services/mission/projection-repair.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import { redactCanaries } from '../services/mission/reason-security.js';
 import {
@@ -508,6 +509,25 @@ export function missionRunsRouter(db: DbInstance): Router {
     });
 
     sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // GET /:runId/projection-repair — scoped, attributable projection repair
+  // history/status. Exposes projection failure and repair evidence (link
+  // status, projection.failed/projection.repaired journal events, and
+  // mission.projection.repaired activity entries) so an authorized operator
+  // can correlate a repaired card with a durable repair record carrying the
+  // same run identity and safe timestamp/trace reference via curl
+  // (VAL-RUN-100, VAL-CROSS-075). Reads do not require the mission flag,
+  // mirroring the existing commands/events read policy.
+  router.get('/:runId/projection-repair', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const service = new MissionProjectionRepairService(db);
+    const result = await service.readRepairHistory({ companyId, projectId, runId });
+
+    res.json({ data: result });
   });
 
   // GET /:runId/commands — scoped, bounded command history with opaque
