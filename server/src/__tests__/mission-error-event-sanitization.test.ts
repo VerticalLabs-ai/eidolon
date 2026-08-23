@@ -346,6 +346,18 @@ describe('VAL-RUN-073: event replay sanitizes sensitive payloads', () => {
       .expect(202);
     runId = start.body.data.run.id;
 
+    // Deep Work now transitions draft→planning (5 events). Revert to
+    // draft (4 events) so sensitive event insertion at sequences 5 and 6
+    // matches the original test semantics.
+    await db.drizzle.execute(sql`
+      DELETE FROM "run_events" WHERE "run_id" = ${runId} AND "sequence" = 5
+    `);
+    await db.drizzle.execute(sql`
+      UPDATE "mission_runs" SET "status" = 'draft', "state_version" = 1,
+        "last_event_sequence" = 4, "updated_at" = ${new Date()}
+      WHERE "id" = ${runId}
+    `);
+
     // Insert sensitive events at sequences 5 and 6 (after the initial 4).
     await insertSensitiveEvent(db, companyId, projectId, runId, 5, 'execution.progress');
     await insertSensitiveEvent(db, companyId, projectId, runId, 6, 'research.source_retrieved', {
@@ -424,6 +436,18 @@ describe('VAL-RUN-073: SSE stream sanitizes sensitive payloads', () => {
       actorId: 'dev-user-000',
     });
     const runId = startResult.run.id;
+
+    // Deep Work now transitions draft→planning (5 events). Revert to
+    // draft (4 events) so the sensitive event insertion at sequence 5
+    // matches the original test semantics.
+    await db.drizzle.execute(sql`
+      DELETE FROM "run_events" WHERE "run_id" = ${runId} AND "sequence" = 5
+    `);
+    await db.drizzle.execute(sql`
+      UPDATE "mission_runs" SET "status" = 'draft', "state_version" = 1,
+        "last_event_sequence" = 4, "updated_at" = ${new Date()}
+      WHERE "id" = ${runId}
+    `);
 
     // Insert a sensitive event at sequence 5.
     await insertSensitiveEvent(db, companyId, projectId, runId, 5, 'execution.progress');
@@ -633,6 +657,18 @@ describe('VAL-RUN-046/073: full surface canary scan', () => {
       .send({ projectThreadId: threadId, mode: 'deep_work', request: { text: 'Full scan' } })
       .expect(202);
     const runId = start.body.data.run.id;
+
+    // Deep Work now transitions draft→planning (5 events). Revert to
+    // draft (4 events) so the sensitive event insertion at sequence 5
+    // matches the original test semantics.
+    await db.drizzle.execute(sql`
+      DELETE FROM "run_events" WHERE "run_id" = ${runId} AND "sequence" = 5
+    `);
+    await db.drizzle.execute(sql`
+      UPDATE "mission_runs" SET "status" = 'draft', "state_version" = 1,
+        "last_event_sequence" = 4, "updated_at" = ${new Date()}
+      WHERE "id" = ${runId}
+    `);
 
     // Insert sensitive events.
     await insertSensitiveEvent(db, companyId, projectId, runId, 5);

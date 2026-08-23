@@ -185,8 +185,8 @@ describe('Mission service-level idempotency whitespace rejection (VAL-RUN-114)',
 
     beforeAll(async () => {
       // Create a run to target with cancel commands. Use deep_work mode so
-      // the run stays in draft (deep_work requires mandatory planning);
-      // fast/auto modes are now enqueued to queued by the start service.
+      // the run is non-queued (deep_work transitions to planning, requiring
+      // mandatory planning); fast/auto simple modes are enqueued to queued.
       enableMissionFlag();
       const service = new MissionStartService(db);
       const result = await service.start({
@@ -264,14 +264,14 @@ describe('Mission service-level idempotency whitespace rejection (VAL-RUN-114)',
         type: 'run.cancel',
         body: { reason: 'valid cancel reason' },
         idempotencyKey: 'valid-cancel-001',
-        ifMatch: 1,
+        ifMatch: 2,
         actorType: 'user',
         actorId: null,
       });
-      // A first cancel on a draft (non-lease) run terminalizes immediately
-      // and returns 202 per the cancellation service contract (VAL-RUN-117).
-      // The whitespace rejection tests above did not change state, so the
-      // run is still draft here.
+      // A first cancel on a planning (non-lease) run terminalizes
+      // immediately and returns 202 per the cancellation service contract
+      // (VAL-RUN-117). The whitespace rejection tests above did not change
+      // state, so the run is still planning (state_version=2) here.
       expect(result.statusCode).toBe(202);
     });
 

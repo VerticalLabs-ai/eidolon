@@ -20,7 +20,7 @@ import {
 // request body (mode, limits, projectThreadId, initiatingAgentId, request)
 // so different mode/limits with the same request text conflict.
 import type { BuiltInMode, MissionMode, ModeLimits } from './modes.js';
-import { classifyRequest, type ClassificationResult } from './mode-classifier.js';
+import { classifyRequest, isComplex, type ClassificationResult } from './mode-classifier.js';
 import { BudgetService } from './budget.js';
 import {
   incrementMissionRunStarted,
@@ -151,18 +151,48 @@ export class MissionStartService {
 
   /**
    * Determine whether a run should be enqueued (draft→queued) immediately
-   * after the start aggregate commits. Modes that require mandatory
-   * planning (planning='always') or mandatory approval (approval='always')
-   * stay in draft; their draft→planning transition is owned by a later
-   * milestone. Modes with 'when_complex' or 'never' planning/approval are
-   * enqueued — without a complexity classifier yet, 'when_complex' is
-   * treated as simple (the default), connecting the start service to the
-   * worker so runs actually progress.
+   * after the start aggregate commits, or whether it should transition to
+   * `planning` (draft→planning) because planning/approval is required.
+   *
+   * Resolution uses the versioned mode classifier and the effective policy
+   * snapshot's planning/approval strategy (VAL-MODEQ-026, VAL-MODEQ-027,
+   * VAL-MODEQ-030, VAL-MODEQ-032, VAL-PLAN-001..010):
+   *
+   * - `always` strategy: the run enters `planning` (not queued). Deep Work
+   *   and Analyst always propose a plan and require approval.
+   * - `when_complex` strategy: the deterministic classifier runs over
+   *   validated request metadata. If complex, the run enters `planning`;
+   *   if simple, the run is enqueued to `queued`.
+   * - `never` strategy: the run is enqueued to `queued`.
+   *
+   * The classifier does NOT use retrieved external content — resolution is
+   * complete from request metadata alone (VAL-PLAN-010).
    */
-  private shouldEnqueue(policy: ResolvedPolicy): boolean {
+  private shouldEnqueue(
+    policy: ResolvedPolicy,
+    classification: ClassificationResult | null,
+  ): boolean {
     const planningStrategy = (policy.planningPolicy as { strategy?: string })?.strategy;
     const approvalStrategy = (policy.approvalPolicy as { strategy?: string })?.strategy;
-    return planningStrategy !== 'always' && approvalStrategy !== 'always';
+
+    // 'always' strategy: planning/approval is mandatory regardless of
+    // request complexity.
+    if (planningStrategy === 'always' || approvalStrategy === 'always') {
+      return false;
+    }
+
+    // 'when_complex' strategy: use the deterministic classifier to decide.
+    // If no classification is available (e.g. custom profile without
+    // classifier), treat as simple (enqueue) — the classifier is only
+    // invoked for built-in modes.
+    if (planningStrategy === 'when_complex' || approvalStrategy === 'when_complex') {
+      if (classification && isComplex(classification.reasons)) {
+        return false;
+      }
+    }
+
+    // 'never' strategy or simple 'when_complex': enqueue.
+    return true;
   }
 
   async start(input: StartInput): Promise<StartResult> {
@@ -241,7 +271,7 @@ export class MissionStartService {
     //    Work, or Analyst) before policy resolution. The classifier does not
     //    use external/retrieved content — resolution is complete before any
     //    research is performed (VAL-MODEQ-021..025, VAL-MODEQ-146).
-    const { policy, autoClassification } = await this.resolveStartPolicy(
+    const { policy, startClassification } = await this.resolveStartPolicy(
       body,
       agent,
       customProfile,
@@ -391,10 +421,10 @@ export class MissionStartService {
               ...(customProfile
                 ? { profileSlug: customProfile.slug, profileVersion: customProfile.version }
                 : {}),
-              ...(autoClassification
+              ...(startClassification
                 ? {
-                    classifierVersion: autoClassification.classifierVersion,
-                    reasons: autoClassification.reasons,
+                    classifierVersion: startClassification.classifierVersion,
+                    reasons: startClassification.reasons,
                   }
                 : {}),
             },
@@ -429,23 +459,30 @@ export class MissionStartService {
 
         this.fireFailpoint('after_events');
 
-        // 5g. Enqueue step: for Fast/simple modes that don't require
-        //     mandatory planning or approval, transition the run from
-        //     draft → queued so the orchestration worker can claim and
-        //     progress it. Modes with planning='always' or approval='always'
-        //     (e.g. Deep Work, Analyst) stay in draft; their draft→planning
-        //     transition is owned by a later milestone.
+        // 5g. Planning path: determine whether the run should be enqueued
+        //     (draft→queued) for direct worker execution, or transition to
+        //     `planning` (draft→planning) because planning/approval is
+        //     required before any complex or side-effecting work.
         //
-        //     The run starts in draft (event 1: run.created with
-        //     status:'draft') and then transitions to queued within the
-        //     same atomic transaction, recording a run.status_changed
-        //     event. This connects the start service to the worker —
-        //     without this step, runs would be stranded in draft and the
-        //     worker (which only claims queued/running/synthesizing) could
-        //     never progress them.
-        let finalStatus: string = 'draft';
-        let finalStateVersion = 1;
-        if (this.shouldEnqueue(policy)) {
+        //     The deterministic mode classifier runs over validated request
+        //     metadata for all built-in modes. For Auto it selects the
+        //     concrete mode; for Fast it determines complexity
+        //     (when_complex strategy); for Deep Work and Analyst
+        //     (always strategy) it records reason codes but planning is
+        //     mandatory regardless (VAL-MODEQ-026, VAL-MODEQ-027,
+        //     VAL-MODEQ-030, VAL-MODEQ-032, VAL-PLAN-001..010).
+        //
+        //     Simple Fast/Auto-fast work → queued (worker claims and
+        //     progresses it). Complex Fast, Deep Work, and Analyst →
+        //     planning (no execution, no tools, no children before
+        //     approval). The draft→planning→awaiting_approval transition
+        //     through plan proposal is owned by the plan-publication-gate
+        //     feature (m3-f03); this feature owns the classification and
+        //     planning-path selection.
+        let finalStatus: string;
+        let finalStateVersion: number;
+        const enqueue = this.shouldEnqueue(policy, startClassification);
+        if (enqueue) {
           seq += 1;
           finalStatus = 'queued';
           finalStateVersion = 2;
@@ -475,6 +512,36 @@ export class MissionStartService {
             .where(eq(schema.missionRuns.id, runId));
 
           this.fireFailpoint('after_enqueue');
+        } else {
+          // Transition to planning: the run requires a structured plan
+          // and approval before execution. No worker lease, no
+          // available_at (the worker does not claim planning runs yet).
+          seq += 1;
+          finalStatus = 'planning';
+          finalStateVersion = 2;
+          await tx.insert(schema.runEvents).values({
+            companyId,
+            projectId,
+            runId,
+            sequence: seq,
+            type: 'run.status_changed',
+            schemaVersion: 1,
+            payload: { from: 'draft', to: 'planning' },
+            commandId: commandRow.id,
+            actorType: 'system',
+            actorId: null,
+            traceId: traceId ?? null,
+            occurredAt: now,
+          });
+          await tx
+            .update(schema.missionRuns)
+            .set({
+              status: 'planning',
+              stateVersion: finalStateVersion,
+              lastEventSequence: seq,
+              updatedAt: now,
+            })
+            .where(eq(schema.missionRuns.id, runId));
         }
 
         // 5h. Build the exact replayable result snapshot from the
@@ -607,12 +674,17 @@ export class MissionStartService {
   /**
    * Resolve the effective policy for a start request. For Auto mode, run
    * the deterministic complexity classifier over validated request metadata
-   * to select a concrete mode before policy resolution. The sourceProfile
-   * for Auto is 'auto' (the selected mode), while resolvedMode is the
-   * classified concrete mode (VAL-MODEQ-015, VAL-MODEQ-021..025).
+   * to select a concrete mode before policy resolution. For all built-in
+   * modes, run the classifier to record reason codes and determine
+   * complexity for `when_complex` planning/approval strategies
+   * (VAL-MODEQ-026, VAL-MODEQ-027, VAL-PLAN-001..010).
    *
-   * Returns the resolved policy and the Auto classification (null for
-   * non-Auto modes).
+   * The sourceProfile for Auto is 'auto' (the selected mode), while
+   * resolvedMode is the classified concrete mode (VAL-MODEQ-015,
+   * VAL-MODEQ-021..025).
+   *
+   * Returns the resolved policy and the classification (null for custom
+   * profiles, which don't use the built-in classifier).
    */
   private async resolveStartPolicy(
     body: StartRequestBody,
@@ -627,7 +699,7 @@ export class MissionStartService {
       enabled: boolean;
     } | null,
     companyPolicy?: CompanyPolicyInput,
-  ): Promise<{ policy: ResolvedPolicy; autoClassification: ClassificationResult | null }> {
+  ): Promise<{ policy: ResolvedPolicy; startClassification: ClassificationResult | null }> {
     // Build user reductions from the request body (limits + removed tools/domains).
     const userReductions: UserReductions = {
       ...body.limits,
@@ -657,17 +729,23 @@ export class MissionStartService {
         company: companyPolicy,
         userReductions,
       });
-      return { policy, autoClassification: null };
+      return { policy, startClassification: null };
     }
 
+    // Run the deterministic complexity classifier for all built-in modes.
+    // For Auto, the classifier selects the concrete mode. For Fast, it
+    // determines complexity (when_complex strategy). For Deep Work and
+    // Analyst, it records reason codes (informational — planning is always
+    // required). The classifier never uses retrieved external content
+    // (VAL-PLAN-010).
+    const startClassification = classifyRequest({
+      text: body.request.text,
+      context: body.request.context,
+    });
+
     let effectiveMode: BuiltInMode = body.mode as BuiltInMode;
-    let autoClassification: ClassificationResult | null = null;
     if (body.mode === 'auto') {
-      autoClassification = classifyRequest({
-        text: body.request.text,
-        context: body.request.context,
-      });
-      effectiveMode = autoClassification.resolvedMode;
+      effectiveMode = startClassification.resolvedMode;
     }
     const policy = resolvePolicy({
       mode: effectiveMode,
@@ -688,10 +766,10 @@ export class MissionStartService {
     // For Auto, the source profile is the selected mode ('auto'), not the
     // classified concrete mode. The concrete mode is recorded in
     // resolvedMode and the mode.resolved event (VAL-MODEQ-015).
-    if (autoClassification) {
+    if (body.mode === 'auto') {
       policy.sourceProfile = 'auto';
     }
-    return { policy, autoClassification };
+    return { policy, startClassification };
   }
 
   /**

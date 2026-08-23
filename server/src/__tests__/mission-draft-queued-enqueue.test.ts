@@ -89,7 +89,9 @@ async function getRunRow(
            "terminal_at", "lease_owner", "lease_token"
     FROM "mission_runs" WHERE "id" = ${runId}
   `)) as unknown as Array<Record<string, unknown>>;
-  if (!rows[0]) {return null;}
+  if (!rows[0]) {
+    return null;
+  }
   const row = rows[0];
   return {
     ...row,
@@ -131,24 +133,26 @@ describe('Mission start: runs begin in draft before enqueue', () => {
     await closeTestDb();
   });
 
-  it('deep_work mode stays in draft (no enqueue, planning required later)', async () => {
-    const ctx = await freshRun('deep_work', '__mtest__ deep-stays-draft');
+  it('deep_work mode transitions to planning (planning required)', async () => {
+    const ctx = await freshRun('deep_work', '__mtest__ deep-to-planning');
     const row = await getRunRow(ctx.db, ctx.runId);
-    expect(row!.status).toBe('draft');
-    // No run.status_changed event for deep_work.
+    expect(row!.status).toBe('planning');
+    // A run.status_changed event records the draft→planning transition.
     const events = await getEvents(ctx.db, ctx.runId);
     const statusChanged = events.find((e) => e.type === 'run.status_changed');
-    expect(statusChanged).toBeUndefined();
+    expect(statusChanged).toBeDefined();
+    expect((statusChanged!.payload as Record<string, unknown>).to).toBe('planning');
     await closeTestDb();
   });
 
-  it('analyst mode stays in draft (no enqueue, planning required later)', async () => {
-    const ctx = await freshRun('analyst', '__mtest__ analyst-stays-draft');
+  it('analyst mode transitions to planning (planning required)', async () => {
+    const ctx = await freshRun('analyst', '__mtest__ analyst-to-planning');
     const row = await getRunRow(ctx.db, ctx.runId);
-    expect(row!.status).toBe('draft');
+    expect(row!.status).toBe('planning');
     const events = await getEvents(ctx.db, ctx.runId);
     const statusChanged = events.find((e) => e.type === 'run.status_changed');
-    expect(statusChanged).toBeUndefined();
+    expect(statusChanged).toBeDefined();
+    expect((statusChanged!.payload as Record<string, unknown>).to).toBe('planning');
     await closeTestDb();
   });
 });

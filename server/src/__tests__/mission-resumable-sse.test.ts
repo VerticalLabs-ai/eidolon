@@ -27,10 +27,12 @@ async function startRun(
   key: string,
   text = 'Do work',
 ) {
-  // Use deep_work mode so the run stays in draft (4 initial events, no
-  // auto-enqueue). Fast/auto modes now enqueue (draft→queued, 5 events).
+  // Use deep_work mode. Deep Work now transitions draft→planning (5
+  // initial events). These SSE tests need a quiet non-queued run with
+  // a known initial event count; revert the planning transition to
+  // preserve the original 4-event draft semantics.
   const service = new MissionStartService(db);
-  return service.start({
+  const result = await service.start({
     companyId,
     projectId,
     idempotencyKey: key,
@@ -38,6 +40,18 @@ async function startRun(
     actorType: 'user',
     actorId: 'dev-user-000',
   });
+  await db.drizzle.execute(sql`
+    DELETE FROM "run_events" WHERE "run_id" = ${result.run.id} AND "sequence" = 5
+  `);
+  await db.drizzle.execute(sql`
+    UPDATE "mission_runs" SET "status" = 'draft', "state_version" = 1,
+      "last_event_sequence" = 4, "updated_at" = ${new Date()}
+    WHERE "id" = ${result.run.id}
+  `);
+  return {
+    ...result,
+    run: { ...result.run, status: 'draft', stateVersion: 1, lastEventSequence: 4 },
+  };
 }
 
 /**
