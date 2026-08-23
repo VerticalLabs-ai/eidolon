@@ -72,3 +72,4 @@ export { missionWorkerHeartbeats } from './mission_worker_heartbeats.js';
 export { modeProfiles } from './mode_profiles.js';
 export { runQuestionSets } from './run_question_sets.js';
 export { runQuestions } from './run_questions.js';
+export { runQuestionAnswers } from './run_question_answers.js';

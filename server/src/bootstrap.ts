@@ -88,6 +88,7 @@ import {
   modeProfiles,
   runQuestionSets,
   runQuestions,
+  runQuestionAnswers,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -173,6 +174,7 @@ const SCHEMA_BUNDLE = {
   modeProfiles,
   runQuestionSets,
   runQuestions,
+  runQuestionAnswers,
 } as const;
 
 export interface BootstrapOptions {
