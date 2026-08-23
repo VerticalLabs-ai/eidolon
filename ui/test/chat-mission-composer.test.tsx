@@ -689,6 +689,58 @@ describe('ChatMissionComposer', () => {
     expect(call.body.request.text).toBe('Research competitor pricing');
   });
 
+  // ── VAL-MODEQ-015: Selecting a custom profile sets modeProfileId ──────
+
+  it('includes modeProfileId in the start body when a custom profile is selected', () => {
+    mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
+    mocks.useModeProfiles.mockReturnValue(modeProfilesResult([customProfileA, customProfileB]));
+    const mutate = vi.fn();
+    mocks.useStartMissionRun.mockReturnValue({
+      mutate,
+      isPending: false,
+      isSuccess: false,
+      isError: false,
+      reset: vi.fn(),
+    });
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+    selectMission();
+    // Select the custom profile "Research Lite" (profile-a)
+    fireEvent.click(screen.getByRole('radio', { name: /research lite/i }));
+    fireEvent.change(screen.getByLabelText(/mission request/i), {
+      target: { value: 'Gather sources on market trends' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /start mission/i }));
+    expect(mutate).toHaveBeenCalledTimes(1);
+    const call = mutate.mock.calls[0][0];
+    expect(call.body.modeProfileId).toBe('profile-a');
+    // Built-in mode defaults to 'auto' but is superseded by the custom profile
+    expect(call.body.request.text).toBe('Gather sources on market trends');
+  });
+
+  it('omits modeProfileId from the start body when a built-in mode is selected', () => {
+    mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
+    mocks.useModeProfiles.mockReturnValue(modeProfilesResult([customProfileA]));
+    const mutate = vi.fn();
+    mocks.useStartMissionRun.mockReturnValue({
+      mutate,
+      isPending: false,
+      isSuccess: false,
+      isError: false,
+      reset: vi.fn(),
+    });
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+    selectMission();
+    fireEvent.click(screen.getByRole('radio', { name: /deep work/i }));
+    fireEvent.change(screen.getByLabelText(/mission request/i), {
+      target: { value: 'Deep analysis request' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /start mission/i }));
+    expect(mutate).toHaveBeenCalledTimes(1);
+    const call = mutate.mock.calls[0][0];
+    expect(call.body.modeProfileId).toBeUndefined();
+    expect(call.body.mode).toBe('deep_work');
+  });
+
   it('disables the start button while a Mission start is in flight', () => {
     mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
     mocks.useStartMissionRun.mockReturnValue({
