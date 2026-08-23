@@ -37,6 +37,29 @@ vi.mock('@/lib/ws', () => ({
   useWebSocket: () => ({ status: 'disconnected' }),
 }));
 
+vi.mock('@/lib/auth', () => ({
+  useSession: () => ({
+    isPending: false,
+    data: {
+      user: {
+        id: 'dev-user-000',
+        name: 'Local Operator',
+        email: 'local@eidolon.dev',
+        image: '',
+        role: 'admin',
+      },
+      session: {
+        id: 'local-dev-session',
+        userId: 'dev-user-000',
+        activeOrganizationId: null,
+        activeOrganizationRole: 'admin',
+      },
+    },
+  }),
+  isLocalTrustedAuth: () => false,
+  CLERK_PUBLISHABLE_KEY: '',
+}));
+
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
 function runSummary(overrides: Partial<Record<string, unknown>> = {}) {

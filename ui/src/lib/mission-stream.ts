@@ -257,6 +257,14 @@ export function useMissionRunStream(
       'limit.exceeded',
       'projection.failed',
       'projection.repaired',
+      // Question lifecycle events (VAL-MODEQ-086: reconnect must not
+      // duplicate question events). Without these named listeners, SSE
+      // frames for question events are silently dropped and only recovered
+      // via gap-detection refetch, which can cause duplicate cards during
+      // reconnect.
+      'questions.requested',
+      'questions.answered',
+      'questions.invalidated',
     ];
     for (const type of namedTypes) {
       eventSource.addEventListener(type, messageHandler);

@@ -8,6 +8,7 @@ import {
   useCancelMissionRun,
   useRetryMissionRun,
 } from '@/lib/hooks';
+import { useSession } from '@/lib/auth';
 import type { MissionRunSummary, MissionRunSnapshot, MissionReplayEvent } from '@/lib/api';
 import { type MissionLinkTarget } from '@eidolon/shared';
 import {
@@ -203,6 +204,10 @@ export function MissionRunCard({
   // Request text from the start mutation cache (prop takes precedence).
   const cachedRequestText = useMissionRequestText(run.id);
   const displayRequestText = requestText ?? cachedRequestText;
+  // Authenticated principal for browser-local question draft scoping
+  // (VAL-MODEQ-134).
+  const session = useSession();
+  const principalId = session.data?.user?.id ?? '';
 
   const snapshot = snapshotQuery.data as MissionRunSnapshot | undefined;
   const events = (eventsQuery.data?.events ?? []) as MissionReplayEvent[];
@@ -299,15 +304,24 @@ export function MissionRunCard({
       <RunCardFailure snapshot={snapshot} status={authoritativeStatus} />
       <RunCardOutput snapshot={snapshot} status={authoritativeStatus} />
       <RunCardCancelledDetail snapshot={snapshot} status={authoritativeStatus} />
-      {snapshot?.currentQuestionSet && (
+      {snapshot?.currentQuestionSet && principalId && (
         <MissionQuestionCard
           companyId={companyId}
           projectId={projectId}
           runId={run.id}
           questionSet={snapshot.currentQuestionSet}
           stateVersion={snapshot.stateVersion}
+          principalId={principalId}
         />
       )}
+      {/* VAL-MODEQ-143: if the run is awaiting input but the snapshot
+       * failed to load (no currentQuestionSet), show an accessible Retry
+       * rather than an empty success or a disappeared question area. */}
+      {authoritativeStatus === 'awaiting_input' &&
+        !snapshot?.currentQuestionSet &&
+        snapshotQuery.isError && (
+          <RunCardQuestionLoadError onRetry={() => snapshotQuery.refetch()} />
+        )}
       <MissionQuestionHistory companyId={companyId} projectId={projectId} runId={run.id} />
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
       <RunCardRetryControl
@@ -935,6 +949,35 @@ function RunCardTimeline({
         </ol>
       )}
     </div>
+  );
+}
+
+/** Question-load failure: the run is awaiting input but the snapshot
+ * failed to load (no currentQuestionSet). Shows an accessible Retry that
+ * refetches the exact run snapshot. The run remains visibly awaiting input
+ * — the user never sees an empty success or a disappeared question area
+ * (VAL-MODEQ-143). */
+function RunCardQuestionLoadError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <section
+      className="mt-3 rounded-xl border border-warning/20 bg-warning/[0.04] p-3 w-full max-w-full break-words"
+      aria-labelledby="question-load-error-heading"
+    >
+      <h4 id="question-load-error-heading" className="text-sm font-semibold text-warning mb-1">
+        Questions unavailable
+      </h4>
+      <p className="text-xs text-text-secondary mb-2" role="alert">
+        Could not load questions for this Mission. Your input is still needed.
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none motion-reduce:transition-none"
+      >
+        <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+        Retry
+      </button>
+    </section>
   );
 }
 

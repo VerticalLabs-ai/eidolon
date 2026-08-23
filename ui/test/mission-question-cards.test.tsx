@@ -25,6 +25,29 @@ vi.mock('@/lib/ws', () => ({
   useWebSocket: () => ({ status: 'disconnected' }),
 }));
 
+vi.mock('@/lib/auth', () => ({
+  useSession: () => ({
+    isPending: false,
+    data: {
+      user: {
+        id: 'dev-user-000',
+        name: 'Local Operator',
+        email: 'local@eidolon.dev',
+        image: '',
+        role: 'admin',
+      },
+      session: {
+        id: 'local-dev-session',
+        userId: 'dev-user-000',
+        activeOrganizationId: null,
+        activeOrganizationRole: 'admin',
+      },
+    },
+  }),
+  isLocalTrustedAuth: () => false,
+  CLERK_PUBLISHABLE_KEY: '',
+}));
+
 function renderWithProviders(ui: React.ReactElement) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -167,6 +190,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     const fields = screen.getAllByTestId(/^question-field-/);
@@ -189,6 +213,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     expect(screen.getByText('Low')).toBeInTheDocument();
@@ -209,6 +234,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     // single_choice default 'fast' is selected.
@@ -231,6 +257,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     const help = screen.getByText('Pick one execution mode.');
@@ -253,6 +280,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     // Edit the number field away from the default (4 → 7).
@@ -279,6 +307,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     // Provide the required boolean answer (no default).
@@ -310,6 +339,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: /Submit answers/ }));
@@ -335,6 +365,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={set}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     // The invalidated badge and reason are shown.
@@ -355,6 +386,7 @@ describe('MissionQuestionCard — typed question cards', () => {
         runId="run-1"
         questionSet={fullQuestionSet()}
         stateVersion={5}
+        principalId="user-1"
       />,
     );
     // The persisted order is a, b, c.

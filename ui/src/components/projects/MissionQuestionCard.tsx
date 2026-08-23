@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAnswerMissionRun } from '@/lib/hooks';
 import type { MissionCurrentQuestionSet, MissionQuestionDefinition } from '@/lib/api';
 import { HelpCircle, Send, Lock } from 'lucide-react';
+import { buildDraftKey, readDraft, writeDraft, clearDraft } from '@/lib/mission-drafts';
 import {
   makeAnswerIdempotencyKey,
   defaultDraftFor,
@@ -37,6 +39,7 @@ export function MissionQuestionCard({
   runId,
   questionSet,
   stateVersion,
+  principalId,
 }: {
   companyId: string;
   projectId: string;
@@ -44,9 +47,14 @@ export function MissionQuestionCard({
   questionSet: MissionCurrentQuestionSet;
   /** Current authoritative run state version, sent as `If-Match`. */
   stateVersion?: number;
+  /** Authenticated principal ID for browser-local draft scoping
+   * (VAL-MODEQ-134). Drafts are keyed by principal so a different user
+   * cannot read another's unsubmitted answers. */
+  principalId: string;
 }) {
   const invalidated = questionSet.status === 'invalidated';
   const answered = questionSet.status === 'answered';
+  const qc = useQueryClient();
 
   // Persisted order is authoritative (VAL-MODEQ-045).
   const orderedQuestions = useMemo(
@@ -54,11 +62,47 @@ export function MissionQuestionCard({
     [questionSet.questions],
   );
 
-  // Browser-local drafts initialized from the immutable defaults
-  // (VAL-MODEQ-054). Edits update only this local state and create no
-  // answer revision, event, or resume context until one atomic
-  // submission (VAL-MODEQ-068).
+  // sessionStorage draft key — scoped by principal, company, project, run,
+  // set, and version so a draft never crosses identities or set versions
+  // (VAL-MODEQ-134). Unsubmitted drafts survive same-tab reload/navigation
+  // and are cleared on answer, invalidation, or terminalization.
+  const draftKey = useMemo(
+    () =>
+      buildDraftKey({
+        principalId,
+        scope: 'question-answer',
+        companyId,
+        projectId,
+        runId,
+        cardVersion: `${questionSet.id}:v${questionSet.version}`,
+      }),
+    [principalId, companyId, projectId, runId, questionSet.id, questionSet.version],
+  );
+
+  // Browser-local drafts initialized from the immutable defaults, or from
+  // the sessionStorage draft if one exists for this set+version (reload/
+  // navigation recovery — VAL-MODEQ-082, VAL-MODEQ-134). Edits update only
+  // this local state and create no answer revision, event, or resume
+  // context until one atomic submission (VAL-MODEQ-068).
   const [drafts, setDrafts] = useState<DraftMap>(() => {
+    const stored = readDraft(draftKey);
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as DraftMap;
+        if (parsed && typeof parsed === 'object') {
+          // Merge with defaults so new questions (version change) get
+          // their default rather than undefined.
+          const merged: DraftMap = {};
+          for (const q of orderedQuestions) {
+            merged[q.questionKey] =
+              q.questionKey in parsed ? parsed[q.questionKey] : defaultDraftFor(q);
+          }
+          return merged;
+        }
+      } catch {
+        // Corrupted draft — fall through to defaults.
+      }
+    }
     const init: DraftMap = {};
     for (const q of orderedQuestions) {
       init[q.questionKey] = defaultDraftFor(q);
@@ -69,28 +113,67 @@ export function MissionQuestionCard({
   // Re-initialize drafts if the set identity/version changes (refresh,
   // replacement). The persisted defaults are re-read from the immutable
   // definition so refresh preserves them unchanged (VAL-MODEQ-045,
-  // VAL-MODEQ-054).
+  // VAL-MODEQ-054). A stored draft for the new set+version is restored.
   useEffect(() => {
+    const stored = readDraft(draftKey);
     const init: DraftMap = {};
-    for (const q of orderedQuestions) {
-      init[q.questionKey] = defaultDraftFor(q);
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as DraftMap;
+        for (const q of orderedQuestions) {
+          init[q.questionKey] =
+            q.questionKey in parsed ? parsed[q.questionKey] : defaultDraftFor(q);
+        }
+      } catch {
+        for (const q of orderedQuestions) {
+          init[q.questionKey] = defaultDraftFor(q);
+        }
+      }
+    } else {
+      for (const q of orderedQuestions) {
+        init[q.questionKey] = defaultDraftFor(q);
+      }
     }
     setDrafts(init);
     setFieldErrors({});
     setSubmitError(null);
-  }, [questionSet.id, questionSet.version, orderedQuestions]);
+  }, [questionSet.id, questionSet.version, orderedQuestions, draftKey]);
+
+  // Clear the stored draft when the set is answered or invalidated — the
+  // draft is no longer actionable (VAL-MODEQ-134).
+  useEffect(() => {
+    if (answered || invalidated) {
+      clearDraft(draftKey);
+    }
+  }, [answered, invalidated, draftKey]);
+
+  // Persist drafts to sessionStorage on every edit so they survive reload
+  // and navigation (VAL-MODEQ-082, VAL-MODEQ-134). Never transmitted to a
+  // server.
+  function persistDrafts(next: DraftMap) {
+    try {
+      writeDraft(draftKey, JSON.stringify(next));
+    } catch {
+      // sessionStorage may be unavailable; ignore.
+    }
+  }
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   // Retained idempotency key for the current logical submission
-  // (Normative Boundary 2 / VAL-MODEQ-133).
+  // (Normative Boundary 2 / VAL-MODEQ-133). Reused across recoverable
+  // retries and lost-response re-submissions until the server confirms.
   const [idempotencyKey, setIdempotencyKey] = useState('');
   const firstInvalidRef = useRef<HTMLElement | null>(null);
 
   const answerMutation = useAnswerMissionRun(companyId, projectId, runId);
 
   function updateDraft(key: string, value: unknown) {
-    setDrafts((prev) => ({ ...prev, [key]: value }));
+    setDrafts((prev) => {
+      const next = { ...prev, [key]: value };
+      persistDrafts(next);
+      return next;
+    });
     setFieldErrors((prev) => {
       if (!prev[key]) {
         return prev;
@@ -158,9 +241,11 @@ export function MissionQuestionCard({
         idempotencyKey: key,
         ifMatch: stateVersion,
       });
-      // Server confirmed the outcome: clear the retained key so a later,
-      // distinct submission is a fresh logical command.
+      // Server confirmed the outcome: clear the retained key and the
+      // stored draft so a later, distinct submission is a fresh logical
+      // command (VAL-MODEQ-133, VAL-MODEQ-134).
       setIdempotencyKey('');
+      clearDraft(draftKey);
     } catch (err) {
       handleSubmissionError(err);
     }
@@ -191,9 +276,19 @@ export function MissionQuestionCard({
     } else if (apiErr?.status === 409 && code === 'INVALID_RUN_STATE') {
       setSubmitError('This Mission is no longer accepting answers.');
     } else {
-      // Network error / lost response: retain the key so the next
-      // activation replays the identical command (VAL-MODEQ-133).
+      // Network error / lost response: the server may have applied the
+      // command but the response was lost. Retain the key so the next
+      // activation replays the identical logical command, and invalidate
+      // the snapshot so TanStack Query refetches authoritative state —
+      // if the answer was applied, the set will show as answered and the
+      // card will update without a duplicate submission (VAL-MODEQ-133).
       setSubmitError('Could not submit answers. Your draft is preserved — try again.');
+      qc.invalidateQueries({
+        queryKey: ['mission-run-snapshot', companyId, projectId, runId],
+      });
+      qc.invalidateQueries({
+        queryKey: ['mission-run-events', companyId, projectId, runId],
+      });
     }
   }
 
