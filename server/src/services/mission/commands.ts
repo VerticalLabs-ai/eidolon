@@ -76,7 +76,7 @@ class InvalidStateSentinel extends Error {
   }
 }
 
-export type RunCommandType = 'run.cancel' | 'run.retry';
+export type RunCommandType = 'run.cancel' | 'run.retry' | 'questions.answer';
 
 export interface CancelBody {
   reason?: string;

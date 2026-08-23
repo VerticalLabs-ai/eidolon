@@ -70,3 +70,5 @@ export { runToolInvocations } from './run_tool_invocations.js';
 export { runProjectionLinks } from './run_projection_links.js';
 export { missionWorkerHeartbeats } from './mission_worker_heartbeats.js';
 export { modeProfiles } from './mode_profiles.js';
+export { runQuestionSets } from './run_question_sets.js';
+export { runQuestions } from './run_questions.js';

@@ -114,6 +114,43 @@ export interface RunSnapshot {
    * authoritative field.
    */
   queueHealth: QueueHealth;
+  /**
+   * Absolute Mission wall-time deadline (createdAt + limits.durationSeconds)
+   * (VAL-MODEQ-128). Null when no policy snapshot exists. The deadline is
+   * absolute from root creation and includes awaiting-input and
+   * awaiting-approval time as well as active work; restart cannot reset it.
+   */
+  deadlineAt: string | null;
+  /**
+   * Remaining wall time in milliseconds until the deadline (VAL-MODEQ-128).
+   * Negative when the deadline has already passed (the run should be
+   * terminalized by deadline enforcement). Null when no deadline is known.
+   */
+  remainingWallMs: number | null;
+  /**
+   * Current open question set with its immutable question definitions
+   * (VAL-MODEQ-044). Null when the run is not awaiting_input or has no
+   * open set. Questions are ordered by their persisted `order` field.
+   */
+  currentQuestionSet: {
+    id: string;
+    ordinal: number;
+    version: number;
+    status: string;
+    invalidationReason: string | null;
+    createdAt: string;
+    questions: Array<{
+      questionKey: string;
+      order: number;
+      type: string;
+      label: string;
+      help: string | null;
+      required: boolean;
+      default: unknown;
+      options: unknown[] | null;
+      validation: Record<string, unknown> | null;
+    }>;
+  } | null;
 }
 
 /** A lean summary used by the scoped run list. */
@@ -204,14 +241,25 @@ export function encodeCursor(createdAt: Date | string, id: string): string {
   return Buffer.from(json, 'utf8').toString('base64url');
 }
 
+export interface SnapshotDeps {
+  clock?: () => Date;
+}
+
 export class MissionSnapshotService {
   private readonly healthService: MissionWorkerHealthService;
+  private readonly deps: SnapshotDeps;
 
   constructor(
     private db: DbInstance,
     healthService?: MissionWorkerHealthService,
+    deps: SnapshotDeps = {},
   ) {
     this.healthService = healthService ?? new MissionWorkerHealthService(db);
+    this.deps = deps;
+  }
+
+  private now(): Date {
+    return this.deps.clock ? this.deps.clock() : new Date();
   }
 
   /**
@@ -261,6 +309,28 @@ export class MissionSnapshotService {
 
     const queueHealth = await this.healthService.queueHealth();
 
+    // Read the current open question set with its question definitions
+    // (VAL-MODEQ-044).
+    const currentQuestionSet = await this.readCurrentQuestionSet(
+      run.companyId,
+      run.id,
+      run.currentQuestionSetId,
+    );
+
+    // Compute the absolute wall-time deadline and remaining wall time
+    // (VAL-MODEQ-128). The deadline is createdAt + limits.durationSeconds
+    // from the immutable policy snapshot. It is absolute from root creation
+    // and includes awaiting-input and awaiting-approval time.
+    let deadlineAt: string | null = null;
+    let remainingWallMs: number | null = null;
+    if (policyRow) {
+      const limits = policyRow.limits as Record<string, number>;
+      const durationSeconds = limits.durationSeconds ?? 3600;
+      const deadline = new Date(run.createdAt.getTime() + durationSeconds * 1000);
+      deadlineAt = deadline.toISOString();
+      remainingWallMs = deadline.getTime() - this.now().getTime();
+    }
+
     return this.toSnapshot(
       run,
       reservation,
@@ -268,6 +338,9 @@ export class MissionSnapshotService {
       policyRow,
       childSummary,
       queueHealth,
+      currentQuestionSet,
+      deadlineAt,
+      remainingWallMs,
     );
   }
 
@@ -413,6 +486,58 @@ export class MissionSnapshotService {
     return summary;
   }
 
+  private async readCurrentQuestionSet(
+    companyId: string,
+    runId: string,
+    questionSetId: string | null,
+  ): Promise<RunSnapshot['currentQuestionSet']> {
+    if (!questionSetId) {
+      return null;
+    }
+    const schema = this.db.schema;
+
+    const [questionSet] = await this.db.drizzle
+      .select()
+      .from(schema.runQuestionSets)
+      .where(
+        and(
+          eq(schema.runQuestionSets.companyId, companyId),
+          eq(schema.runQuestionSets.id, questionSetId),
+        ),
+      )
+      .limit(1);
+
+    if (!questionSet || questionSet.status !== 'open') {
+      return null;
+    }
+
+    const questions = await this.db.drizzle
+      .select()
+      .from(schema.runQuestions)
+      .where(eq(schema.runQuestions.questionSetId, questionSet.id))
+      .orderBy(schema.runQuestions.order);
+
+    return {
+      id: questionSet.id,
+      ordinal: questionSet.ordinal,
+      version: questionSet.version,
+      status: questionSet.status,
+      invalidationReason: questionSet.invalidationReason,
+      createdAt: questionSet.createdAt.toISOString(),
+      questions: questions.map((q) => ({
+        questionKey: q.questionKey,
+        order: q.order,
+        type: q.type,
+        label: q.label,
+        help: q.help,
+        required: q.required === 1,
+        default: q.defaultValue,
+        options: q.options,
+        validation: q.validation,
+      })),
+    };
+  }
+
   private toSnapshot(
     run: MissionRunRow,
     reservation: BudgetReservationRow | undefined,
@@ -420,6 +545,9 @@ export class MissionSnapshotService {
     policyRow: EidolonDbSchema['runPolicySnapshots']['$inferSelect'] | null,
     childSummary: RunSnapshot['childSummary'],
     queueHealth: QueueHealth,
+    currentQuestionSet: RunSnapshot['currentQuestionSet'],
+    deadlineAt: string | null,
+    remainingWallMs: number | null,
   ): RunSnapshot {
     const { companyId, projectId } = run;
     return {
@@ -506,6 +634,9 @@ export class MissionSnapshotService {
         }),
       },
       queueHealth,
+      deadlineAt,
+      remainingWallMs,
+      currentQuestionSet,
     };
   }
 }

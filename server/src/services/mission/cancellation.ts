@@ -236,7 +236,26 @@ export class MissionCancellationService {
     }
 
     const baseVersion = opts.fromVersion ?? run.stateVersion;
-    const baseSeq = opts.fromSequence ?? Number(run.lastEventSequence);
+    let baseSeq = opts.fromSequence ?? Number(run.lastEventSequence);
+
+    // Invalidate any open question set before terminalizing (VAL-MODEQ-142,
+    // VAL-MODEQ-150). The invalidation event is emitted before the
+    // cancelled transition so ordered replay shows closure of the set
+    // before the run closes.
+    if (run.currentQuestionSetId) {
+      const { MissionQuestionPublicationService } = await import('./question-publication.js');
+      const pubService = new MissionQuestionPublicationService(this.db, { clock: () => now });
+      const invResult = await pubService.invalidateOpenSet(tx, run, 'cancelled', {
+        actorType,
+        actorId,
+        traceId,
+        baseSequence: baseSeq + 1,
+      });
+      if (invResult.invalidated) {
+        baseSeq = invResult.eventSequence!;
+      }
+    }
+
     const newVersion = baseVersion + 1;
     const seq = baseSeq + 1;
 

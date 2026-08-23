@@ -562,12 +562,21 @@ describe('Mission run aggregate ETag (VAL-RUN-129)', () => {
     patch: Record<string, unknown>;
     field: string;
     expect: unknown;
+    setup?: (db: AnyDb, runId: string, companyId: string, projectId: string) => Promise<void>;
   }> = [
     {
       name: 'currentQuestionSetId pointer',
       patch: { current_question_set_id: 'qset-001' },
       field: 'currentQuestionSetId',
       expect: 'qset-001',
+      /** Insert a real run_question_sets row so the FK constraint passes. */
+      setup: async (db: AnyDb, runId: string, companyId: string, projectId: string) => {
+        const now = new Date();
+        await db.drizzle.execute(sql`
+          INSERT INTO "run_question_sets" ("id", "company_id", "project_id", "run_id", "ordinal", "version", "status", "created_at")
+          VALUES ('qset-001', ${companyId}, ${projectId}, ${runId}, 1, 1, 'open', ${now})
+        `);
+      },
     },
     {
       name: 'currentPlanRevisionId pointer',
@@ -636,6 +645,9 @@ describe('Mission run aggregate ETag (VAL-RUN-129)', () => {
       const beforeEtag = beforeRes.headers.etag;
       const beforeStatus = beforeRes.body.data.run.status;
 
+      if (c.setup) {
+        await c.setup(db, start.run.id, companyId, projectId);
+      }
       await mutateRun(db, start.run.id, c.patch);
 
       const afterRes = await request(app).get(detailUrl(start.run.id)).expect(200);

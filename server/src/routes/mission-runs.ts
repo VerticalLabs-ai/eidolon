@@ -145,6 +145,14 @@ const CommandBody = z.discriminatedUnion('type', [
     request: RetryRequest,
     modeOverride: RetryModeOverride,
   }),
+  z.object({
+    type: z.literal('questions.answer'),
+    body: z.object({
+      questionSetId: z.string().uuid(),
+      questionSetVersion: z.number().int().min(1),
+      answers: z.record(z.unknown()),
+    }),
+  }),
 ]);
 
 const CancelBody = z.object({ reason: ReasonSchema });
@@ -496,11 +504,13 @@ export function missionRunsRouter(db: DbInstance): Router {
     const logicalBody =
       body.type === 'run.cancel'
         ? normalizeCommandBody({ reason: redactCanaries(body.reason).redacted })
-        : normalizeCommandBody({
-            limits: body.limits,
-            request: body.request,
-            modeOverride: body.modeOverride,
-          });
+        : body.type === 'questions.answer'
+          ? normalizeCommandBody({ body: body.body })
+          : normalizeCommandBody({
+              limits: body.limits,
+              request: body.request,
+              modeOverride: body.modeOverride,
+            });
     const result = await service.submit({
       companyId,
       projectId,

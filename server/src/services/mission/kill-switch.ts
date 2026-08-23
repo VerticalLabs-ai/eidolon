@@ -296,6 +296,26 @@ export class MissionKillSwitchService {
             return;
           }
 
+          // VAL-MODEQ-150: When the absolute Mission deadline expires in
+          // awaiting_input, fail the run with category `limit` and code
+          // `TIME_LIMIT` and invalidate the open question set with
+          // `deadline_expired`. This is a terminalization transaction, not
+          // a cancellation — the run did not get cancelled, it ran out of
+          // time while waiting for human input.
+          if (locked.status === 'awaiting_input') {
+            const { MissionQuestionPublicationService } = await import('./question-publication.js');
+            const pubService = new MissionQuestionPublicationService(this.db, {
+              clock: () => now,
+            });
+            await pubService.terminalizeForDeadlineExpiry(tx, locked, {
+              actorType: 'system',
+              actorId: null,
+              traceId: null,
+            });
+            count++;
+            return;
+          }
+
           // Request cancellation (sets the deadline).
           const cancelResult = await cancelService.requestCancellation(tx, locked, {
             companyId: run.companyId,
