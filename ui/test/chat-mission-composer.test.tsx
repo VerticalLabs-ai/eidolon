@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   useCreateThreadItem: vi.fn(),
   useStartMissionRun: vi.fn(),
   useModeProfiles: vi.fn(),
+  useSession: vi.fn(),
 }));
 
 vi.mock('@/lib/hooks', async () => {
@@ -24,6 +25,11 @@ vi.mock('@/lib/hooks', async () => {
     useModeProfiles: mocks.useModeProfiles,
   };
 });
+
+vi.mock('@/lib/auth', () => ({
+  useSession: mocks.useSession,
+  isLocalTrustedAuth: () => false,
+}));
 
 vi.mock('@/lib/ws', () => ({
   useServerEvents: vi.fn(),
@@ -84,6 +90,27 @@ function modeProfilesResult(profiles: unknown[] = []) {
     data: { profiles },
     isLoading: false,
     isError: false,
+  };
+}
+
+function sessionResult(userId = 'dev-user-000') {
+  return {
+    isPending: false,
+    data: {
+      user: {
+        id: userId,
+        name: 'Local Operator',
+        email: 'local@eidolon.dev',
+        image: '',
+        role: 'admin',
+      },
+      session: {
+        id: 'local-dev-session',
+        userId,
+        activeOrganizationId: null,
+        activeOrganizationRole: 'admin',
+      },
+    },
   };
 }
 
@@ -159,6 +186,7 @@ describe('ChatMissionComposer', () => {
     mocks.useCreateThreadItem.mockReturnValue(createThreadItemResult());
     mocks.useStartMissionRun.mockReturnValue(startMissionResult());
     mocks.useModeProfiles.mockReturnValue(modeProfilesResult());
+    mocks.useSession.mockReturnValue(sessionResult());
   });
 
   // ── VAL-MODEQ-001: Chat and Mission choices ──────────────────────────

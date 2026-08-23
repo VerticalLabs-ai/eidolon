@@ -5,10 +5,20 @@ import {
   useProjectThreads,
   useCreateThreadItem,
   useStartMissionRun,
+  useModeProfiles,
 } from '@/lib/hooks';
+import { useSession } from '@/lib/auth';
 import { Button } from '@/components/ui/Button';
 import { MissionModeSelector } from './MissionModeSelector';
 import type { MissionMode } from '@/lib/api';
+import {
+  buildDraftKey,
+  readDraft,
+  writeDraft,
+  clearDraft,
+  clearPrincipalDrafts,
+  type MissionDraftScope,
+} from '@/lib/mission-drafts';
 
 type ComposerMode = 'chat' | 'mission';
 
@@ -130,6 +140,10 @@ function MissionForm({
   selectedThreadId: string;
   startMission: ReturnType<typeof useStartMissionRun>;
 }) {
+  const profilesQuery = useModeProfiles(companyId);
+  const profiles = profilesQuery.data?.profiles ?? [];
+  const profilesError = profilesQuery.isError;
+  const profilesLoading = profilesQuery.isLoading;
   const [costLimit, setCostLimit] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const costLimitRef = useRef<HTMLInputElement>(null);
@@ -258,6 +272,12 @@ function MissionForm({
           onModeProfileIdChange(profileId);
         }}
         requestText={draft}
+        profiles={profiles}
+        profilesLoading={profilesLoading}
+        profilesError={profilesError}
+        onRetry={() => {
+          void profilesQuery.refetch();
+        }}
       />
       <div>
         <label
@@ -316,7 +336,7 @@ function MissionForm({
       <Button
         type="submit"
         aria-label="Start mission"
-        disabled={!trimmedDraft || !selectedThreadId || startMission.isPending}
+        disabled={!trimmedDraft || !selectedThreadId || startMission.isPending || profilesError}
         loading={startMission.isPending}
         icon={<Rocket className="h-3.5 w-3.5" />}
       >
@@ -345,9 +365,12 @@ function MissionForm({
  * inspects raw flag configuration.
  *
  * Chat and Mission maintain independent drafts so switching between them
- * preserves unsent text. Drafts are scoped to the component instance, so
- * navigating to another project (which re-mounts with different props) starts
- * with empty drafts.
+ * preserves unsent text. Drafts are keyed by authenticated principal,
+ * company, project, and thread so a different user (after logout, account
+ * switch, or session replacement) or a different scope cannot read prior
+ * drafts. Drafts are stored per tab in `sessionStorage` and never enter
+ * analytics, error reporting, logs, URLs, cross-tab broadcasts, or another
+ * browser session (VAL-MODEQ-121, VAL-MODEQ-149).
  *
  * Both modes bind submissions to the selected conversation thread ID.
  */
@@ -358,6 +381,8 @@ export function ChatMissionComposer({
   companyId: string;
   projectId: string;
 }) {
+  const session = useSession();
+  const principalId = session.data?.user?.id ?? '';
   const flagsQuery = useFeatureFlags(companyId);
   const missionEnabled = flagsQuery.data?.flags?.missionAgentIntelligence === true;
 
@@ -387,39 +412,67 @@ export function ChatMissionComposer({
     }
   }, [missionEnabled, mode]);
 
-  // Independent drafts for each mode, persisted to sessionStorage so they
-  // survive tab navigation within Project Work (VAL-RUN-112). The storage
-  // key is scoped by company/project so switching scope does not leak
-  // drafts from another company/project (VAL-CROSS-069, VAL-CROSS-070).
-  const draftStorageKey = `mission-drafts:${companyId}:${projectId}`;
-  const [chatDraft, setChatDraft] = useState(() => {
-    try {
-      const stored = sessionStorage.getItem(draftStorageKey);
-      return stored ? (JSON.parse(stored).chatDraft ?? '') : '';
-    } catch {
-      return '';
+  // Track the previous principal ID so we can clear the prior principal's
+  // drafts on logout, account switch, or session replacement
+  // (VAL-MODEQ-149).
+  const prevPrincipalRef = useRef(principalId);
+  useEffect(() => {
+    if (prevPrincipalRef.current && prevPrincipalRef.current !== principalId) {
+      // Principal changed: clear the old principal's drafts from this tab's
+      // sessionStorage so they do not linger (VAL-MODEQ-149).
+      clearPrincipalDrafts(prevPrincipalRef.current);
     }
-  });
-  const [missionDraft, setMissionDraft] = useState(() => {
-    try {
-      const stored = sessionStorage.getItem(draftStorageKey);
-      return stored ? (JSON.parse(stored).missionDraft ?? '') : '';
-    } catch {
-      return '';
-    }
-  });
+    prevPrincipalRef.current = principalId;
+  }, [principalId]);
+
+  // Independent drafts for each mode, persisted to sessionStorage with a
+  // principal-scoped, thread-scoped key so they survive tab navigation
+  // within Project Work (VAL-RUN-112, VAL-MODEQ-121, VAL-MODEQ-149).
+  // Drafts are keyed by principal + company + project + thread so a
+  // different user or scope cannot read prior drafts.
+  const draftKey = (scope: MissionDraftScope) =>
+    buildDraftKey({
+      principalId,
+      scope,
+      companyId,
+      projectId,
+      threadId: selectedThreadId || undefined,
+    });
+
+  const [chatDraft, setChatDraft] = useState(() => readDraft(draftKey('chat')) ?? '');
+  const [missionDraft, setMissionDraft] = useState(
+    () => readDraft(draftKey('mission-request')) ?? '',
+  );
   const [missionMode, setMissionMode] = useState<MissionMode>('auto');
   // Selected custom profile ID (null when a built-in mode is selected).
   const [missionModeProfileId, setMissionModeProfileId] = useState<string | null>(null);
 
+  // Re-read drafts when the thread or principal changes (each thread and
+  // principal has its own draft). The draftKey helper is a closure over
+  // these same values.
+  useEffect(() => {
+    setChatDraft(readDraft(draftKey('chat')) ?? '');
+    setMissionDraft(readDraft(draftKey('mission-request')) ?? '');
+  }, [selectedThreadId, principalId, companyId, projectId]); // draftKey depends on these
+
   // Persist drafts to sessionStorage whenever they change.
   useEffect(() => {
-    try {
-      sessionStorage.setItem(draftStorageKey, JSON.stringify({ chatDraft, missionDraft }));
-    } catch {
-      // sessionStorage may be unavailable (private mode); ignore.
+    const key = draftKey('chat');
+    if (chatDraft) {
+      writeDraft(key, chatDraft);
+    } else {
+      clearDraft(key);
     }
-  }, [draftStorageKey, chatDraft, missionDraft]);
+  }, [chatDraft, selectedThreadId, principalId, companyId, projectId]); // draftKey depends on these
+
+  useEffect(() => {
+    const key = draftKey('mission-request');
+    if (missionDraft) {
+      writeDraft(key, missionDraft);
+    } else {
+      clearDraft(key);
+    }
+  }, [missionDraft, selectedThreadId, principalId, companyId, projectId]); // draftKey depends on these
 
   // Thread item creation (legacy Chat path).
   const createThreadItem = useCreateThreadItem(companyId, projectId, selectedThreadId);

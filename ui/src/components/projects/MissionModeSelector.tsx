@@ -2,23 +2,32 @@
  * Accessible Mission mode selector with effective summary.
  *
  * Renders built-in modes (Auto, Fast, Deep Work, Analyst) in that fixed
- * order, followed by enabled company-defined custom profiles in their
- * deterministic server-provided order. Incompatible custom profiles remain
- * visible but disabled with a safe reason; disabled or foreign profiles are
- * absent from the list.
+ * order, followed by enabled company-defined custom profiles in normalized
+ * display-name order with stable profile-ID tie-break. Incompatible custom
+ * profiles remain visible but disabled with a safe reason; disabled or
+ * foreign profiles are absent from the list. Duplicate profile IDs are
+ * deduplicated so a repeated server response never produces two choices
+ * for the same profile (VAL-MODEQ-125).
+ *
+ * When the mode-registry query fails, the selector renders an accessible
+ * error and Retry button instead of the mode list. Mission start is
+ * unavailable while the registry is unavailable, and no stale foreign
+ * profile is selectable (VAL-MODEQ-122).
  *
  * Each choice exposes a visible name, description, and (when disabled) a
- * safe reason. The selector is a semantic radiogroup, fully keyboard
- * operable, with an effective mode summary region below.
+ * safe reason. When two profiles share the same display name, each
+ * radio's accessible name is disambiguated with the profile slug so
+ * assistive technology can distinguish them (VAL-MODEQ-125).
  *
  * Built-in mode descriptions are code-owned constants from
  * `BUILT_IN_MODE_DISPLAY`. Custom profile name/description come from the
- * server-owned registry via `useModeProfiles`.
+ * server-owned registry.
  */
 
 import { useMemo } from 'react';
-import { useModeProfiles } from '@/lib/hooks';
+import { AlertCircle, RefreshCw } from 'lucide-react';
 import { BUILT_IN_MODE_DISPLAY, type MissionMode, type MissionModeProfile } from '@/lib/api';
+import { Button } from '@/components/ui/Button';
 
 /** Cost ceilings per concrete mode (cents). Matches server BUILT_IN_MODES. */
 const MODE_COST_CEILINGS: Record<MissionMode, number> = {
@@ -49,6 +58,13 @@ function resolvePreviewMode(mode: MissionMode, request: string): MissionMode {
   return 'fast';
 }
 
+/** Normalize a display name for deterministic ordering: Unicode NFC +
+ * lowercase + trim. This mirrors the server's normalized-name ordering
+ * (VAL-MODEQ-125, VAL-MODEQ-153). */
+function normalizeName(name: string): string {
+  return name.normalize('NFC').trim().toLowerCase();
+}
+
 export interface MissionModeChoice {
   /** Stable choice ID: built-in mode value or `custom:<profileId>`. */
   choiceId: string;
@@ -65,9 +81,16 @@ export interface MissionModeChoice {
   /** Custom profile ID when this is a custom choice. */
   modeProfileId: string | null;
   isCustom: boolean;
+  /** Accessible name for the radio, disambiguated when display names
+   * collide (VAL-MODEQ-125). */
+  accessibleName: string;
 }
 
-/** Build the ordered list of mode choices from built-ins + custom profiles. */
+/** Build the ordered list of mode choices from built-ins + custom profiles.
+ *
+ * Custom profiles are sorted by normalized display name with a stable
+ * profile-ID tie-break, deduplicated by profile ID, and given
+ * disambiguated accessible names when display names collide. */
 export function buildModeChoices(profiles: MissionModeProfile[]): MissionModeChoice[] {
   const builtInChoices: MissionModeChoice[] = BUILT_IN_MODE_DISPLAY.map((display) => ({
     choiceId: display.id,
@@ -78,12 +101,45 @@ export function buildModeChoices(profiles: MissionModeProfile[]): MissionModeCho
     mode: display.id,
     modeProfileId: null,
     isCustom: false,
+    accessibleName: display.name,
   }));
 
-  const customChoices: MissionModeChoice[] = profiles
+  // Filter enabled profiles, deduplicate by profile ID, and sort by
+  // normalized display name with stable profile-ID tie-break
+  // (VAL-MODEQ-125).
+  const seenIds = new Set<string>();
+  const enabledProfiles = profiles
     .filter((p) => p.enabled)
-    .sort((a, b) => a.order - b.order)
-    .map((p) => ({
+    .filter((p) => {
+      if (seenIds.has(p.id)) {
+        return false; // deduplicate
+      }
+      seenIds.add(p.id);
+      return true;
+    })
+    .sort((a, b) => {
+      const nameA = normalizeName(a.name);
+      const nameB = normalizeName(b.name);
+      if (nameA < nameB) {
+        return -1;
+      }
+      if (nameA > nameB) {
+        return 1;
+      }
+      // Stable tie-break by profile ID
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+
+  // Detect display-name collisions to disambiguate accessible names
+  const nameCounts = new Map<string, number>();
+  for (const p of enabledProfiles) {
+    const normalized = normalizeName(p.name);
+    nameCounts.set(normalized, (nameCounts.get(normalized) ?? 0) + 1);
+  }
+
+  const customChoices: MissionModeChoice[] = enabledProfiles.map((p) => {
+    const hasCollision = (nameCounts.get(normalizeName(p.name)) ?? 0) > 1;
+    return {
       choiceId: `custom:${p.id}`,
       name: p.name,
       description: p.description,
@@ -92,7 +148,12 @@ export function buildModeChoices(profiles: MissionModeProfile[]): MissionModeCho
       mode: null,
       modeProfileId: p.id,
       isCustom: true,
-    }));
+      // When display names collide, append the slug to the accessible name
+      // so assistive technology can distinguish the two choices
+      // (VAL-MODEQ-125).
+      accessibleName: hasCollision ? `${p.name} (${p.slug})` : p.name,
+    };
+  });
 
   return [...builtInChoices, ...customChoices];
 }
@@ -107,18 +168,29 @@ export interface MissionModeSelectorProps {
   onSelect: (mode: MissionMode, modeProfileId: string | null) => void;
   /** Current request text (for Auto preview classification). */
   requestText: string;
+  /** Custom profiles from the server registry. When undefined, only
+   * built-ins are shown. */
+  profiles: MissionModeProfile[];
+  /** Whether the registry query is loading. */
+  profilesLoading: boolean;
+  /** Whether the registry query failed. When true, the selector renders an
+   * accessible error and Retry button instead of the mode list
+   * (VAL-MODEQ-122). */
+  profilesError: boolean;
+  /** Retry handler called when the user activates Retry. */
+  onRetry: () => void;
 }
 
 export function MissionModeSelector({
-  companyId,
   selectedMode,
   selectedModeProfileId,
   onSelect,
   requestText,
+  profiles,
+  profilesLoading,
+  profilesError,
+  onRetry,
 }: MissionModeSelectorProps) {
-  const profilesQuery = useModeProfiles(companyId);
-  const profiles = profilesQuery.data?.profiles ?? [];
-
   const choices = useMemo(() => buildModeChoices(profiles), [profiles]);
 
   const selectedChoiceId = selectedModeProfileId ? `custom:${selectedModeProfileId}` : selectedMode;
@@ -146,6 +218,48 @@ export function MissionModeSelector({
     : isAutoProvisional
       ? BUILT_IN_MODE_DISPLAY.find((d) => d.id === 'auto')!.description
       : (BUILT_IN_MODE_DISPLAY.find((d) => d.id === resolvedMode)?.description ?? '');
+
+  // Fail-closed registry error: show an accessible error and Retry instead
+  // of the mode list. No stale foreign profile is selectable. Mission start
+  // is disabled by the parent form while this error is visible
+  // (VAL-MODEQ-122).
+  if (profilesError) {
+    return (
+      <div>
+        <fieldset className="mb-3" role="radiogroup" aria-label="Mission mode">
+          <legend className="block text-xs font-medium text-text-secondary mb-1.5">
+            Mission mode
+          </legend>
+          <div
+            className="rounded-md border border-error/30 bg-error/[0.04] px-3 py-2.5"
+            role="alert"
+          >
+            <div className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-error" aria-hidden="true" />
+              <div className="space-y-1.5">
+                <p className="text-sm text-text-primary">
+                  Mission modes could not be loaded. Start is unavailable until they load.
+                </p>
+                <p className="text-xs text-text-muted">
+                  Your request draft is preserved. Retry to load the current company&apos;s modes.
+                </p>
+                <Button
+                  type="button"
+                  onClick={onRetry}
+                  disabled={profilesLoading}
+                  loading={profilesLoading}
+                  icon={<RefreshCw className="h-3.5 w-3.5" />}
+                  aria-label="Retry loading mission modes"
+                >
+                  Retry
+                </Button>
+              </div>
+            </div>
+          </div>
+        </fieldset>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -178,11 +292,14 @@ export function MissionModeSelector({
                     value={choice.choiceId}
                     checked={isSelected}
                     onChange={() => {
-                      if (choice.disabled) {return;}
+                      if (choice.disabled) {
+                        return;
+                      }
                       onSelect(choice.mode ?? 'auto', choice.modeProfileId);
                     }}
                     disabled={choice.disabled}
                     aria-checked={isSelected}
+                    aria-label={choice.accessibleName}
                     aria-describedby={
                       choice.disabled ? `${descriptionId} ${reasonId}` : descriptionId
                     }
