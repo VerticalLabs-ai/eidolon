@@ -26,6 +26,7 @@ export * from './types/diff.js';
 export * from './types/links.js';
 export * from './types/mission.js';
 export * from './types/mission-questions.js';
+export * from './types/mission-plan.js';
 export * from './mission-links.js';
 export * from './coedit-ops.js';
 
