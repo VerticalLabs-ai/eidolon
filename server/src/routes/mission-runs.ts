@@ -55,7 +55,14 @@ const StartBody = z.object({
       outputBytes: z.number().int().positive().optional(),
     })
     .optional(),
+  /** User reductions: tools/domains the user explicitly removes (narrowing only, VAL-MODEQ-036). */
+  removedTools: z.array(z.string().min(1).max(200)).max(100).optional(),
+  removedDomains: z.array(z.string().min(1).max(200)).max(100).optional(),
 });
+
+/** Preview body: same shape as StartBody but does not require an Idempotency-Key
+ *  and never creates a run (VAL-MODEQ-126). */
+const PreviewBody = StartBody;
 
 const ListQuery = z.object({
   status: z.string().optional(),
@@ -279,6 +286,33 @@ export function missionRunsRouter(db: DbInstance): Router {
     const result = await service.listRuns({ companyId, projectId, status, limit, cursor });
 
     res.json({ data: { runs: result.runs, nextCursor: result.nextCursor } });
+  });
+
+  // POST /api/companies/:companyId/projects/:projectId/mission-runs/preview
+  // Policy preview: resolves the effective policy WITHOUT creating a run,
+  // command, reservation, or event (VAL-MODEQ-126). The preview is keyed by
+  // all resolution inputs so changing any input invalidates it. Start always
+  // re-resolves transactionally — the preview can never authorize a stale
+  // policy. Does not require an Idempotency-Key (no state mutation).
+  router.post('/preview', validate(PreviewBody), async (req, res) => {
+    const { companyId, projectId } = routeParams(req);
+    const body = req.body as z.infer<typeof PreviewBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+
+    const service = new MissionStartService(db);
+    const preview = await service.preview({
+      companyId,
+      projectId,
+      idempotencyKey: 'preview', // not used for state mutation
+      body,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    res.status(200).json({ data: { preview } });
   });
 
   // POST /api/companies/:companyId/projects/:projectId/mission-runs

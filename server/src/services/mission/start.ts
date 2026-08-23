@@ -8,13 +8,18 @@ import {
   policyContentHash,
   canonicalHash,
   checkAgentEligibility,
+  previewPolicy,
   type ResolvedPolicy,
   type CustomProfileConfig,
+  type CompanyPolicyInput,
+  type UserReductions,
+  type PolicyPreview,
+  type PreviewKeyInputs,
 } from './policy.js';
 // requestContentHash is no longer used; start hashes the complete canonical
 // request body (mode, limits, projectThreadId, initiatingAgentId, request)
 // so different mode/limits with the same request text conflict.
-import type { BuiltInMode, MissionMode } from './modes.js';
+import type { BuiltInMode, MissionMode, ModeLimits } from './modes.js';
 import { classifyRequest, type ClassificationResult } from './mode-classifier.js';
 import { BudgetService } from './budget.js';
 import {
@@ -55,6 +60,9 @@ export interface StartRequestBody {
     steps?: number;
     outputBytes?: number;
   };
+  /** User reductions: tools/domains the user explicitly removes (narrowing only, VAL-MODEQ-036). */
+  removedTools?: string[];
+  removedDomains?: string[];
 }
 
 export interface StartInput {
@@ -199,6 +207,11 @@ export class MissionStartService {
       ? await this.lookupAgent(companyId, body.initiatingAgentId)
       : undefined;
 
+    // 4a. Read company governance (mission policy from company settings).
+    //     This is the company layer in the deny-biased precedence
+    //     (VAL-MODEQ-035, VAL-CROSS-008).
+    const companyPolicy = await this.lookupCompanyPolicy(companyId);
+
     // 4b. For custom mode, resolve the custom profile from the database.
     let customProfile: {
       id: string;
@@ -231,6 +244,7 @@ export class MissionStartService {
       body,
       agent,
       customProfile,
+      companyPolicy,
     );
 
     // Hash the COMPLETE canonical request body (mode, limits, projectThreadId,
@@ -244,6 +258,8 @@ export class MissionStartService {
       initiatingAgentId: body.initiatingAgentId ?? null,
       request: body.request,
       limits: body.limits ?? null,
+      removedTools: body.removedTools ?? null,
+      removedDomains: body.removedDomains ?? null,
     });
     const policyHash = policyContentHash(policy);
     const ceiling = policy.limits.costCents;
@@ -606,7 +622,15 @@ export class MissionStartService {
       version: number;
       enabled: boolean;
     } | null,
+    companyPolicy?: CompanyPolicyInput,
   ): Promise<{ policy: ResolvedPolicy; autoClassification: ClassificationResult | null }> {
+    // Build user reductions from the request body (limits + removed tools/domains).
+    const userReductions: UserReductions = {
+      ...body.limits,
+      removedTools: body.removedTools,
+      removedDomains: body.removedDomains,
+    };
+
     if (body.mode === 'custom' && customProfile) {
       const policy = resolveCustomPolicy({
         profileSlug: customProfile.slug,
@@ -624,7 +648,8 @@ export class MissionStartService {
               capabilities: agent.capabilities ?? [],
             }
           : undefined,
-        userLimits: body.limits,
+        company: companyPolicy,
+        userReductions,
       });
       return { policy, autoClassification: null };
     }
@@ -647,9 +672,12 @@ export class MissionStartService {
             model: agent.model,
             toolAllowlist: agent.toolsEnabled ?? [],
             domainAllowlist: agent.allowedDomains ?? [],
+            status: agent.status,
+            capabilities: agent.capabilities ?? [],
           }
         : undefined,
-      userLimits: body.limits,
+      company: companyPolicy,
+      userReductions,
     });
     // For Auto, the source profile is the selected mode ('auto'), not the
     // classified concrete mode. The concrete mode is recorded in
@@ -727,6 +755,82 @@ export class MissionStartService {
     }
   }
 
+  /**
+   * Compute a policy preview for a start request (VAL-MODEQ-126).
+   *
+   * The preview is labelled a preview (kind:'preview'), keyed by all
+   * resolution inputs (company, project, thread, agent, classifier inputs,
+   * profile ID/version, reductions). Changing any input invalidates the
+   * preview key. Start always re-resolves transactionally — the preview
+   * can never authorize a stale policy. The run card displays the actual
+   * narrowed snapshot if it differs from the preview.
+   *
+   * This method does NOT create a run, command, reservation, or event.
+   * It only resolves the effective policy and returns a preview summary.
+   */
+  async preview(input: StartInput): Promise<PolicyPreview> {
+    const { companyId, projectId, body } = input;
+
+    // Validate thread ownership (same company + project). Non-enumerating 404.
+    await this.validateThread(companyId, projectId, body.projectThreadId);
+
+    // Resolve the initiating agent if provided.
+    const agent = body.initiatingAgentId
+      ? await this.lookupAgent(companyId, body.initiatingAgentId)
+      : undefined;
+
+    // Read company governance.
+    const companyPolicy = await this.lookupCompanyPolicy(companyId);
+
+    // Resolve the custom profile if custom mode.
+    let customProfile: {
+      id: string;
+      slug: string;
+      name: string;
+      config: Record<string, unknown>;
+      version: number;
+      enabled: boolean;
+    } | null = null;
+    if (body.mode === 'custom') {
+      if (!body.modeProfileId) {
+        throw new AppError(
+          400,
+          'VALIDATION_ERROR',
+          'modeProfileId is required when mode is "custom"',
+        );
+      }
+      const { ModeRegistryService } = await import('./mode-registry.js');
+      const registry = new ModeRegistryService(this.db);
+      customProfile = await registry.resolveProfileForStart(companyId, body.modeProfileId);
+    }
+
+    // Resolve the effective policy (same path as start — deny-biased).
+    const { policy } = await this.resolveStartPolicy(body, agent, customProfile, companyPolicy);
+
+    // Compute the preview key from all resolution inputs.
+    const requestTextHash = canonicalHash(body.request.text);
+    const contextHash = canonicalHash(body.request.context ?? null);
+    const reductionsHash = canonicalHash({
+      limits: body.limits ?? null,
+      removedTools: body.removedTools ?? null,
+      removedDomains: body.removedDomains ?? null,
+    });
+    const keyInputs: PreviewKeyInputs = {
+      companyId,
+      projectId,
+      projectThreadId: body.projectThreadId,
+      initiatingAgentId: body.initiatingAgentId ?? null,
+      requestTextHash,
+      contextHash,
+      mode: body.mode,
+      modeProfileId: body.modeProfileId ?? null,
+      modeProfileVersion: customProfile?.version ?? null,
+      reductionsHash,
+    };
+
+    return previewPolicy(policy, keyInputs);
+  }
+
   private async lookupStartCommand(companyId: string, projectId: string, key: string) {
     const schema = this.db.schema;
     const [row] = await this.db.drizzle
@@ -764,6 +868,8 @@ export class MissionStartService {
       initiatingAgentId: body.initiatingAgentId ?? null,
       request: body.request,
       limits: body.limits ?? null,
+      removedTools: body.removedTools ?? null,
+      removedDomains: body.removedDomains ?? null,
     });
     if (existing.requestHash !== reqHash) {
       throw new AppError(
@@ -901,6 +1007,47 @@ export class MissionStartService {
     return agent;
   }
 
+  /**
+   * Read company governance (mission policy) from company settings.
+   * Returns undefined if no mission policy is configured (no restriction
+   * at the company layer). The settings are stored in
+   * `companies.settings.missionPolicy` (VAL-MODEQ-035, VAL-CROSS-008).
+   */
+  private async lookupCompanyPolicy(companyId: string): Promise<CompanyPolicyInput | undefined> {
+    const schema = this.db.schema;
+    const [company] = await this.db.drizzle
+      .select({ settings: schema.companies.settings })
+      .from(schema.companies)
+      .where(eq(schema.companies.id, companyId))
+      .limit(1);
+    if (!company) {
+      return undefined;
+    }
+    const settings = company.settings as Record<string, unknown>;
+    const missionPolicy = settings.missionPolicy as Record<string, unknown> | undefined;
+    if (!missionPolicy) {
+      return undefined;
+    }
+    return {
+      allowedProviders: (missionPolicy.allowedProviders as string[] | undefined)?.filter(
+        (p): p is string => typeof p === 'string',
+      ),
+      allowedTools: (missionPolicy.allowedTools as string[] | undefined)?.filter(
+        (t): t is string => typeof t === 'string',
+      ),
+      allowedDomains: (missionPolicy.allowedDomains as string[] | undefined)?.filter(
+        (d): d is string => typeof d === 'string',
+      ),
+      deniedTools: (missionPolicy.deniedTools as string[] | undefined)?.filter(
+        (t): t is string => typeof t === 'string',
+      ),
+      deniedDomains: (missionPolicy.deniedDomains as string[] | undefined)?.filter(
+        (d): d is string => typeof d === 'string',
+      ),
+      limits: missionPolicy.limits as Partial<ModeLimits> | undefined,
+    };
+  }
+
   private isUniqueViolation(err: unknown): boolean {
     const code = (err as { code?: string })?.code;
     return code === '23505';
@@ -909,3 +1056,4 @@ export class MissionStartService {
 
 /** Re-export for route/test use. */
 export type { ResolvedPolicy };
+export type { PolicyPreview, PreviewKeyInputs };

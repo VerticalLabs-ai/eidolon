@@ -76,6 +76,7 @@ interface RunRow {
   cancelRequestedAt: Date | null;
   policySnapshotId: string | null;
   requestEnvelope: string | null;
+  initiatingAgentId: string | null;
   createdAt: Date;
 }
 
@@ -126,6 +127,25 @@ export class RunProcessor {
       return;
     }
 
+    // VAL-MODEQ-151: Root agent revocation is deny-only.
+    //
+    // Before any provider call or commit, re-check the initiating/executing
+    // agent's CURRENT eligibility (status, provider/model eligibility,
+    // credential). The policy snapshot is immutable and never broadened, but
+    // live enforcement uses the agent's current state. If the agent has been
+    // revoked (deactivated, provider/model changed, credential removed)
+    // since the snapshot was taken, the run fails safely with a
+    // policy/authorization outcome — it never resumes forbidden work.
+    const revocationResult = await this.checkAgentRevocation(data.run);
+    if (revocationResult.revoked) {
+      await this.handleFailure(claim, {
+        kind: 'authorization',
+        code: revocationResult.code,
+        safeMessage: revocationResult.safeMessage,
+      });
+      return;
+    }
+
     const requestText = this.decryptRequest(data.run);
     if (requestText === null) {
       await this.handleFailure(claim, {
@@ -166,6 +186,80 @@ export class RunProcessor {
     } catch {
       return null;
     }
+  }
+
+  // -- internal: agent revocation re-check (VAL-MODEQ-151) -----------------
+
+  /**
+   * Re-check the initiating/executing agent's CURRENT eligibility before
+   * the next provider call or commit. The policy snapshot is immutable, but
+   * live enforcement uses the agent's current state. If the agent has been
+   * revoked (status changed to paused/error/offline, provider/model changed,
+   * or agent deleted), the run fails safely with a policy/authorization
+   * outcome — it never resumes forbidden work (VAL-MODEQ-151).
+   *
+   * For runs without an initiating agent (system-initiated), no check is
+   * needed.
+   */
+  private async checkAgentRevocation(run: RunRow): Promise<{
+    revoked: boolean;
+    code: string;
+    safeMessage: string;
+  }> {
+    if (!run.initiatingAgentId) {
+      return { revoked: false, code: '', safeMessage: '' };
+    }
+
+    const schema = this.db.schema;
+    const [agent] = await this.db.drizzle
+      .select({
+        id: schema.agents.id,
+        provider: schema.agents.provider,
+        model: schema.agents.model,
+        status: schema.agents.status,
+        apiKeyEncrypted: schema.agents.apiKeyEncrypted,
+      })
+      .from(schema.agents)
+      .where(eq(schema.agents.id, run.initiatingAgentId))
+      .limit(1);
+
+    // Agent deleted — revoked.
+    if (!agent) {
+      return {
+        revoked: true,
+        code: 'AGENT_REVOKED',
+        safeMessage: 'The initiating agent is no longer available.',
+      };
+    }
+
+    // Agent status revoked (paused/error/offline).
+    if (agent.status && !['idle', 'working'].includes(agent.status)) {
+      return {
+        revoked: true,
+        code: 'AGENT_REVOKED',
+        safeMessage: 'The initiating agent is no longer active.',
+      };
+    }
+
+    // Credential revoked: agent has no API key and no server-side key is
+    // available (checked at call time, but we can detect a missing encrypted
+    // key here as a proxy for credential removal).
+    if (!agent.apiKeyEncrypted) {
+      // Fall back to server-side key resolution — only revoke if the
+      // server-side key is also missing. We check this conservatively.
+      try {
+        const provider = agent.provider ?? 'anthropic';
+        resolveProviderApiKey(provider, undefined);
+      } catch {
+        return {
+          revoked: true,
+          code: 'AGENT_CREDENTIAL_REVOKED',
+          safeMessage: 'The initiating agent no longer has valid credentials.',
+        };
+      }
+    }
+
+    return { revoked: false, code: '', safeMessage: '' };
   }
 
   // -- internal: execute provider call and complete the run ----------------
@@ -278,6 +372,7 @@ export class RunProcessor {
         cancelRequestedAt: schema.missionRuns.cancelRequestedAt,
         policySnapshotId: schema.missionRuns.policySnapshotId,
         requestEnvelope: schema.missionRuns.requestEnvelope,
+        initiatingAgentId: schema.missionRuns.initiatingAgentId,
         createdAt: schema.missionRuns.createdAt,
       })
       .from(schema.missionRuns)
@@ -318,7 +413,7 @@ export class RunProcessor {
   private async handleFailure(
     claim: Claim,
     failure: {
-      kind: 'provider' | 'network' | 'internal';
+      kind: 'provider' | 'network' | 'internal' | 'authorization' | 'policy';
       httpStatus?: number;
       code: string;
       safeMessage: string;

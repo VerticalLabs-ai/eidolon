@@ -339,6 +339,84 @@ export class ToolDispatcher {
         };
       }
 
+      // 7b. VAL-MODEQ-151: Live agent revocation re-check for tools.
+      //
+      // The policy snapshot is immutable, but live enforcement uses the
+      // agent's CURRENT tool allowlist. If the agent's tool permissions
+      // were revoked after the snapshot was taken, the tool call is denied
+      // even though it was in the snapshot. This prevents a revoked agent
+      // from executing tools that were later removed from its allowlist.
+      if (run.initiatingAgentId) {
+        const [agent] = await tx
+          .select({
+            id: this.db.schema.agents.id,
+            status: this.db.schema.agents.status,
+            toolsEnabled: this.db.schema.agents.toolsEnabled,
+          })
+          .from(this.db.schema.agents)
+          .where(eq(this.db.schema.agents.id, run.initiatingAgentId))
+          .limit(1);
+
+        if (!agent) {
+          await this.emitDenied(
+            tx,
+            run,
+            input.toolId,
+            'AGENT_REVOKED',
+            'The initiating agent is no longer available.',
+            traceId,
+            actorType,
+            actorId,
+          );
+          return {
+            authorized: false,
+            denialCode: 'AGENT_REVOKED',
+            denialMessage: 'The initiating agent is no longer available.',
+          };
+        }
+
+        // Agent status revoked.
+        if (agent.status && !['idle', 'working'].includes(agent.status)) {
+          await this.emitDenied(
+            tx,
+            run,
+            input.toolId,
+            'AGENT_REVOKED',
+            'The initiating agent is no longer active.',
+            traceId,
+            actorType,
+            actorId,
+          );
+          return {
+            authorized: false,
+            denialCode: 'AGENT_REVOKED',
+            denialMessage: 'The initiating agent is no longer active.',
+          };
+        }
+
+        // Agent's current tool allowlist: the effective tools are the
+        // intersection of the snapshot's tools and the agent's current tools.
+        // If the tool was revoked from the agent, deny.
+        const currentTools = new Set((agent.toolsEnabled as string[] | null) ?? []);
+        if (currentTools.size > 0 && !currentTools.has(input.toolId)) {
+          await this.emitDenied(
+            tx,
+            run,
+            input.toolId,
+            'TOOL_NOT_ALLOWED',
+            `Tool '${input.toolId}' was removed from the agent's allowlist.`,
+            traceId,
+            actorType,
+            actorId,
+          );
+          return {
+            authorized: false,
+            denialCode: 'TOOL_NOT_ALLOWED',
+            denialMessage: `Tool '${input.toolId}' was removed from the agent's allowlist.`,
+          };
+        }
+      }
+
       // 8. Validate arguments (if validator provided).
       if (input.argValidator) {
         const error = input.argValidator(input.args);
