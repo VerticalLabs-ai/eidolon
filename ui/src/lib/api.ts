@@ -3535,9 +3535,66 @@ export const getFeatureFlags = (companyId: string) =>
 
 export type MissionMode = 'auto' | 'fast' | 'deep_work' | 'analyst';
 
+/** Company-defined custom mode profile (server-owned registry, later feature).
+ * The UI consumes this typed contract; the registry endpoint is implemented
+ * by a later orchestration-backend feature. Built-in modes are code-owned
+ * constants and never appear as profile rows. */
+export interface MissionModeProfile {
+  id: string;
+  companyId: string;
+  slug: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  version: number;
+  /** Stable deterministic display order among custom profiles. */
+  order: number;
+  /** Safe reason when the profile is incompatible with the selected
+   * initiating agent, or null when eligible. The UI shows incompatible
+   * profiles as disabled with this reason rather than hiding them. */
+  incompatibilityReason?: string | null;
+}
+
+/** Display metadata for a built-in mode (code-owned, versioned constants).
+ * Order matches the validation contract: Auto, Fast, Deep Work, Analyst. */
+export interface BuiltInModeDisplay {
+  id: MissionMode;
+  name: string;
+  description: string;
+}
+
+export const BUILT_IN_MODE_DISPLAY: BuiltInModeDisplay[] = [
+  {
+    id: 'auto',
+    name: 'Auto',
+    description:
+      'Chooses a concrete mode (Fast, Deep Work, or Analyst) from your request rather than running as its own execution policy.',
+  },
+  {
+    id: 'fast',
+    name: 'Fast',
+    description: 'Short, bounded work. Plans only for complex requests. No parallel children.',
+  },
+  {
+    id: 'deep_work',
+    name: 'Deep Work',
+    description:
+      'Structured planning and approval, deeper reasoning, research available, and bounded parallel work.',
+  },
+  {
+    id: 'analyst',
+    name: 'Analyst',
+    description:
+      'Structured planning, evidence-oriented research, and citations for external factual claims.',
+  },
+];
+
 export interface MissionStartBody {
   projectThreadId: string;
   mode: MissionMode;
+  /** Custom profile ID when a company-defined profile is selected.
+   * Additive: absent for built-in modes. */
+  modeProfileId?: string;
   initiatingAgentId?: string;
   request: {
     text: string;
@@ -3552,6 +3609,16 @@ export interface MissionStartBody {
     steps?: number;
     outputBytes?: number;
   };
+}
+
+/** List company-defined custom mode profiles (enabled profiles only, in
+ * deterministic order). The endpoint is implemented by a later
+ * orchestration-backend feature; until then this returns an error that the
+ * hook handles as fail-closed (empty list). */
+export function listModeProfiles(companyId: string) {
+  return request<{ data: { profiles: MissionModeProfile[] } }>(
+    `/companies/${companyId}/mode-profiles`,
+  );
 }
 
 export interface MissionRun {

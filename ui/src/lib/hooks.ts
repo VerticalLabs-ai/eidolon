@@ -2704,6 +2704,26 @@ export function useFeatureFlags(companyId: string | undefined) {
   });
 }
 
+// ── Mission Mode Profiles ───────────────────────────────────────────────
+
+/** Company-defined custom mode profiles in deterministic order.
+ * Preserves previous data on refetch error so the selector remains stable
+ * rather than flashing empty. When the endpoint is unavailable (later
+ * backend feature not yet deployed), the hook returns an empty list rather
+ * than blocking the composer — built-in modes are always available. */
+export function useModeProfiles(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ['mode-profiles', companyId],
+    queryFn: async () =>
+      unwrap<{ profiles: api.MissionModeProfile[] }>(await api.listModeProfiles(companyId!)),
+    enabled: !!companyId,
+    staleTime: 30_000,
+    retry: false,
+    placeholderData: (prev: { profiles: api.MissionModeProfile[] } | undefined) => prev,
+    refetchOnWindowFocus: false,
+  });
+}
+
 // ── Mission Runs ─────────────────────────────────────────────────────────
 
 export function useStartMissionRun(companyId: string, projectId: string) {

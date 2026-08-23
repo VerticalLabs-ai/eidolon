@@ -7,37 +7,10 @@ import {
   useStartMissionRun,
 } from '@/lib/hooks';
 import { Button } from '@/components/ui/Button';
+import { MissionModeSelector } from './MissionModeSelector';
 import type { MissionMode } from '@/lib/api';
 
 type ComposerMode = 'chat' | 'mission';
-
-const MISSION_MODES: { value: MissionMode; label: string }[] = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'fast', label: 'Fast' },
-  { value: 'deep_work', label: 'Deep Work' },
-  { value: 'analyst', label: 'Analyst' },
-];
-
-const MODE_COST_CEILINGS: Record<MissionMode, number> = {
-  auto: 10_000,
-  fast: 500,
-  deep_work: 5_000,
-  analyst: 5_000,
-};
-
-function resolvePreviewMode(mode: MissionMode, request: string): MissionMode {
-  if (mode !== 'auto') {
-    return mode;
-  }
-  const normalized = request.toLowerCase();
-  if (/\b(research|sources?|citations?|web)\b/.test(normalized)) {
-    return 'analyst';
-  }
-  if (/\b(and|then|compare|multiple|dependencies?)\b/.test(normalized)) {
-    return 'deep_work';
-  }
-  return 'fast';
-}
 
 /** Chat form: posts a comment to the selected thread through the legacy path. */
 function ChatForm({
@@ -112,19 +85,48 @@ function makeStartIdempotencyKey(): string {
   return `mission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** Cost ceiling (cents) for a built-in mode given request text. Auto is
+ * classified by request text to show a concrete ceiling; other modes use
+ * their own ceiling. Matches the MissionModeSelector preview logic. */
+function resolvePreviewCeiling(mode: MissionMode, request: string): number {
+  const ceilings: Record<MissionMode, number> = {
+    auto: 10_000,
+    fast: 500,
+    deep_work: 5_000,
+    analyst: 5_000,
+  };
+  if (mode !== 'auto') {
+    return ceilings[mode];
+  }
+  const normalized = request.toLowerCase();
+  if (/\b(research|sources?|citations?|web)\b/.test(normalized)) {
+    return ceilings.analyst;
+  }
+  if (/\b(and|then|compare|multiple|dependencies?)\b/.test(normalized)) {
+    return ceilings.deep_work;
+  }
+  return ceilings.fast;
+}
+
 /** Mission form: starts an asynchronous durable Mission run. */
 function MissionForm({
+  companyId,
   draft,
   onDraftChange,
   missionMode,
   onModeChange,
+  modeProfileId,
+  onModeProfileIdChange,
   selectedThreadId,
   startMission,
 }: {
+  companyId: string;
   draft: string;
   onDraftChange: (value: string) => void;
   missionMode: MissionMode;
   onModeChange: (mode: MissionMode) => void;
+  modeProfileId: string | null;
+  onModeProfileIdChange: (id: string | null) => void;
   selectedThreadId: string;
   startMission: ReturnType<typeof useStartMissionRun>;
 }) {
@@ -178,7 +180,15 @@ function MissionForm({
     if (!trimmed || !selectedThreadId || startMission.isPending) {
       return;
     }
-    const ceiling = MODE_COST_CEILINGS[resolvePreviewMode(missionMode, trimmed)];
+    // Ceiling for the selected mode. Custom profiles inherit the platform
+    // cap; built-ins use their own ceiling. Auto uses the provisional cap
+    // until classified by request text.
+    const isAutoProvisional = missionMode === 'auto' && !modeProfileId && !trimmed;
+    const ceiling = isAutoProvisional
+      ? 10_000
+      : modeProfileId
+        ? 10_000
+        : resolvePreviewCeiling(missionMode, trimmed);
     let requestedCost: number | undefined;
     if (costLimit.trim()) {
       const parsed = Number(costLimit);
@@ -217,6 +227,7 @@ function MissionForm({
       body: {
         projectThreadId: selectedThreadId,
         mode: missionMode,
+        ...(modeProfileId ? { modeProfileId } : {}),
         request: { text: trimmed },
         ...(requestedCost === undefined ? {} : { limits: { costCents: requestedCost } }),
       },
@@ -224,9 +235,12 @@ function MissionForm({
   }
 
   const trimmedDraft = draft.trim();
-  const resolvedMode = resolvePreviewMode(missionMode, trimmedDraft);
-  const isProvisional = missionMode === 'auto' && !trimmedDraft;
-  const ceiling = MODE_COST_CEILINGS[isProvisional ? 'auto' : resolvedMode];
+  const isAutoProvisional = missionMode === 'auto' && !modeProfileId && !trimmedDraft;
+  const ceiling = isAutoProvisional
+    ? 10_000
+    : modeProfileId
+      ? 10_000
+      : resolvePreviewCeiling(missionMode, trimmedDraft);
   const displayedCost = costLimit.trim() ? Number(costLimit) * 100 : ceiling;
 
   return (
@@ -235,43 +249,19 @@ function MissionForm({
         Mission sends an asynchronous durable request. It will appear as a run card with questions,
         plans, and cited artifacts as it progresses.
       </p>
+      <MissionModeSelector
+        companyId={companyId}
+        selectedMode={missionMode}
+        selectedModeProfileId={modeProfileId}
+        onSelect={(mode, profileId) => {
+          onModeChange(mode);
+          onModeProfileIdChange(profileId);
+        }}
+        requestText={draft}
+      />
       <div>
         <label
-          className="block text-xs font-medium text-text-secondary mb-1"
-          htmlFor="mission-mode"
-        >
-          Mission mode
-        </label>
-        <select
-          id="mission-mode"
-          aria-label="Mission mode"
-          value={missionMode}
-          onChange={(e) => onModeChange(e.target.value as MissionMode)}
-          className="h-9 w-full rounded-md border border-white/10 bg-surface px-3 text-sm text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:border-accent/60"
-        >
-          {MISSION_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2.5">
-        <div className="flex items-baseline justify-between gap-3">
-          <p className="text-xs font-medium text-text-secondary">
-            {isProvisional ? 'Provisional hard ceiling' : 'Effective hard ceiling'}
-          </p>
-          <p className="text-sm font-semibold tabular-nums text-text-primary">
-            ${(displayedCost / 100).toFixed(2)}
-          </p>
-        </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
-          {isProvisional
-            ? 'Auto will resolve to a concrete mode after you describe the request.'
-            : `Resolved ${resolvedMode.replace('_', ' ')} mode. A lower limit narrows the run; it never adds headroom.`}
-        </p>
-        <label
-          className="mt-2 block text-xs font-medium text-text-secondary"
+          className="block text-xs font-medium text-text-secondary"
           htmlFor="mission-cost-limit"
         >
           Maximum mission cost
@@ -296,6 +286,9 @@ function MissionForm({
             className="mt-1 h-9 w-full rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus:border-accent/60"
           />
         </label>
+        <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+          A lower limit narrows the run; it never adds headroom.
+        </p>
       </div>
       <div>
         <label
@@ -416,6 +409,8 @@ export function ChatMissionComposer({
     }
   });
   const [missionMode, setMissionMode] = useState<MissionMode>('auto');
+  // Selected custom profile ID (null when a built-in mode is selected).
+  const [missionModeProfileId, setMissionModeProfileId] = useState<string | null>(null);
 
   // Persist drafts to sessionStorage whenever they change.
   useEffect(() => {
@@ -528,10 +523,13 @@ export function ChatMissionComposer({
       {/* Mission composer */}
       {mode === 'mission' && missionEnabled && (
         <MissionForm
+          companyId={companyId}
           draft={missionDraft}
           onDraftChange={setMissionDraft}
           missionMode={missionMode}
           onModeChange={setMissionMode}
+          modeProfileId={missionModeProfileId}
+          onModeProfileIdChange={setMissionModeProfileId}
           selectedThreadId={selectedThreadId}
           startMission={startMission}
         />
