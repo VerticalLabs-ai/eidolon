@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PLATFORM_HARD_CAPS } from './modes.js';
 
 /**
  * Closed, bounded, and inert Zod schemas for custom Mission mode profiles.
@@ -90,7 +91,26 @@ const FiniteNonNegInt = z
  * Profile limits. All optional; omitted limits inherit from the built-in
  * defaults and are narrowed by platform/company/agent policy at resolution.
  * Values may only lower the effective limit, never raise it.
+ *
+ * (VAL-MODEQ-020) Profile administration rejects any declared limit that
+ * exceeds the corresponding platform hard cap with a 400 VALIDATION_ERROR.
+ * This is a fail-closed admin-time guard: a profile must never be persisted
+ * with authority broader than the platform allows. Start-time resolution
+ * remains deny-biased (min wins) as defense-in-depth, but administration
+ * is the first gate. Fields without a platform hard cap (e.g. `steps`) are
+ * not capped here.
  */
+const PROFILE_LIMIT_CAPS: ReadonlyArray<readonly [string, number]> = [
+  ['durationSeconds', PLATFORM_HARD_CAPS.durationSeconds],
+  ['providerCalls', PLATFORM_HARD_CAPS.providerCalls],
+  ['totalTokens', PLATFORM_HARD_CAPS.totalTokens],
+  ['outputBytes', PLATFORM_HARD_CAPS.outputBytes],
+  ['costCents', PLATFORM_HARD_CAPS.costCents],
+  ['depth', PLATFORM_HARD_CAPS.depth],
+  ['fanOut', PLATFORM_HARD_CAPS.fanOut],
+  ['descendants', PLATFORM_HARD_CAPS.descendants],
+];
+
 export const ProfileLimits = z
   .object({
     steps: FiniteNonNegInt.optional(),
@@ -103,7 +123,19 @@ export const ProfileLimits = z
     fanOut: FiniteNonNegInt.optional(),
     descendants: FiniteNonNegInt.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((limits, ctx) => {
+    for (const [field, cap] of PROFILE_LIMIT_CAPS) {
+      const value = limits[field as keyof typeof limits];
+      if (value !== undefined && value > cap) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `Limit ${field}=${value} exceeds platform hard cap ${cap}`,
+        });
+      }
+    }
+  });
 
 /** Planning strategy. */
 const PlanningStrategy = z.enum(['never', 'when_complex', 'always']).optional();

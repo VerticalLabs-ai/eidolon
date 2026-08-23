@@ -1204,12 +1204,11 @@ describe('VAL-MODEQ-020: Custom mode can only narrow (integration)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('profile with limits above platform caps is narrowed at start', async () => {
-    const agentId = await createAgent(db, companyId, {
-      toolsEnabled: ['research.search'],
-      allowedDomains: ['example.com'],
-    });
-
+  // VAL-MODEQ-020: Profile administration rejects values above platform
+  // hard caps. A profile whose config.limits exceed PLATFORM_HARD_CAPS
+  // must be rejected at admin time with 400 VALIDATION_ERROR — not accepted
+  // with 201 and silently narrowed at start time.
+  it('profile creation with costCents above platform hard cap is rejected with 400 VALIDATION_ERROR', async () => {
     const createRes = await request(server)
       .post(`/api/companies/${companyId}/mission-mode-profiles`)
       .set({ 'X-Eidolon-Test-Session-Id': ownerSession })
@@ -1221,10 +1220,109 @@ describe('VAL-MODEQ-020: Custom mode can only narrow (integration)', () => {
           ...validConfig,
           limits: {
             ...validConfig.limits,
-            costCents: 999_999, // above platform cap
-            depth: 99,
-            fanOut: 99,
-            descendants: 99,
+            costCents: 999_999, // above PLATFORM_HARD_CAPS.costCents (10_000)
+          },
+        },
+      });
+    expect(createRes.status).toBe(400);
+    expect(createRes.body.code).toBe('VALIDATION_ERROR');
+
+    // No profile should have been created.
+    const profiles = await db.drizzle
+      .select()
+      .from(db.schema.modeProfiles)
+      .where(eq(db.schema.modeProfiles.companyId, companyId));
+    expect(profiles).toHaveLength(0);
+  });
+
+  it('profile creation with depth above platform hard cap is rejected with 400 VALIDATION_ERROR', async () => {
+    const createRes = await request(server)
+      .post(`/api/companies/${companyId}/mission-mode-profiles`)
+      .set({ 'X-Eidolon-Test-Session-Id': ownerSession })
+      .set('Idempotency-Key', 'narrow-1b')
+      .send({
+        slug: 'high-depth',
+        name: 'High Depth',
+        config: {
+          ...validConfig,
+          limits: {
+            ...validConfig.limits,
+            depth: 99, // above PLATFORM_HARD_CAPS.depth (2)
+          },
+        },
+      });
+    expect(createRes.status).toBe(400);
+    expect(createRes.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('profile update with costCents above platform hard cap is rejected with 400 VALIDATION_ERROR', async () => {
+    // Create a valid profile first (within caps).
+    const createRes = await request(server)
+      .post(`/api/companies/${companyId}/mission-mode-profiles`)
+      .set({ 'X-Eidolon-Test-Session-Id': ownerSession })
+      .set('Idempotency-Key', 'narrow-1c')
+      .send({ slug: 'valid-then-bad', name: 'Valid Then Bad', config: validConfig });
+    const profileId = createRes.body.data.profile.id;
+
+    // Attempt to update config with an over-cap costCents.
+    const patchRes = await request(server)
+      .patch(`/api/companies/${companyId}/mission-mode-profiles/${profileId}`)
+      .set({ 'X-Eidolon-Test-Session-Id': ownerSession })
+      .set('Idempotency-Key', 'narrow-1d')
+      .set('If-Match', `"${createRes.body.data.profile.version}"`)
+      .send({
+        config: {
+          ...validConfig,
+          limits: { ...validConfig.limits, costCents: 999_999 },
+        },
+      });
+    expect(patchRes.status).toBe(400);
+    expect(patchRes.body.code).toBe('VALIDATION_ERROR');
+
+    // The profile version must not have advanced.
+    const getRes = await request(server)
+      .get(`/api/companies/${companyId}/mission-mode-profiles/${profileId}`)
+      .set({ 'X-Eidolon-Test-Session-Id': ownerSession });
+    expect(getRes.body.data.profile.version).toBe(1);
+  });
+
+  it('profile creation with costCents at the platform hard cap boundary succeeds', async () => {
+    const createRes = await request(server)
+      .post(`/api/companies/${companyId}/mission-mode-profiles`)
+      .set({ 'X-Eidolon-Test-Session-Id': ownerSession })
+      .set('Idempotency-Key', 'narrow-1e')
+      .send({
+        slug: 'boundary',
+        name: 'Boundary',
+        config: {
+          ...validConfig,
+          limits: { ...validConfig.limits, costCents: PLATFORM_HARD_CAPS.costCents },
+        },
+      });
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.data.profile.config.limits.costCents).toBe(PLATFORM_HARD_CAPS.costCents);
+  });
+
+  it('profile with valid (within-cap) limits still starts and narrows at start time', async () => {
+    const agentId = await createAgent(db, companyId, {
+      toolsEnabled: ['research.search'],
+      allowedDomains: ['example.com'],
+    });
+
+    // Limits within caps; start-time resolution may still narrow via
+    // company/agent policy, but admin-time validation passes.
+    const createRes = await request(server)
+      .post(`/api/companies/${companyId}/mission-mode-profiles`)
+      .set({ 'X-Eidolon-Test-Session-Id': ownerSession })
+      .set('Idempotency-Key', 'narrow-1f')
+      .send({
+        slug: 'within-cap',
+        name: 'Within Cap',
+        config: {
+          ...validConfig,
+          limits: {
+            ...validConfig.limits,
+            costCents: 5000, // within PLATFORM_HARD_CAPS.costCents (10_000)
           },
         },
       });
@@ -1233,7 +1331,7 @@ describe('VAL-MODEQ-020: Custom mode can only narrow (integration)', () => {
     const res = await request(server)
       .post(`/api/companies/${companyId}/projects/${projectId}/mission-runs`)
       .set({ 'X-Eidolon-Test-Session-Id': ownerSession })
-      .set('Idempotency-Key', 'narrow-start-1')
+      .set('Idempotency-Key', 'narrow-start-1f')
       .send({
         projectThreadId: threadId,
         mode: 'custom',
@@ -1242,9 +1340,6 @@ describe('VAL-MODEQ-020: Custom mode can only narrow (integration)', () => {
         request: { text: 'Test' },
       });
     expect(res.status).toBe(202);
-    // The snapshot should show narrowed limits — the start succeeds (202)
-    // rather than failing with 422 POLICY_UNSATISFIABLE, proving the limits
-    // above platform caps were narrowed (min wins), not rejected.
     const snapshot = res.body.data.run;
     expect(snapshot.resolvedMode).toBe('custom');
     expect(snapshot.policySnapshotId).not.toBeNull();
