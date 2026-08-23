@@ -333,6 +333,27 @@ describe('Mission mode drafts and registry (VAL-MODEQ-121/122/125/149)', () => {
     expect(within(modeGroup).getByRole('alert')).toBeInTheDocument();
   });
 
+  it('Retry button is keyboard operable with an explicit accessible name (VAL-MODEQ-122)', async () => {
+    mocks.useFeatureFlags.mockReturnValue(flagsResult(true));
+    const refetchSpy = vi.fn().mockResolvedValue({ data: { profiles: [] } });
+    mocks.useModeProfiles.mockReturnValue({ ...modeProfilesError(), refetch: refetchSpy });
+    const user = userEvent.setup();
+    render(<ChatMissionComposer companyId="company-1" projectId="project-1" />, { wrapper });
+    await user.click(screen.getByRole('radio', { name: /mission/i }));
+    // The error alert is announced via role=alert
+    const alert = screen.getByRole('alert');
+    expect(alert).toBeInTheDocument();
+    expect(alert).toHaveTextContent(/could not be loaded/i);
+    // The Retry button has an explicit accessible name for assistive technology
+    const retryBtn = screen.getByRole('button', { name: /retry loading mission modes/i });
+    expect(retryBtn).toBeInTheDocument();
+    // Keyboard-focus the Retry button and activate it with Enter
+    retryBtn.focus();
+    expect(retryBtn).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(refetchSpy).toHaveBeenCalled();
+  });
+
   // ── VAL-MODEQ-125: Custom-profile ordering and identity are stable ────
 
   it('orders custom profiles by normalized display name with profile-ID tie-break', () => {
