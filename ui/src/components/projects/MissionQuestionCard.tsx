@@ -334,6 +334,7 @@ export function MissionQuestionCard({
       <form onSubmit={handleSubmit}>
         <fieldset
           disabled={fieldsetDisabled}
+          aria-busy={pending || undefined}
           className="space-y-4"
           aria-describedby={`question-set-help-${questionSet.id}`}
         >

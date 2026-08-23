@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowUp, ArrowDown } from 'lucide-react';
 import type { MissionQuestionDefinition } from '@/lib/api';
 import {
@@ -168,13 +168,13 @@ function BooleanControl({
   setRef,
   hasError,
 }: ControlProps & { labelId: string }) {
-  const groupLabel = `${question.label} (Yes or No)`;
   return (
     <div
       role="radiogroup"
       aria-labelledby={labelId}
       aria-describedby={describedBy}
-      aria-label={groupLabel}
+      aria-required={question.required || undefined}
+      aria-invalid={hasError || undefined}
       className="flex gap-4"
     >
       {[
@@ -223,6 +223,8 @@ function SingleChoiceControl({
       role="radiogroup"
       aria-labelledby={labelId}
       aria-describedby={describedBy}
+      aria-required={question.required || undefined}
+      aria-invalid={hasError || undefined}
       className="space-y-1"
     >
       {options.map((opt, i) => {
@@ -282,6 +284,8 @@ function MultipleChoiceControl({
       role="group"
       aria-labelledby={labelId}
       aria-describedby={describedBy}
+      aria-required={question.required || undefined}
+      aria-invalid={hasError || undefined}
       className="space-y-1"
     >
       {options.map((opt, i) => {
@@ -333,6 +337,8 @@ function TextControl({
       maxLength={validation?.maxLength}
       aria-describedby={describedBy}
       aria-label={question.label}
+      aria-required={question.required || undefined}
+      aria-invalid={hasError || undefined}
       rows={3}
       className={controlClasses(hasError)}
     />
@@ -371,6 +377,8 @@ function NumberControl({
       step={validation?.step}
       aria-describedby={describedBy}
       aria-label={question.label}
+      aria-required={question.required || undefined}
+      aria-invalid={hasError || undefined}
       className={controlClasses(hasError)}
     />
   );
@@ -394,6 +402,11 @@ function ScaleControl({
     );
   }
   const v = typeof value === 'number' && Number.isFinite(value) ? value : scale.min;
+  const valuetext = `${v} of ${scale.max}${
+    scale.minLabel || scale.maxLabel
+      ? `, ${scale.minLabel ?? scale.min} to ${scale.maxLabel ?? scale.max}`
+      : ''
+  }`;
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-3">
@@ -414,7 +427,9 @@ function ScaleControl({
           onChange={(e) => onChange(Number(e.target.value))}
           aria-describedby={describedBy}
           aria-label={question.label}
-          aria-valuetext={String(v)}
+          aria-valuetext={valuetext}
+          aria-required={question.required || undefined}
+          aria-invalid={hasError || undefined}
           className={`flex-1 accent-accent focus-visible:ring-2 focus-visible:outline-none ${
             hasError ? 'focus-visible:ring-error/40' : 'focus-visible:ring-accent/40'
           }`}
@@ -464,6 +479,12 @@ function OrderingControl({
     return arr;
   }, [order, options, initial]);
 
+  // Live announcement for reordering operations (VAL-MODEQ-144).
+  // Announces the moved option and its new position so screen reader
+  // users understand the result of each move without seeing the visual
+  // reorder.
+  const [moveAnnouncement, setMoveAnnouncement] = useState('');
+
   function move(index: number, dir: -1 | 1) {
     const next = [...normalized];
     const target = index + dir;
@@ -472,46 +493,65 @@ function OrderingControl({
     }
     [next[index], next[target]] = [next[target], next[index]];
     onChange(next);
+    const label = labelByKey.get(next[target]) ?? next[target];
+    setMoveAnnouncement(`${label} moved to position ${target + 1} of ${next.length}`);
   }
 
   const labelByKey = new Map(options.map((o) => [o.key, o.label]));
   return (
-    <ol className="space-y-1" aria-describedby={describedBy} aria-label={question.label}>
-      {normalized.map((key, i) => {
-        const label = labelByKey.get(key) ?? key;
-        return (
-          <li
-            key={key}
-            className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-2 py-1"
-          >
-            <span className="text-xs tabular-nums text-text-muted w-5 shrink-0">{i + 1}</span>
-            <span className="text-sm text-text-primary break-words flex-1">{label}</span>
-            <button
-              type="button"
-              onClick={() => move(i, -1)}
-              disabled={disabled || i === 0}
-              aria-label={`Move ${label} up`}
-              className={`inline-flex items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
-                hasError ? 'focus-visible:ring-error/40' : 'focus-visible:ring-accent/40'
-              }`}
+    <div>
+      <ol
+        className="space-y-1"
+        aria-describedby={describedBy}
+        aria-label={question.label}
+        aria-required={question.required || undefined}
+        aria-invalid={hasError || undefined}
+        tabIndex={-1}
+        ref={setRef}
+      >
+        {normalized.map((key, i) => {
+          const label = labelByKey.get(key) ?? key;
+          return (
+            <li
+              key={key}
+              className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-2 py-1"
             >
-              <ArrowUp className="h-3 w-3" aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              onClick={() => move(i, 1)}
-              disabled={disabled || i === normalized.length - 1}
-              aria-label={`Move ${label} down`}
-              className={`inline-flex items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
-                hasError ? 'focus-visible:ring-error/40' : 'focus-visible:ring-accent/40'
-              }`}
-            >
-              <ArrowDown className="h-3 w-3" aria-hidden="true" />
-            </button>
-          </li>
-        );
-      })}
-      <button type="button" ref={setRef} tabIndex={-1} aria-hidden="true" className="sr-only" />
-    </ol>
+              <span
+                className="text-xs tabular-nums text-text-muted w-5 shrink-0"
+                aria-hidden="true"
+              >
+                {i + 1}
+              </span>
+              <span className="text-sm text-text-primary break-words flex-1">{label}</span>
+              <button
+                type="button"
+                onClick={() => move(i, -1)}
+                disabled={disabled || i === 0}
+                aria-label={`Move ${label} up`}
+                className={`inline-flex items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
+                  hasError ? 'focus-visible:ring-error/40' : 'focus-visible:ring-accent/40'
+                }`}
+              >
+                <ArrowUp className="h-3 w-3" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={() => move(i, 1)}
+                disabled={disabled || i === normalized.length - 1}
+                aria-label={`Move ${label} down`}
+                className={`inline-flex items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
+                  hasError ? 'focus-visible:ring-error/40' : 'focus-visible:ring-accent/40'
+                }`}
+              >
+                <ArrowDown className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      <span aria-live="polite" className="sr-only" data-testid="ordering-announcement">
+        {moveAnnouncement}
+      </span>
+    </div>
   );
 }
