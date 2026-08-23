@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -698,5 +698,184 @@ describe('MissionPlanCard quantitative authority (VAL-PLAN-018..022)', () => {
     expect(screen.getByText(/revision 99/i)).toBeInTheDocument();
     const details = screen.getByTestId('plan-hash-details');
     expect(within(details).getByText('0123456789abcdef'.repeat(4))).toBeInTheDocument();
+  });
+});
+
+// ── VAL-PLAN-023, 033, 097: Pure presentation state preserves plan
+//    meaning across collapse/expand and responsive layouts. The content
+//    hash and revision are authoritative server values rendered verbatim;
+//    collapse/expand and viewport changes are local presentation state that
+//    never fire a mutation and never drop an authority field.
+describe('MissionPlanCard presentation state (VAL-PLAN-023, 033, 097)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.useMissionCurrentPlanRevision.mockReturnValue(planQueryResult());
+  });
+
+  /** Collect every authority field's visible text in one render. */
+  function expectAllAuthorityFields() {
+    // Objective, ordered steps, dependencies, routing/agents, tools, outputs,
+    // completion criteria, budgets, limits, partial-result policy, revision,
+    // and hash are all present.
+    expect(screen.getByText(/Analyze the quarterly revenue report/i)).toBeInTheDocument();
+    expect(screen.getByText(/Gather source data/i)).toBeInTheDocument();
+    expect(screen.getByText(/Synthesize cited summary/i)).toBeInTheDocument();
+    expect(screen.getByText(/depends on step-1/i)).toBeInTheDocument();
+    expect(screen.getByText(/assigned to agent-42/i)).toBeInTheDocument();
+    expect(screen.getByText('research.search')).toBeInTheDocument();
+    expect(screen.getByText('research.extract')).toBeInTheDocument();
+    expect(screen.getByText('artifact.create')).toBeInTheDocument();
+    expect(screen.getByText('sourceSet')).toBeInTheDocument();
+    expect(screen.getByText('summaryArtifact')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-total-budget')).toHaveTextContent('$17.50');
+    expect(screen.getByTestId('plan-limits')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-partial-policy')).toBeInTheDocument();
+    expect(screen.getByText(/revision 1/i)).toBeInTheDocument();
+    expect(screen.getByTestId('plan-hash')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-hash-details')).toBeInTheDocument();
+  }
+
+  // ── VAL-PLAN-033: collapsing is pure presentation; the revision ID and
+  //    content hash never change across collapse/expand.
+  it('keeps the revision ID and content hash unchanged when collapsing and re-expanding', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    const hashBefore = screen.getByTestId('plan-hash').textContent;
+    const revBefore = screen.getByText(/revision 1/i).textContent;
+
+    // Collapse via the presentation-only toggle.
+    fireEvent.click(screen.getByRole('button', { name: /collapse plan/i }));
+    expect(screen.getByTestId('plan-hash').textContent).toBe(hashBefore);
+    expect(screen.getByText(/revision 1/i).textContent).toBe(revBefore);
+
+    // Re-expand.
+    fireEvent.click(screen.getByRole('button', { name: /expand plan/i }));
+    expect(screen.getByTestId('plan-hash').textContent).toBe(hashBefore);
+    expect(screen.getByText(/revision 1/i).textContent).toBe(revBefore);
+  });
+
+  // ── VAL-PLAN-023: collapse hides step details; re-expand restores every
+  //    authority field unchanged, and no decision state changes.
+  it('hides step details when collapsed and restores all fields on re-expand', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    // Initially expanded: every authority field is present.
+    expectAllAuthorityFields();
+
+    // Collapse: detailed step content is no longer visible, but header
+    // identity (revision + hash) remains.
+    fireEvent.click(screen.getByRole('button', { name: /collapse plan/i }));
+    expect(screen.queryByText(/Gather source data/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-total-budget')).not.toBeInTheDocument();
+    expect(screen.getByText(/revision 1/i)).toBeInTheDocument();
+    expect(screen.getByTestId('plan-hash')).toBeInTheDocument();
+
+    // Re-expand: every authority field is restored unchanged.
+    fireEvent.click(screen.getByRole('button', { name: /expand plan/i }));
+    expectAllAuthorityFields();
+  });
+
+  // ── VAL-PLAN-023 / 033: the presentation toggle fires no plan refetch or
+  //    mutation; pure local state only.
+  it('does not trigger a plan refetch or mutation when toggling collapse state', () => {
+    const refetch = vi.fn();
+    mocks.useMissionCurrentPlanRevision.mockReturnValue({ ...planQueryResult(), refetch });
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /collapse plan/i }));
+    fireEvent.click(screen.getByRole('button', { name: /expand plan/i }));
+    expect(refetch).not.toHaveBeenCalled();
+  });
+
+  // ── VAL-PLAN-023: the toggle exposes aria-expanded state for assistive
+  //    tech so collapse/expand is observable without decision state.
+  it('toggles aria-expanded true/false to reflect presentation state', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    const toggle = screen.getByRole('button', { name: /collapse plan/i });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  // ── VAL-PLAN-097: the complete plan renders in a single view with
+  //    reflow-friendly markup so desktop, mobile, and zoom all expose the
+  //    same authority fields (only presentation differs).
+  it('renders the complete plan with reflow-friendly markup so no field is lost at narrow widths', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    // Every authority field is present in one render — no field is
+    // conditionally dropped by viewport.
+    expectAllAuthorityFields();
+    // The card root uses reflow primitives (max-w-full + break-words) so
+    // content wraps instead of clipping at narrow widths / high zoom.
+    const root = screen.getByTestId('mission-plan-card');
+    expect(root.className).toMatch(/max-w-full/);
+    expect(root.className).toMatch(/break-words/);
+  });
+
+  // ── VAL-PLAN-097: an approved plan also retains all fields across
+  //    collapse/expand (decision state does not change presentation).
+  it('retains all approved-plan fields across collapse and re-expand', () => {
+    mocks.useMissionCurrentPlanRevision.mockReturnValue(
+      planQueryResult(planRevision({ status: 'approved' })),
+    );
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    expect(screen.getByRole('heading', { name: /approved plan/i })).toBeInTheDocument();
+    const hashBefore = screen.getByTestId('plan-hash').textContent;
+    fireEvent.click(screen.getByRole('button', { name: /collapse plan/i }));
+    fireEvent.click(screen.getByRole('button', { name: /expand plan/i }));
+    expect(screen.getByRole('heading', { name: /approved plan/i })).toBeInTheDocument();
+    expect(screen.getByTestId('plan-hash').textContent).toBe(hashBefore);
+    expectAllAuthorityFields();
   });
 });

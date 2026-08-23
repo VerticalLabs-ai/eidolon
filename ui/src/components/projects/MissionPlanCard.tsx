@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useMissionCurrentPlanRevision } from '@/lib/hooks';
 import { formatCents } from '@/lib/format';
 import type { MissionPlanRevision, MissionPlanRouting, MissionPlanStep } from '@/lib/api';
@@ -16,6 +18,20 @@ import type { MissionPlanRevision, MissionPlanRouting, MissionPlanStep } from '@
  * current plan revision renders nothing. Status text is always paired with
  * text, never color alone.
  *
+ * Presentation state (VAL-PLAN-023, 033, 097):
+ * - A pure local collapse/expand toggle hides the detailed sections while
+ *   keeping the heading, objective, revision, and content hash visible. The
+ *   toggle is local UI state only: it never fires a mutation, refetch, or
+ *   revision command, so the authoritative revision ID and content hash are
+ *   unchanged across collapse/expand, focus, and viewport changes.
+ * - The complete plan (objective, steps, dependencies, agents, tools,
+ *   outputs, budgets, limits, partial-result policy, revision, and hash) is
+ *   always available in the expanded view. The card uses reflow primitives
+ *   (`max-w-full`, `break-words`, `flex-wrap`, `min-w-0`) so desktop,
+ *   mobile, and 200–400% zoom all expose the same authority fields with only
+ *   presentation differing — no field is dropped or clipped behind
+ *   horizontal-only scrolling.
+ *
  * Accessibility:
  * - A semantic heading identifies the plan and its revision.
  * - Steps are an ordered list (`<ol>`) preserving plan order.
@@ -24,6 +40,9 @@ import type { MissionPlanRevision, MissionPlanRouting, MissionPlanStep } from '@
  * - Routing labels are explicit text: "Pending routing" for unassigned
  *   requirements routing and "Assigned to <agent>" for concrete assignment,
  *   so pre- and post-routing labels cannot mislead (VAL-PLAN-125).
+ * - The collapse/expand toggle is a native button with `aria-expanded` and
+ *   `aria-controls` so the presentation state is observable to assistive
+ *   tech without implying any authority change.
  */
 export function MissionPlanCard({
   companyId,
@@ -47,6 +66,13 @@ export function MissionPlanCard({
     currentPlanRevisionId,
   );
 
+  // Pure presentation state: collapse/expand never changes the authoritative
+  // revision ID or content hash and never fires a mutation (VAL-PLAN-023,
+  // VAL-PLAN-033). Defaults to expanded so the complete plan is visible in
+  // every responsive view (VAL-PLAN-097). Declared before any early return
+  // so the hook order is stable across renders.
+  const [expanded, setExpanded] = useState(true);
+
   // No current plan revision pointer: render nothing.
   if (!currentPlanRevisionId) {
     return null;
@@ -68,14 +94,31 @@ export function MissionPlanCard({
   const headingText = isApproved ? 'Approved plan' : 'Proposed plan';
   const hashPrefix = revision.contentHash.slice(0, 12);
 
+  const detailsId = `plan-details-${revision.id}`;
+
   return (
     <section
       id={`mission-plan-revision-${revision.id}`}
       aria-labelledby={`plan-heading-${revision.id}`}
       data-testid="mission-plan-card"
-      className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 w-full max-w-full break-words"
+      className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 w-full max-w-full break-words overflow-hidden"
     >
       <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <button
+          type="button"
+          className="shrink-0 rounded p-0.5 text-text-secondary hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} plan`}
+          data-testid="plan-collapse-toggle"
+          onClick={() => setExpanded((c) => !c)}
+        >
+          {expanded ? (
+            <ChevronDown className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          )}
+        </button>
         <h4
           id={`plan-heading-${revision.id}`}
           className="text-sm font-semibold text-text-primary font-display"
@@ -91,13 +134,19 @@ export function MissionPlanCard({
       </div>
 
       <PlanObjective revision={revision} />
-      <PlanSteps revision={revision} />
-      <PlanSynthesis revision={revision} />
-      <PlanBudgetSummary revision={revision} />
-      <PlanLimits revision={revision} />
-      <PlanPartialPolicy revision={revision} />
-      <PlanHashDetails revision={revision} />
-      <PlanAnalystEvidenceNotice resolvedMode={resolvedMode} revision={revision} />
+      <div id={detailsId}>
+        {expanded && (
+          <>
+            <PlanSteps revision={revision} />
+            <PlanSynthesis revision={revision} />
+            <PlanBudgetSummary revision={revision} />
+            <PlanLimits revision={revision} />
+            <PlanPartialPolicy revision={revision} />
+            <PlanHashDetails revision={revision} />
+            <PlanAnalystEvidenceNotice resolvedMode={resolvedMode} revision={revision} />
+          </>
+        )}
+      </div>
     </section>
   );
 }
@@ -132,12 +181,12 @@ function PlanSteps({ revision }: { revision: MissionPlanRevision }) {
 function PlanStepItem({ step, ordinal }: { step: MissionPlanStep; ordinal: number }) {
   return (
     <li
-      className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 w-full max-w-full break-words"
+      className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 w-full max-w-full min-w-0 break-words overflow-hidden"
       aria-label={`Step ${ordinal}: ${step.title}`}
     >
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 mb-1">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 mb-1 min-w-0">
         <span className="text-xs tabular-nums text-text-muted shrink-0">{ordinal}.</span>
-        <h5 className="text-sm font-medium text-text-primary break-words">{step.title}</h5>
+        <h5 className="text-sm font-medium text-text-primary break-words min-w-0">{step.title}</h5>
         <span className="text-xs text-text-muted">({step.nodeKind})</span>
       </div>
       <p className="text-xs text-text-secondary mb-2 break-words">{step.description}</p>
@@ -369,7 +418,7 @@ function PlanBudgetSummary({ revision }: { revision: MissionPlanRevision }) {
   return (
     <div className="mb-3">
       <p className="text-xs font-medium text-text-secondary mb-1">Estimated budget</p>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+      <dl className="grid grid-cols-[auto_1fr] sm:grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs max-w-full break-words">
         <dt className="text-text-muted">Step budgets</dt>
         <dd className="tabular-nums text-text-primary" data-testid="plan-step-budget-subtotal">
           {formatCents(stepSubtotal)}
@@ -429,7 +478,7 @@ function PlanLimits({ revision }: { revision: MissionPlanRevision }) {
   return (
     <div className="mb-3" data-testid="plan-limits">
       <p className="text-xs font-medium text-text-secondary mb-1">Limits</p>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs max-w-full break-words">
         {rows.map((row) => (
           <div key={row.label} className="contents">
             <dt className="text-text-muted">{row.label}</dt>
