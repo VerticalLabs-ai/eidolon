@@ -246,6 +246,10 @@ export function MissionQuestionCard({
       // command (VAL-MODEQ-133, VAL-MODEQ-134).
       setIdempotencyKey('');
       clearDraft(draftKey);
+      // Invalidate the inbox projection so the mission-question attention
+      // item converges to the resolved state without duplicates
+      // (VAL-CROSS-044, Normative Boundary 1).
+      qc.invalidateQueries({ queryKey: ['inbox', companyId] });
     } catch (err) {
       handleSubmissionError(err);
     }

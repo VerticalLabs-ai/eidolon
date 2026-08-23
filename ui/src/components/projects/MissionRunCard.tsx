@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   useMissionRunSnapshot,
   useMissionRunEvents,
@@ -258,6 +259,7 @@ export function MissionRunCard({
   // snapshot status so a stale list row cannot keep an actually-terminal
   // run cancellable (Normative Boundary 1).
   const cancelMutation = useCancelMissionRun(companyId, projectId, run.id);
+  const qc = useQueryClient();
   const [cancelOpen, setCancelOpen] = useState(false);
   const cancelBtnRef = useRef<HTMLButtonElement>(null);
   const cancelRequested =
@@ -376,6 +378,10 @@ export function MissionRunCard({
           projectId={projectId}
           onSubmit={async (args) => {
             await cancelMutation.mutateAsync(args);
+            // Invalidate the inbox projection so the mission-question
+            // attention item converges to the resolved state after
+            // cancellation (VAL-CROSS-057, Normative Boundary 1).
+            qc.invalidateQueries({ queryKey: ['inbox', companyId] });
           }}
         />
       )}
