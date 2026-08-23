@@ -175,7 +175,7 @@ function BooleanControl({
       aria-describedby={describedBy}
       aria-required={question.required || undefined}
       aria-invalid={hasError || undefined}
-      className="flex gap-4"
+      className="flex flex-wrap gap-4"
     >
       {[
         { v: true, label: 'Yes' },
@@ -522,13 +522,13 @@ function OrderingControl({
               >
                 {i + 1}
               </span>
-              <span className="text-sm text-text-primary break-words flex-1">{label}</span>
+              <span className="text-sm text-text-primary break-words flex-1 min-w-0">{label}</span>
               <button
                 type="button"
                 onClick={() => move(i, -1)}
                 disabled={disabled || i === 0}
                 aria-label={`Move ${label} up`}
-                className={`inline-flex items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`inline-flex shrink-0 items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
                   hasError ? 'focus-visible:ring-error/40' : 'focus-visible:ring-accent/40'
                 }`}
               >
@@ -539,7 +539,7 @@ function OrderingControl({
                 onClick={() => move(i, 1)}
                 disabled={disabled || i === normalized.length - 1}
                 aria-label={`Move ${label} down`}
-                className={`inline-flex items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`inline-flex shrink-0 items-center justify-center rounded border border-white/[0.1] px-1.5 py-0.5 text-text-secondary hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
                   hasError ? 'focus-visible:ring-error/40' : 'focus-visible:ring-accent/40'
                 }`}
               >

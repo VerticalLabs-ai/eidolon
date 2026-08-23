@@ -275,7 +275,7 @@ export function MissionModeSelector({
             return (
               <div
                 key={choice.choiceId}
-                className={`rounded-md border px-3 py-2 transition-colors ${
+                className={`rounded-md border px-3 py-2 transition-colors motion-reduce:transition-none ${
                   isSelected
                     ? 'border-accent/40 bg-accent/[0.06]'
                     : 'border-white/[0.06] bg-white/[0.015]'
@@ -329,7 +329,7 @@ export function MissionModeSelector({
         className="rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2.5"
         aria-label="Effective mode summary"
       >
-        <div className="flex items-baseline justify-between gap-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
           <p className="text-xs font-medium text-text-secondary">
             {isAutoProvisional ? 'Provisional hard ceiling' : 'Effective hard ceiling'}
           </p>

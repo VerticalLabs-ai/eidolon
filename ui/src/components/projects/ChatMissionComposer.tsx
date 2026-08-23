@@ -519,9 +519,9 @@ export function ChatMissionComposer({
       {/* Chat / Mission segmented control */}
       <fieldset className="mb-3" role="radiogroup" aria-label="Chat or Mission">
         <legend className="sr-only">Chat or Mission</legend>
-        <div className="inline-flex rounded-lg border border-white/10 bg-white/[0.02] p-0.5">
+        <div className="inline-flex flex-wrap rounded-lg border border-white/10 bg-white/[0.02] p-0.5">
           <label
-            className={`flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors motion-reduce:transition-none ${
               mode === 'chat'
                 ? 'bg-accent/15 text-accent'
                 : 'text-text-secondary hover:text-text-primary'
@@ -541,7 +541,7 @@ export function ChatMissionComposer({
           </label>
           {missionEnabled && (
             <label
-              className={`flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              className={`flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors motion-reduce:transition-none ${
                 mode === 'mission'
                   ? 'bg-accent/15 text-accent'
                   : 'text-text-secondary hover:text-text-primary'
