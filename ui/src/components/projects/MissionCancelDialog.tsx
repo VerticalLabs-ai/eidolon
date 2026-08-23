@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Ban } from 'lucide-react';
 import type { MissionRunSummary } from '@/lib/api';
+import { buildDraftKey, readDraft, writeDraft, clearDraft } from '@/lib/mission-drafts';
 
 /** Generate a stable random idempotency key for a logical confirmation. */
 function makeIdempotencyKey(): string {
@@ -107,6 +108,9 @@ export function MissionCancelDialog({
   onClose,
   onSubmit,
   ifMatch,
+  principalId,
+  companyId,
+  projectId,
 }: {
   run: MissionRunSummary;
   open: boolean;
@@ -120,6 +124,15 @@ export function MissionCancelDialog({
    * VAL-RUN-055). When undefined (snapshot still loading), no If-Match is
    * sent. */
   ifMatch?: number;
+  /** Authenticated principal ID for browser-local draft scoping. When
+   * provided alongside `companyId`/`projectId`, the typed reason is
+   * persisted to sessionStorage keyed by principal/company/project/run/
+   * state-version so it survives same-profile reload for at most 24 hours
+   * and is cleared on confirm, dismiss, or terminalization
+   * (VAL-CROSS-084). */
+  principalId?: string;
+  companyId?: string;
+  projectId?: string;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -135,8 +148,29 @@ export function MissionCancelDialog({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<unknown>(null);
 
+  // Browser-local cancellation reason draft, scoped by principal/company/
+  // project/run/state-version so it survives same-profile reload for at
+  // most 24 hours and is cleared on confirm, dismiss, or terminalization
+  // (VAL-CROSS-084). The draft is a non-authoritative local value; the
+  // server never reads it.
+  const draftKey = useMemo(() => {
+    if (!principalId || !companyId || !projectId) {
+      return null;
+    }
+    return buildDraftKey({
+      principalId,
+      scope: 'cancel-reason',
+      companyId,
+      projectId,
+      runId: run.id,
+      cardVersion: ifMatch !== undefined ? String(ifMatch) : undefined,
+    });
+  }, [principalId, companyId, projectId, run.id, ifMatch]);
+
   // Open/close the native dialog. Regenerate the idempotency key on open so
-  // each distinct confirmation flow has its own key.
+  // each distinct confirmation flow has its own key. Restore a persisted
+  // reason draft so the typed reason survives a same-profile reload while
+  // the dialog was open (VAL-CROSS-084).
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) {
@@ -145,13 +179,19 @@ export function MissionCancelDialog({
     if (open && !dialog.open) {
       setIdempotencyKey((prev) => prev || makeIdempotencyKey());
       setSubmitError(null);
+      if (draftKey) {
+        const restored = readDraft(draftKey);
+        if (restored) {
+          setReason(restored);
+        }
+      }
       dialog.showModal();
       // Move focus to the reason field (user-triggered → useful focus).
       window.setTimeout(() => reasonRef.current?.focus(), 0);
     } else if (!open && dialog.open) {
       dialog.close();
     }
-  }, [open]);
+  }, [open, draftKey]);
 
   // Close the dialog if the run became terminal while it was open (e.g.
   // cancellation was applied by another surface). The authoritative snapshot
@@ -165,10 +205,14 @@ export function MissionCancelDialog({
 
   const handleDismiss = () => {
     // A clean back-out clears the in-progress reason so the next flow starts
-    // fresh; the run state is untouched (VAL-RUN-037).
+    // fresh; the run state is untouched (VAL-RUN-037). Clear the persisted
+    // draft too — this is an explicit discard (VAL-CROSS-084).
     setReason('');
     setIdempotencyKey('');
     setSubmitError(null);
+    if (draftKey) {
+      clearDraft(draftKey);
+    }
     onClose();
   };
 
@@ -182,9 +226,13 @@ export function MissionCancelDialog({
     try {
       await onSubmit({ reason: trimmed, idempotencyKey, ifMatch });
       // Success: clear and close. The authoritative snapshot refetch
-      // reveals the cancellation state (VAL-RUN-035).
+      // reveals the cancellation state (VAL-RUN-035). Clear the persisted
+      // draft — submit clears the draft (VAL-CROSS-084).
       setReason('');
       setIdempotencyKey('');
+      if (draftKey) {
+        clearDraft(draftKey);
+      }
       onClose();
     } catch (e) {
       setSubmitError(e);
@@ -256,7 +304,15 @@ export function MissionCancelDialog({
               rows={3}
               maxLength={2000}
               value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              onChange={(e) => {
+                setReason(e.target.value);
+                // Persist the typed reason so it survives same-profile
+                // reload while the dialog is open (VAL-CROSS-084). The
+                // draft is non-authoritative and never sent to the server.
+                if (draftKey) {
+                  writeDraft(draftKey, e.target.value);
+                }
+              }}
               disabled={submitting}
               className="w-full resize-y rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:opacity-60"
               placeholder="Why should this Mission be cancelled?"

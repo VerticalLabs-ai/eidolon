@@ -3620,12 +3620,13 @@ export interface MissionStartBody {
 }
 
 /** List company-defined custom mode profiles (enabled profiles only, in
- * deterministic order). The endpoint is implemented by a later
- * orchestration-backend feature; until then this returns an error that the
- * hook handles as fail-closed (empty list). */
+ * deterministic order). The server registry is mounted at
+ * `/mission-mode-profiles`; reads require company.view and the Mission
+ * flag to be enabled. A disabled flag or missing registry fails closed so
+ * the selector shows an accessible error and Start is unavailable. */
 export function listModeProfiles(companyId: string) {
   return request<{ data: { profiles: MissionModeProfile[] } }>(
-    `/companies/${companyId}/mode-profiles`,
+    `/companies/${companyId}/mission-mode-profiles`,
   );
 }
 

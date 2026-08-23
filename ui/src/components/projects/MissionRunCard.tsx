@@ -26,6 +26,7 @@ import {
 import { MissionCancelDialog } from './MissionCancelDialog';
 import { MissionQuestionCard } from './MissionQuestionCard';
 import { MissionQuestionHistory } from './MissionQuestionHistory';
+import { clearRunDrafts } from '@/lib/mission-drafts';
 
 /** Terminal run statuses. */
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -232,6 +233,24 @@ export function MissionRunCard({
   const statusText = statusToText(authoritativeStatus);
   const announcement = useBatchedStatusAnnouncement(run.id, authoritativeStatus);
 
+  // Clear all run-scoped browser drafts (question answers, revision/
+  // rejection feedback, cancellation reason) when the run reaches a
+  // terminal state. Drafts are non-authoritative local values; once the
+  // run is finished/cancelled/failed they must not linger past the run's
+  // lifetime (VAL-CROSS-084 terminalization). Idempotent: removing
+  // already-absent keys is harmless, so running on every terminal render
+  // is safe.
+  useEffect(() => {
+    if (isTerminal && principalId) {
+      clearRunDrafts({
+        principalId,
+        companyId,
+        projectId,
+        runId: run.id,
+      });
+    }
+  }, [isTerminal, principalId, companyId, projectId, run.id]);
+
   // Cancellation confirmation state (VAL-RUN-035, VAL-RUN-036). The cancel
   // control is shown only for nonterminal runs that have not already
   // requested cancellation. Once requested, the authoritative indicator
@@ -352,6 +371,9 @@ export function MissionRunCard({
           open={cancelOpen}
           onClose={handleCancelClose}
           ifMatch={snapshot?.stateVersion}
+          principalId={principalId}
+          companyId={companyId}
+          projectId={projectId}
           onSubmit={async (args) => {
             await cancelMutation.mutateAsync(args);
           }}
@@ -410,8 +432,15 @@ function RunCardRequest({
   );
 }
 
-/** Meta row: mode, creation time, and terminal timestamps.
- * `status` is the authoritative status (snapshot?.status ?? run.status). */
+/** Meta row: mode, immutable policy identity, creation time, and terminal
+ * timestamps. `status` is the authoritative status
+ * (snapshot?.status ?? run.status).
+ *
+ * The immutable policy identity (short prefix of the policy content hash)
+ * is shown so the user can correlate the visible mode with the run's
+ * immutable resolved policy, and observe that later composer mode changes
+ * do not alter an existing run (VAL-CROSS-006). The hash is a safe,
+ * non-secret commitment to the immutable policy snapshot. */
 function RunCardMeta({
   run,
   snapshot,
@@ -430,11 +459,21 @@ function RunCardMeta({
         : status === 'cancelled'
           ? 'Cancelled at: '
           : '';
+  // Immutable policy identity: prefer the authoritative snapshot hash, fall
+  // back to the list row hash while the snapshot loads. Show a short prefix
+  // so the value is readable and comparable across reloads (VAL-CROSS-006).
+  const policyHash = snapshot?.policyContentHash ?? run.policyContentHash ?? null;
+  const policyShort = policyHash ? policyHash.slice(0, 12) : null;
   return (
     <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-muted">
       <span>
         Mode: <span className="text-text-secondary capitalize">{modeToText(run.resolvedMode)}</span>
       </span>
+      {policyShort && (
+        <span data-testid="run-policy-identity">
+          Policy: <span className="text-text-secondary font-mono">{policyShort}</span>
+        </span>
+      )}
       <span>
         Created: <time dateTime={run.createdAt}>{formatTime(run.createdAt)}</time>
       </span>
