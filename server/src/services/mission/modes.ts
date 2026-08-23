@@ -110,10 +110,11 @@ export const BUILT_IN_MODES: Record<BuiltInMode, ModePolicy> = {
     partialResultPolicy: 'require_all',
     limits: ANALYST_LIMITS,
   },
-  // Auto resolves to a concrete mode before snapshot. The deterministic
-  // complexity classifier is a later feature; for milestone 1 Auto resolves
-  // to the most conservative concrete mode (fast) so the snapshot is finite
-  // and honest about the provisional resolution.
+  // Auto resolves to a concrete mode (Fast, Deep Work, or Analyst) via the
+  // deterministic complexity classifier before policy snapshot. The
+  // classifier lives in mode-classifier.ts and is invoked by the start
+  // service. This built-in entry is the fallback default (fast) used only
+  // when resolveBuiltInMode is called directly without classification.
   auto: {
     mode: 'auto',
     planning: 'when_complex',
@@ -125,8 +126,10 @@ export const BUILT_IN_MODES: Record<BuiltInMode, ModePolicy> = {
 };
 
 /**
- * Resolve a selected mode to a concrete mode + policy. Auto is provisionally
- * resolved to `fast` until the M2 classifier replaces this function.
+ * Resolve a selected built-in mode to a concrete mode + policy. Auto
+ * provisionally resolves to `fast` as a fallback; the start service runs the
+ * deterministic classifier (mode-classifier.ts) and passes the concrete mode
+ * before calling resolvePolicy.
  */
 export function resolveBuiltInMode(mode: BuiltInMode): {
   resolvedMode: ResolvedMode;

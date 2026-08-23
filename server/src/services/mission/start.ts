@@ -15,6 +15,7 @@ import {
 // request body (mode, limits, projectThreadId, initiatingAgentId, request)
 // so different mode/limits with the same request text conflict.
 import type { BuiltInMode, MissionMode } from './modes.js';
+import { classifyRequest, type ClassificationResult } from './mode-classifier.js';
 import { BudgetService } from './budget.js';
 import {
   incrementMissionRunStarted,
@@ -221,41 +222,16 @@ export class MissionStartService {
     }
 
     // 5. Resolve the effective policy.
-    let policy: ResolvedPolicy;
-    if (body.mode === 'custom' && customProfile) {
-      policy = resolveCustomPolicy({
-        profileSlug: customProfile.slug,
-        profileVersion: customProfile.version,
-        profileId: customProfile.id,
-        config: customProfile.config as CustomProfileConfig,
-        agent: agent
-          ? {
-              provider: agent.provider,
-              adapterId: agent.adapterId ?? undefined,
-              model: agent.model,
-              toolAllowlist: agent.toolsEnabled ?? [],
-              domainAllowlist: agent.allowedDomains ?? [],
-              status: agent.status,
-              capabilities: agent.capabilities ?? [],
-            }
-          : undefined,
-        userLimits: body.limits,
-      });
-    } else {
-      policy = resolvePolicy({
-        mode: body.mode as BuiltInMode,
-        agent: agent
-          ? {
-              provider: agent.provider,
-              adapterId: agent.adapterId ?? undefined,
-              model: agent.model,
-              toolAllowlist: agent.toolsEnabled ?? [],
-              domainAllowlist: agent.allowedDomains ?? [],
-            }
-          : undefined,
-        userLimits: body.limits,
-      });
-    }
+    //    For Auto mode, the deterministic complexity classifier runs over
+    //    validated request metadata to select a concrete mode (Fast, Deep
+    //    Work, or Analyst) before policy resolution. The classifier does not
+    //    use external/retrieved content — resolution is complete before any
+    //    research is performed (VAL-MODEQ-021..025, VAL-MODEQ-146).
+    const { policy, autoClassification } = await this.resolveStartPolicy(
+      body,
+      agent,
+      customProfile,
+    );
 
     // Hash the COMPLETE canonical request body (mode, limits, projectThreadId,
     // initiatingAgentId, request, modeProfileId) so that different mode/limits
@@ -395,6 +371,12 @@ export class MissionStartService {
               resolvedMode: policy.resolvedMode,
               ...(customProfile
                 ? { profileSlug: customProfile.slug, profileVersion: customProfile.version }
+                : {}),
+              ...(autoClassification
+                ? {
+                    classifierVersion: autoClassification.classifierVersion,
+                    reasons: autoClassification.reasons,
+                  }
                 : {}),
             },
           },
@@ -601,6 +583,81 @@ export class MissionStartService {
         traceId: input.traceId,
       },
     };
+  }
+
+  /**
+   * Resolve the effective policy for a start request. For Auto mode, run
+   * the deterministic complexity classifier over validated request metadata
+   * to select a concrete mode before policy resolution. The sourceProfile
+   * for Auto is 'auto' (the selected mode), while resolvedMode is the
+   * classified concrete mode (VAL-MODEQ-015, VAL-MODEQ-021..025).
+   *
+   * Returns the resolved policy and the Auto classification (null for
+   * non-Auto modes).
+   */
+  private async resolveStartPolicy(
+    body: StartRequestBody,
+    agent: Awaited<ReturnType<MissionStartService['lookupAgent']>> | undefined,
+    customProfile: {
+      id: string;
+      slug: string;
+      name: string;
+      config: Record<string, unknown>;
+      version: number;
+      enabled: boolean;
+    } | null,
+  ): Promise<{ policy: ResolvedPolicy; autoClassification: ClassificationResult | null }> {
+    if (body.mode === 'custom' && customProfile) {
+      const policy = resolveCustomPolicy({
+        profileSlug: customProfile.slug,
+        profileVersion: customProfile.version,
+        profileId: customProfile.id,
+        config: customProfile.config as CustomProfileConfig,
+        agent: agent
+          ? {
+              provider: agent.provider,
+              adapterId: agent.adapterId ?? undefined,
+              model: agent.model,
+              toolAllowlist: agent.toolsEnabled ?? [],
+              domainAllowlist: agent.allowedDomains ?? [],
+              status: agent.status,
+              capabilities: agent.capabilities ?? [],
+            }
+          : undefined,
+        userLimits: body.limits,
+      });
+      return { policy, autoClassification: null };
+    }
+
+    let effectiveMode: BuiltInMode = body.mode as BuiltInMode;
+    let autoClassification: ClassificationResult | null = null;
+    if (body.mode === 'auto') {
+      autoClassification = classifyRequest({
+        text: body.request.text,
+        context: body.request.context,
+      });
+      effectiveMode = autoClassification.resolvedMode;
+    }
+    const policy = resolvePolicy({
+      mode: effectiveMode,
+      agent: agent
+        ? {
+            provider: agent.provider,
+            adapterId: agent.adapterId ?? undefined,
+            model: agent.model,
+            toolAllowlist: agent.toolsEnabled ?? [],
+            domainAllowlist: agent.allowedDomains ?? [],
+          }
+        : undefined,
+      userLimits: body.limits,
+    });
+    // For Auto, the source profile is the selected mode ('auto'), not the
+    // classified concrete mode. The concrete mode is recorded in
+    // resolvedMode and the mode.resolved event (VAL-MODEQ-015).
+    if (autoClassification) {
+      policy.sourceProfile = 'auto';
+    }
+    return { policy, autoClassification };
   }
 
   /**
