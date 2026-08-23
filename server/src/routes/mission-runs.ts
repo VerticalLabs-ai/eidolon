@@ -162,6 +162,15 @@ const RetryBody = z.object({
   modeOverride: RetryModeOverride,
 });
 
+/** Convenience answer body: maps to `questions.answer` canonical command
+ *  (VAL-MODEQ-070..081, VAL-CROSS-012). Shares the same idempotency
+ *  namespace as the canonical `POST /:runId/commands` route. */
+const AnswerBody = z.object({
+  questionSetId: z.string().uuid(),
+  questionSetVersion: z.number().int().min(1),
+  answers: z.record(z.unknown()),
+});
+
 /** Validate the Idempotency-Key header (shared contract: 1-128 safe chars,
  *  no controls, no leading/trailing whitespace). Missing or invalid →
  *  400 VALIDATION_ERROR before any command/state/event change (VAL-RUN-114). */
@@ -573,6 +582,41 @@ export function missionRunsRouter(db: DbInstance): Router {
       runId,
       type: 'run.retry',
       body: normalizeCommandBody(body),
+      idempotencyKey,
+      ifMatch,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // POST /:runId/answers — convenience mapping to questions.answer.
+  // Shares one (company, runId, idempotencyKey) namespace with the
+  // canonical POST /:runId/commands route (VAL-RUN-115, VAL-CROSS-012).
+  // Requires the mission flag (answers are not exempt, unlike cancel).
+  // RBAC is enforced by the mount-level requirePermissionByMethod:
+  // POST requires content.create, which denies viewers (VAL-MODEQ-079)
+  // and allows members/owners/admins (VAL-MODEQ-080). The actor is always
+  // derived from authenticated context, never the request body
+  // (VAL-MODEQ-081).
+  router.post('/:runId/answers', validate(AnswerBody), async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    const body = req.body as z.infer<typeof AnswerBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+    const idempotencyKey = requireIdempotencyKey(req);
+    const ifMatch = parseIfMatch(req);
+
+    const service = new MissionCommandService(db);
+    const result = await service.submit({
+      companyId,
+      projectId,
+      runId,
+      type: 'questions.answer',
+      body: normalizeCommandBody({ body }),
       idempotencyKey,
       ifMatch,
       actorType: 'user',

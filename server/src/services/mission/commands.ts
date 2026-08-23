@@ -2,6 +2,11 @@ import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
+import {
+  MissionAnswerSubmissionService,
+  type AnswerSubmissionInput,
+  type AnswerInput,
+} from './answer-submission.js';
 import { commandRequestHash, validateIdempotencyKey } from './idempotency.js';
 import {
   canonicalHash,
@@ -73,6 +78,21 @@ class InvalidStateSentinel extends Error {
   constructor() {
     super('Invalid run state detected inside transaction');
     this.name = 'InvalidStateSentinel';
+  }
+}
+
+/**
+ * Sentinel for answer-service domain errors (404/409/422) thrown inside the
+ * locked transaction. The catch block in `submit` converts it to a rejected
+ * command row and re-throws the original AppError so the caller sees the
+ * correct domain error. This ensures domain-rejected answer commands remain
+ * visible in history without changing state, events, budget, or output
+ * (VAL-RUN-075, VAL-MODEQ-075, 077, 078).
+ */
+class AnswerDomainError extends Error {
+  constructor(readonly error: AppError) {
+    super('Answer domain error detected inside transaction');
+    this.name = 'AnswerDomainError';
   }
 }
 
@@ -347,6 +367,23 @@ export class MissionCommandService {
       // profile is disabled or absent and no modeOverride is provided,
       // this fails closed.
       retryPolicy = await this.resolveRetryPolicy(run, body, retryIngress);
+    } else if (type === 'questions.answer') {
+      // Answer submission requires the If-Match precondition (VAL-MODEQ-074).
+      if (ifMatch === null) {
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          428,
+          'PRECONDITION_REQUIRED',
+          'If-Match is required for this action',
+          actorType,
+          actorId,
+          ifMatch,
+        );
+        throw new AppError(428, 'PRECONDITION_REQUIRED', 'If-Match is required for this action');
+      }
     }
 
     // 4. Locked transaction: re-check durable idempotency under the lock,
@@ -394,6 +431,33 @@ export class MissionCommandService {
           }
           return this.applyCancel(tx, locked, body, idempotencyKey, actorType, actorId, traceId);
         }
+        if (type === 'questions.answer') {
+          if (locked.stateVersion !== ifMatch) {
+            throw new StaleVersionSentinel();
+          }
+          // Delegate to MissionAnswerSubmissionService within the locked
+          // transaction. Domain errors (wrong-run set, stale version,
+          // invalidated/answered set, validation failure) are caught and
+          // converted to AnswerDomainError so the catch block records a
+          // rejected command row and re-throws the original error
+          // (VAL-MODEQ-070, 071, 075, 077, 078, VAL-CROSS-012).
+          try {
+            return await this.applyAnswer(
+              tx,
+              locked,
+              body,
+              idempotencyKey,
+              actorType,
+              actorId,
+              traceId,
+            );
+          } catch (ae) {
+            if (ae instanceof AppError) {
+              throw new AnswerDomainError(ae);
+            }
+            throw ae;
+          }
+        }
         // run.retry
         if (locked.stateVersion !== ifMatch) {
           throw new StaleVersionSentinel();
@@ -428,6 +492,26 @@ export class MissionCommandService {
     } catch (err) {
       if (err instanceof IdempotencyReplayError) {
         return this.replayOrConflict(err.row, type, body);
+      }
+      if (err instanceof AnswerDomainError) {
+        // Record the domain-rejected answer command and re-throw the
+        // original AppError so the caller sees the correct domain error
+        // (VAL-RUN-075, VAL-MODEQ-075, 077, 078).
+        const ae = err.error;
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          ae.status,
+          ae.code,
+          ae.message,
+          actorType,
+          actorId,
+          ifMatch,
+          ae.details,
+        );
+        throw ae;
       }
       if (err instanceof StaleVersionSentinel) {
         await this.recordRejected(
@@ -592,6 +676,110 @@ export class MissionCommandService {
       traceId,
     });
     return { statusCode: 200, etag: snapshot.stateVersion, run: snapshot, commandRow };
+  }
+
+  // -- answer ---------------------------------------------------------------
+
+  /**
+   * Apply a `questions.answer` command within the locked transaction.
+   *
+   * Delegates to `MissionAnswerSubmissionService.submitAnswers` for
+   * all-or-nothing validation, atomic answer recording, set closure, event
+   * emission, and run resume (VAL-MODEQ-064). The command row is recorded
+   * with the replayable result so duplicate submissions with the same
+   * idempotency key replay the original outcome (VAL-MODEQ-070,
+   * VAL-CROSS-012).
+   *
+   * Domain errors from the answer service (wrong-run set 404, stale
+   * version 409, invalidated/answered set 409, validation failure 422)
+   * propagate as AppError to the caller in `submit`, which catches them
+   * as AnswerDomainError, records a rejected command row, and re-throws
+   * (VAL-MODEQ-075, 077, 078).
+   *
+   * The actor is always derived from authenticated context (`actorType`/
+   * `actorId` parameters), never from the answer payload — forged actor
+   * fields in the answers record are ignored (VAL-MODEQ-081).
+   */
+  private async applyAnswer(
+    tx: Tx,
+    run: MissionRunRow,
+    body: unknown,
+    idempotencyKey: string,
+    actorType: 'user' | 'agent' | 'system',
+    actorId: string | null,
+    traceId: string | null,
+  ): Promise<ApplyOutcome> {
+    // Extract the answer submission input from the normalized logical body.
+    // The logical body shape is { body: { questionSetId, questionSetVersion,
+    // answers: Record<string, unknown> } }.
+    const logicalBody = (body ?? {}) as { body?: Record<string, unknown> };
+    const answerBody = (logicalBody.body ?? {}) as {
+      questionSetId: string;
+      questionSetVersion: number;
+      answers: Record<string, unknown>;
+    };
+
+    // Convert the answers record (questionKey → value) to the AnswerInput[]
+    // array expected by the answer service. Only entries with a defined
+    // questionKey are included; undefined values are preserved as explicit
+    // "omitted" signals (the answer service treats `value === undefined` as
+    // omitted). Forged actor fields (actorId, actorType, userId) in the
+    // answers record are passed through as regular answer values but are
+    // NOT question keys, so the answer service will ignore them (no
+    // matching question definition) — they cannot change attribution.
+    const answers: AnswerInput[] = Object.entries(answerBody.answers ?? {}).map(
+      ([questionKey, value]) => ({ questionKey, value }),
+    );
+
+    const input: AnswerSubmissionInput = {
+      questionSetId: answerBody.questionSetId,
+      questionSetVersion: answerBody.questionSetVersion,
+      answers,
+    };
+
+    // Delegate to the answer submission service for all validation and
+    // state changes. The run row is already locked by the caller.
+    const answerService = new MissionAnswerSubmissionService(this.db, {
+      clock: () => this.now(),
+    });
+    await answerService.submitAnswers(tx, run, input, {
+      actorType,
+      actorId,
+      traceId,
+    });
+
+    // Build the response snapshot AFTER the answer service has applied
+    // all answer/set/event/run changes.
+    const snapshot = await this.buildSnapshot(tx, run.id);
+    const stored: StoredResult = {
+      statusCode: 200,
+      etag: snapshot.stateVersion,
+      run: snapshot,
+    };
+
+    // Record the questions.answer command with the replayable result.
+    const commandRow = await this.insertCommand(tx, {
+      companyId: run.companyId,
+      projectId: run.projectId,
+      runId: run.id,
+      type: 'questions.answer',
+      idempotencyKey,
+      requestHash: commandRequestHash('questions.answer', body),
+      payload: { ...(body as Record<string, unknown>) },
+      actorType,
+      actorId,
+      expectedStateVersion: run.stateVersion,
+      resultStatusCode: 200,
+      stored,
+      traceId,
+    });
+
+    return {
+      statusCode: 200,
+      etag: snapshot.stateVersion,
+      run: snapshot,
+      commandRow,
+    };
   }
 
   /**
@@ -1397,6 +1585,7 @@ export class MissionCommandService {
     actorType: 'user' | 'agent' | 'system',
     actorId: string | null,
     ifMatch: number | null,
+    details?: unknown,
   ): Promise<void> {
     // Increment the rejected command counter (VAL-RUN-078).
     incrementMissionCommand(type, 'rejected');
@@ -1420,7 +1609,7 @@ export class MissionCommandService {
         expectedStateVersion: ifMatch,
         status: 'rejected',
         resultStatusCode: statusCode,
-        resultBody: { statusCode, code: errorCode, message: errorMessage } as Record<
+        resultBody: { statusCode, code: errorCode, message: errorMessage, details } as Record<
           string,
           unknown
         >,
@@ -1480,9 +1669,15 @@ export class MissionCommandService {
         statusCode: number;
         code: string;
         message: string;
+        details?: unknown;
       } | null;
       if (stored?.statusCode && stored?.code) {
-        throw new AppError(stored.statusCode, stored.code, stored.message ?? 'Command rejected');
+        throw new AppError(
+          stored.statusCode,
+          stored.code,
+          stored.message ?? 'Command rejected',
+          stored.details,
+        );
       }
       throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency key already used');
     }
