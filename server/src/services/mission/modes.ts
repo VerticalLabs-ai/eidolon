@@ -9,6 +9,9 @@
 
 export type BuiltInMode = 'fast' | 'deep_work' | 'analyst' | 'auto';
 
+/** All selectable Mission modes, including company-defined custom profiles. */
+export type MissionMode = BuiltInMode | 'custom';
+
 export type ResolvedMode = 'fast' | 'deep_work' | 'analyst' | 'custom';
 
 /** Numeric limits snapshot for one run. All values are finite integers. */

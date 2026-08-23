@@ -2,11 +2,19 @@ import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
-import { resolvePolicy, policyContentHash, canonicalHash, type ResolvedPolicy } from './policy.js';
+import {
+  resolvePolicy,
+  resolveCustomPolicy,
+  policyContentHash,
+  canonicalHash,
+  checkAgentEligibility,
+  type ResolvedPolicy,
+  type CustomProfileConfig,
+} from './policy.js';
 // requestContentHash is no longer used; start hashes the complete canonical
 // request body (mode, limits, projectThreadId, initiatingAgentId, request)
 // so different mode/limits with the same request text conflict.
-import type { BuiltInMode } from './modes.js';
+import type { BuiltInMode, MissionMode } from './modes.js';
 import { BudgetService } from './budget.js';
 import {
   incrementMissionRunStarted,
@@ -29,7 +37,9 @@ import { validateIdempotencyKey } from './idempotency.js';
 
 export interface StartRequestBody {
   projectThreadId: string;
-  mode: BuiltInMode;
+  mode: MissionMode;
+  /** Required when mode is 'custom': the custom profile ID to use. */
+  modeProfileId?: string;
   initiatingAgentId?: string;
   request: {
     text: string;
@@ -183,31 +193,77 @@ export class MissionStartService {
       context: body.request.context,
     });
 
-    // 4. Resolve the initiating agent (provider/model/tools) if provided.
+    // 4. Resolve the initiating agent (provider/model/tools/status) if provided.
     const agent = body.initiatingAgentId
       ? await this.lookupAgent(companyId, body.initiatingAgentId)
       : undefined;
 
+    // 4b. For custom mode, resolve the custom profile from the database.
+    let customProfile: {
+      id: string;
+      slug: string;
+      name: string;
+      config: Record<string, unknown>;
+      version: number;
+      enabled: boolean;
+    } | null = null;
+    if (body.mode === 'custom') {
+      if (!body.modeProfileId) {
+        throw new AppError(
+          400,
+          'VALIDATION_ERROR',
+          'modeProfileId is required when mode is "custom"',
+        );
+      }
+      const { ModeRegistryService } = await import('./mode-registry.js');
+      const registry = new ModeRegistryService(this.db);
+      customProfile = await registry.resolveProfileForStart(companyId, body.modeProfileId);
+    }
+
     // 5. Resolve the effective policy.
-    const policy = resolvePolicy({
-      mode: body.mode,
-      agent: agent
-        ? {
-            provider: agent.provider,
-            adapterId: agent.adapterId ?? undefined,
-            model: agent.model,
-            toolAllowlist: agent.toolsEnabled ?? [],
-            domainAllowlist: agent.allowedDomains ?? [],
-          }
-        : undefined,
-      userLimits: body.limits,
-    });
+    let policy: ResolvedPolicy;
+    if (body.mode === 'custom' && customProfile) {
+      policy = resolveCustomPolicy({
+        profileSlug: customProfile.slug,
+        profileVersion: customProfile.version,
+        profileId: customProfile.id,
+        config: customProfile.config as CustomProfileConfig,
+        agent: agent
+          ? {
+              provider: agent.provider,
+              adapterId: agent.adapterId ?? undefined,
+              model: agent.model,
+              toolAllowlist: agent.toolsEnabled ?? [],
+              domainAllowlist: agent.allowedDomains ?? [],
+              status: agent.status,
+              capabilities: agent.capabilities ?? [],
+            }
+          : undefined,
+        userLimits: body.limits,
+      });
+    } else {
+      policy = resolvePolicy({
+        mode: body.mode as BuiltInMode,
+        agent: agent
+          ? {
+              provider: agent.provider,
+              adapterId: agent.adapterId ?? undefined,
+              model: agent.model,
+              toolAllowlist: agent.toolsEnabled ?? [],
+              domainAllowlist: agent.allowedDomains ?? [],
+            }
+          : undefined,
+        userLimits: body.limits,
+      });
+    }
 
     // Hash the COMPLETE canonical request body (mode, limits, projectThreadId,
-    // initiatingAgentId, request) so that different mode/limits with the same
-    // request text conflict (HIGH-RISK REPAIR: complete-body start hash).
+    // initiatingAgentId, request, modeProfileId) so that different mode/limits
+    // with the same request text conflict (HIGH-RISK REPAIR: complete-body
+    // start hash).
     const reqHash = canonicalHash({
       mode: body.mode,
+      modeProfileId: body.modeProfileId ?? null,
       projectThreadId: body.projectThreadId,
       initiatingAgentId: body.initiatingAgentId ?? null,
       request: body.request,
@@ -226,6 +282,7 @@ export class MissionStartService {
             companyId,
             schemaVersion: policy.schemaVersion,
             sourceProfile: policy.sourceProfile,
+            sourceProfileVersion: policy.sourceProfileVersion ?? null,
             provider: policy.provider,
             adapterId: policy.adapterId,
             model: policy.model,
@@ -265,6 +322,7 @@ export class MissionStartService {
           requestEnvelope: ingress.encryptedEnvelope,
           requestContentHash: reqHash,
           requestSafeSummary: ingress.safeSummary,
+          modeProfileId: customProfile?.id ?? null,
           resolvedMode: policy.resolvedMode,
           policySnapshotId,
           status: 'draft',
@@ -332,7 +390,13 @@ export class MissionStartService {
           { type: 'run.created', payload: { runId, status: 'draft' } },
           {
             type: 'mode.resolved',
-            payload: { mode: body.mode, resolvedMode: policy.resolvedMode },
+            payload: {
+              mode: body.mode,
+              resolvedMode: policy.resolvedMode,
+              ...(customProfile
+                ? { profileSlug: customProfile.slug, profileVersion: customProfile.version }
+                : {}),
+            },
           },
           { type: 'policy.snapshotted', payload: { policySnapshotId, contentHash: policyHash } },
           { type: 'budget.reserved', payload: { reservedCents, periodKey } },
@@ -638,6 +702,7 @@ export class MissionStartService {
   ): Promise<StartResult> {
     const reqHash = canonicalHash({
       mode: body.mode,
+      modeProfileId: body.modeProfileId ?? null,
       projectThreadId: body.projectThreadId,
       initiatingAgentId: body.initiatingAgentId ?? null,
       request: body.request,
@@ -752,6 +817,8 @@ export class MissionStartService {
         model: schema.agents.model,
         toolsEnabled: schema.agents.toolsEnabled,
         allowedDomains: schema.agents.allowedDomains,
+        status: schema.agents.status,
+        capabilities: schema.agents.capabilities,
       })
       .from(schema.agents)
       .where(and(eq(schema.agents.id, agentId), eq(schema.agents.companyId, companyId)))
@@ -759,6 +826,21 @@ export class MissionStartService {
     if (!agent) {
       throw new AppError(404, 'AGENT_NOT_FOUND', 'Choose an agent from this company.');
     }
+    // Check agent eligibility for Mission start (VAL-MODEQ-123): reject
+    // inactive (paused/error/offline) agents with POLICY_UNSATISFIABLE.
+    checkAgentEligibility(
+      {
+        id: agent.id,
+        provider: agent.provider,
+        adapterId: agent.adapterId ?? undefined,
+        model: agent.model,
+        toolAllowlist: agent.toolsEnabled ?? [],
+        domainAllowlist: agent.allowedDomains ?? [],
+        status: agent.status,
+        capabilities: agent.capabilities ?? [],
+      },
+      undefined,
+    );
     return agent;
   }
 

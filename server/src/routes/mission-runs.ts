@@ -28,11 +28,13 @@ import {
 import { buildMissionUiLink } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 
-const MODES = ['fast', 'deep_work', 'analyst', 'auto'] as const;
+const MODES = ['fast', 'deep_work', 'analyst', 'auto', 'custom'] as const;
 
 const StartBody = z.object({
   projectThreadId: z.string().uuid(),
   mode: z.enum(MODES),
+  /** Required when mode is 'custom': the custom profile ID. */
+  modeProfileId: z.string().uuid().optional(),
   initiatingAgentId: z.string().uuid().optional(),
   request: z.object({
     // No semantic trimming (VAL-RUN-134): the ingress module counts Unicode

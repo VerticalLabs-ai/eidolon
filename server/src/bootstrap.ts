@@ -85,6 +85,7 @@ import {
   runToolInvocations,
   runProjectionLinks,
   missionWorkerHeartbeats,
+  modeProfiles,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,7 @@ const SCHEMA_BUNDLE = {
   runToolInvocations,
   runProjectionLinks,
   missionWorkerHeartbeats,
+  modeProfiles,
 } as const;
 
 export interface BootstrapOptions {
