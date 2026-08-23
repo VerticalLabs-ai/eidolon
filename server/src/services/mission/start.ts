@@ -217,6 +217,7 @@ export class MissionStartService {
       id: string;
       slug: string;
       name: string;
+      description: string | null;
       config: Record<string, unknown>;
       version: number;
       enabled: boolean;
@@ -274,6 +275,8 @@ export class MissionStartService {
             companyId,
             schemaVersion: policy.schemaVersion,
             sourceProfile: policy.sourceProfile,
+            sourceProfileName: policy.sourceProfileName ?? null,
+            sourceProfileDescription: policy.sourceProfileDescription ?? null,
             sourceProfileVersion: policy.sourceProfileVersion ?? null,
             provider: policy.provider,
             adapterId: policy.adapterId,
@@ -618,6 +621,7 @@ export class MissionStartService {
       id: string;
       slug: string;
       name: string;
+      description: string | null;
       config: Record<string, unknown>;
       version: number;
       enabled: boolean;
@@ -636,6 +640,8 @@ export class MissionStartService {
         profileSlug: customProfile.slug,
         profileVersion: customProfile.version,
         profileId: customProfile.id,
+        profileName: customProfile.name,
+        profileDescription: customProfile.description ?? null,
         config: customProfile.config as CustomProfileConfig,
         agent: agent
           ? {
@@ -787,6 +793,7 @@ export class MissionStartService {
       id: string;
       slug: string;
       name: string;
+      description: string | null;
       config: Record<string, unknown>;
       version: number;
       enabled: boolean;

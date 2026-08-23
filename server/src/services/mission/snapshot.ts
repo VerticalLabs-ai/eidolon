@@ -40,6 +40,32 @@ export interface RunSnapshot {
   modeProfileId: string | null;
   policySnapshotId: string | null;
   policyContentHash: string | null;
+  /**
+   * Complete immutable policy snapshot fields (VAL-MODEQ-039, VAL-MODEQ-115).
+   * Exposed so workers and user-visible history use complete hash-bound
+   * snapshots. Null when no policy snapshot exists (legacy/edge case).
+   */
+  policy: {
+    schemaVersion: number;
+    sourceProfile: string | null;
+    sourceProfileName: string | null;
+    sourceProfileDescription: string | null;
+    sourceProfileVersion: number | null;
+    provider: string;
+    adapterId: string | null;
+    model: string;
+    reasoningDepth: string | null;
+    systemPromptHash: string | null;
+    instructionHash: string | null;
+    toolAllowlist: string[];
+    domainAllowlist: string[];
+    researchPolicy: Record<string, unknown>;
+    planningPolicy: Record<string, unknown>;
+    approvalPolicy: Record<string, unknown>;
+    fallbackPolicy: Record<string, unknown>;
+    partialResultPolicy: string;
+    limits: Record<string, number>;
+  } | null;
   requestContentHash: string;
   currentQuestionSetId: string | null;
   currentPlanRevisionId: string | null;
@@ -218,20 +244,31 @@ export class MissionSnapshotService {
       .limit(1);
 
     let policyContentHash: string | null = null;
+    let policyRow: EidolonDbSchema['runPolicySnapshots']['$inferSelect'] | null = null;
     if (run.policySnapshotId) {
       const [policy] = await this.db.drizzle
-        .select({ contentHash: schema.runPolicySnapshots.contentHash })
+        .select()
         .from(schema.runPolicySnapshots)
         .where(eq(schema.runPolicySnapshots.id, run.policySnapshotId))
         .limit(1);
-      policyContentHash = policy?.contentHash ?? null;
+      if (policy) {
+        policyContentHash = policy.contentHash;
+        policyRow = policy;
+      }
     }
 
     const childSummary = await this.computeChildSummary(companyId, projectId, run.id);
 
     const queueHealth = await this.healthService.queueHealth();
 
-    return this.toSnapshot(run, reservation, policyContentHash, childSummary, queueHealth);
+    return this.toSnapshot(
+      run,
+      reservation,
+      policyContentHash,
+      policyRow,
+      childSummary,
+      queueHealth,
+    );
   }
 
   /**
@@ -380,6 +417,7 @@ export class MissionSnapshotService {
     run: MissionRunRow,
     reservation: BudgetReservationRow | undefined,
     policyContentHash: string | null,
+    policyRow: EidolonDbSchema['runPolicySnapshots']['$inferSelect'] | null,
     childSummary: RunSnapshot['childSummary'],
     queueHealth: QueueHealth,
   ): RunSnapshot {
@@ -402,6 +440,29 @@ export class MissionSnapshotService {
       modeProfileId: run.modeProfileId,
       policySnapshotId: run.policySnapshotId,
       policyContentHash,
+      policy: policyRow
+        ? {
+            schemaVersion: policyRow.schemaVersion,
+            sourceProfile: policyRow.sourceProfile,
+            sourceProfileName: policyRow.sourceProfileName,
+            sourceProfileDescription: policyRow.sourceProfileDescription,
+            sourceProfileVersion: policyRow.sourceProfileVersion,
+            provider: policyRow.provider,
+            adapterId: policyRow.adapterId,
+            model: policyRow.model,
+            reasoningDepth: policyRow.reasoningDepth,
+            systemPromptHash: policyRow.systemPromptHash,
+            instructionHash: policyRow.instructionHash,
+            toolAllowlist: policyRow.toolAllowlist,
+            domainAllowlist: policyRow.domainAllowlist,
+            researchPolicy: policyRow.researchPolicy,
+            planningPolicy: policyRow.planningPolicy,
+            approvalPolicy: policyRow.approvalPolicy,
+            fallbackPolicy: policyRow.fallbackPolicy,
+            partialResultPolicy: policyRow.partialResultPolicy,
+            limits: policyRow.limits,
+          }
+        : null,
       requestContentHash: run.requestContentHash,
       currentQuestionSetId: run.currentQuestionSetId,
       currentPlanRevisionId: run.currentPlanRevisionId,

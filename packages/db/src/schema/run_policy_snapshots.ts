@@ -26,6 +26,21 @@ export const runPolicySnapshots = pgTable(
     // Built-in mode slug (e.g. "fast") or custom profile slug. Null only if
     // the source is not a profile row (built-ins are code-owned constants).
     sourceProfile: text('source_profile'),
+    /**
+     * Display name of the source mode/profile at snapshot time. For built-in
+     * modes this is the human-readable name (e.g. "Fast", "Deep Work"). For
+     * custom profiles this is the profile's name row. Stored so historical
+     * mode identity survives profile renames, disables, or deletions
+     * (VAL-MODEQ-129). This is display text and is NOT included in the
+     * canonical content hash (VAL-MODEQ-127).
+     */
+    sourceProfileName: text('source_profile_name'),
+    /**
+     * Description of the source mode/profile at snapshot time. Same
+     * survival and exclusion rules as sourceProfileName (VAL-MODEQ-129,
+     * VAL-MODEQ-127).
+     */
+    sourceProfileDescription: text('source_profile_description'),
     sourceProfileVersion: integer('source_profile_version'),
     provider: text('provider').notNull(),
     adapterId: text('adapter_id'),

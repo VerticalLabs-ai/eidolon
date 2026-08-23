@@ -3,7 +3,18 @@ import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
 import { commandRequestHash, validateIdempotencyKey } from './idempotency.js';
-import { canonicalHash } from './policy.js';
+import {
+  canonicalHash,
+  resolvePolicy,
+  resolveCustomPolicy,
+  policyContentHash,
+  type ResolvedPolicy,
+  type CustomProfileConfig,
+  type CompanyPolicyInput,
+  type UserReductions,
+} from './policy.js';
+import { type BuiltInMode, type ModeLimits } from './modes.js';
+import { classifyRequest, type ClassificationResult } from './mode-classifier.js';
 import { BudgetService } from './budget.js';
 import { MissionCancellationService } from './cancellation.js';
 import { encryptReason } from './reason-security.js';
@@ -81,6 +92,16 @@ export interface RetryBody {
     outputBytes?: number;
   };
   request?: { text?: string; attachments?: string[]; context?: Record<string, unknown> };
+  /**
+   * Optional mode/profile override for retry (VAL-MODEQ-117). When the
+   * original custom profile is disabled or absent, the user may explicitly
+   * select an eligible replacement. If omitted, the retry uses the original
+   * run's mode/profile. Never silently substitutes Auto.
+   */
+  modeOverride?: {
+    mode: 'fast' | 'deep_work' | 'analyst' | 'auto' | 'custom';
+    modeProfileId?: string;
+  };
 }
 
 export interface CommandInput {
@@ -178,6 +199,23 @@ interface RetryIngressResult {
   reqHash: string;
 }
 
+/**
+ * Pre-computed policy resolution result for the retry branch. The policy is
+ * re-resolved from current governance (agent, company, profile) rather than
+ * copied from the original snapshot, so the successor gets a fresh snapshot
+ * reflecting current settings (VAL-MODEQ-117). If the original custom
+ * profile is disabled or absent and no modeOverride is provided, the
+ * resolution fails closed.
+ */
+interface RetryPolicyResult {
+  policy: ResolvedPolicy;
+  autoClassification: ClassificationResult | null;
+  /** The mode to store on the successor run's resolvedMode column. */
+  resolvedMode: string;
+  /** The modeProfileId to store on the successor run (null for built-ins). */
+  modeProfileId: string | null;
+}
+
 export interface MissionCommandDeps {
   clock?: () => Date;
 }
@@ -228,6 +266,7 @@ export class MissionCommandService {
     //    history without changing state, events, budget, or output
     //    (VAL-RUN-075).
     let retryIngress: RetryIngressResult | undefined;
+    let retryPolicy: RetryPolicyResult | undefined;
     if (type === 'run.cancel') {
       if (TERMINAL_STATUSES.has(run.status)) {
         // Already-terminal: return 200 with the current snapshot, no event,
@@ -303,6 +342,11 @@ export class MissionCommandService {
       // failure throws before the transaction so no successor, command,
       // reservation, or projection is created.
       retryIngress = await this.validateRetryIngress(run, body);
+      // Re-resolve the policy from current governance so the successor
+      // gets a fresh snapshot (VAL-MODEQ-117). If the original custom
+      // profile is disabled or absent and no modeOverride is provided,
+      // this fails closed.
+      retryPolicy = await this.resolveRetryPolicy(run, body, retryIngress);
     }
 
     // 4. Locked transaction: re-check durable idempotency under the lock,
@@ -357,10 +401,14 @@ export class MissionCommandService {
         if (!RETRY_LEGAL.has(locked.status)) {
           throw new InvalidStateSentinel();
         }
-        // run.retry — retryIngress is guaranteed to be set here because it
-        // was computed in the pre-transaction retry block above.
+        // run.retry — retryIngress and retryPolicy are guaranteed to be set
+        // here because they were computed in the pre-transaction retry block
+        // above.
         if (!retryIngress) {
           throw new Error('retryIngress not computed for run.retry');
+        }
+        if (!retryPolicy) {
+          throw new Error('retryPolicy not computed for run.retry');
         }
         return this.applyRetry(
           tx,
@@ -371,6 +419,7 @@ export class MissionCommandService {
           actorId,
           traceId,
           retryIngress,
+          retryPolicy,
         );
       });
       // Increment command counter for a newly applied command (not a replay).
@@ -609,6 +658,338 @@ export class MissionCommandService {
     };
   }
 
+  /**
+   * Re-resolve the effective policy for a retry from current governance
+   * (VAL-MODEQ-117). The successor gets a fresh snapshot reflecting current
+   * agent, company, and profile settings — not a verbatim copy of the
+   * original.
+   *
+   * Mode selection for retry:
+   * 1. If the retry body provides a `modeOverride`, use that mode/profile.
+   * 2. If the original run used a custom profile, try to re-resolve it
+   *    from the current DB. If the profile is disabled or absent, fail
+   *    closed with `PROFILE_UNAVAILABLE` — never silently substitute Auto.
+   * 3. If the original run used Auto, re-classify from the request text
+   *    (using the new request if provided, otherwise the original).
+   * 4. If the original run used a built-in mode, re-resolve from current
+   *    governance.
+   *
+   * After resolution, retry body limits are applied as user reductions
+   * (minimum wins — retry may only lower, never raise).
+   */
+  private async resolveRetryPolicy(
+    run: MissionRunRow,
+    body: unknown,
+    retryIngress: RetryIngressResult,
+  ): Promise<RetryPolicyResult> {
+    const retryBody = (body ?? {}) as RetryBody;
+    const schema = this.db.schema;
+
+    // Read the original policy snapshot to determine what mode/profile was
+    // originally used.
+    const [origPolicy] = await this.db.drizzle
+      .select()
+      .from(schema.runPolicySnapshots)
+      .where(eq(schema.runPolicySnapshots.id, run.policySnapshotId ?? ''))
+      .limit(1);
+    if (!origPolicy) {
+      throw new AppError(500, 'INTERNAL_SERVER_ERROR', 'Original policy snapshot missing');
+    }
+
+    // Read the initiating agent from current DB (may have changed since
+    // the original run started — VAL-MODEQ-040, VAL-RUN-103).
+    let agent:
+      | {
+          provider: string;
+          adapterId: string | null;
+          model: string;
+          toolAllowlist: string[];
+          domainAllowlist: string[];
+          status: string;
+          capabilities: string[];
+        }
+      | undefined;
+    if (run.initiatingAgentId) {
+      const [agentRow] = await this.db.drizzle
+        .select({
+          id: schema.agents.id,
+          provider: schema.agents.provider,
+          adapterId: schema.agents.adapterId,
+          model: schema.agents.model,
+          toolsEnabled: schema.agents.toolsEnabled,
+          allowedDomains: schema.agents.allowedDomains,
+          status: schema.agents.status,
+          capabilities: schema.agents.capabilities,
+        })
+        .from(schema.agents)
+        .where(
+          and(
+            eq(schema.agents.id, run.initiatingAgentId),
+            eq(schema.agents.companyId, run.companyId),
+          ),
+        )
+        .limit(1);
+      if (agentRow) {
+        agent = {
+          provider: agentRow.provider,
+          adapterId: agentRow.adapterId,
+          model: agentRow.model,
+          toolAllowlist: agentRow.toolsEnabled ?? [],
+          domainAllowlist: agentRow.allowedDomains ?? [],
+          status: agentRow.status,
+          capabilities: agentRow.capabilities ?? [],
+        };
+      }
+    }
+
+    // Read company governance from current DB (may have changed).
+    const companyPolicy = await this.lookupCompanyPolicy(run.companyId);
+
+    // Build user reductions from the retry body limits.
+    const userReductions: UserReductions = { ...retryBody.limits };
+
+    // Determine the effective mode for the retry.
+    const modeOverride = retryBody.modeOverride;
+    const originalSourceProfile = origPolicy.sourceProfile;
+    const originalWasCustom = run.modeProfileId !== null;
+
+    if (modeOverride) {
+      // User explicitly selected a replacement mode (VAL-MODEQ-117).
+      if (modeOverride.mode === 'custom') {
+        if (!modeOverride.modeProfileId) {
+          throw new AppError(
+            400,
+            'VALIDATION_ERROR',
+            'modeProfileId is required when modeOverride.mode is "custom"',
+          );
+        }
+        const { ModeRegistryService } = await import('./mode-registry.js');
+        const registry = new ModeRegistryService(this.db);
+        const profile = await registry.resolveProfileForStart(
+          run.companyId,
+          modeOverride.modeProfileId,
+        );
+        const policy = resolveCustomPolicy({
+          profileSlug: profile.slug,
+          profileVersion: profile.version,
+          profileId: profile.id,
+          profileName: profile.name,
+          profileDescription: profile.description,
+          config: profile.config as CustomProfileConfig,
+          agent: agent
+            ? {
+                provider: agent.provider,
+                adapterId: agent.adapterId ?? undefined,
+                model: agent.model,
+                toolAllowlist: agent.toolAllowlist,
+                domainAllowlist: agent.domainAllowlist,
+                status: agent.status,
+                capabilities: agent.capabilities,
+              }
+            : undefined,
+          company: companyPolicy,
+          userReductions,
+        });
+        return {
+          policy,
+          autoClassification: null,
+          resolvedMode: policy.resolvedMode,
+          modeProfileId: profile.id,
+        };
+      }
+
+      // Built-in or Auto mode override.
+      return this.resolveBuiltInRetry(
+        modeOverride.mode as BuiltInMode,
+        agent,
+        companyPolicy,
+        userReductions,
+        retryIngress,
+        originalSourceProfile,
+      );
+    }
+
+    // No mode override: use the original run's mode/profile.
+    if (originalWasCustom && run.modeProfileId) {
+      // Original was custom: try to re-resolve from current DB. If the
+      // profile is disabled or absent, fail closed (VAL-MODEQ-117,
+      // VAL-MODEQ-129).
+      const { ModeRegistryService } = await import('./mode-registry.js');
+      const registry = new ModeRegistryService(this.db);
+      const profile = await registry.getProfile({
+        companyId: run.companyId,
+        profileId: run.modeProfileId,
+      });
+      if (!profile || !profile.enabled) {
+        throw new AppError(
+          409,
+          'PROFILE_UNAVAILABLE',
+          'The original custom mode profile is no longer available. Please select an eligible replacement mode and retry.',
+        );
+      }
+      // Re-resolve with the current profile row (name/description may have
+      // changed, but the slug/version are current).
+      const policy = resolveCustomPolicy({
+        profileSlug: profile.slug,
+        profileVersion: profile.version,
+        profileId: profile.id,
+        profileName: profile.name,
+        profileDescription: profile.description,
+        config: profile.config as CustomProfileConfig,
+        agent: agent
+          ? {
+              provider: agent.provider,
+              adapterId: agent.adapterId ?? undefined,
+              model: agent.model,
+              toolAllowlist: agent.toolAllowlist,
+              domainAllowlist: agent.domainAllowlist,
+              status: agent.status,
+              capabilities: agent.capabilities,
+            }
+          : undefined,
+        company: companyPolicy,
+        userReductions,
+      });
+      return {
+        policy,
+        autoClassification: null,
+        resolvedMode: policy.resolvedMode,
+        modeProfileId: profile.id,
+      };
+    }
+
+    // Original was a built-in or Auto mode.
+    // If the original sourceProfile was 'auto', re-classify.
+    if (originalSourceProfile === 'auto') {
+      return this.resolveBuiltInRetry(
+        'auto',
+        agent,
+        companyPolicy,
+        userReductions,
+        retryIngress,
+        originalSourceProfile,
+      );
+    }
+
+    // Original was a concrete built-in mode (fast, deep_work, analyst).
+    const originalMode = originalSourceProfile as BuiltInMode;
+    return this.resolveBuiltInRetry(
+      originalMode,
+      agent,
+      companyPolicy,
+      userReductions,
+      retryIngress,
+      originalSourceProfile,
+    );
+  }
+
+  /**
+   * Resolve a built-in or Auto mode for retry, including Auto
+   * re-classification from the request text (VAL-MODEQ-117).
+   */
+  private resolveBuiltInRetry(
+    mode: BuiltInMode,
+    agent:
+      | {
+          provider: string;
+          adapterId: string | null;
+          model: string;
+          toolAllowlist: string[];
+          domainAllowlist: string[];
+          status: string;
+          capabilities: string[];
+        }
+      | undefined,
+    companyPolicy: CompanyPolicyInput | undefined,
+    userReductions: UserReductions,
+    retryIngress: RetryIngressResult,
+    originalSourceProfile: string | null,
+  ): RetryPolicyResult {
+    let effectiveMode: BuiltInMode = mode;
+    let autoClassification: ClassificationResult | null = null;
+
+    if (mode === 'auto') {
+      // Re-classify from the request text. Use the decrypted original
+      // request if no new request was provided, otherwise the retry
+      // request text. The retryIngress has the encrypted envelope; we
+      // decrypt it for classification.
+      const envelope = decryptEnvelope(retryIngress.encryptedEnvelope);
+      const text = (envelope.text as string) ?? '';
+      const context = (envelope.context as Record<string, unknown>) ?? undefined;
+      autoClassification = classifyRequest({ text, context });
+      effectiveMode = autoClassification.resolvedMode;
+    }
+
+    const policy = resolvePolicy({
+      mode: effectiveMode,
+      agent: agent
+        ? {
+            provider: agent.provider,
+            adapterId: agent.adapterId ?? undefined,
+            model: agent.model,
+            toolAllowlist: agent.toolAllowlist,
+            domainAllowlist: agent.domainAllowlist,
+            status: agent.status,
+            capabilities: agent.capabilities,
+          }
+        : undefined,
+      company: companyPolicy,
+      userReductions,
+    });
+
+    // For Auto, the source profile is 'auto' (the selected mode), not the
+    // classified concrete mode (VAL-MODEQ-015).
+    if (mode === 'auto') {
+      policy.sourceProfile = 'auto';
+    }
+
+    return {
+      policy,
+      autoClassification,
+      resolvedMode: policy.resolvedMode,
+      modeProfileId: null,
+    };
+  }
+
+  /**
+   * Read company governance (mission policy) from company settings.
+   * Returns undefined if no mission policy is configured.
+   */
+  private async lookupCompanyPolicy(companyId: string): Promise<CompanyPolicyInput | undefined> {
+    const schema = this.db.schema;
+    const [company] = await this.db.drizzle
+      .select({ settings: schema.companies.settings })
+      .from(schema.companies)
+      .where(eq(schema.companies.id, companyId))
+      .limit(1);
+    if (!company) {
+      return undefined;
+    }
+    const settings = company.settings as Record<string, unknown>;
+    const missionPolicy = settings.missionPolicy as Record<string, unknown> | undefined;
+    if (!missionPolicy) {
+      return undefined;
+    }
+    return {
+      allowedProviders: (missionPolicy.allowedProviders as string[] | undefined)?.filter(
+        (p): p is string => typeof p === 'string',
+      ),
+      allowedTools: (missionPolicy.allowedTools as string[] | undefined)?.filter(
+        (t): t is string => typeof t === 'string',
+      ),
+      allowedDomains: (missionPolicy.allowedDomains as string[] | undefined)?.filter(
+        (d): d is string => typeof d === 'string',
+      ),
+      deniedTools: (missionPolicy.deniedTools as string[] | undefined)?.filter(
+        (t): t is string => typeof t === 'string',
+      ),
+      deniedDomains: (missionPolicy.deniedDomains as string[] | undefined)?.filter(
+        (d): d is string => typeof d === 'string',
+      ),
+      limits: missionPolicy.limits as Partial<ModeLimits> | undefined,
+    };
+  }
+
   // -- retry ----------------------------------------------------------------
 
   private async applyRetry(
@@ -620,103 +1001,52 @@ export class MissionCommandService {
     actorId: string | null,
     traceId: string | null,
     retryIngress: RetryIngressResult,
+    retryPolicy: RetryPolicyResult,
   ): Promise<ApplyOutcome> {
     const schema = this.db.schema;
     const now = this.now();
+    const { policy, autoClassification, resolvedMode, modeProfileId } = retryPolicy;
 
-    // Copy the original immutable policy snapshot to a fresh row so the
-    // successor has its own snapshot identity ("fresh snapshot").
-    const [origPolicy] = await tx
-      .select()
-      .from(schema.runPolicySnapshots)
-      .where(eq(schema.runPolicySnapshots.id, run.policySnapshotId ?? ''))
-      .limit(1);
-    if (!origPolicy) {
-      throw new AppError(500, 'INTERNAL_SERVER_ERROR', 'Original policy snapshot missing');
-    }
-    const successorPolicyId = randomUUID();
-    await tx.insert(schema.runPolicySnapshots).values({
-      id: successorPolicyId,
-      companyId: origPolicy.companyId,
-      schemaVersion: origPolicy.schemaVersion,
-      sourceProfile: origPolicy.sourceProfile,
-      sourceProfileVersion: origPolicy.sourceProfileVersion,
-      provider: origPolicy.provider,
-      adapterId: origPolicy.adapterId,
-      model: origPolicy.model,
-      reasoningDepth: origPolicy.reasoningDepth,
-      systemPromptHash: origPolicy.systemPromptHash,
-      instructionHash: origPolicy.instructionHash,
-      toolAllowlist: origPolicy.toolAllowlist,
-      domainAllowlist: origPolicy.domainAllowlist,
-      researchPolicy: origPolicy.researchPolicy,
-      planningPolicy: origPolicy.planningPolicy,
-      approvalPolicy: origPolicy.approvalPolicy,
-      fallbackPolicy: origPolicy.fallbackPolicy,
-      partialResultPolicy: origPolicy.partialResultPolicy,
-      limits: origPolicy.limits,
-      contentHash: origPolicy.contentHash,
-      createdAt: now,
-    });
-
-    const retryBody = (body ?? {}) as RetryBody;
     // The retry request envelope has already been validated and encrypted
     // (or copied from the original) by validateRetryIngress in the
     // pre-transaction phase (VAL-RUN-133, VAL-RUN-134, VAL-RUN-135,
-    // Normative Boundary 3). Use the pre-computed encrypted envelope,
-    // safe summary, and request hash directly.
+    // Normative Boundary 3). The policy has been re-resolved from current
+    // governance by resolveRetryPolicy (VAL-MODEQ-117).
     const encryptedEnvelope = retryIngress.encryptedEnvelope;
     const reqHash = retryIngress.reqHash;
 
-    // Narrow the original policy limits with the retry body's limits
-    // (minimum wins — retry may only lower, never raise). Recompute the
-    // policy content hash so the narrowed snapshot has a distinct identity
-    // (HIGH-RISK REPAIR: retry narrows limits and recomputes policy hash).
-    const origLimits = origPolicy.limits as Record<string, number>;
-    const retryLimits = retryBody.limits ?? {};
-    const narrowedLimits: Record<string, number> = { ...origLimits };
-    for (const key of [
-      'costCents',
-      'totalTokens',
-      'durationSeconds',
-      'providerCalls',
-      'steps',
-      'outputBytes',
-    ]) {
-      const override = retryLimits[key as keyof typeof retryLimits];
-      if (override !== undefined) {
-        narrowedLimits[key] = Math.min(origLimits[key] ?? override, override);
-      }
-    }
-    const narrowedPolicyContentHash = canonicalHash({
-      schemaVersion: origPolicy.schemaVersion,
-      sourceProfile: origPolicy.sourceProfile,
-      provider: origPolicy.provider,
-      adapterId: origPolicy.adapterId,
-      model: origPolicy.model,
-      reasoningDepth: origPolicy.reasoningDepth,
-      systemPromptHash: origPolicy.systemPromptHash,
-      instructionHash: origPolicy.instructionHash,
-      toolAllowlist: origPolicy.toolAllowlist,
-      domainAllowlist: origPolicy.domainAllowlist,
-      researchPolicy: origPolicy.researchPolicy,
-      planningPolicy: origPolicy.planningPolicy,
-      approvalPolicy: origPolicy.approvalPolicy,
-      fallbackPolicy: origPolicy.fallbackPolicy,
-      partialResultPolicy: origPolicy.partialResultPolicy,
-      limits: narrowedLimits,
-      resolvedMode: run.resolvedMode,
-    });
+    // Compute the fresh policy content hash from the re-resolved policy.
+    // This covers the entire effective policy, not display text
+    // (VAL-MODEQ-127).
+    const policyHash = policyContentHash(policy);
 
-    // Re-insert the policy snapshot with the narrowed limits and recomputed
-    // hash (replace the verbatim copy above).
-    await tx
-      .update(schema.runPolicySnapshots)
-      .set({
-        limits: narrowedLimits as unknown as Record<string, number>,
-        contentHash: narrowedPolicyContentHash,
-      })
-      .where(eq(schema.runPolicySnapshots.id, successorPolicyId));
+    // Store the fresh immutable policy snapshot (VAL-MODEQ-117, VAL-MODEQ-129).
+    const successorPolicyId = randomUUID();
+    await tx.insert(schema.runPolicySnapshots).values({
+      id: successorPolicyId,
+      companyId: run.companyId,
+      schemaVersion: policy.schemaVersion,
+      sourceProfile: policy.sourceProfile,
+      sourceProfileName: policy.sourceProfileName ?? null,
+      sourceProfileDescription: policy.sourceProfileDescription ?? null,
+      sourceProfileVersion: policy.sourceProfileVersion ?? null,
+      provider: policy.provider,
+      adapterId: policy.adapterId,
+      model: policy.model,
+      reasoningDepth: policy.reasoningDepth,
+      systemPromptHash: policy.systemPromptHash,
+      instructionHash: policy.instructionHash,
+      toolAllowlist: policy.toolAllowlist,
+      domainAllowlist: policy.domainAllowlist,
+      researchPolicy: policy.researchPolicy,
+      planningPolicy: policy.planningPolicy,
+      approvalPolicy: policy.approvalPolicy,
+      fallbackPolicy: policy.fallbackPolicy,
+      partialResultPolicy: policy.partialResultPolicy,
+      limits: policy.limits as unknown as Record<string, number>,
+      contentHash: policyHash,
+      createdAt: now,
+    });
 
     const successorId = randomUUID();
     await tx.insert(schema.missionRuns).values({
@@ -734,27 +1064,21 @@ export class MissionCommandService {
       requestEnvelope: encryptedEnvelope,
       requestContentHash: reqHash,
       requestSafeSummary: retryIngress.safeSummary,
-      resolvedMode: run.resolvedMode,
+      modeProfileId,
+      resolvedMode: resolvedMode as 'fast' | 'deep_work' | 'analyst' | 'auto' | 'custom',
       policySnapshotId: successorPolicyId,
       status: 'draft',
       stateVersion: 1,
       lastEventSequence: 0,
-      partialResultPolicy: run.partialResultPolicy,
+      partialResultPolicy: policy.partialResultPolicy,
       createdAt: now,
       updatedAt: now,
     });
 
-    // Fresh finite root budget reservation + allocation with the narrowed
-    // ceiling (HIGH-RISK REPAIR: reserve the authoritative narrowed budget).
-    // The budget module checks headroom and throws 409 BUDGET_UNAVAILABLE
-    // when insufficient (VAL-RUN-061, VAL-CROSS-061).
-    const [origReservation] = await tx
-      .select()
-      .from(schema.budgetReservations)
-      .where(eq(schema.budgetReservations.runId, run.id))
-      .limit(1);
-    const origCeiling = origReservation?.requestedCents ?? 0;
-    const ceiling = Math.min(origCeiling, narrowedLimits['costCents'] ?? origCeiling);
+    // Fresh finite root budget reservation + allocation with the resolved
+    // ceiling. The budget module checks headroom and throws 409
+    // BUDGET_UNAVAILABLE when insufficient (VAL-RUN-061, VAL-CROSS-061).
+    const ceiling = policy.limits.costCents;
     const periodKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
     const budgetService = new BudgetService(this.db, { clock: () => now });
     const budgetResult = await budgetService.reserveRoot(tx, {
@@ -798,10 +1122,25 @@ export class MissionCommandService {
         type: 'run.created',
         payload: { runId: successorId, status: 'draft', retryOfRunId: run.id },
       },
-      { type: 'mode.resolved', payload: { resolvedMode: run.resolvedMode, retry: true } },
+      {
+        type: 'mode.resolved',
+        payload: {
+          resolvedMode,
+          retry: true,
+          ...(modeProfileId
+            ? { profileSlug: policy.sourceProfile, profileVersion: policy.sourceProfileVersion }
+            : {}),
+          ...(autoClassification
+            ? {
+                classifierVersion: autoClassification.classifierVersion,
+                reasons: autoClassification.reasons,
+              }
+            : {}),
+        },
+      },
       {
         type: 'policy.snapshotted',
-        payload: { policySnapshotId: successorPolicyId, contentHash: narrowedPolicyContentHash },
+        payload: { policySnapshotId: successorPolicyId, contentHash: policyHash },
       },
       { type: 'budget.reserved', payload: { reservedCents, periodKey } },
     ];

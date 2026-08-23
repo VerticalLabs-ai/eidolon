@@ -126,6 +126,31 @@ export const BUILT_IN_MODES: Record<BuiltInMode, ModePolicy> = {
 };
 
 /**
+ * Human-readable display names for built-in modes. Used in policy snapshots
+ * so historical mode identity survives (VAL-MODEQ-129). These are display
+ * text and are NOT included in the canonical content hash (VAL-MODEQ-127).
+ */
+export const BUILT_IN_MODE_DISPLAY_NAMES: Record<BuiltInMode, string> = {
+  fast: 'Fast',
+  deep_work: 'Deep Work',
+  analyst: 'Analyst',
+  auto: 'Auto',
+};
+
+/**
+ * Descriptions for built-in modes. Same survival and exclusion rules as
+ * display names (VAL-MODEQ-129, VAL-MODEQ-127).
+ */
+export const BUILT_IN_MODE_DESCRIPTIONS: Record<BuiltInMode, string> = {
+  fast: 'Short, bounded work. Plans only for complex requests. No parallel children.',
+  deep_work:
+    'Structured planning and approval, deeper reasoning, research available, and bounded parallel work.',
+  analyst:
+    'Structured planning, evidence-oriented research, and citations for external factual claims.',
+  auto: 'Chooses a concrete mode (Fast, Deep Work, or Analyst) from your request rather than running as its own execution policy.',
+};
+
+/**
  * Resolve a selected built-in mode to a concrete mode + policy. Auto
  * provisionally resolves to `fast` as a fallback; the start service runs the
  * deterministic classifier (mode-classifier.ts) and passes the concrete mode

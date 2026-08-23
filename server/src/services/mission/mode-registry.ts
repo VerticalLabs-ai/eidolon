@@ -345,6 +345,7 @@ export class ModeRegistryService {
     id: string;
     slug: string;
     name: string;
+    description: string | null;
     config: Record<string, unknown>;
     version: number;
     enabled: boolean;
@@ -355,6 +356,7 @@ export class ModeRegistryService {
         id: schema.modeProfiles.id,
         slug: schema.modeProfiles.slug,
         name: schema.modeProfiles.name,
+        description: schema.modeProfiles.description,
         config: schema.modeProfiles.config,
         version: schema.modeProfiles.version,
         enabled: schema.modeProfiles.enabled,
@@ -381,6 +383,7 @@ export class ModeRegistryService {
       id: row.id,
       slug: row.slug,
       name: row.name,
+      description: row.description,
       config: row.config ?? {},
       version: row.version,
       enabled: row.enabled,

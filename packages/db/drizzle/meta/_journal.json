@@ -267,6 +267,13 @@
       "when": 1787516400000,
       "tag": "0037_mode_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787602800000,
+      "tag": "0038_immutable_policy_snapshot_fields",
+      "breakpoints": true
     }
   ]
 }

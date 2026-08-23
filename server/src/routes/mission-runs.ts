@@ -109,6 +109,19 @@ const RetryRequest = z
   .optional();
 
 /**
+ * Optional mode override for retry (VAL-MODEQ-117). When the original
+ * custom profile is disabled or absent, the user may explicitly select an
+ * eligible replacement mode. If omitted, the retry uses the original run's
+ * mode/profile. Never silently substitutes Auto.
+ */
+const RetryModeOverride = z
+  .object({
+    mode: z.enum(MODES),
+    modeProfileId: z.string().uuid().optional(),
+  })
+  .optional();
+
+/**
  * Cancellation reason schema: required, NFC-normalized, 1–2,000 Unicode code
  * points (counted as spread code points, not UTF-16 code units). No semantic
  * trimming — whitespace is preserved (VAL-RUN-138).
@@ -126,11 +139,20 @@ const ReasonSchema = z
  *  idempotency namespace (VAL-RUN-115). */
 const CommandBody = z.discriminatedUnion('type', [
   z.object({ type: z.literal('run.cancel'), reason: ReasonSchema }),
-  z.object({ type: z.literal('run.retry'), limits: RetryLimits, request: RetryRequest }),
+  z.object({
+    type: z.literal('run.retry'),
+    limits: RetryLimits,
+    request: RetryRequest,
+    modeOverride: RetryModeOverride,
+  }),
 ]);
 
 const CancelBody = z.object({ reason: ReasonSchema });
-const RetryBody = z.object({ limits: RetryLimits, request: RetryRequest });
+const RetryBody = z.object({
+  limits: RetryLimits,
+  request: RetryRequest,
+  modeOverride: RetryModeOverride,
+});
 
 /** Validate the Idempotency-Key header (shared contract: 1-128 safe chars,
  *  no controls, no leading/trailing whitespace). Missing or invalid →
@@ -474,7 +496,11 @@ export function missionRunsRouter(db: DbInstance): Router {
     const logicalBody =
       body.type === 'run.cancel'
         ? normalizeCommandBody({ reason: redactCanaries(body.reason).redacted })
-        : normalizeCommandBody({ limits: body.limits, request: body.request });
+        : normalizeCommandBody({
+            limits: body.limits,
+            request: body.request,
+            modeOverride: body.modeOverride,
+          });
     const result = await service.submit({
       companyId,
       projectId,

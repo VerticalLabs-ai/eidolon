@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import {
   PLATFORM_HARD_CAPS,
   resolveBuiltInMode,
+  BUILT_IN_MODE_DISPLAY_NAMES,
+  BUILT_IN_MODE_DESCRIPTIONS,
   type BuiltInMode,
   type ModeLimits,
   type ModePolicy,
@@ -98,6 +100,19 @@ export interface ResolvedPolicy {
   schemaVersion: number;
   /** Built-in mode slug (e.g. "fast") or custom profile slug. */
   sourceProfile: string;
+  /**
+   * Display name of the source mode/profile at snapshot time (VAL-MODEQ-129).
+   * For built-in modes this is the human-readable name. For custom profiles
+   * this is the profile's name row. NOT included in the content hash
+   * (display text is excluded per VAL-MODEQ-127).
+   */
+  sourceProfileName: string | null;
+  /**
+   * Description of the source mode/profile at snapshot time (VAL-MODEQ-129).
+   * NOT included in the content hash (display text is excluded per
+   * VAL-MODEQ-127).
+   */
+  sourceProfileDescription: string | null;
   /** Custom profile row version (null for built-in modes). */
   sourceProfileVersion?: number | null;
   /** Custom profile row ID (null for built-in modes). */
@@ -260,6 +275,8 @@ export function resolvePolicy(input: {
   return {
     schemaVersion: 1,
     sourceProfile: input.mode as string,
+    sourceProfileName: BUILT_IN_MODE_DISPLAY_NAMES[input.mode] ?? null,
+    sourceProfileDescription: BUILT_IN_MODE_DESCRIPTIONS[input.mode] ?? null,
     sourceProfileVersion: null,
     modeProfileId: null,
     provider,
@@ -314,6 +331,10 @@ export function canonicalHash(value: unknown): string {
 
 /** The canonical hash of a resolved policy snapshot. */
 export function policyContentHash(policy: ResolvedPolicy): string {
+  // Tool and domain allowlists are SETS, not ordered lists — semantically
+  // identical policies with reordered sets must produce one hash
+  // (VAL-MODEQ-127). Sort them lexicographically before hashing so order
+  // does not affect the hash. All other arrays preserve their order.
   return canonicalHash({
     schemaVersion: policy.schemaVersion,
     sourceProfile: policy.sourceProfile,
@@ -325,8 +346,8 @@ export function policyContentHash(policy: ResolvedPolicy): string {
     reasoningDepth: policy.reasoningDepth,
     systemPromptHash: policy.systemPromptHash,
     instructionHash: policy.instructionHash,
-    toolAllowlist: policy.toolAllowlist,
-    domainAllowlist: policy.domainAllowlist,
+    toolAllowlist: [...policy.toolAllowlist].sort(),
+    domainAllowlist: [...policy.domainAllowlist].sort(),
     researchPolicy: policy.researchPolicy,
     planningPolicy: policy.planningPolicy,
     approvalPolicy: policy.approvalPolicy,
@@ -438,6 +459,10 @@ export function resolveCustomPolicy(input: {
   profileSlug: string;
   profileVersion: number;
   profileId: string;
+  /** Display name from the profile row (VAL-MODEQ-129). */
+  profileName?: string | null;
+  /** Description from the profile row (VAL-MODEQ-129). */
+  profileDescription?: string | null;
   config: CustomProfileConfig;
   agent?: AgentPolicyInput;
   company?: CompanyPolicyInput;
@@ -588,6 +613,8 @@ export function resolveCustomPolicy(input: {
   return {
     schemaVersion: 1,
     sourceProfile: input.profileSlug,
+    sourceProfileName: input.profileName ?? null,
+    sourceProfileDescription: input.profileDescription ?? null,
     sourceProfileVersion: input.profileVersion,
     modeProfileId: input.profileId,
     provider,
