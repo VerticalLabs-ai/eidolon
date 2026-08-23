@@ -18,6 +18,11 @@ import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
 import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
 import { MissionCommandHistoryService } from '../services/mission/command-history.js';
+import {
+  MissionQuestionSetHistoryService,
+  decodeQuestionSetCursor,
+  MAX_QUESTION_SETS_PER_PAGE,
+} from '../services/mission/question-set-history.js';
 import { MissionProjectionRepairService } from '../services/mission/projection-repair.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import { redactCanaries } from '../services/mission/reason-security.js';
@@ -85,6 +90,13 @@ const StreamQuery = z.object({
 /** Command history query: bounded page with opaque keyset cursor. */
 const CommandsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+/** Question-set history query: bounded page (max 50) with opaque keyset
+ *  cursor ordered by (ordinal, id) (VAL-MODEQ-148). */
+const QuestionSetsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(MAX_QUESTION_SETS_PER_PAGE).default(50),
   cursor: z.string().max(512).optional(),
 });
 
@@ -701,6 +713,52 @@ export function missionRunsRouter(db: DbInstance): Router {
     }));
 
     res.json({ data: { commands, nextCursor: result.nextCursor } });
+  });
+
+  // GET /:runId/question-sets — scoped, bounded question and answer history
+  // with opaque keyset cursors, immutable definitions, set version/state,
+  // accepted answer revision/hash, actor, and timestamps. Role-based read
+  // contract: owner/admin/member with content access read safe exact
+  // answers; viewers receive definitions and sanitized answer metadata
+  // only (answer values redacted). Reads do not require the mission flag
+  // (VAL-MODEQ-148, VAL-MODEQ-113).
+  router.get('/:runId/question-sets', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const parsed = QuestionSetsQuery.safeParse(req.query);
+    if (!parsed.success) {
+      throw parsed.error;
+    }
+    const { limit, cursor } = parsed.data;
+
+    // Decode the cursor early so a malformed cursor is a 400, not a 500.
+    decodeQuestionSetCursor(cursor);
+
+    // Determine answer-value access by permission: viewers (company.view
+    // only) receive redacted answer values; contributors (content.create)
+    // see safe exact answers (VAL-MODEQ-148).
+    const role = (req.organizationMembership?.role ?? 'viewer') as
+      'owner' | 'admin' | 'member' | 'viewer';
+    const includeAnswerValues = hasPermission(role, 'content.create');
+
+    const service = new MissionQuestionSetHistoryService(db);
+    const result = await service.listQuestionSets({
+      companyId,
+      projectId,
+      runId,
+      limit,
+      cursor,
+      includeAnswerValues,
+    });
+
+    res.json({
+      data: {
+        questionSets: result.questionSets,
+        nextCursor: result.nextCursor,
+      },
+    });
   });
 
   // Mission error sanitizer: converts any error thrown by a Mission route
