@@ -14,6 +14,7 @@ import {
   isValidStatus,
   decodeCursor,
 } from '../services/mission/snapshot.js';
+import { MissionPlanSnapshotService } from '../services/mission/plan-snapshot.js';
 import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
 import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
@@ -425,6 +426,26 @@ export function missionRunsRouter(db: DbInstance): Router {
     }
 
     res.json({ data: { run: snapshot, links: snapshot.links } });
+  });
+
+  // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId/plan
+  // Current plan revision content (proposed or approved) for card rendering
+  // (VAL-PLAN-008..017, VAL-PLAN-125). Returns the immutable revision with
+  // the complete PlanContentV1 so the UI renders objective, ordered steps,
+  // dependencies, routing authority, exact tools, expected outputs, and
+  // completion criteria from authoritative content. Returns 404
+  // PLAN_NOT_FOUND when the run has no current plan revision. Reads do not
+  // require the mission flag, mirroring the snapshot/events read policy so
+  // an operator can review a proposed plan during a kill switch.
+  router.get('/:runId/plan', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const service = new MissionPlanSnapshotService(db);
+    const planRevision = await service.getCurrentPlanRevision(companyId, projectId, runId);
+
+    res.json({ data: { planRevision } });
   });
 
   // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId/events

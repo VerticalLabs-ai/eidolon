@@ -3797,6 +3797,117 @@ export interface MissionRunSnapshotResult {
   data: { run: MissionRunSnapshot; links: { ui: string } };
 }
 
+// ── Mission Plan Revision (current proposed/approved plan content) ───────
+// Mirrors the server's closed `PlanContentV1` schema (VAL-PLAN-124). The
+// server is the authoritative source; this client contract is kept in sync
+// so the UI renders objective, topology, routing authority, exact tools,
+// expected outputs, and completion criteria from the immutable revision.
+
+/** A typed input-binding source (closed discriminated union). */
+export type MissionPlanInputSource =
+  | { kind: 'stepOutput'; stepKey: string; output: string }
+  | { kind: 'requestContext'; key: string }
+  | { kind: 'artifact'; artifactId: string; revision?: number };
+
+/** A step input binding. */
+export interface MissionPlanInputBinding {
+  name: string;
+  source: MissionPlanInputSource;
+}
+
+/** Evidence requirements for a step or synthesis. */
+export interface MissionPlanEvidenceRequirements {
+  citationsRequired: boolean;
+}
+
+/** Routing is a closed discriminated union (VAL-PLAN-124).
+ *  - `requirements`: routing authority (what an agent must have) — the
+ *    step is not yet assigned to a concrete agent (pre-routing).
+ *  - `concreteAgent`: execution assignment to a specific agent
+ *    (post-routing). */
+export type MissionPlanRouting =
+  | {
+      kind: 'requirements';
+      routingRequirements: {
+        capabilities: string[];
+        requiredTools: string[];
+        requiredDomains: string[];
+        ephemeralAllowed: boolean;
+      };
+    }
+  | { kind: 'concreteAgent'; executingAgentId: string };
+
+/** One executable plan step (VAL-PLAN-124). */
+export interface MissionPlanStep {
+  stepKey: string;
+  parentStepKey: string | null;
+  childOrdinal: number;
+  nodeKind: 'root' | 'child';
+  title: string;
+  description: string;
+  dependencies: string[];
+  inputBindings: MissionPlanInputBinding[];
+  routing: MissionPlanRouting;
+  toolAllowlist: string[];
+  replayClass: 'read_only' | 'idempotent_write' | 'non_replayable';
+  sideEffecting: boolean;
+  expectedOutputs: string[];
+  evidenceRequirements: MissionPlanEvidenceRequirements;
+  completionCriteria: string;
+  budgetCents: number;
+  limits: Record<string, number | undefined>;
+}
+
+/** Synthesis section (VAL-PLAN-124). */
+export interface MissionPlanSynthesis {
+  instructions: string;
+  declaredInputs: Array<{ kind: 'stepOutput'; stepKey: string; output: string }>;
+  declaredOutput: string;
+  evidenceRequirements: MissionPlanEvidenceRequirements;
+  completionCriteria: string;
+  budgetCents: number;
+}
+
+/** Top-level plan limits (integer, nonnegative). */
+export interface MissionPlanLimits {
+  steps: number;
+  durationSeconds: number;
+  providerCalls: number;
+  totalTokens: number;
+  outputBytes: number;
+  costCents: number;
+  depth: number;
+  fanOut: number;
+  descendants: number;
+}
+
+/** The complete `PlanContentV1` (VAL-PLAN-124). */
+export interface MissionPlanContent {
+  schemaVersion: number;
+  objective: string;
+  steps: MissionPlanStep[];
+  synthesis: MissionPlanSynthesis;
+  planningBudgetCents: number;
+  partialResultPolicy: 'require_all' | 'best_effort';
+  limits: MissionPlanLimits;
+  presentationMetadata?: { cardTitle?: string; summary?: string };
+}
+
+/** An immutable plan revision exposed for card rendering. */
+export interface MissionPlanRevision {
+  id: string;
+  revision: number;
+  status: 'proposed' | 'superseded' | 'approved' | 'rejected';
+  contentHash: string;
+  parentRevisionId: string | null;
+  createdAt: string;
+  content: MissionPlanContent;
+}
+
+export interface MissionCurrentPlanResult {
+  data: { planRevision: MissionPlanRevision };
+}
+
 export interface MissionRunEventsResult {
   data: {
     events: MissionReplayEvent[];
@@ -3829,6 +3940,20 @@ export function listMissionRuns(
 export function getMissionRunSnapshot(companyId: string, projectId: string, runId: string) {
   return request<MissionRunSnapshotResult>(
     `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}`,
+  );
+}
+
+/**
+ * Read the current plan revision (proposed or approved) for a run
+ * (VAL-PLAN-008..017, VAL-PLAN-125). Returns the immutable revision with
+ * the complete `PlanContentV1` so the UI can render objective, ordered
+ * steps, dependencies, routing authority, exact tools, expected outputs,
+ * and completion criteria from authoritative content. Returns 404
+ * `PLAN_NOT_FOUND` when the run has no current plan revision.
+ */
+export function getMissionCurrentPlanRevision(companyId: string, projectId: string, runId: string) {
+  return request<MissionCurrentPlanResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/plan`,
   );
 }
 

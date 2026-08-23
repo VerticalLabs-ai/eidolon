@@ -2832,6 +2832,48 @@ export function useMissionRequestText(runId: string | undefined): string | undef
 }
 
 /**
+ * Current plan revision for a run (VAL-PLAN-008..017, VAL-PLAN-125).
+ *
+ * Fetches the immutable current proposed/approved plan revision content so
+ * the plan card renders objective, ordered steps, dependencies, routing
+ * authority, exact tools, expected outputs, and completion criteria from
+ * authoritative server content. Only fetches when the snapshot reports a
+ * current plan revision pointer. A 404 (no current plan) resolves to
+ * `null` so the card renders nothing rather than an error. Preserves
+ * previous data on refetch error so the card remains visible as stale
+ * rather than disappearing (VAL-RUN-131).
+ */
+export function useMissionCurrentPlanRevision(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+  currentPlanRevisionId: string | null | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-plan-revision', companyId, projectId, runId, currentPlanRevisionId],
+    queryFn: async () => {
+      try {
+        const res = await api.getMissionCurrentPlanRevision(companyId, projectId, runId!);
+        const data = unwrap<{ planRevision: api.MissionPlanRevision }>(res);
+        return data.planRevision;
+      } catch (err) {
+        // 404 PLAN_NOT_FOUND: the run has no current plan revision. Resolve
+        // to null so the card renders nothing rather than an error.
+        const apiErr = err as { status?: number; body?: { code?: string } };
+        if (apiErr?.status === 404 || apiErr?.body?.code === 'PLAN_NOT_FOUND') {
+          return null;
+        }
+        throw err;
+      }
+    },
+    enabled: !!companyId && !!projectId && !!runId && !!currentPlanRevisionId,
+    staleTime: 5_000,
+    retry: false,
+    placeholderData: (prev: api.MissionPlanRevision | null | undefined) => prev,
+  });
+}
+
+/**
  * Cursor-based paginated fetch of Mission runs ordered by
  * (createdAt DESC, id DESC). Uses `useInfiniteQuery` so pages are
  * accumulated — each page's opaque `nextCursor` drives `fetchNextPage`.

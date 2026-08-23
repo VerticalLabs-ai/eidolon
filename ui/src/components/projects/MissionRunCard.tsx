@@ -27,6 +27,7 @@ import {
 import { MissionCancelDialog } from './MissionCancelDialog';
 import { MissionQuestionCard } from './MissionQuestionCard';
 import { MissionQuestionHistory } from './MissionQuestionHistory';
+import { MissionPlanCard } from './MissionPlanCard';
 import { clearRunDrafts } from '@/lib/mission-drafts';
 
 /** Terminal run statuses. */
@@ -344,6 +345,15 @@ export function MissionRunCard({
           <RunCardQuestionLoadError onRetry={() => snapshotQuery.refetch()} />
         )}
       <MissionQuestionHistory companyId={companyId} projectId={projectId} runId={run.id} />
+      {snapshot?.currentPlanRevisionId && (
+        <MissionPlanCard
+          companyId={companyId}
+          projectId={projectId}
+          runId={run.id}
+          currentPlanRevisionId={snapshot.currentPlanRevisionId}
+          resolvedMode={run.resolvedMode}
+        />
+      )}
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
       <RunCardRetryControl
         companyId={companyId}
