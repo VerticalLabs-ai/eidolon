@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Inbox as InboxIcon,
   ShieldCheck,
@@ -11,29 +11,26 @@ import {
   MessageCircle,
   Keyboard,
   Archive,
-} from "lucide-react";
-import { clsx } from "clsx";
-import { motion, type PanInfo } from "framer-motion";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Card } from "@/components/ui/Card";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { Tabs, type Tab } from "@/components/ui/Tabs";
-import { PageTransition } from "@/components/ui/PageTransition";
-import {
-  useInbox,
-  useMarkInboxRead,
-  useMarkInboxUnread,
-} from "@/lib/hooks";
-import { shortId } from "@/lib/ids";
-import { BoardChat } from "@/pages/BoardChat";
-import { MessageCenter } from "@/pages/MessageCenter";
-import type { InboxItem, InboxItemKind } from "@/lib/api";
+  HelpCircle,
+} from 'lucide-react';
+import { clsx } from 'clsx';
+import { motion, type PanInfo } from 'framer-motion';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Tabs, type Tab } from '@/components/ui/Tabs';
+import { PageTransition } from '@/components/ui/PageTransition';
+import { useInbox, useMarkInboxRead, useMarkInboxUnread } from '@/lib/hooks';
+import { shortId } from '@/lib/ids';
+import { BoardChat } from '@/pages/BoardChat';
+import { MessageCenter } from '@/pages/MessageCenter';
+import type { InboxItem, InboxItemKind, InboxResponse } from '@/lib/api';
 
 const tabs: Tab[] = [
-  { id: "inbox", label: "Inbox" },
-  { id: "chat", label: "Board chat" },
-  { id: "messages", label: "Messages" },
+  { id: 'inbox', label: 'Inbox' },
+  { id: 'chat', label: 'Board chat' },
+  { id: 'messages', label: 'Messages' },
 ];
 
 const kindIcon: Record<InboxItemKind, typeof ShieldCheck> = {
@@ -41,20 +38,22 @@ const kindIcon: Record<InboxItemKind, typeof ShieldCheck> = {
   collaboration: Users,
   activity: Bell,
   task_thread: MessageSquareDot,
+  mission_question: HelpCircle,
 };
 
 const kindTint: Record<InboxItemKind, string> = {
-  approval: "text-success bg-success/15",
-  collaboration: "text-neon-purple bg-neon-purple/15",
-  activity: "text-accent bg-accent/15",
-  task_thread: "text-warning bg-warning/15",
+  approval: 'text-success bg-success/15',
+  collaboration: 'text-neon-purple bg-neon-purple/15',
+  activity: 'text-accent bg-accent/15',
+  task_thread: 'text-warning bg-warning/15',
+  mission_question: 'text-accent bg-accent/15',
 };
 
-const priorityVariant: Record<string, "info" | "warning" | "error"> = {
-  low: "info",
-  medium: "info",
-  high: "warning",
-  critical: "error",
+const priorityVariant: Record<string, 'info' | 'warning' | 'error'> = {
+  low: 'info',
+  medium: 'info',
+  high: 'warning',
+  critical: 'error',
 };
 
 // ---------------------------------------------------------------------------
@@ -74,11 +73,49 @@ function isToday(iso: string): boolean {
 function formatRelative(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
+  if (mins < 1) {return 'just now';}
+  if (mins < 60) {return `${mins}m`;}
   const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h`;
+  if (hours < 24) {return `${hours}h`;}
   return `${Math.round(hours / 24)}d`;
+}
+
+// ---------------------------------------------------------------------------
+// InboxSummary — header counts (approvals, collaborations, task questions,
+// mission questions). Extracted so InboxFeed stays within cyclomatic limit.
+// ---------------------------------------------------------------------------
+
+function InboxSummary({
+  unreadCount,
+  total,
+  meta,
+}: {
+  unreadCount: number;
+  total: number;
+  meta?: InboxResponse['meta'];
+}) {
+  return (
+    <div className="flex items-center gap-3 text-xs text-text-secondary">
+      <span>
+        <strong className="text-text-primary">{unreadCount}</strong> unread of {total}
+      </span>
+      {meta?.pendingApprovals ? (
+        <span>
+          · <strong>{meta.pendingApprovals}</strong> pending approvals
+        </span>
+      ) : null}
+      {meta?.pendingThreadItems ? (
+        <span>
+          · <strong>{meta.pendingThreadItems}</strong> task questions
+        </span>
+      ) : null}
+      {meta?.pendingMissionQuestions ? (
+        <span>
+          · <strong>{meta.pendingMissionQuestions}</strong> mission questions
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +135,7 @@ function InboxFeed({ companyId }: { companyId: string }) {
 
   // Default selection = first unread, else first item
   useEffect(() => {
-    if (selectedId && items.some((i) => i.id === selectedId)) return;
+    if (selectedId && items.some((i) => i.id === selectedId)) {return;}
     const firstUnread = items.find((i) => !i.readAt);
     setSelectedId((firstUnread ?? items[0])?.id ?? null);
   }, [items, selectedId]);
@@ -106,7 +143,7 @@ function InboxFeed({ companyId }: { companyId: string }) {
   const doMarkRead = useCallback(
     (id: string) => {
       const item = items.find((i) => i.id === id);
-      if (!item || item.readAt) return; // already read — no-op
+      if (!item || item.readAt) {return;} // already read — no-op
       markRead.mutate([id]);
     },
     [items, markRead],
@@ -114,7 +151,7 @@ function InboxFeed({ companyId }: { companyId: string }) {
 
   const markAllVisible = useCallback(() => {
     const unreadIds = items.filter((i) => !i.readAt).map((i) => i.id);
-    if (unreadIds.length === 0) return;
+    if (unreadIds.length === 0) {return;}
     markRead.mutate(unreadIds);
   }, [items, markRead]);
 
@@ -133,60 +170,52 @@ function InboxFeed({ companyId }: { companyId: string }) {
       const target = ev.target as HTMLElement | null;
       if (
         target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable)
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
       ) {
         return;
       }
-      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) {return;}
 
-      if (items.length === 0) return;
+      if (items.length === 0) {return;}
       const currentIdx = items.findIndex((i) => i.id === selectedId);
 
-      if (ev.key === "j" || ev.key === "ArrowDown") {
+      if (ev.key === 'j' || ev.key === 'ArrowDown') {
         ev.preventDefault();
         const next = items[Math.min(currentIdx + 1, items.length - 1)];
-        if (next) setSelectedId(next.id);
-      } else if (ev.key === "k" || ev.key === "ArrowUp") {
+        if (next) {setSelectedId(next.id);}
+      } else if (ev.key === 'k' || ev.key === 'ArrowUp') {
         ev.preventDefault();
         const prev = items[Math.max(currentIdx - 1, 0)];
-        if (prev) setSelectedId(prev.id);
-      } else if (ev.key === "a" || ev.key === "y") {
+        if (prev) {setSelectedId(prev.id);}
+      } else if (ev.key === 'a' || ev.key === 'y') {
         // Gmail-style: `y` archives the current conversation. We keep `a`
         // as an alias for discoverability.
         ev.preventDefault();
         if (selectedId) {
           doMarkRead(selectedId);
           const next = items[Math.min(currentIdx + 1, items.length - 1)];
-          if (next && next.id !== selectedId) setSelectedId(next.id);
+          if (next && next.id !== selectedId) {setSelectedId(next.id);}
         }
-      } else if (ev.key === "u") {
+      } else if (ev.key === 'u') {
         // Gmail-style: `u` marks unread.
         ev.preventDefault();
-        if (selectedId) markSelectedUnread(selectedId);
-      } else if (ev.key === "o" || ev.key === "Enter") {
+        if (selectedId) {markSelectedUnread(selectedId);}
+      } else if (ev.key === 'o' || ev.key === 'Enter') {
         ev.preventDefault();
         const selected = items.find((i) => i.id === selectedId);
         if (selected) {
           doMarkRead(selected.id);
           navigate(selected.link);
         }
-      } else if (ev.key === "?") {
+      } else if (ev.key === '?') {
         ev.preventDefault();
         setShowShortcuts((v) => !v);
       }
     }
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [
-    items,
-    selectedId,
-    doMarkRead,
-    markSelectedUnread,
-    navigate,
-  ]);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [items, selectedId, doMarkRead, markSelectedUnread, navigate]);
 
   const { todayItems, earlierItems } = useMemo(() => {
     const today: InboxItem[] = [];
@@ -223,22 +252,7 @@ function InboxFeed({ companyId }: { companyId: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
-        <div className="flex items-center gap-3 text-xs text-text-secondary">
-          <span>
-            <strong className="text-text-primary">{unreadCount}</strong> unread
-            of {items.length}
-          </span>
-          {data?.meta?.pendingApprovals ? (
-            <span>
-              · <strong>{data.meta.pendingApprovals}</strong> pending approvals
-            </span>
-          ) : null}
-          {data?.meta?.pendingThreadItems ? (
-            <span>
-              · <strong>{data.meta.pendingThreadItems}</strong> task questions
-            </span>
-          ) : null}
-        </div>
+        <InboxSummary unreadCount={unreadCount} total={items.length} meta={data?.meta} />
         <div className="flex items-center gap-2">
           <Button
             variant="ghost"
@@ -271,8 +285,7 @@ function InboxFeed({ companyId }: { companyId: string }) {
               <kbd className="kbd">k</kbd> / <kbd className="kbd">↑</kbd> prev
             </span>
             <span>
-              <kbd className="kbd">y</kbd> / <kbd className="kbd">a</kbd> archive
-              (mark read)
+              <kbd className="kbd">y</kbd> / <kbd className="kbd">a</kbd> archive (mark read)
             </span>
             <span>
               <kbd className="kbd">u</kbd> mark unread
@@ -291,10 +304,7 @@ function InboxFeed({ companyId }: { companyId: string }) {
       )}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-5 md:grid-cols-[minmax(0,340px)_1fr]">
-        <div
-          ref={listRef}
-          className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1"
-        >
+        <div ref={listRef} className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
           {todayItems.length > 0 && (
             <DayGroup
               label="Today"
@@ -417,18 +427,18 @@ function SwipeableInboxRow({
         onDrag={(_, info) => setDragX(info.offset.x)}
         onDragEnd={handleDragEnd}
         animate={{ x: 0 }}
-        transition={{ type: "spring", stiffness: 400, damping: 30 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 30 }}
         className={clsx(
-          "group relative flex cursor-pointer items-start gap-3 border px-3 py-2.5 backdrop-blur-sm transition-colors duration-150",
+          'group relative flex cursor-pointer items-start gap-3 border px-3 py-2.5 backdrop-blur-sm transition-colors duration-150',
           // Keep rounded corners via inner content, not the drag transform.
-          "rounded-lg",
+          'rounded-lg',
           isSelected
-            ? "border-accent/40 bg-accent/[0.07]"
-            : "border-white/[0.06] bg-surface hover:border-white/[0.12] hover:bg-white/[0.02]",
+            ? 'border-accent/40 bg-accent/[0.07]'
+            : 'border-white/[0.06] bg-surface hover:border-white/[0.12] hover:bg-white/[0.02]',
         )}
         onClick={() => {
           // Ignore clicks that actually came from a drag
-          if (Math.abs(dragX) > 4) return;
+          if (Math.abs(dragX) > 4) {return;}
           onSelect();
         }}
         onDoubleClick={(e) => {
@@ -438,15 +448,13 @@ function SwipeableInboxRow({
       >
         <span
           className={clsx(
-            "mt-0.5 flex h-2 w-2 shrink-0 rounded-full transition-all",
-            isRead
-              ? "bg-transparent"
-              : "bg-accent shadow-[0_0_6px_rgba(0,243,255,0.6)]",
+            'mt-0.5 flex h-2 w-2 shrink-0 rounded-full transition-all',
+            isRead ? 'bg-transparent' : 'bg-accent shadow-[0_0_6px_rgba(0,243,255,0.6)]',
           )}
         />
         <span
           className={clsx(
-            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+            'flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
             kindTint[item.kind],
           )}
         >
@@ -459,29 +467,23 @@ function SwipeableInboxRow({
           <div className="flex items-center gap-2">
             <p
               className={clsx(
-                "truncate text-xs",
-                isRead
-                  ? "font-normal text-text-secondary"
-                  : "font-medium text-text-primary",
+                'truncate text-xs',
+                isRead ? 'font-normal text-text-secondary' : 'font-medium text-text-primary',
               )}
             >
               {item.title}
             </p>
             {item.priority && priorityVariant[item.priority] && (
-              <Badge variant={priorityVariant[item.priority]}>
-                {item.priority}
-              </Badge>
+              <Badge variant={priorityVariant[item.priority]}>{item.priority}</Badge>
             )}
           </div>
           {item.subtitle && (
-            <p className="mt-0.5 truncate text-[11px] text-text-secondary">
-              {item.subtitle}
-            </p>
+            <p className="mt-0.5 truncate text-[11px] text-text-secondary">{item.subtitle}</p>
           )}
           {item.taskId && (
             <p className="mt-1 truncate font-mono text-[10px] text-text-secondary/70">
               task {shortId(item.taskId)}
-              {item.threadItemId ? ` · thread ${shortId(item.threadItemId)}` : ""}
+              {item.threadItemId ? ` · thread ${shortId(item.threadItemId)}` : ''}
             </p>
           )}
         </div>
@@ -512,16 +514,14 @@ function DetailPane({
       <div className="flex items-start gap-3 border-b border-white/[0.06] p-5">
         <span
           className={clsx(
-            "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
             kindTint[item.kind],
           )}
         >
           <Icon className="h-5 w-5" />
         </span>
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-text-primary">
-            {item.title}
-          </h2>
+          <h2 className="text-sm font-semibold text-text-primary">{item.title}</h2>
           <div className="mt-1 flex items-center gap-2 text-[11px] text-text-secondary">
             <span className="capitalize">{item.kind}</span>
             {item.taskId && (
@@ -543,9 +543,7 @@ function DetailPane({
               </>
             )}
             <span>·</span>
-            <span title={item.createdAt}>
-              {formatRelative(item.createdAt)} ago
-            </span>
+            <span title={item.createdAt}>{formatRelative(item.createdAt)} ago</span>
             {isRead && item.readAt && (
               <>
                 <span>·</span>
@@ -564,8 +562,8 @@ function DetailPane({
 
       <div className="flex-1 overflow-auto p-5 text-xs text-text-secondary">
         <p>
-          Open the linked {item.taskId ? "task thread" : item.kind} to review
-          the current state and complete the available action.
+          Open the linked {item.taskId ? 'task thread' : item.kind} to review the current state and
+          complete the available action.
         </p>
       </div>
 
@@ -595,7 +593,7 @@ function DetailPane({
 
 export function Inbox() {
   const { companyId } = useParams();
-  const [activeTab, setActiveTab] = useState("inbox");
+  const [activeTab, setActiveTab] = useState('inbox');
 
   return (
     <PageTransition>
@@ -610,24 +608,18 @@ export function Inbox() {
                 Inbox
               </h1>
               <p className="text-[11px] text-text-secondary">
-                Approvals, collaborations, and alerts in one feed. Press{" "}
+                Approvals, collaborations, and alerts in one feed. Press{' '}
                 <kbd className="kbd">?</kbd> for shortcuts.
               </p>
             </div>
           </div>
-          <Tabs
-            tabs={tabs}
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-          />
+          <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
         </div>
 
         <div className="flex-1 overflow-hidden">
-          {activeTab === "inbox" && companyId && (
-            <InboxFeed companyId={companyId} />
-          )}
-          {activeTab === "chat" && <BoardChat />}
-          {activeTab === "messages" && (
+          {activeTab === 'inbox' && companyId && <InboxFeed companyId={companyId} />}
+          {activeTab === 'chat' && <BoardChat />}
+          {activeTab === 'messages' && (
             <div className="flex h-full flex-col">
               <div className="flex-shrink-0 border-b border-white/[0.06] px-5 py-2 text-[11px] text-text-secondary">
                 <MessageCircle className="mr-1.5 inline h-3 w-3" />

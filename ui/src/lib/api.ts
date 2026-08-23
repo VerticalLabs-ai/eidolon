@@ -2700,7 +2700,8 @@ export const createArtifactFromTemplate = (
 
 // ── Inbox (unified feed) ────────────────────────────────────────────────
 
-export type InboxItemKind = 'approval' | 'collaboration' | 'activity' | 'task_thread';
+export type InboxItemKind =
+  'approval' | 'collaboration' | 'activity' | 'task_thread' | 'mission_question';
 
 export interface InboxItem {
   id: string;
@@ -2717,6 +2718,12 @@ export interface InboxItem {
   link: string;
   createdAt: string;
   readAt: string | null;
+  /** Mission question attention context (kind === 'mission_question'). */
+  projectId?: string;
+  runId?: string;
+  questionSetId?: string;
+  /** Whether the attention item is still actionable (open) or resolved history. */
+  actionable?: boolean;
 }
 
 export interface InboxResponse {
@@ -2725,6 +2732,7 @@ export interface InboxResponse {
     pendingApprovals: number;
     pendingCollaborations: number;
     pendingThreadItems?: number;
+    pendingMissionQuestions?: number;
     total: number;
     unread: number;
   };
