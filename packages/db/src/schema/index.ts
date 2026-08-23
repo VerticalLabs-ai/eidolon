@@ -73,3 +73,5 @@ export { modeProfiles } from './mode_profiles.js';
 export { runQuestionSets } from './run_question_sets.js';
 export { runQuestions } from './run_questions.js';
 export { runQuestionAnswers } from './run_question_answers.js';
+export { runPlanRevisions } from './run_plan_revisions.js';
+export { runPlanApprovalBindings } from './run_plan_approval_bindings.js';

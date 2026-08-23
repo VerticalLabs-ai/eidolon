@@ -288,6 +288,13 @@
       "when": 1787775600000,
       "tag": "0040_question_answers",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787862000000,
+      "tag": "0041_plan_revisions_approval_bindings",
+      "breakpoints": true
     }
   ]
 }

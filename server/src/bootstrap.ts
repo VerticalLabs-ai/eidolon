@@ -89,6 +89,8 @@ import {
   runQuestionSets,
   runQuestions,
   runQuestionAnswers,
+  runPlanRevisions,
+  runPlanApprovalBindings,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -175,6 +177,8 @@ const SCHEMA_BUNDLE = {
   runQuestionSets,
   runQuestions,
   runQuestionAnswers,
+  runPlanRevisions,
+  runPlanApprovalBindings,
 } as const;
 
 export interface BootstrapOptions {

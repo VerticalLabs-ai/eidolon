@@ -63,6 +63,17 @@ export interface RunProcessorDeps {
    * calls.
    */
   providerCall?: ProviderCallFn;
+  /**
+   * Planner service for handling `planning`-status runs. When a claimed run
+   * is in `planning` status, the processor delegates to the planner to
+   * generate, validate, and atomically publish a plan proposal, transitioning
+   * the run to `awaiting_approval` (VAL-PLAN-024, 025, 103, 114).
+   *
+   * If not provided, `planning` runs are left in place (no execution begins).
+   * The production worker wires a real planner; tests inject a harness-backed
+   * planner.
+   */
+  planner?: { plan: (claim: Claim, signal: AbortSignal) => Promise<void> };
 }
 
 interface RunRow {
@@ -124,6 +135,17 @@ export class RunProcessor {
 
     const data = await this.readRunAndPolicy(claim);
     if (!data || data.run.cancelRequestedAt !== null || signal.aborted) {
+      return;
+    }
+
+    // Planning dispatch: if the run is in `planning` status, delegate to the
+    // planner service to generate, validate, and atomically publish a plan
+    // proposal. The planner transitions the run to `awaiting_approval` on
+    // success or terminalizes on failure. No execution, tools, children, or
+    // artifacts begin during planning (VAL-PLAN-025, 026, 027, 106).
+    if (data.run.status === 'planning' && this.deps.planner) {
+      await this.deps.planner.plan(claim, signal);
+      await this.projectRunEvents(claim);
       return;
     }
 

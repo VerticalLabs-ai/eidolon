@@ -135,16 +135,17 @@ export class RunCoordinator {
       const nowIso = now.toISOString();
       const result = await tx.execute(sql`
         SELECT * FROM "mission_runs"
-        WHERE "status" IN ('queued', 'running', 'synthesizing')
+        WHERE "status" IN ('planning', 'queued', 'running', 'synthesizing')
           AND ("available_at" IS NULL OR "available_at" <= ${nowIso}::timestamptz)
           AND ("lease_expires_at" IS NULL OR "lease_expires_at" <= ${nowIso}::timestamptz)
           AND "cancel_requested_at" IS NULL
           AND "terminal_at" IS NULL
         ORDER BY
           CASE "status"
-            WHEN 'queued' THEN 0
-            WHEN 'running' THEN 1
-            WHEN 'synthesizing' THEN 2
+            WHEN 'planning' THEN 0
+            WHEN 'queued' THEN 1
+            WHEN 'running' THEN 2
+            WHEN 'synthesizing' THEN 3
           END,
           "available_at" ASC NULLS LAST,
           "created_at" ASC
@@ -166,7 +167,11 @@ export class RunCoordinator {
       }
 
       // Determine if this is a first claim or a recovery.
-      const isFirstClaim = run.status === 'queued' && run.lease_owner === null;
+      // A first claim is when the run has never been leased (no lease owner
+      // and no lease token). This covers both `queued` and `planning` runs
+      // that are freshly eligible. A recovery is when a previously-leased
+      // run's lease expired and a new worker claims it.
+      const isFirstClaim = run.lease_owner === null && run.lease_token === null;
       const isRecovery = !isFirstClaim;
       const newStatus = FIRST_CLAIM_TRANSITION[run.status] ?? run.status;
 
