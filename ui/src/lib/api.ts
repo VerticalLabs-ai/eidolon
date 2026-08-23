@@ -3713,6 +3713,43 @@ export interface MissionRunSnapshot {
   links: { ui: string };
   /** Server-derived queue health: "unavailable" when no worker heartbeat for >= 30s. */
   queueHealth?: 'available' | 'unavailable';
+  /**
+   * Absolute Mission wall-time deadline (createdAt + limits.durationSeconds)
+   * (VAL-MODEQ-128). Null when no policy snapshot exists.
+   */
+  deadlineAt?: string | null;
+  /** Remaining wall time in ms until the deadline (VAL-MODEQ-128). */
+  remainingWallMs?: number | null;
+  /**
+   * Current open question set with its immutable question definitions
+   * (VAL-MODEQ-044, VAL-MODEQ-045). Null when the run is not awaiting_input
+   * or has no open set. Questions are ordered by their persisted `order`.
+   */
+  currentQuestionSet?: MissionCurrentQuestionSet | null;
+}
+
+/** A question definition in the current open question set. */
+export interface MissionQuestionDefinition {
+  questionKey: string;
+  order: number;
+  type: string;
+  label: string;
+  help: string | null;
+  required: boolean;
+  default: unknown;
+  options: unknown[] | null;
+  validation: Record<string, unknown> | null;
+}
+
+/** The current open question set exposed by the run snapshot. */
+export interface MissionCurrentQuestionSet {
+  id: string;
+  ordinal: number;
+  version: number;
+  status: string;
+  invalidationReason: string | null;
+  createdAt: string;
+  questions: MissionQuestionDefinition[];
 }
 
 /** Lean run summary from the scoped list endpoint. */
@@ -3903,5 +3940,136 @@ export function retryMissionRun(
       body: JSON.stringify(body),
       headers,
     },
+  );
+}
+
+// ── Mission Question Answers ──────────────────────────────────────────────
+
+/** Convenience answer response. The convenience `/answers` route maps to the
+ * canonical `questions.answer` command and returns the applied command result
+ * plus the current run snapshot. */
+export interface MissionAnswerResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/** Answer body for the convenience `/answers` route (VAL-MODEQ-064).
+ * Submission is atomic and idempotent: all answers validate together or
+ * none commit, and the set closes only when every required question is
+ * valid. The question-set id and version bind the submission to the exact
+ * persisted definition (VAL-MODEQ-075). */
+export interface MissionAnswerBody {
+  questionSetId: string;
+  questionSetVersion: number;
+  /** Map of question key → validated answer value. */
+  answers: Record<string, unknown>;
+}
+
+/**
+ * Submit an idempotent, atomic answer to a Mission run's current open
+ * question set (`POST /:runId/answers`). The body names the exact
+ * question-set id and version; a stale version is rejected with
+ * `QUESTION_SET_VERSION_MISMATCH` (VAL-MODEQ-075) and an invalidated set
+ * with `QUESTION_SET_INVALIDATED` (VAL-MODEQ-076).
+ *
+ * The `ifMatch` state version sends a strong quoted `If-Match` ETag so a
+ * stale run action is rejected (VAL-MODEQ-073). The browser never advances
+ * state optimistically; the authoritative snapshot/event refetch reveals
+ * the answered/resumed state (VAL-MODEQ-109).
+ */
+export function answerMissionRun(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  body: MissionAnswerBody,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionAnswerResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/answers`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers,
+    },
+  );
+}
+
+// ── Mission Question-Set History ───────────────────────────────────────────
+
+/** A question definition in a historical question-set entry. */
+export interface MissionHistoryQuestion {
+  id: string;
+  questionKey: string;
+  order: number;
+  type: string;
+  label: string;
+  help: string | null;
+  required: boolean;
+  default: unknown;
+  options: unknown[] | null;
+  validation: Record<string, unknown> | null;
+}
+
+/** An accepted answer in a historical question-set entry. Viewers receive
+ * `{ redacted: true }` in place of the value (VAL-MODEQ-148). */
+export interface MissionHistoryAnswer {
+  id: string;
+  questionKey: string;
+  answerRevision: number;
+  value: unknown;
+  contentHash: string;
+  actorType: string;
+  actorId: string | null;
+  createdAt: string;
+}
+
+/** A historical question-set entry: immutable definitions plus accepted
+ * answers (VAL-MODEQ-110, VAL-MODEQ-148). Ordered by (ordinal, id). */
+export interface MissionQuestionSetHistoryEntry {
+  id: string;
+  ordinal: number;
+  version: number;
+  status: string;
+  invalidationReason: string | null;
+  promptContextHash: string | null;
+  createdAt: string;
+  answeredAt: string | null;
+  invalidatedAt: string | null;
+  questions: MissionHistoryQuestion[];
+  answers: MissionHistoryAnswer[];
+}
+
+export interface MissionQuestionSetsResult {
+  data: { questionSets: MissionQuestionSetHistoryEntry[]; nextCursor: string | null };
+}
+
+/**
+ * Read scoped, bounded question-set history for a run
+ * (`GET /:runId/question-sets?limit=&cursor=`). Returns at most 50 entries
+ * ordered by (ordinal ASC, id ASC) with opaque keyset cursors. Each entry
+ * includes immutable question definitions and accepted answer revisions;
+ * viewers receive redacted answer values (VAL-MODEQ-110, VAL-MODEQ-148).
+ */
+export function getMissionQuestionSets(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  opts?: { limit?: number; cursor?: string },
+) {
+  const params = new URLSearchParams();
+  if (opts?.limit) {
+    params.set('limit', String(opts.limit));
+  }
+  if (opts?.cursor) {
+    params.set('cursor', opts.cursor);
+  }
+  const qs = params.toString();
+  return request<MissionQuestionSetsResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/question-sets${qs ? `?${qs}` : ''}`,
   );
 }

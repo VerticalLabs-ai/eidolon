@@ -2946,3 +2946,83 @@ export function useRetryMissionRun(companyId: string, projectId: string, runId: 
     retry: false,
   });
 }
+
+// ── Mission Question Answers ──────────────────────────────────────────────
+
+/**
+ * Idempotent, atomic Mission answer submission
+ * (`POST /:runId/answers`). The idempotency key is retained by the
+ * caller across recoverable retries so a lost response replays the
+ * identical logical command (Normative Boundary 2 / VAL-MODEQ-133). The
+ * browser never advances state optimistically; the authoritative
+ * snapshot/event/question-set-history refetch reveals the answered/resumed
+ * state (VAL-MODEQ-109). On success the run's question-set history, run
+ * snapshot, events, and run list are invalidated so all authoritative
+ * surfaces converge (Normative Boundary 1).
+ */
+export function useAnswerMissionRun(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      body: api.MissionAnswerBody;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      const res = await api.answerMissionRun(
+        companyId,
+        projectId,
+        runId,
+        args.body,
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+      return res;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ['mission-question-sets', companyId, projectId, runId],
+      });
+      qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+    },
+    retry: false,
+  });
+}
+
+// ── Mission Question-Set History ───────────────────────────────────────────
+
+/**
+ * Read scoped, bounded question-set history for a run
+ * (`GET /:runId/question-sets`). Returns immutable question definitions and
+ * accepted answer revisions ordered by (ordinal, id) with stable opaque
+ * keyset pagination (VAL-MODEQ-110, VAL-MODEQ-148). Used to render the
+ * reviewable, non-editable question/answer history in the Mission timeline.
+ */
+export function useMissionQuestionSets(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-question-sets', companyId, projectId, runId],
+    queryFn: async () => {
+      const res = await api.getMissionQuestionSets(companyId, projectId, runId!, {
+        limit: 50,
+      });
+      return unwrap<{
+        questionSets: api.MissionQuestionSetHistoryEntry[];
+        nextCursor: string | null;
+      }>(res);
+    },
+    enabled: !!runId,
+    placeholderData: (
+      prev:
+        | {
+            questionSets: api.MissionQuestionSetHistoryEntry[];
+            nextCursor: string | null;
+          }
+        | undefined,
+    ) => prev,
+  });
+}

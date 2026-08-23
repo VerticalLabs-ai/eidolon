@@ -23,6 +23,8 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { MissionCancelDialog } from './MissionCancelDialog';
+import { MissionQuestionCard } from './MissionQuestionCard';
+import { MissionQuestionHistory } from './MissionQuestionHistory';
 
 /** Terminal run statuses. */
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -297,6 +299,16 @@ export function MissionRunCard({
       <RunCardFailure snapshot={snapshot} status={authoritativeStatus} />
       <RunCardOutput snapshot={snapshot} status={authoritativeStatus} />
       <RunCardCancelledDetail snapshot={snapshot} status={authoritativeStatus} />
+      {snapshot?.currentQuestionSet && (
+        <MissionQuestionCard
+          companyId={companyId}
+          projectId={projectId}
+          runId={run.id}
+          questionSet={snapshot.currentQuestionSet}
+          stateVersion={snapshot.stateVersion}
+        />
+      )}
+      <MissionQuestionHistory companyId={companyId} projectId={projectId} runId={run.id} />
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
       <RunCardRetryControl
         companyId={companyId}
