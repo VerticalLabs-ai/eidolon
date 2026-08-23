@@ -342,7 +342,7 @@ describe('VAL-RUN-073: event replay sanitizes sensitive payloads', () => {
     const start = await request(app)
       .post(base)
       .set('Idempotency-Key', `replay-${randomUUID()}`)
-      .send({ projectThreadId: threadId, mode: 'fast', request: { text: 'Test work' } })
+      .send({ projectThreadId: threadId, mode: 'deep_work', request: { text: 'Test work' } })
       .expect(202);
     runId = start.body.data.run.id;
 
@@ -419,7 +419,7 @@ describe('VAL-RUN-073: SSE stream sanitizes sensitive payloads', () => {
       companyId,
       projectId,
       idempotencyKey: `sse-${randomUUID()}`,
-      body: { projectThreadId: threadId, mode: 'fast', request: { text: 'SSE test' } },
+      body: { projectThreadId: threadId, mode: 'deep_work', request: { text: 'SSE test' } },
       actorType: 'user',
       actorId: 'dev-user-000',
     });
@@ -630,7 +630,7 @@ describe('VAL-RUN-046/073: full surface canary scan', () => {
     const start = await request(server)
       .post(base)
       .set('Idempotency-Key', `full-${randomUUID()}`)
-      .send({ projectThreadId: threadId, mode: 'fast', request: { text: 'Full scan' } })
+      .send({ projectThreadId: threadId, mode: 'deep_work', request: { text: 'Full scan' } })
       .expect(202);
     const runId = start.body.data.run.id;
 

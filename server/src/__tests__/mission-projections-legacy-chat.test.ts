@@ -212,7 +212,8 @@ describe('Mission Projections and Legacy Chat — VAL-CROSS-075/092/093/097, VAL
         sql`SELECT status, state_version FROM mission_runs WHERE id = ${runId}`,
       );
       expect(run).toBeDefined();
-      expect(run.status).toBe('draft');
+      // Fast mode auto-enqueues (draft→queued) within the start transaction.
+      expect(run.status).toBe('queued');
 
       // The thread item projection failed — no thread item exists.
       const threadItems = await execRows<{ id: string }>(
@@ -304,7 +305,7 @@ describe('Mission Projections and Legacy Chat — VAL-CROSS-075/092/093/097, VAL
         db,
         sql`SELECT status, state_version FROM mission_runs WHERE id = ${runId}`,
       );
-      expect(runAfterRepair.status).toBe('draft');
+      expect(runAfterRepair.status).toBe('queued');
     });
   });
 
@@ -506,7 +507,7 @@ describe('Mission Projections and Legacy Chat — VAL-CROSS-075/092/093/097, VAL
         db,
         sql`SELECT status FROM mission_runs WHERE id = ${runId}`,
       );
-      expect(run.status).toBe('draft');
+      expect(run.status).toBe('queued');
     });
   });
 

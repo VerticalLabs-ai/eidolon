@@ -156,10 +156,11 @@ describe('Mission run list (VAL-RUN-019)', () => {
     expect(res.body.data.runs[0].id).toBe(b.run.id);
     expect(res.body.data.runs[0].status).toBe('planning');
 
-    // The draft run is excluded.
-    const draftRes = await request(app).get(listUrl()).query({ status: 'draft' }).expect(200);
-    expect(draftRes.body.data.runs).toHaveLength(1);
-    expect(draftRes.body.data.runs[0].id).toBe(a.run.id);
+    // The queued run (fast mode auto-enqueued) is excluded from the
+    // planning filter.
+    const queuedRes = await request(app).get(listUrl()).query({ status: 'queued' }).expect(200);
+    expect(queuedRes.body.data.runs).toHaveLength(1);
+    expect(queuedRes.body.data.runs[0].id).toBe(a.run.id);
   });
 
   it('rejects an invalid status filter with 400 VALIDATION_ERROR', async () => {
@@ -335,9 +336,9 @@ describe('Mission run snapshot recovery state (VAL-RUN-020)', () => {
     expect(run.companyId).toBe(companyId);
     expect(run.projectId).toBe(projectId);
     expect(run.projectThreadId).toBe(threadId);
-    expect(run.status).toBe('draft');
-    expect(run.stateVersion).toBe(1);
-    expect(run.lastEventSequence).toBe(4);
+    expect(run.status).toBe('queued');
+    expect(run.stateVersion).toBe(2);
+    expect(run.lastEventSequence).toBe(5);
     expect(run.resolvedMode).toBe('fast');
     expect(run.policySnapshotId).toBeTruthy();
     expect(run.policyContentHash).toMatch(/^[0-9a-f]{64}$/);
@@ -476,8 +477,8 @@ describe('Mission run conditional refresh (VAL-RUN-021)', () => {
       .set('If-None-Match', oldEtag)
       .expect(200);
     expect(res.body.data.run.status).toBe('planning');
-    expect(res.body.data.run.stateVersion).toBe(2);
-    expect(res.headers.etag).toBe(`"2"`);
+    expect(res.body.data.run.stateVersion).toBe(3);
+    expect(res.headers.etag).toBe(`"3"`);
     expect(res.headers.etag).not.toBe(oldEtag);
   });
 
@@ -682,7 +683,7 @@ describe('Mission run aggregate ETag (VAL-RUN-129)', () => {
     expect(afterRes.headers.etag).not.toBe(beforeEtag);
     expect(afterRes.body.data.run.budget.settledCents).toBe(50);
     expect(afterRes.body.data.run.budget.actualCostCents).toBe(50);
-    expect(afterRes.body.data.run.status).toBe('draft');
+    expect(afterRes.body.data.run.status).toBe('queued');
   });
 
   it('changes the ETag when a child summary changes (status unchanged)', async () => {
@@ -707,6 +708,6 @@ describe('Mission run aggregate ETag (VAL-RUN-129)', () => {
     expect(afterRes.headers.etag).not.toBe(beforeEtag);
     expect(afterRes.body.data.run.childSummary.running).toBe(1);
     expect(afterRes.body.data.run.childSummary.total).toBe(1);
-    expect(afterRes.body.data.run.status).toBe('draft');
+    expect(afterRes.body.data.run.status).toBe('queued');
   });
 });

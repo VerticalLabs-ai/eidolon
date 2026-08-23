@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { createTestDb, createTestServer } from '../test-utils.js';
 import { MissionStartService } from '../services/mission/start.js';
@@ -313,7 +313,7 @@ describe('Mission viewer read-only access (VAL-RUN-067, VAL-CROSS-065)', () => {
 
     const afterRes = await request(app).get(`${base()}/${runId}`).expect(200);
     expect(afterRes.body.data.run.stateVersion).toBe(beforeVersion);
-    expect(afterRes.body.data.run.status).toBe('draft');
+    expect(afterRes.body.data.run.status).toBe('queued');
   });
 });
 
@@ -372,6 +372,11 @@ describe('Mission member permitted actions (VAL-RUN-068)', () => {
   it('member can cancel a run', async () => {
     const start = await startRun(db, companyId, projectId, threadId, 'member-cancel-setup');
     const runId = start.run.id;
+    // Fast mode auto-enqueues to queued; move to draft so cancel
+    // terminalizes immediately (draft is a non-lease state).
+    await db.drizzle.execute(
+      sql`UPDATE "mission_runs" SET "status" = 'draft' WHERE "id" = ${runId}`,
+    );
 
     const res = await request(app)
       .post(`${base()}/${runId}/cancel`)
@@ -386,6 +391,11 @@ describe('Mission member permitted actions (VAL-RUN-068)', () => {
   it('member can retry a terminal run', async () => {
     const start = await startRun(db, companyId, projectId, threadId, 'member-retry-setup');
     const runId = start.run.id;
+    // Fast mode auto-enqueues to queued; move to draft so cancel
+    // terminalizes immediately (draft is a non-lease state).
+    await db.drizzle.execute(
+      sql`UPDATE "mission_runs" SET "status" = 'draft' WHERE "id" = ${runId}`,
+    );
 
     // Cancel the run first to make it terminal.
     await request(app)
@@ -571,8 +581,8 @@ describe('Mission cross-company isolation (VAL-RUN-069, VAL-CROSS-071)', () => {
     const snapshot = await request(app)
       .get(`/api/companies/${companyA}/projects/${projectA}/mission-runs/${runIdA}`)
       .expect(200);
-    expect(snapshot.body.data.run.status).toBe('draft');
-    expect(snapshot.body.data.run.stateVersion).toBe(1);
+    expect(snapshot.body.data.run.status).toBe('queued');
+    expect(snapshot.body.data.run.stateVersion).toBe(2);
   });
 });
 
@@ -669,8 +679,8 @@ describe('Mission cross-project isolation (VAL-RUN-070)', () => {
     const snapshot = await request(app)
       .get(`/api/companies/${companyId}/projects/${projectA}/mission-runs/${runIdA}`)
       .expect(200);
-    expect(snapshot.body.data.run.status).toBe('draft');
-    expect(snapshot.body.data.run.stateVersion).toBe(1);
+    expect(snapshot.body.data.run.status).toBe('queued');
+    expect(snapshot.body.data.run.stateVersion).toBe(2);
   });
 });
 
@@ -1117,7 +1127,7 @@ describe('Mission role downgrade and membership removal (VAL-CROSS-088)', () => 
       .expect(200);
     expect(readRes.body.data.run.id).toBe(runId);
     // The run state is unchanged (no stale queued actions were applied).
-    expect(readRes.body.data.run.status).toBe('draft');
+    expect(readRes.body.data.run.status).toBe('queued');
   });
 
   it('SSE access checker detects session revocation (live SSE invalidation)', async () => {

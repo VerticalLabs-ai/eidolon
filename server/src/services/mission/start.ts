@@ -97,7 +97,12 @@ export interface CommandSummary {
 
 /** Test-only failpoint hook. Throwing aborts the transaction. */
 export type FailpointHook =
-  'after_policy' | 'after_run' | 'after_reservation' | 'after_command' | 'after_events';
+  | 'after_policy'
+  | 'after_run'
+  | 'after_reservation'
+  | 'after_command'
+  | 'after_events'
+  | 'after_enqueue';
 
 export interface MissionStartDeps {
   clock?: () => Date;
@@ -123,6 +128,22 @@ export class MissionStartService {
     if (this.deps.failpoint?.at === at) {
       throw this.deps.failpoint.throw();
     }
+  }
+
+  /**
+   * Determine whether a run should be enqueued (draft→queued) immediately
+   * after the start aggregate commits. Modes that require mandatory
+   * planning (planning='always') or mandatory approval (approval='always')
+   * stay in draft; their draft→planning transition is owned by a later
+   * milestone. Modes with 'when_complex' or 'never' planning/approval are
+   * enqueued — without a complexity classifier yet, 'when_complex' is
+   * treated as simple (the default), connecting the start service to the
+   * worker so runs actually progress.
+   */
+  private shouldEnqueue(policy: ResolvedPolicy): boolean {
+    const planningStrategy = (policy.planningPolicy as { strategy?: string })?.strategy;
+    const approvalStrategy = (policy.approvalPolicy as { strategy?: string })?.strategy;
+    return planningStrategy !== 'always' && approvalStrategy !== 'always';
   }
 
   async start(input: StartInput): Promise<StartResult> {
@@ -343,7 +364,55 @@ export class MissionStartService {
 
         this.fireFailpoint('after_events');
 
-        // 5g. Build the exact replayable result snapshot from the
+        // 5g. Enqueue step: for Fast/simple modes that don't require
+        //     mandatory planning or approval, transition the run from
+        //     draft → queued so the orchestration worker can claim and
+        //     progress it. Modes with planning='always' or approval='always'
+        //     (e.g. Deep Work, Analyst) stay in draft; their draft→planning
+        //     transition is owned by a later milestone.
+        //
+        //     The run starts in draft (event 1: run.created with
+        //     status:'draft') and then transitions to queued within the
+        //     same atomic transaction, recording a run.status_changed
+        //     event. This connects the start service to the worker —
+        //     without this step, runs would be stranded in draft and the
+        //     worker (which only claims queued/running/synthesizing) could
+        //     never progress them.
+        let finalStatus: string = 'draft';
+        let finalStateVersion = 1;
+        if (this.shouldEnqueue(policy)) {
+          seq += 1;
+          finalStatus = 'queued';
+          finalStateVersion = 2;
+          await tx.insert(schema.runEvents).values({
+            companyId,
+            projectId,
+            runId,
+            sequence: seq,
+            type: 'run.status_changed',
+            schemaVersion: 1,
+            payload: { from: 'draft', to: 'queued' },
+            commandId: commandRow.id,
+            actorType: 'system',
+            actorId: null,
+            traceId: traceId ?? null,
+            occurredAt: now,
+          });
+          await tx
+            .update(schema.missionRuns)
+            .set({
+              status: 'queued',
+              availableAt: now,
+              stateVersion: finalStateVersion,
+              lastEventSequence: seq,
+              updatedAt: now,
+            })
+            .where(eq(schema.missionRuns.id, runId));
+
+          this.fireFailpoint('after_enqueue');
+        }
+
+        // 5h. Build the exact replayable result snapshot from the
         //     in-transaction data and persist it in the command's
         //     result_body within the same transaction. This ensures the
         //     replayable status, headers, and body are committed atomically
@@ -364,6 +433,8 @@ export class MissionStartService {
           ceiling,
           reservedCents,
           lastEventSequence: seq,
+          finalStatus,
+          finalStateVersion,
           now,
           commandCreatedAt: commandRow.createdAt,
           commandIdempotencyKey: idempotencyKey,
@@ -425,6 +496,8 @@ export class MissionStartService {
     ceiling: number;
     reservedCents: number;
     lastEventSequence: number;
+    finalStatus: string;
+    finalStateVersion: number;
     now: Date;
     commandCreatedAt: Date;
     commandIdempotencyKey: string;
@@ -437,8 +510,8 @@ export class MissionStartService {
         companyId: input.companyId,
         projectId: input.projectId,
         projectThreadId: input.projectThreadId,
-        status: 'draft',
-        stateVersion: 1,
+        status: input.finalStatus,
+        stateVersion: input.finalStateVersion,
         lastEventSequence: input.lastEventSequence,
         resolvedMode: input.resolvedMode,
         policySnapshotId: input.policySnapshotId,

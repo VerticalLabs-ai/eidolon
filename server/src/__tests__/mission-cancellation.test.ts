@@ -268,7 +268,10 @@ describe('MissionCancellationService — VAL-RUN-117: Every nonterminal phase ca
 
   it('cancellation from draft terminalizes immediately', async () => {
     ctx = await freshRun('cancel-draft');
-    // Run starts in draft status.
+    // Fast mode auto-enqueues to queued; move back to draft to test
+    // cancellation from the draft phase specifically.
+    await setRunStatus(ctx.db, ctx.runId, 'draft');
+    // Run is now in draft status.
     const beforeRow = await getRunRow(ctx.db, ctx.runId);
     expect(beforeRow!.status).toBe('draft');
     const beforeVersion = beforeRow!.state_version as number;
@@ -456,6 +459,9 @@ describe('MissionCancellationService — VAL-RUN-136: Cancellation deadline', ()
 
   it('no late output commits after cancellation wins (VAL-RUN-041)', async () => {
     ctx = await freshRun('cancel-no-late-output');
+    // Fast mode auto-enqueues to queued; move back to draft so cancel
+    // terminalizes immediately (draft is a non-lease state).
+    await setRunStatus(ctx.db, ctx.runId, 'draft');
     const beforeRow = await getRunRow(ctx.db, ctx.runId);
     const beforeVersion = beforeRow!.state_version as number;
 
@@ -493,6 +499,9 @@ describe('MissionCancellationService — VAL-RUN-136: Cancellation deadline', ()
 
   it('terminalize is idempotent for already-terminal runs', async () => {
     ctx = await freshRun('cancel-idempotent-terminal');
+    // Fast mode auto-enqueues to queued; move back to draft so cancel
+    // terminalizes immediately (draft is a non-lease state).
+    await setRunStatus(ctx.db, ctx.runId, 'draft');
     const beforeRow = await getRunRow(ctx.db, ctx.runId);
     const beforeVersion = beforeRow!.state_version as number;
 

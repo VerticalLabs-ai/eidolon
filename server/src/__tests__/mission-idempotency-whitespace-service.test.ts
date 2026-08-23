@@ -184,7 +184,9 @@ describe('Mission service-level idempotency whitespace rejection (VAL-RUN-114)',
     let runId: string;
 
     beforeAll(async () => {
-      // Create a run to target with cancel commands.
+      // Create a run to target with cancel commands. Use deep_work mode so
+      // the run stays in draft (deep_work requires mandatory planning);
+      // fast/auto modes are now enqueued to queued by the start service.
       enableMissionFlag();
       const service = new MissionStartService(db);
       const result = await service.start({
@@ -193,7 +195,7 @@ describe('Mission service-level idempotency whitespace rejection (VAL-RUN-114)',
         idempotencyKey: 't1',
         body: {
           projectThreadId: threadId,
-          mode: 'fast',
+          mode: 'deep_work',
           request: { text: 'target run for whitespace cancel tests' },
         },
         actorType: 'user',

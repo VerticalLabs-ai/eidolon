@@ -609,7 +609,7 @@ describe('Mission start with encrypted ingress (VAL-RUN-133/134/135)', () => {
       .set('Idempotency-Key', 'enc-boundary-text-001')
       .send({ ...validBody(), request: { text } })
       .expect(202);
-    expect(res.body.data.run.status).toBe('draft');
+    expect(res.body.data.run.status).toBe('queued');
   });
 
   // VAL-RUN-134: one-over fails atomically
@@ -708,7 +708,7 @@ describe('Mission start with encrypted ingress (VAL-RUN-133/134/135)', () => {
         request: { text: 'Summarize this artifact.', attachments: [artifactId] },
       })
       .expect(202);
-    expect(res.body.data.run.status).toBe('draft');
+    expect(res.body.data.run.status).toBe('queued');
   });
 
   // VAL-RUN-133: uniform non-enumerating responses

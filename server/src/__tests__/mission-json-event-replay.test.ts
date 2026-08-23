@@ -22,12 +22,14 @@ async function startRun(
   key: string,
   text = 'Do work',
 ) {
+  // Use deep_work mode so the run stays in draft (4 initial events, no
+  // auto-enqueue). Fast/auto modes now enqueue (draft→queued, 5 events).
   const service = new MissionStartService(db);
   return service.start({
     companyId,
     projectId,
     idempotencyKey: key,
-    body: { projectThreadId: threadId, mode: 'fast', request: { text } },
+    body: { projectThreadId: threadId, mode: 'deep_work', request: { text } },
     actorType: 'user',
     actorId: 'dev-user-000',
   });

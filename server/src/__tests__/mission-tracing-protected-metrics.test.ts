@@ -99,7 +99,9 @@ function extractLabelNames(text: string): Set<string> {
     const labelPart = match[0].slice(match[0].indexOf('{') + 1, -1);
     for (const pair of labelPart.split(',')) {
       const name = pair.split('=')[0].trim();
-      if (name) {names.add(name);}
+      if (name) {
+        names.add(name);
+      }
     }
   }
   return names;
@@ -333,7 +335,9 @@ describe('Mission trace correlation and protected metrics', () => {
         if (labelMatch) {
           for (const pair of labelMatch[1].split(',')) {
             const name = pair.split('=')[0].trim();
-            if (name) {labelNames.add(name);}
+            if (name) {
+              labelNames.add(name);
+            }
           }
         }
       }
@@ -520,19 +524,19 @@ describe('Mission trace correlation and protected metrics', () => {
       const { companyId, projectId, threadId } = await seedScope(db, '__mtest__ metrics-status');
       const base = `/api/companies/${companyId}/projects/${projectId}/mission-runs`;
 
-      // Start a run (status: draft)
+      // Start a run (fast mode auto-enqueues to queued)
       const startRes = await startRun(app, base, threadId, `status-${randomUUID()}`).expect(202);
       const runId = startRes.body.data.run.id;
 
-      // Check the gauge shows at least 1 draft run
+      // Check the gauge shows at least 1 queued run
       const res = await request(app)
         .get('/api/metrics')
         .set('Authorization', 'Bearer metrics-token')
         .expect(200);
 
-      const draftCount =
-        parseMetric(res.text, 'eidolon_mission_runs_by_status', { status: 'draft' }) ?? 0;
-      expect(draftCount).toBeGreaterThanOrEqual(1);
+      const queuedCount =
+        parseMetric(res.text, 'eidolon_mission_runs_by_status', { status: 'queued' }) ?? 0;
+      expect(queuedCount).toBeGreaterThanOrEqual(1);
     });
 
     it('increments budget denial counter when budget is unavailable', async () => {

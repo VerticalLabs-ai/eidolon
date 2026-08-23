@@ -297,9 +297,11 @@ describe('Mission start API', () => {
     expect(res.body.links.ui).toContain(projectId);
     expect(res.body.links.ui).toContain(res.body.data.run.id);
 
-    // Run is non-terminal (draft) — no terminal event yet.
-    expect(res.body.data.run.status).toBe('draft');
-    expect(res.body.data.run.lastEventSequence).toBe(4);
+    // Run is non-terminal — fast mode is enqueued (draft→queued) so the
+    // worker can claim it. The run.created event records the initial draft
+    // status; a run.status_changed event records the draft→queued transition.
+    expect(res.body.data.run.status).toBe('queued');
+    expect(res.body.data.run.lastEventSequence).toBe(5);
     expect(res.body.data.run.budget.reservedCents).toBeGreaterThan(0);
   });
 
@@ -515,13 +517,14 @@ describe('Mission start aggregate atomicity (VAL-RUN-113)', () => {
       actorId: 'dev-user-000',
     });
 
-    expect(result.run.status).toBe('draft');
-    expect(result.run.lastEventSequence).toBe(4);
+    // Fast mode is enqueued (draft→queued) so the worker can claim it.
+    expect(result.run.status).toBe('queued');
+    expect(result.run.lastEventSequence).toBe(5);
 
     const counts = await countAggregate(db, companyId, projectId);
     expect(counts.runs).toBe(1);
     expect(counts.commands).toBe(1);
-    expect(counts.events).toBe(4);
+    expect(counts.events).toBe(5);
     expect(counts.reservations).toBe(1);
     expect(counts.allocations).toBe(1);
     expect(counts.policies).toBe(1);
@@ -619,8 +622,9 @@ describe('Mission start aggregate atomicity (VAL-RUN-113)', () => {
       'mode.resolved',
       'policy.snapshotted',
       'budget.reserved',
+      'run.status_changed',
     ]);
-    expect(events.map((e) => Number(e.sequence))).toEqual([1, 2, 3, 4]);
+    expect(events.map((e) => Number(e.sequence))).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('the root run references itself and the reservation is finite', async () => {
