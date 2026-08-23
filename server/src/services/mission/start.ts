@@ -14,6 +14,7 @@ import {
 } from '../../middleware/observability.js';
 import type { ProjectionSurface } from './projection.js';
 import { validateAndEncryptIngress, encryptStartPayload } from './ingress.js';
+import { validateIdempotencyKey } from './idempotency.js';
 
 /**
  * Mission start service.
@@ -128,7 +129,14 @@ export class MissionStartService {
     const { companyId, projectId, body, actorType, actorId, traceId } = input;
     const schema = this.db.schema;
     const now = this.now();
-    const idempotencyKey = input.idempotencyKey;
+    // Defense-in-depth: validate the idempotency key at the service boundary
+    // before any database query or state change (VAL-RUN-114). The route
+    // also validates, but Node's HTTP parser strips leading/trailing OWS
+    // from header values per RFC 7230 before Express sees them, so this
+    // service-level check is the authoritative seam for callers that reach
+    // the service directly (internal calls, tests, non-OWS Unicode
+    // whitespace that survives HTTP parsing).
+    const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
 
     // 1. Idempotency replay/conflict check (start is scoped by project).
     const existing = await this.lookupStartCommand(companyId, projectId, idempotencyKey);

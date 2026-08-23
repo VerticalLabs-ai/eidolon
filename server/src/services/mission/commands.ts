@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
-import { commandRequestHash } from './idempotency.js';
+import { commandRequestHash, validateIdempotencyKey } from './idempotency.js';
 import { canonicalHash } from './policy.js';
 import { BudgetService } from './budget.js';
 import { MissionCancellationService } from './cancellation.js';
@@ -197,9 +197,17 @@ export class MissionCommandService {
   }
 
   async submit(input: CommandInput): Promise<CommandResult> {
-    const { companyId, projectId, runId, type, body, idempotencyKey, ifMatch, actorType, actorId } =
-      input;
+    const { companyId, projectId, runId, type, body, ifMatch, actorType, actorId } = input;
     const traceId = input.traceId ?? null;
+
+    // Defense-in-depth: validate the idempotency key at the service boundary
+    // before any database query or state change (VAL-RUN-114). The route
+    // also validates, but Node's HTTP parser strips leading/trailing OWS
+    // from header values per RFC 7230 before Express sees them, so this
+    // service-level check is the authoritative seam for callers that reach
+    // the service directly (internal calls, tests, non-OWS Unicode
+    // whitespace that survives HTTP parsing).
+    const idempotencyKey = validateIdempotencyKey(input.idempotencyKey);
 
     // 1. Idempotency replay takes first precedence: a same-key replay wins
     //    even after the run advanced (VAL-RUN-137). Scope check includes
