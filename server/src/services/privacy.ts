@@ -276,6 +276,14 @@ export const PERSONAL_DATA_RULES: PersonalDataRule[] = [
     exportable: true,
     why: 'The append-only event journal is Mission audit evidence. The actor id is pseudonymised so the event trail stays intact without identifying the person.',
   },
+  {
+    table: 'run_question_answers',
+    column: 'actor_id',
+    strategy: 'pseudonymise',
+    scope: { kind: 'direct' },
+    exportable: true,
+    why: 'Immutable answer records are Mission audit evidence. The actor id is pseudonymised so the answer trail stays intact without identifying the person.',
+  },
 ];
 
 /**
@@ -697,6 +705,13 @@ const NON_IDENTITY_CLASSIFICATIONS: PiiFieldClassification[] = [
     sensitivity: 'metadata',
     protection: 'company-owned',
     why: 'Template config JSONB. Could carry sensitive configuration patterns; metadata-tier sensitive.',
+  },
+  {
+    table: 'mode_profiles',
+    column: 'config',
+    sensitivity: 'metadata',
+    protection: 'company-owned',
+    why: 'Custom Mission mode profile config JSONB. Holds closed, bounded policy/instructions that may reference sensitive company directives; metadata-tier sensitive.',
   },
   // --- Financial -----------------------------------------------------------
   {

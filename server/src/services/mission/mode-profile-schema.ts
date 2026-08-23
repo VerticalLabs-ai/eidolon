@@ -43,9 +43,10 @@ function codepointRange(min: number, max: number) {
  * We allow TAB (U+0009), LF (U+000A), CR (U+000D) in instructions/description
  * since those are legitimate formatting characters.
  */
-// eslint-disable-next-line no-control-regex, no-misleading-character-class
+/* eslint-disable no-control-regex, no-misleading-character-class */
 const UNSAFE_CODEPOINT_RE =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069\u200B\u200C\u200D\uFEFF]/;
+/* eslint-enable no-control-regex, no-misleading-character-class */
 
 function rejectUnsafeControls(s: string): boolean {
   return !UNSAFE_CODEPOINT_RE.test(s);
