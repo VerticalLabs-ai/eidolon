@@ -358,9 +358,9 @@ describe('MissionPlanCard', () => {
     // The card has a heading identifying it as the proposed plan.
     const heading = screen.getByRole('heading', { name: /proposed plan/i });
     expect(heading).toBeInTheDocument();
-    // Revision number and content hash prefix are shown.
+    // Revision number and content hash prefix are shown in the header.
     expect(screen.getByText(/revision 1/i)).toBeInTheDocument();
-    expect(screen.getByText(/a{12}/i)).toBeInTheDocument();
+    expect(screen.getByTestId('plan-hash')).toHaveTextContent(/^a{12}$/);
   });
 });
 
@@ -487,5 +487,216 @@ describe('MissionPlanCard routing labels (VAL-PLAN-125)', () => {
     expect(screen.queryByText(/assigned to .*step-1/i)).not.toBeInTheDocument();
     // Assigned (concreteAgent) step: assigned to agent-42, never implies pending.
     expect(screen.getByText(/assigned to agent-42/i)).toBeInTheDocument();
+  });
+});
+
+// ── VAL-PLAN-018..022: Quantitative plan authority card (budgets, limits,
+//    partial-result policy, revision, and hash). ───────────────────────
+describe('MissionPlanCard quantitative authority (VAL-PLAN-018..022)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.useMissionCurrentPlanRevision.mockReturnValue(planQueryResult());
+  });
+
+  /** Plan with boundary-mixed step budgets (zero, small, large). */
+  function boundaryPlanRevision(): MissionPlanRevision {
+    const base = planRevision();
+    return {
+      ...base,
+      contentHash: 'c'.repeat(64),
+      content: {
+        ...base.content,
+        steps: [
+          { ...base.content.steps[0], stepKey: 'step-1', budgetCents: 0 },
+          { ...base.content.steps[1], stepKey: 'step-2', budgetCents: 12345 },
+        ],
+        synthesis: { ...base.content.synthesis, budgetCents: 678 },
+        planningBudgetCents: 0,
+      },
+    };
+  }
+
+  // ── VAL-PLAN-018: Plan card shows step budgets ───────────────────────
+  it('renders each step budget as an integer-cent currency amount, including zero', () => {
+    mocks.useMissionCurrentPlanRevision.mockReturnValue(planQueryResult(boundaryPlanRevision()));
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    const budgets = screen.getAllByTestId('step-budget');
+    expect(budgets).toHaveLength(2);
+    // Zero and large boundary values render exact currency, no float estimate.
+    expect(budgets[0]).toHaveTextContent('$0.00');
+    expect(budgets[1]).toHaveTextContent('$123.45');
+  });
+
+  it('renders step budgets at exact currency values from the default plan', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    const budgets = screen.getAllByTestId('step-budget');
+    expect(budgets[0]).toHaveTextContent('$5.00');
+    expect(budgets[1]).toHaveTextContent('$10.00');
+  });
+
+  // ── VAL-PLAN-019: Plan card shows total estimated budget ─────────────
+  it('renders the total estimated budget reconciling step, planning, and synthesis amounts', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    // Default plan: steps 500 + 1000 = 1500, planning 50, synthesis 200.
+    // Total = 1750 cents = $17.50.
+    const total = screen.getByTestId('plan-total-budget');
+    expect(total).toHaveTextContent('$17.50');
+    // The separately budgeted planning and synthesis amounts are visible.
+    expect(screen.getByTestId('plan-planning-budget')).toHaveTextContent('$0.50');
+    expect(screen.getByTestId('plan-synthesis-budget')).toHaveTextContent('$2.00');
+    // Step subtotal is visible and reconciles to the sum of step budgets.
+    expect(screen.getByTestId('plan-step-budget-subtotal')).toHaveTextContent('$15.00');
+  });
+
+  it('reconciles the total for boundary budgets including zero planning', () => {
+    mocks.useMissionCurrentPlanRevision.mockReturnValue(planQueryResult(boundaryPlanRevision()));
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    // Steps 0 + 12345 = 12345, planning 0, synthesis 678. Total = 13023.
+    expect(screen.getByTestId('plan-step-budget-subtotal')).toHaveTextContent('$123.45');
+    expect(screen.getByTestId('plan-planning-budget')).toHaveTextContent('$0.00');
+    expect(screen.getByTestId('plan-synthesis-budget')).toHaveTextContent('$6.78');
+    expect(screen.getByTestId('plan-total-budget')).toHaveTextContent('$130.23');
+  });
+
+  // ── VAL-PLAN-020: Plan card shows plan limits ────────────────────────
+  it('renders all applicable plan limits before a decision', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    const limits = screen.getByTestId('plan-limits');
+    expect(limits).toBeInTheDocument();
+    // Each applicable limit is visible and reconciles to the plan snapshot.
+    // Asserted as combined container text to remain robust against duplicate
+    // numeric values (e.g. steps and descendants both equal 12).
+    expect(limits).toHaveTextContent(/Steps.*12.*Duration/i);
+    expect(limits).toHaveTextContent(/Duration.*2,700s.*45m/i);
+    expect(limits).toHaveTextContent(/Provider calls.*48/i);
+    expect(limits).toHaveTextContent(/Total tokens.*300,000/i);
+    expect(limits).toHaveTextContent(/Persisted output.*8 MiB.*8,388,608/i);
+    expect(limits).toHaveTextContent(/Total cost.*\$50\.00/i);
+  });
+
+  // ── VAL-PLAN-021: Plan card shows partial-result policy ──────────────
+  it('renders the require_all partial-result policy in plain language', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    const policy = screen.getByTestId('plan-partial-policy');
+    expect(policy).toBeInTheDocument();
+    expect(policy).toHaveTextContent(/require all/i);
+    // Plain-language explanation, not just the raw enum token.
+    expect(policy).toHaveTextContent(/step/i);
+  });
+
+  it('renders the best_effort partial-result policy in plain language', () => {
+    const bestEffort = planRevision({
+      content: { ...planRevision().content, partialResultPolicy: 'best_effort' },
+    });
+    mocks.useMissionCurrentPlanRevision.mockReturnValue(planQueryResult(bestEffort));
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    const policy = screen.getByTestId('plan-partial-policy');
+    expect(policy).toHaveTextContent(/best effort/i);
+  });
+
+  // ── VAL-PLAN-022: Plan card shows revision and hash ──────────────────
+  it('renders the revision number and full immutable content hash through a labelled details control', () => {
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    // Revision number is always visible.
+    expect(screen.getByText(/revision 1/i)).toBeInTheDocument();
+    // The full 64-character lowercase hexadecimal hash is available through a
+    // clearly labelled details control (the inline prefix is only a preview).
+    const details = screen.getByTestId('plan-hash-details');
+    expect(details.tagName).toBe('DETAILS');
+    expect(within(details).getByText(/content hash and revision/i)).toBeInTheDocument();
+    expect(within(details).getByText('a'.repeat(64))).toBeInTheDocument();
+  });
+
+  it('renders the full hash for a boundary revision and hash value', () => {
+    const boundary = planRevision({
+      revision: 99,
+      contentHash: '0123456789abcdef'.repeat(4),
+    });
+    mocks.useMissionCurrentPlanRevision.mockReturnValue(planQueryResult(boundary));
+    render(
+      <MissionPlanCard
+        companyId="company-1"
+        projectId="project-1"
+        runId="run-1"
+        currentPlanRevisionId="plan-rev-1"
+        resolvedMode="deep_work"
+      />,
+      { wrapper },
+    );
+    expect(screen.getByText(/revision 99/i)).toBeInTheDocument();
+    const details = screen.getByTestId('plan-hash-details');
+    expect(within(details).getByText('0123456789abcdef'.repeat(4))).toBeInTheDocument();
   });
 });

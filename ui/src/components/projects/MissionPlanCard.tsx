@@ -1,4 +1,5 @@
 import { useMissionCurrentPlanRevision } from '@/lib/hooks';
+import { formatCents } from '@/lib/format';
 import type { MissionPlanRevision, MissionPlanRouting, MissionPlanStep } from '@/lib/api';
 
 /**
@@ -92,6 +93,10 @@ export function MissionPlanCard({
       <PlanObjective revision={revision} />
       <PlanSteps revision={revision} />
       <PlanSynthesis revision={revision} />
+      <PlanBudgetSummary revision={revision} />
+      <PlanLimits revision={revision} />
+      <PlanPartialPolicy revision={revision} />
+      <PlanHashDetails revision={revision} />
       <PlanAnalystEvidenceNotice resolvedMode={resolvedMode} revision={revision} />
     </section>
   );
@@ -142,6 +147,7 @@ function PlanStepItem({ step, ordinal }: { step: MissionPlanStep; ordinal: numbe
       <StepTools step={step} />
       <StepExpectedOutputs step={step} />
       <StepCompletionCriteria step={step} />
+      <StepBudget step={step} />
       <StepEvidence step={step} />
     </li>
   );
@@ -262,6 +268,20 @@ function StepCompletionCriteria({ step }: { step: MissionPlanStep }) {
   );
 }
 
+/** Render the step budget as an integer-cent currency amount, including
+ *  zero (VAL-PLAN-018). The value is always an exact currency string
+ *  derived from integer cents; no hidden or floating-point estimate. */
+function StepBudget({ step }: { step: MissionPlanStep }) {
+  return (
+    <div className="mb-1.5" data-testid="step-budget">
+      <p className="text-xs font-medium text-text-secondary inline">Budget: </p>
+      <span className="text-xs tabular-nums text-text-primary">
+        {formatCents(step.budgetCents)}
+      </span>
+    </div>
+  );
+}
+
 /** Render evidence requirements (VAL-PLAN-008). */
 function StepEvidence({ step }: { step: MissionPlanStep }) {
   if (!step.evidenceRequirements?.citationsRequired) {
@@ -327,5 +347,146 @@ function PlanAnalystEvidenceNotice({
     >
       Evidence plan: external factual claims require citations.
     </p>
+  );
+}
+
+/**
+ * Total estimated Mission budget, reconciled from the immutable plan
+ * content (VAL-PLAN-019).
+ *
+ * The total equals the sum of displayed step budgets plus the separately
+ * budgeted planning and synthesis amounts. Every value is an exact
+ * integer-cent currency string; no hidden or floating-point estimate. The
+ * step subtotal, planning, and synthesis amounts are shown separately so a
+ * reviewer can reconcile the arithmetic against the authoritative plan
+ * snapshot.
+ */
+function PlanBudgetSummary({ revision }: { revision: MissionPlanRevision }) {
+  const stepSubtotal = revision.content.steps.reduce((sum, s) => sum + s.budgetCents, 0);
+  const planning = revision.content.planningBudgetCents;
+  const synthesis = revision.content.synthesis.budgetCents;
+  const total = stepSubtotal + planning + synthesis;
+  return (
+    <div className="mb-3">
+      <p className="text-xs font-medium text-text-secondary mb-1">Estimated budget</p>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+        <dt className="text-text-muted">Step budgets</dt>
+        <dd className="tabular-nums text-text-primary" data-testid="plan-step-budget-subtotal">
+          {formatCents(stepSubtotal)}
+        </dd>
+        <dt className="text-text-muted">Planning</dt>
+        <dd className="tabular-nums text-text-primary" data-testid="plan-planning-budget">
+          {formatCents(planning)}
+        </dd>
+        <dt className="text-text-muted">Synthesis</dt>
+        <dd className="tabular-nums text-text-primary" data-testid="plan-synthesis-budget">
+          {formatCents(synthesis)}
+        </dd>
+        <dt className="text-text-secondary font-medium">Total</dt>
+        <dd className="tabular-nums text-text-primary font-medium" data-testid="plan-total-budget">
+          {formatCents(total)}
+        </dd>
+      </dl>
+    </div>
+  );
+}
+
+/** Format a duration in seconds as a compact human-readable string with the
+ *  exact seconds value, e.g. `2,700s (45m 0s)`. */
+function formatDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${seconds.toLocaleString('en-US')}s (${minutes}m ${remainingSeconds}s)`;
+}
+
+/** Format a byte count as a compact binary size with the exact byte value,
+ *  e.g. `8 MiB (8,388,608 bytes)`. */
+function formatBytes(bytes: number): string {
+  const mib = bytes / (1024 * 1024);
+  return `${mib} MiB (${bytes.toLocaleString('en-US')} bytes)`;
+}
+
+/**
+ * Applicable plan limits, available before a decision (VAL-PLAN-020).
+ *
+ * Each value is reconciled to the authoritative plan/policy snapshot. The
+ * limits are the immutable revision's `limits` object; the total cost limit
+ * is rendered as exact currency from integer cents.
+ */
+function PlanLimits({ revision }: { revision: MissionPlanRevision }) {
+  const limits = revision.content.limits;
+  const rows: Array<{ label: string; value: string }> = [
+    { label: 'Steps', value: limits.steps.toLocaleString('en-US') },
+    { label: 'Duration', value: formatDuration(limits.durationSeconds) },
+    { label: 'Provider calls', value: limits.providerCalls.toLocaleString('en-US') },
+    { label: 'Total tokens', value: limits.totalTokens.toLocaleString('en-US') },
+    { label: 'Persisted output', value: formatBytes(limits.outputBytes) },
+    { label: 'Total cost', value: formatCents(limits.costCents) },
+    { label: 'Depth', value: limits.depth.toLocaleString('en-US') },
+    { label: 'Fan-out', value: limits.fanOut.toLocaleString('en-US') },
+    { label: 'Descendants', value: limits.descendants.toLocaleString('en-US') },
+  ];
+  return (
+    <div className="mb-3" data-testid="plan-limits">
+      <p className="text-xs font-medium text-text-secondary mb-1">Limits</p>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+        {rows.map((row) => (
+          <div key={row.label} className="contents">
+            <dt className="text-text-muted">{row.label}</dt>
+            <dd className="tabular-nums text-text-primary">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+/** Human-readable mapping for the closed partial-result policy set. */
+function partialPolicyLabel(policy: 'require_all' | 'best_effort'): string {
+  return policy === 'require_all'
+    ? 'Require all steps to complete before synthesis.'
+    : 'Best effort: permit partial results when a step fails.';
+}
+
+/**
+ * The partial-result policy, in plain language, before approval
+ * (VAL-PLAN-021). The value comes from the immutable plan content, not a
+ * client-inferred transition.
+ */
+function PlanPartialPolicy({ revision }: { revision: MissionPlanRevision }) {
+  const policy = revision.content.partialResultPolicy;
+  return (
+    <div className="mb-3" data-testid="plan-partial-policy">
+      <p className="text-xs font-medium text-text-secondary inline">Partial-result policy: </p>
+      <span className="text-xs text-text-primary break-words">{partialPolicyLabel(policy)}</span>
+    </div>
+  );
+}
+
+/**
+ * The immutable revision number and full lowercase SHA-256 content hash
+ * (VAL-PLAN-022). The revision is always visible in the card header; the
+ * full 64-character hash is available through a clearly labelled details
+ * control so the card stays compact while the exact hash remains inspectable
+ * before approval. The hash is rendered verbatim from the authoritative
+ * revision and never recomputed in the browser.
+ */
+function PlanHashDetails({ revision }: { revision: MissionPlanRevision }) {
+  return (
+    <details className="mb-2" data-testid="plan-hash-details">
+      <summary className="text-xs text-text-muted cursor-pointer select-none">
+        Content hash and revision
+      </summary>
+      <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+        <dt className="text-text-muted">Revision</dt>
+        <dd className="tabular-nums text-text-primary">{revision.revision}</dd>
+        <dt className="text-text-muted">Content hash</dt>
+        <dd>
+          <code className="text-xs text-text-primary font-mono break-all">
+            {revision.contentHash}
+          </code>
+        </dd>
+      </dl>
+    </details>
   );
 }
