@@ -7,10 +7,12 @@ import {
   PLAN_NODE_KINDS,
   PLAN_REPLAY_CLASSES,
   PLAN_PARTIAL_RESULT_POLICIES,
+  PLAN_DEPENDENCY_KINDS,
   PLAN_EXECUTOR_FIELD_MANIFEST,
   type PlanNodeKind,
   type PlanReplayClass,
   type PlanPartialResultPolicy,
+  type PlanDependencyKind,
 } from '@eidolon/shared';
 
 /**
@@ -240,6 +242,18 @@ const Step = z
     title: PlanText,
     description: PlanText,
     dependencies: z.array(PlanKey),
+    /**
+     * Optional per-dependency kind map. Keys are step keys from
+     * `dependencies`; values are `'required'` (default) or `'optional'`.
+     * An optional edge may supply a typed unavailable value when the
+     * predecessor fails or is absent (VAL-SUB-003, VAL-SUB-107).
+     */
+    dependencyKinds: z
+      .record(
+        PlanKey,
+        z.enum([...PLAN_DEPENDENCY_KINDS] as [PlanDependencyKind, ...PlanDependencyKind[]]),
+      )
+      .optional(),
     inputBindings: z.array(InputBinding),
     routing: Routing,
     toolAllowlist: z.array(PlanKey),
@@ -319,7 +333,12 @@ export type PlanSynthesis = z.infer<typeof Synthesis>;
 export type PlanContent = z.infer<typeof PlanContentV1>;
 
 // Re-export closed enum types for consumers.
-export type { PlanNodeKind, PlanReplayClass, PlanPartialResultPolicy } from '@eidolon/shared';
+export type {
+  PlanNodeKind,
+  PlanReplayClass,
+  PlanPartialResultPolicy,
+  PlanDependencyKind,
+} from '@eidolon/shared';
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -507,13 +526,186 @@ function validateBudgetTotals(content: PlanContent): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Topology validation (VAL-SUB-085, VAL-SUB-106)
+// ---------------------------------------------------------------------------
+
 /**
- * Validate the closed executable plan graph (VAL-PLAN-113).
+ * Validate the parent-child topology of an approved plan.
+ *
+ * Rejects (VAL-SUB-106):
+ * - `parentStepKey` references a non-existent step (missing/foreign parent).
+ * - Parent-chain cycles (a step whose ancestor chain loops back).
+ * - `childOrdinal` duplicates under the same parent (duplicate ordinals).
+ * - Depth exceeding `plan.limits.depth` (root depth 0, child = parent + 1).
+ *
+ * Rejects (VAL-SUB-085):
+ * - Direct executable-child count at any node exceeding the effective
+ *   fan-out (`plan.limits.fanOut` or the step's own `limits.fanOut`).
+ *
+ * Does NOT enforce a single root (milestone-3 flat plans with multiple
+ * root-level steps remain valid). Only non-root steps (parentStepKey !==
+ * null) are validated for parent references and ordinals.
+ *
+ * Throws `AppError(422, PLAN_GRAPH_INVALID)` on any topology failure.
+ */
+function validateTopology(content: PlanContent, byKey: Map<string, PlanStep>): void {
+  // 1. Parent reference validation: every non-null parentStepKey must exist.
+  for (const step of content.steps) {
+    if (step.parentStepKey !== null && !byKey.has(step.parentStepKey)) {
+      throw new AppError(
+        422,
+        'PLAN_GRAPH_INVALID',
+        `Step "${step.stepKey}" references missing parent step: ${step.parentStepKey}`,
+      );
+    }
+  }
+
+  // 2. Parent-chain cycle detection (follow parentStepKey links).
+  for (const step of content.steps) {
+    if (step.parentStepKey === null) {
+      continue;
+    }
+    const seen = new Set<string>();
+    let current: string | null = step.stepKey;
+    while (current !== null) {
+      if (seen.has(current)) {
+        throw new AppError(
+          422,
+          'PLAN_GRAPH_INVALID',
+          `Parent-chain cycle detected involving step: ${step.stepKey}`,
+        );
+      }
+      seen.add(current);
+      const node: PlanStep | undefined = current === step.stepKey ? step : byKey.get(current);
+      if (!node) {
+        break; // missing parent already reported above
+      }
+      current = node.parentStepKey;
+    }
+  }
+
+  // 3. Compute depth for each step and validate against plan depth limit.
+  const depthCache = new Map<string, number>();
+  function computeDepth(stepKey: string): number {
+    if (depthCache.has(stepKey)) {
+      return depthCache.get(stepKey)!;
+    }
+    const step = byKey.get(stepKey);
+    if (!step || step.parentStepKey === null) {
+      depthCache.set(stepKey, 0);
+      return 0;
+    }
+    const d = computeDepth(step.parentStepKey) + 1;
+    depthCache.set(stepKey, d);
+    return d;
+  }
+  const maxDepth = content.limits.depth;
+  for (const step of content.steps) {
+    const d = computeDepth(step.stepKey);
+    if (d > maxDepth) {
+      throw new AppError(
+        422,
+        'PLAN_GRAPH_INVALID',
+        `Step "${step.stepKey}" at depth ${d} exceeds plan depth limit ${maxDepth}`,
+      );
+    }
+  }
+
+  // 4. Sibling-unique childOrdinal under each parent.
+  const ordinalsByParent = new Map<string, Set<number>>();
+  for (const step of content.steps) {
+    if (step.parentStepKey === null) {
+      continue;
+    }
+    const parent = step.parentStepKey;
+    let set = ordinalsByParent.get(parent);
+    if (!set) {
+      set = new Set<number>();
+      ordinalsByParent.set(parent, set);
+    }
+    if (set.has(step.childOrdinal)) {
+      throw new AppError(
+        422,
+        'PLAN_GRAPH_INVALID',
+        `Duplicate child ordinal ${step.childOrdinal} under parent "${parent}" (step "${step.stepKey}")`,
+      );
+    }
+    set.add(step.childOrdinal);
+  }
+
+  // 5. Fan-out validation: per-parent direct child count <= effective fan-out
+  // (VAL-SUB-085). The effective fan-out for a parent is the minimum of the
+  // plan-level fan-out and the parent step's own fan-out limit (if set).
+  const childCountByParent = new Map<string, number>();
+  for (const step of content.steps) {
+    if (step.parentStepKey === null) {
+      continue;
+    }
+    const parent = step.parentStepKey;
+    childCountByParent.set(parent, (childCountByParent.get(parent) ?? 0) + 1);
+  }
+  const planFanOut = content.limits.fanOut;
+  for (const [parentKey, count] of childCountByParent) {
+    const parentStep = byKey.get(parentKey);
+    const stepFanOut = parentStep?.limits?.fanOut;
+    const effectiveFanOut =
+      stepFanOut !== undefined ? Math.min(planFanOut, stepFanOut) : planFanOut;
+    if (count > effectiveFanOut) {
+      throw new AppError(
+        422,
+        'PLAN_GRAPH_INVALID',
+        `Step "${parentKey}" has ${count} direct children, exceeding effective fan-out ${effectiveFanOut}`,
+      );
+    }
+  }
+
+  // 6. Descendant count validation: total non-root steps <= plan descendants
+  // limit.
+  const descendantCount = content.steps.filter((s) => s.parentStepKey !== null).length;
+  if (descendantCount > content.limits.descendants) {
+    throw new AppError(
+      422,
+      'PLAN_GRAPH_INVALID',
+      `Plan has ${descendantCount} descendant steps, exceeding descendants limit ${content.limits.descendants}`,
+    );
+  }
+}
+
+/**
+ * Validate that dependencyKinds keys are a subset of the step's dependencies
+ * (VAL-SUB-003). Throws `AppError(422, PLAN_GRAPH_INVALID)` on any unknown
+ * dependency kind key.
+ */
+function validateDependencyKinds(content: PlanContent): void {
+  for (const step of content.steps) {
+    if (!step.dependencyKinds) {
+      continue;
+    }
+    const deps = new Set(step.dependencies);
+    for (const key of Object.keys(step.dependencyKinds)) {
+      if (!deps.has(key)) {
+        throw new AppError(
+          422,
+          'PLAN_GRAPH_INVALID',
+          `Step "${step.stepKey}" declares dependencyKinds for non-dependency: ${key}`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Validate the closed executable plan graph (VAL-PLAN-113, VAL-SUB-085,
+ * VAL-SUB-106).
  *
  * Rejects: zero executable steps (enforced by the schema), self/unknown/
  * duplicate dependency edges, cycles, impossible routing, synthesis
- * references to undeclared outputs, input bindings to undeclared outputs, and
- * totals that omit enforced planning/synthesis costs.
+ * references to undeclared outputs, input bindings to undeclared outputs,
+ * totals that omit enforced planning/synthesis costs, invalid topology
+ * (missing/foreign parents, parent-chain cycles, duplicate ordinals, depth
+ * exceeding the plan limit), fan-out exceeding the effective limit, and
+ * descendant count exceeding the plan limit.
  *
  * Throws `AppError(422, PLAN_GRAPH_INVALID)` on any graph failure.
  */
@@ -528,6 +720,8 @@ export function validatePlanGraph(content: PlanContent): PlanContent {
   validateInputBindings(content, byKey);
   validateSynthesisInputs(content, byKey);
   validateBudgetTotals(content);
+  validateTopology(content, byKey);
+  validateDependencyKinds(content);
   return content;
 }
 
@@ -580,6 +774,7 @@ function canonicalStep(step: PlanStep): unknown {
     title: step.title,
     description: step.description,
     dependencies: step.dependencies, // ordered
+    dependencyKinds: step.dependencyKinds, // optional; stripped when undefined
     inputBindings: step.inputBindings.map(canonicalInputBinding), // ordered
     routing: canonicalRouting(step.routing),
     toolAllowlist: sortedCopy(step.toolAllowlist), // set

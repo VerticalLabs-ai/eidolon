@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { ChatMessage, CompletionResult, ProviderConfig } from '../../providers/types.js';
 import { resolveProviderApiKey } from '../provider-key.js';
@@ -11,6 +11,8 @@ import { MissionRetryService } from './retry.js';
 import { BudgetService } from './budget.js';
 import { projectEvent } from './projection.js';
 import { decryptEnvelope } from './ingress.js';
+import { TopologyMaterializer } from './topology-materializer.js';
+import type { PlanContent } from './plan-schema.js';
 import logger from '../../utils/logger.js';
 
 /**
@@ -74,6 +76,13 @@ export interface RunProcessorDeps {
    * planner.
    */
   planner?: { plan: (claim: Claim, signal: AbortSignal) => Promise<void> };
+  /**
+   * Topology materializer for approved plans. When a claimed root run has an
+   * approved plan with child steps, the processor materializes the topology
+   * into child shells and assignments (VAL-SUB-001, 002, 003, 005). If not
+   * provided, a default materializer is constructed from the db instance.
+   */
+  materializer?: TopologyMaterializer;
 }
 
 interface RunRow {
@@ -89,6 +98,9 @@ interface RunRow {
   requestEnvelope: string | null;
   initiatingAgentId: string | null;
   createdAt: Date;
+  parentRunId: string | null;
+  rootRunId: string;
+  approvedPlanRevisionId: string | null;
 }
 
 interface PolicyInfo {
@@ -149,6 +161,26 @@ export class RunProcessor {
       return;
     }
 
+    // Topology materialization (VAL-SUB-001, 002, 003, 005):
+    // When a root run (parentRunId === null) has an approved plan, materialize
+    // the topology into child shells and assignments. If the plan has non-root
+    // executable steps (children), the root oversees children and does not
+    // execute a single LLM call — children are claimed and advanced
+    // separately. If the plan has no children (flat plan), the root executes
+    // directly via the existing path below.
+    if (
+      data.run.status === 'running' &&
+      data.run.parentRunId === null &&
+      data.run.approvedPlanRevisionId &&
+      !signal.aborted
+    ) {
+      const handled = await this.handleTopologyMaterialization(claim, data.run);
+      if (handled) {
+        await this.projectRunEvents(claim);
+        return;
+      }
+    }
+
     // VAL-MODEQ-151: Root agent revocation is deny-only.
     //
     // Before any provider call or commit, re-check the initiating/executing
@@ -194,6 +226,84 @@ export class RunProcessor {
       leaseToken: claim.leaseToken,
     });
     return result.terminalized;
+  }
+
+  // -- internal: topology materialization (VAL-SUB-001, 002, 003, 005) ----
+
+  /**
+   * Handle topology materialization for a claimed root run with an approved
+   * plan. Returns true if the root should NOT proceed to direct execution
+   * (i.e., the plan has children and the root oversees them), false if the
+   * root should execute directly (flat plan with no children).
+   *
+   * Materialization is idempotent: if already materialized, it checks
+   * whether the plan has children and returns accordingly.
+   */
+  private async handleTopologyMaterialization(claim: Claim, run: RunRow): Promise<boolean> {
+    const schema = this.db.schema;
+    const materializer =
+      this.deps.materializer ?? new TopologyMaterializer(this.db, { clock: () => this.now() });
+
+    // Load the approved plan revision.
+    const [revision] = await this.db.drizzle
+      .select()
+      .from(schema.runPlanRevisions)
+      .where(eq(schema.runPlanRevisions.id, run.approvedPlanRevisionId!))
+      .limit(1);
+
+    if (!revision) {
+      // No revision found — fall through to direct execution.
+      return false;
+    }
+
+    const plan = revision.content as unknown as PlanContent;
+    const hasChildren = plan.steps.some((s) => s.parentStepKey !== null);
+
+    if (!hasChildren) {
+      // Flat plan (no child topology) — root executes directly.
+      return false;
+    }
+
+    // Materialize the topology in a fenced transaction. The fence ensures
+    // a stale worker cannot materialize after lease loss.
+    await this.db.drizzle.transaction(async (tx) => {
+      // Lock the root run row.
+      const [lockedRun] = await tx
+        .select()
+        .from(schema.missionRuns)
+        .where(
+          and(
+            eq(schema.missionRuns.companyId, claim.companyId),
+            eq(schema.missionRuns.id, claim.runId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      if (!lockedRun || lockedRun.terminalAt !== null) {
+        return; // run is terminal; nothing to do
+      }
+
+      // Fence: verify lease token still matches.
+      if (lockedRun.leaseToken !== claim.leaseToken) {
+        return; // stale worker; another claim owns this run
+      }
+
+      await materializer.materialize(
+        tx,
+        lockedRun,
+        plan,
+        revision.id,
+        revision.contentHash,
+        'system',
+        claim.leaseOwner,
+        null,
+      );
+    });
+
+    // The root oversees children; do not execute a single LLM call.
+    // Children are queued and claimable by the worker.
+    return true;
   }
 
   // -- internal: decrypt request envelope ----------------------------------
@@ -396,6 +506,9 @@ export class RunProcessor {
         requestEnvelope: schema.missionRuns.requestEnvelope,
         initiatingAgentId: schema.missionRuns.initiatingAgentId,
         createdAt: schema.missionRuns.createdAt,
+        parentRunId: schema.missionRuns.parentRunId,
+        rootRunId: schema.missionRuns.rootRunId,
+        approvedPlanRevisionId: schema.missionRuns.approvedPlanRevisionId,
       })
       .from(schema.missionRuns)
       .where(eq(schema.missionRuns.id, claim.runId))

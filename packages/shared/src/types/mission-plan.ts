@@ -37,6 +37,24 @@ export type PlanRoutingKind = (typeof PLAN_ROUTING_KINDS)[number];
 export const PLAN_INPUT_SOURCE_KINDS = ['stepOutput', 'requestContext', 'artifact'] as const;
 export type PlanInputSourceKind = (typeof PLAN_INPUT_SOURCE_KINDS)[number];
 
+/** The closed set of dependency kinds (required vs optional edges). */
+export const PLAN_DEPENDENCY_KINDS = ['required', 'optional'] as const;
+export type PlanDependencyKind = (typeof PLAN_DEPENDENCY_KINDS)[number];
+
+/** The closed set of step assignment lifecycle statuses. */
+export const STEP_ASSIGNMENT_STATUSES = [
+  'pending_dependencies',
+  'pending_routing',
+  'routed',
+  'queued',
+  'running',
+  'synthesizing',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+export type StepAssignmentStatus = (typeof STEP_ASSIGNMENT_STATUSES)[number];
+
 /** Contract schema version for stable evolution. */
 export const PLAN_CONTRACT_SCHEMA_VERSION = 1;
 
@@ -95,6 +113,7 @@ const STEP_AUTHORITY_FIELDS = [
   'title',
   'description',
   'dependencies',
+  'dependencyKinds',
   'inputBindings',
   'routing',
   'toolAllowlist',

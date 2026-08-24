@@ -309,6 +309,13 @@
       "when": 1788034800000,
       "tag": "0043_current_authorization",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1788121200000,
+      "tag": "0044_run_step_assignments",
+      "breakpoints": true
     }
   ]
 }
