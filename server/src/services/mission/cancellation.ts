@@ -378,6 +378,24 @@ export class MissionCancellationService {
     const budgetService = new BudgetService(this.db, { clock: () => now });
     await budgetService.release(tx, { companyId: run.companyId, runId: run.id });
 
+    // VAL-SUB-050, 051, 064, 065, 111: For non-root (child) runs, update the
+    // step assignment with the cancelled result and propagate the parent's
+    // partial-result policy. Under require_all, this cascades cancellation
+    // to remaining required siblings. Under best_effort, siblings continue.
+    if (run.parentRunId !== null && run.parentRunId !== run.id) {
+      await this.applyParentPolicyOnChildTerminal(
+        tx,
+        run.companyId,
+        run.projectId,
+        run.id,
+        run.parentRunId,
+        run.rootRunId,
+        'cancelled',
+        { actorType, actorId, traceId } as RequestCancellationInput,
+        traceId,
+      );
+    }
+
     // Emit budget.released event.
     const budgetSeq = seq + 1;
     await tx

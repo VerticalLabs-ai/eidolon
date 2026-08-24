@@ -283,6 +283,26 @@ export class MissionCompletionService {
       occurredAt: now,
     });
 
+    // VAL-SUB-064, 065, 066, 111: For non-root (child) runs, update the
+    // step assignment with the completed result and propagate the parent's
+    // partial-result policy. This ensures the synthesis manifest has the
+    // correct result status for each direct child.
+    if (run.parentRunId !== null) {
+      const { SubtreeCancellationService } = await import('./subtree-cancellation.js');
+      const subtreeService = new SubtreeCancellationService(this.db, { clock: () => now });
+      await subtreeService.applyChildTerminalPolicy(tx, {
+        companyId: run.companyId,
+        projectId: run.projectId,
+        rootRunId: run.rootRunId,
+        childRunId: run.id,
+        parentRunId: run.parentRunId,
+        terminalStatus: 'completed',
+        actorType,
+        actorId,
+        traceId,
+      });
+    }
+
     // Release residual budget.
     const budgetService = new BudgetService(this.db, { clock: () => now });
     await budgetService.release(tx, { companyId: run.companyId, runId: run.id });

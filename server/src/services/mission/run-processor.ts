@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { ChatMessage, CompletionResult, ProviderConfig } from '../../providers/types.js';
 import { resolveProviderApiKey } from '../provider-key.js';
@@ -10,6 +10,7 @@ import { MissionRecoveryService } from './recovery.js';
 import { MissionCompletionService } from './completion.js';
 import { MissionRetryService } from './retry.js';
 import { BudgetService } from './budget.js';
+import { MissionSynthesisService } from './synthesis.js';
 import { projectEvent } from './projection.js';
 import { decryptEnvelope } from './ingress.js';
 import { TopologyMaterializer } from './topology-materializer.js';
@@ -200,6 +201,14 @@ export class RunProcessor {
     ) {
       const handled = await this.handleTopologyMaterialization(claim, data.run);
       if (handled) {
+        // VAL-SUB-064, 065, 066, 111: After topology materialization (or if
+        // already materialized), attempt synthesis. If all direct children are
+        // terminal, the synthesis service commits exactly one ordered manifest,
+        // synthesis result, completion event, and terminal outcome. If children
+        // are not all terminal, the run remains nonterminal. The lease is left
+        // to expire naturally (the worker stops renewing it when advance
+        // returns), so the run stays in 'running' and is re-claimed later.
+        await this.attemptCompositeSynthesis(claim);
         await this.projectRunEvents(claim);
         return;
       }
@@ -217,6 +226,25 @@ export class RunProcessor {
     // m4-f03-ephemeral-fallback).
     if (await this.maybeHandleChildRouting(claim, signal, data)) {
       return;
+    }
+
+    // VAL-SUB-064, 065, 066, 111: Intermediate composite synthesis.
+    // A non-root run that has children (an intermediate composite) must not
+    // execute a direct LLM call — it synthesizes from its direct children.
+    // When claimed, attempt synthesis. If children are not all terminal,
+    // the run stays nonterminal and the lease expires naturally for re-claim.
+    if (
+      data.run.parentRunId !== null &&
+      data.run.status === 'running' &&
+      data.run.approvedPlanRevisionId &&
+      !signal.aborted
+    ) {
+      const hasChildren = await this.runHasChildren(claim, data.run.id);
+      if (hasChildren) {
+        await this.attemptCompositeSynthesis(claim);
+        await this.projectRunEvents(claim);
+        return;
+      }
     }
 
     // VAL-MODEQ-151: Root agent revocation is deny-only.
@@ -249,6 +277,50 @@ export class RunProcessor {
     }
 
     await this.executeAndComplete(claim, signal, data, requestText);
+  }
+
+  // -- internal: composite synthesis (VAL-SUB-051, 052, 053, 064, 065, 066, 111)
+
+  /**
+   * Check whether a run has any direct children (is a composite).
+   */
+  private async runHasChildren(claim: Claim, runId: string): Promise<boolean> {
+    const result = await this.db.drizzle.execute(sql`
+      SELECT count(*)::int AS cnt FROM "mission_runs"
+      WHERE "company_id" = ${claim.companyId}
+        AND "parent_run_id" = ${runId}
+    `);
+    const rows = result as unknown as Array<{ cnt: number }>;
+    return rows.length > 0 && Number(rows[0]!.cnt) > 0;
+  }
+
+  /**
+   * Attempt composite synthesis for a parent run with children. Returns
+   * true if synthesis was performed (the run is now terminal), false if
+   * children are not all terminal or synthesis was skipped.
+   *
+   * (VAL-SUB-064, 065, 066, 111)
+   */
+  private async attemptCompositeSynthesis(claim: Claim): Promise<boolean> {
+    const synthesisService = new MissionSynthesisService(this.db, {
+      clock: () => this.now(),
+    });
+    try {
+      const result = await this.db.drizzle.transaction(async (tx) => {
+        return synthesisService.attemptSynthesis(tx, {
+          companyId: claim.companyId,
+          projectId: claim.projectId,
+          runId: claim.runId,
+          leaseToken: claim.leaseToken,
+        });
+      });
+      return result.synthesized;
+    } catch {
+      // Synthesis may fail due to concurrent transaction (exactly-once
+      // unique constraint) or lease fencing. In either case, the run
+      // remains nonterminal and will be retried on re-claim.
+      return false;
+    }
   }
 
   // -- internal: recovery check --------------------------------------------

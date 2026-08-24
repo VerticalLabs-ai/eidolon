@@ -517,6 +517,29 @@ export class MissionRetryService {
       occurredAt: now,
     });
 
+    // VAL-SUB-051, 064, 065, 111: For non-root (child) runs, update the
+    // step assignment with the failed result and propagate the parent's
+    // partial-result policy. Under require_all, this cascades cancellation
+    // to remaining required siblings. Under best_effort, siblings continue.
+    if (run.parentRunId !== null && run.parentRunId !== run.id) {
+      const { SubtreeCancellationService } = await import('./subtree-cancellation.js');
+      const subtreeService = new SubtreeCancellationService(this.db, { clock: () => now });
+      await subtreeService.applyChildTerminalPolicy(tx, {
+        companyId: run.companyId,
+        projectId: run.projectId,
+        rootRunId: run.rootRunId,
+        childRunId: run.id,
+        parentRunId: run.parentRunId,
+        terminalStatus: 'failed',
+        failureCategory: ctx.classification.category,
+        failureCode: ctx.classification.code,
+        safeErrorMessage: ctx.classification.safeMessage,
+        actorType: ctx.actorType,
+        actorId: ctx.actorId,
+        traceId: ctx.traceId,
+      });
+    }
+
     return {
       kind: 'fail',
       runId: run.id,

@@ -94,6 +94,7 @@ import {
   runStepAssignments,
   runSchedulingPermits,
   runDescendantMirrors,
+  runSynthesisManifests,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -185,6 +186,7 @@ const SCHEMA_BUNDLE = {
   runStepAssignments,
   runSchedulingPermits,
   runDescendantMirrors,
+  runSynthesisManifests,
 } as const;
 
 export interface BootstrapOptions {
