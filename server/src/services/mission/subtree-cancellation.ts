@@ -224,8 +224,14 @@ export class SubtreeCancellationService {
       'require_all' | 'best_effort';
 
     // 3. Under require_all, cascade cancellation to remaining nonterminal
-    //    siblings (children of the same parent).
-    if (parentPolicy !== 'require_all') {
+    //    siblings (children of the same parent) — but ONLY when the child
+    //    reached a negative terminal state. A completed child is a success,
+    //    not a failure: cascading cancellation to its still-running siblings
+    //    would cancel successful work just because the first child finished
+    //    (fix-s4-synthesis-completion-cascade). The cascade fires for
+    //    'failed' or 'cancelled' only; 'completed' updates the step
+    //    assignment (step 1 above) without touching siblings.
+    if (parentPolicy !== 'require_all' || input.terminalStatus === 'completed') {
       return {
         cascadedToSiblings: false,
         cascadedSiblingIds: [],

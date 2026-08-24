@@ -180,7 +180,9 @@ async function getRunRow(db: AnyDb, runId: string): Promise<RunRow | null> {
            "safe_error_message", "cancel_requested_at"
     FROM "mission_runs" WHERE "id" = ${runId}
   `)) as unknown as Record<string, unknown>[];
-  if (!rows[0]) {return null;}
+  if (!rows[0]) {
+    return null;
+  }
   const row = rows[0];
   return {
     ...row,
@@ -473,7 +475,9 @@ describe('Partial Result Synthesis (VAL-SUB-051, 052, 053, 054, 064, 065, 066, 1
 
     // Verify siblings were not cancelled.
     for (let i = 0; i < tree.childRunIds.length; i++) {
-      if (i === 1) {continue;} // Skip the failed child
+      if (i === 1) {
+        continue;
+      } // Skip the failed child
       const childRow = await getRunRow(db, tree.childRunIds[i]);
       expect(childRow?.status).toBe('completed');
     }
@@ -1302,5 +1306,63 @@ describe('Partial Result Synthesis (VAL-SUB-051, 052, 053, 054, 064, 065, 066, 1
     expect(resultRoot.status).toBe('completed');
     // Root's manifest has 2 direct children (composite + leaf).
     expect(resultRoot.manifest!.length).toBe(2);
+  });
+
+  // Regression: a completed child under require_all must NOT cancel its
+  // running siblings. The require_all sibling-cancellation cascade fires
+  // only for 'failed' or 'cancelled' terminal statuses, not 'completed'.
+  // (fix-s4-synthesis-completion-cascade)
+  it('does not cancel running siblings when a child completes under require_all', async () => {
+    const tree = await setupCompositeTree(db, 'completed-no-cascade', {
+      partialResultPolicy: 'require_all',
+      childCount: 3,
+      childStatuses: ['running', 'running', 'running'],
+      childResultStatuses: ['pending_routing', 'pending_routing', 'pending_routing'],
+    });
+
+    // Simulate child 0 completing.
+    await db.drizzle.execute(sql`
+      UPDATE "mission_runs" SET "status" = 'completed', "terminal_at" = ${new Date()}
+      WHERE "id" = ${tree.childRunIds[0]}
+    `);
+
+    const subtreeService = new SubtreeCancellationService(db);
+    const policyResult = await db.drizzle.transaction(async (tx) => {
+      return subtreeService.applyChildTerminalPolicy(tx, {
+        companyId: tree.companyId,
+        projectId: tree.projectId,
+        rootRunId: tree.rootRunId,
+        childRunId: tree.childRunIds[0]!,
+        parentRunId: tree.rootRunId,
+        terminalStatus: 'completed',
+        actorType: 'system',
+        actorId: null,
+        traceId: null,
+      });
+    });
+
+    // No sibling cancellation should occur for a completed child.
+    expect(policyResult.cascadedToSiblings).toBe(false);
+    expect(policyResult.cascadedSiblingIds).toEqual([]);
+    expect(policyResult.parentPolicy).toBe('require_all');
+
+    // Siblings must remain running with no cancel_requested_at.
+    for (let i = 1; i < tree.childRunIds.length; i++) {
+      const siblingRow = await getRunRow(db, tree.childRunIds[i]);
+      expect(siblingRow?.status).toBe('running');
+      expect(siblingRow?.cancel_requested_at).toBeNull();
+    }
+
+    // The completed child's step assignment must be updated to 'completed'.
+    const completedAssign = await getAssignment(db, tree.childRunIds[0]!);
+    expect(completedAssign!.assignment_status).toBe('completed');
+    expect(completedAssign!.result_status).toBe('completed');
+
+    // No child.cancel_requested events should have been emitted for siblings.
+    for (let i = 1; i < tree.childRunIds.length; i++) {
+      const events = await getEvents(db, tree.childRunIds[i]);
+      const cancelRequested = events.find((e) => e.type === 'child.cancel_requested');
+      expect(cancelRequested).toBeUndefined();
+    }
   });
 });
