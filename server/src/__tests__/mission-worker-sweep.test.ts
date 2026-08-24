@@ -184,13 +184,18 @@ describe('Worker sweep integration', () => {
     expect(result.sweptCompanies).toBeGreaterThanOrEqual(1);
     expect(result.cancelledRuns).toBeGreaterThanOrEqual(1);
 
-    // `queued` is a lease state, so the sweep sets cancel_requested_at
-    // and a bounded cancellation_deadline_at. The run is terminalized
-    // by enforceDeadlines when the deadline passes.
+    // `queued` with no active lease has no worker to observe a
+    // cancellation request, so the sweep terminalizes it immediately
+    // (VAL-SUB-046). The cancel request is recorded and the run is
+    // cancelled in the same sweep; enforceDeadlines is a no-op on the
+    // already-terminal run.
     const row = await getRunRow(ctx.db, ctx.runId);
     expect(row?.cancel_requested_at).not.toBeNull();
+    expect(row?.status).toBe('cancelled');
+    expect(row?.terminal_at).not.toBeNull();
 
-    // Now enforce deadlines with the cancellation deadline in the past.
+    // enforceDeadlines must not re-terminalize or alter an already
+    // terminal run, even with a past cancellation deadline.
     const past = new Date(Date.now() - 120_000);
     await ctx.db.drizzle.execute(sql`
       UPDATE "mission_runs"
@@ -199,7 +204,7 @@ describe('Worker sweep integration', () => {
     `);
 
     const deadlineResult = await killSwitch.enforceDeadlines();
-    expect(deadlineResult.terminalized).toBeGreaterThanOrEqual(1);
+    expect(deadlineResult.terminalized).toBe(0);
 
     const finalRow = await getRunRow(ctx.db, ctx.runId);
     expect(finalRow?.status).toBe('cancelled');
