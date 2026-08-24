@@ -166,6 +166,25 @@ const CommandBody = z.discriminatedUnion('type', [
       answers: z.record(z.unknown()),
     }),
   }),
+  z.object({
+    type: z.literal('plan.approve'),
+    revisionId: z.string().uuid(),
+    contentHash: z.string().length(64),
+  }),
+  z.object({
+    type: z.literal('plan.reject'),
+    revisionId: z.string().uuid(),
+    contentHash: z.string().length(64),
+    reason: ReasonSchema,
+    disposition: z.literal('revise').optional(),
+    feedback: z.string().min(1).max(2000).optional(),
+  }),
+  z.object({
+    type: z.literal('plan.revision_request'),
+    revisionId: z.string().uuid(),
+    contentHash: z.string().length(64),
+    feedback: z.string().min(1).max(2000),
+  }),
 ]);
 
 const CancelBody = z.object({ reason: ReasonSchema });
@@ -182,6 +201,34 @@ const AnswerBody = z.object({
   questionSetId: z.string().uuid(),
   questionSetVersion: z.number().int().min(1),
   answers: z.record(z.unknown()),
+});
+
+/** Convenience plan approve body: maps to `plan.approve` canonical command
+ *  (VAL-PLAN-029, 030). Shares the same idempotency namespace as the
+ *  canonical `POST /:runId/commands` route. */
+const PlanApproveBody = z.object({
+  revisionId: z.string().uuid(),
+  contentHash: z.string().length(64),
+});
+
+/** Convenience plan reject body: maps to `plan.reject` canonical command
+ *  (VAL-PLAN-041). Default disposition cancels the run; `disposition:'revise'`
+ *  with feedback returns the run to planning. */
+const PlanRejectBody = z.object({
+  revisionId: z.string().uuid(),
+  contentHash: z.string().length(64),
+  reason: ReasonSchema,
+  disposition: z.literal('revise').optional(),
+  feedback: z.string().min(1).max(2000).optional(),
+});
+
+/** Convenience plan revision request body: maps to `plan.revision_request`
+ *  canonical command (VAL-PLAN-037). A member's ordinary revision request
+ *  supersedes the current proposal without a rejection decision. */
+const PlanRevisionBody = z.object({
+  revisionId: z.string().uuid(),
+  contentHash: z.string().length(64),
+  feedback: z.string().min(1).max(2000),
 });
 
 /** Validate the Idempotency-Key header (shared contract: 1-128 safe chars,
@@ -219,6 +266,23 @@ function requireMissionEnabled(companyId: string): void {
       404,
       'FEATURE_NOT_AVAILABLE',
       'Mission runs are not available for this company',
+    );
+  }
+}
+
+/**
+ * Require the `mission.approve` permission for plan approve/reject
+ * commands. Only owner/admin roles have this permission (VAL-PLAN-052,
+ * 053, 054). The actor is always derived from authenticated context.
+ */
+function requireMissionApprove(req: { organizationMembership?: { role?: string } | null }): void {
+  const role = (req.organizationMembership?.role ?? 'viewer') as
+    'owner' | 'admin' | 'member' | 'viewer';
+  if (!hasPermission(role, 'mission.approve' as Permission)) {
+    throw new AppError(
+      403,
+      'INSUFFICIENT_PERMISSION',
+      'Mission plan approval requires the mission.approve permission',
     );
   }
 }
@@ -533,6 +597,11 @@ export function missionRunsRouter(db: DbInstance): Router {
     if (body.type !== 'run.cancel') {
       requireMissionEnabled(companyId);
     }
+    // Plan approve/reject require the mission.approve permission
+    // (owner/admin only) in addition to the mount-level content.create.
+    if (body.type === 'plan.approve' || body.type === 'plan.reject') {
+      requireMissionApprove(req);
+    }
     const idempotencyKey = requireIdempotencyKey(req);
     const ifMatch = parseIfMatch(req);
 
@@ -548,11 +617,30 @@ export function missionRunsRouter(db: DbInstance): Router {
         ? normalizeCommandBody({ reason: redactCanaries(body.reason).redacted })
         : body.type === 'questions.answer'
           ? normalizeCommandBody({ body: body.body })
-          : normalizeCommandBody({
-              limits: body.limits,
-              request: body.request,
-              modeOverride: body.modeOverride,
-            });
+          : body.type === 'plan.approve'
+            ? normalizeCommandBody({
+                revisionId: body.revisionId,
+                contentHash: body.contentHash,
+              })
+            : body.type === 'plan.reject'
+              ? normalizeCommandBody({
+                  revisionId: body.revisionId,
+                  contentHash: body.contentHash,
+                  reason: redactCanaries(body.reason).redacted,
+                  disposition: body.disposition,
+                  feedback: body.feedback ? redactCanaries(body.feedback).redacted : undefined,
+                })
+              : body.type === 'plan.revision_request'
+                ? normalizeCommandBody({
+                    revisionId: body.revisionId,
+                    contentHash: body.contentHash,
+                    feedback: redactCanaries(body.feedback).redacted,
+                  })
+                : normalizeCommandBody({
+                    limits: body.limits,
+                    request: body.request,
+                    modeOverride: body.modeOverride,
+                  });
     const result = await service.submit({
       companyId,
       projectId,
@@ -650,6 +738,114 @@ export function missionRunsRouter(db: DbInstance): Router {
       runId,
       type: 'questions.answer',
       body: normalizeCommandBody({ body }),
+      idempotencyKey,
+      ifMatch,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // POST /:runId/plan/approve — convenience mapping to plan.approve.
+  // Requires the mission flag and the `mission.approve` permission
+  // (owner/admin only). Binds the exact current revision ID and content
+  // hash; mismatched or stale values are rejected with deterministic
+  // precedence (VAL-PLAN-029, 030, 043, 044, 046, 047, 128).
+  router.post('/:runId/plan/approve', validate(PlanApproveBody), async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    const body = req.body as z.infer<typeof PlanApproveBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+    requireMissionApprove(req);
+    const idempotencyKey = requireIdempotencyKey(req);
+    const ifMatch = parseIfMatch(req);
+
+    const service = new MissionCommandService(db);
+    const result = await service.submit({
+      companyId,
+      projectId,
+      runId,
+      type: 'plan.approve',
+      body: normalizeCommandBody({
+        revisionId: body.revisionId,
+        contentHash: body.contentHash,
+      }),
+      idempotencyKey,
+      ifMatch,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // POST /:runId/plan/reject — convenience mapping to plan.reject.
+  // Requires the mission flag and the `mission.approve` permission
+  // (owner/admin only). Default disposition cancels the run;
+  // `disposition:'revise'` with feedback returns to planning
+  // (VAL-PLAN-040, 041, 128).
+  router.post('/:runId/plan/reject', validate(PlanRejectBody), async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    const body = req.body as z.infer<typeof PlanRejectBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+    requireMissionApprove(req);
+    const idempotencyKey = requireIdempotencyKey(req);
+    const ifMatch = parseIfMatch(req);
+
+    const service = new MissionCommandService(db);
+    const result = await service.submit({
+      companyId,
+      projectId,
+      runId,
+      type: 'plan.reject',
+      body: normalizeCommandBody({
+        revisionId: body.revisionId,
+        contentHash: body.contentHash,
+        reason: redactCanaries(body.reason).redacted,
+        disposition: body.disposition,
+        feedback: body.feedback ? redactCanaries(body.feedback).redacted : undefined,
+      }),
+      idempotencyKey,
+      ifMatch,
+      actorType: 'user',
+      actorId: req.user?.id ?? null,
+      traceId: req.traceId ?? null,
+    });
+
+    sendCommandResponse(res, companyId, projectId, result);
+  });
+
+  // POST /:runId/plan/revisions — convenience mapping to
+  // plan.revision_request. Requires the mission flag and content.update
+  // permission (member/owner/admin). A member's ordinary revision request
+  // supersedes the current proposal without a rejection decision
+  // (VAL-PLAN-037, 041, 128).
+  router.post('/:runId/plan/revisions', validate(PlanRevisionBody), async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    const body = req.body as z.infer<typeof PlanRevisionBody>;
+
+    await validateProjectOwnership(db, companyId, projectId);
+    requireMissionEnabled(companyId);
+    const idempotencyKey = requireIdempotencyKey(req);
+    const ifMatch = parseIfMatch(req);
+
+    const service = new MissionCommandService(db);
+    const result = await service.submit({
+      companyId,
+      projectId,
+      runId,
+      type: 'plan.revision_request',
+      body: normalizeCommandBody({
+        revisionId: body.revisionId,
+        contentHash: body.contentHash,
+        feedback: redactCanaries(body.feedback).redacted,
+      }),
       idempotencyKey,
       ifMatch,
       actorType: 'user',

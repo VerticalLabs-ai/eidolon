@@ -7,6 +7,13 @@ import {
   type AnswerSubmissionInput,
   type AnswerInput,
 } from './answer-submission.js';
+import {
+  PlanDecisionService,
+  type PlanApproveBody,
+  type PlanRejectBody,
+  type PlanRevisionRequestBody,
+  PlanDecisionError,
+} from './plan-decision.js';
 import { commandRequestHash, validateIdempotencyKey } from './idempotency.js';
 import {
   canonicalHash,
@@ -96,7 +103,13 @@ class AnswerDomainError extends Error {
   }
 }
 
-export type RunCommandType = 'run.cancel' | 'run.retry' | 'questions.answer';
+export type RunCommandType =
+  | 'run.cancel'
+  | 'run.retry'
+  | 'questions.answer'
+  | 'plan.approve'
+  | 'plan.reject'
+  | 'plan.revision_request';
 
 export interface CancelBody {
   reason?: string;
@@ -384,6 +397,28 @@ export class MissionCommandService {
         );
         throw new AppError(428, 'PRECONDITION_REQUIRED', 'If-Match is required for this action');
       }
+    } else if (
+      type === 'plan.approve' ||
+      type === 'plan.reject' ||
+      type === 'plan.revision_request'
+    ) {
+      // Plan decision commands require the If-Match precondition
+      // (VAL-PLAN-044: missing precondition → 428 PRECONDITION_REQUIRED).
+      if (ifMatch === null) {
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          428,
+          'PRECONDITION_REQUIRED',
+          'If-Match is required for this action',
+          actorType,
+          actorId,
+          ifMatch,
+        );
+        throw new AppError(428, 'PRECONDITION_REQUIRED', 'If-Match is required for this action');
+      }
     }
 
     // 4. Locked transaction: re-check durable idempotency under the lock,
@@ -458,6 +493,39 @@ export class MissionCommandService {
             throw ae;
           }
         }
+        if (type === 'plan.approve' || type === 'plan.reject' || type === 'plan.revision_request') {
+          // Step 3 (current ETag): check version inside the lock
+          // (VAL-PLAN-043: stale → 412 RUN_VERSION_MISMATCH).
+          if (locked.stateVersion !== ifMatch) {
+            throw new StaleVersionSentinel();
+          }
+          // Steps 4–7: delegate to PlanDecisionService within the locked
+          // transaction. Domain errors (invalid state, stale revision,
+          // hash mismatch, policy unsatisfiable) are caught and converted
+          // to PlanDecisionError so the catch block records a rejected
+          // command row and re-throws the original error
+          // (VAL-PLAN-029, 030, 043, 128).
+          try {
+            return await this.applyPlanDecision(
+              tx,
+              locked,
+              type,
+              body,
+              idempotencyKey,
+              actorType,
+              actorId,
+              traceId,
+            );
+          } catch (ae) {
+            if (ae instanceof PlanDecisionError) {
+              throw ae;
+            }
+            if (ae instanceof AppError) {
+              throw new PlanDecisionError(ae);
+            }
+            throw ae;
+          }
+        }
         // run.retry
         if (locked.stateVersion !== ifMatch) {
           throw new StaleVersionSentinel();
@@ -497,6 +565,26 @@ export class MissionCommandService {
         // Record the domain-rejected answer command and re-throw the
         // original AppError so the caller sees the correct domain error
         // (VAL-RUN-075, VAL-MODEQ-075, 077, 078).
+        const ae = err.error;
+        await this.recordRejected(
+          run,
+          type,
+          body,
+          idempotencyKey,
+          ae.status,
+          ae.code,
+          ae.message,
+          actorType,
+          actorId,
+          ifMatch,
+          ae.details,
+        );
+        throw ae;
+      }
+      if (err instanceof PlanDecisionError) {
+        // Record the domain-rejected plan decision command and re-throw
+        // the original AppError so the caller sees the correct domain
+        // error (VAL-PLAN-029, 030, 043, 128).
         const ae = err.error;
         await this.recordRejected(
           run,
@@ -780,6 +868,114 @@ export class MissionCommandService {
       run: snapshot,
       commandRow,
     };
+  }
+
+  // -- plan decision --------------------------------------------------------
+
+  /**
+   * Apply a plan decision command (approve/reject/revision_request) within
+   * the locked transaction.
+   *
+   * Delegates to `PlanDecisionService` for the deterministic error
+   * precedence (state → revision → hash → policy revalidation) and the
+   * actual state changes (approval resolution, binding update, run
+   * transition, event append). The command row is recorded with the
+   * replayable result so duplicate submissions with the same idempotency
+   * key replay the original outcome (VAL-PLAN-046, 047).
+   *
+   * Domain errors from the plan decision service (invalid state 409,
+   * stale revision 409, hash mismatch 409, policy unsatisfiable 409)
+   * propagate as PlanDecisionError to the caller in `submit`, which
+   * catches them, records a rejected command row, and re-throws
+   * (VAL-PLAN-029, 030, 128).
+   */
+  private async applyPlanDecision(
+    tx: Tx,
+    run: MissionRunRow,
+    type: RunCommandType,
+    body: unknown,
+    idempotencyKey: string,
+    actorType: 'user' | 'agent' | 'system',
+    actorId: string | null,
+    traceId: string | null,
+  ): Promise<ApplyOutcome> {
+    const service = new PlanDecisionService(this.db, { clock: () => this.now() });
+
+    let result;
+    let commandType: RunCommandType;
+    if (type === 'plan.approve') {
+      const approveBody = (body ?? {}) as PlanApproveBody;
+      result = await service.applyApprove(tx, run, approveBody, actorType, actorId, traceId);
+      commandType = 'plan.approve';
+    } else if (type === 'plan.reject') {
+      const rejectBody = (body ?? {}) as PlanRejectBody;
+      result = await service.applyReject(tx, run, rejectBody, actorType, actorId, traceId);
+      commandType = 'plan.reject';
+    } else {
+      const revisionBody = (body ?? {}) as PlanRevisionRequestBody;
+      result = await service.applyRevisionRequest(
+        tx,
+        run,
+        revisionBody,
+        actorType,
+        actorId,
+        traceId,
+      );
+      commandType = 'plan.revision_request';
+    }
+
+    // Build the response snapshot AFTER the decision service has applied
+    // all state/event changes.
+    const snapshot = await this.buildSnapshot(tx, run.id);
+    const stored: StoredResult = {
+      statusCode: result.statusCode,
+      etag: snapshot.stateVersion,
+      run: snapshot,
+    };
+
+    // Encrypt feedback/reason in the command payload before storage
+    // (VAL-PLAN-096).
+    const payload = this.encryptPlanDecisionPayload(type, body);
+
+    const commandRow = await this.insertCommand(tx, {
+      companyId: run.companyId,
+      projectId: run.projectId,
+      runId: run.id,
+      type: commandType,
+      idempotencyKey,
+      requestHash: commandRequestHash(type, body),
+      payload,
+      actorType,
+      actorId,
+      expectedStateVersion: run.stateVersion,
+      resultStatusCode: result.statusCode,
+      stored,
+      traceId,
+    });
+
+    return {
+      statusCode: result.statusCode,
+      etag: snapshot.stateVersion,
+      run: snapshot,
+      commandRow,
+    };
+  }
+
+  /**
+   * Encrypt feedback/reason fields in a plan decision command payload
+   * before storage so plaintext is not visible in the raw database column
+   * (VAL-PLAN-096). The request hash is computed from the redacted
+   * plaintext body (before encryption) so idempotent replay is consistent.
+   */
+  private encryptPlanDecisionPayload(type: RunCommandType, body: unknown): Record<string, unknown> {
+    const payload = { ...(body as Record<string, unknown>) };
+    if (typeof payload.reason === 'string' && payload.reason.length > 0) {
+      payload.reason = encryptReason(payload.reason);
+    }
+    if (typeof payload.feedback === 'string' && payload.feedback.length > 0) {
+      payload.feedback = encryptReason(payload.feedback);
+    }
+    return payload;
   }
 
   /**
