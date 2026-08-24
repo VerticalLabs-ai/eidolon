@@ -425,7 +425,8 @@ describe('MissionChildTree', () => {
 
     const nodeA = screen.getByRole('listitem', { name: /Step 1: Gather sources/i });
     expect(within(nodeA).getByText('Company agent')).toBeInTheDocument();
-    expect(within(nodeA).getByText(AGENT_ID)).toBeInTheDocument();
+    // AGENT_ID now appears in both the routing line and the billing identity.
+    expect(within(nodeA).getAllByText(AGENT_ID).length).toBeGreaterThanOrEqual(1);
     // No ineligible candidate leakage.
     expect(within(nodeA).queryByText(/candidate/i)).not.toBeInTheDocument();
 
@@ -775,7 +776,8 @@ describe('MissionChildTree', () => {
     const node = screen.getByRole('listitem', { name: /Step 1: Gather sources/i });
     expect(within(node).getByText(CHILD_A)).toBeInTheDocument();
     expect(within(node).getByText('Company agent')).toBeInTheDocument();
-    expect(within(node).getByText(AGENT_ID)).toBeInTheDocument();
+    // AGENT_ID now appears in both the routing line and the billing identity.
+    expect(within(node).getAllByText(AGENT_ID).length).toBeGreaterThanOrEqual(1);
     expect(within(node).getByText('Completed')).toBeInTheDocument();
     expect(within(node).getByText('$2.50')).toBeInTheDocument();
     expect(within(node).getByText(/3 sources/i)).toBeInTheDocument();

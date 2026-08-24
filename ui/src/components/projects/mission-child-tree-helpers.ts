@@ -20,7 +20,14 @@ export type ChildStatus =
 export type RoutingLabel =
   | { kind: 'pending_dependencies' }
   | { kind: 'pending_routing' }
-  | { kind: 'routed'; routingKind: 'company_agent' | 'ephemeral'; agentId: string | null }
+  | {
+      kind: 'routed';
+      routingKind: 'company_agent' | 'ephemeral';
+      agentId: string | null;
+      /** Billing agent id from the `child.routed` event (ephemeral children
+       * bill the root initiating billing agent, VAL-SUB-101). */
+      billingAgentId: string | null;
+    }
   | { kind: 'no_eligible_agent' };
 
 /** A child node derived from the plan topology + committed journal events. */
@@ -123,6 +130,98 @@ export function formatCents(cents: number): string {
 /** Whether a lifecycle status is terminal. */
 export function isTerminalStatus(status: ChildStatus): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+// ── Limit failures (VAL-SUB-040) ──────────────────────────────────────────
+
+/** Stable failure codes/categories that represent an effective limit being
+ * reached (depth, fan-out, descendants, calls, tokens, bytes, budget, or
+ * wall time). The browser labels these explicitly rather than hanging. */
+const LIMIT_FAILURE_CODES = new Set([
+  'LIMIT_EXCEEDED',
+  'TIME_LIMIT',
+  'BUDGET_EXHAUSTED',
+  'BUDGET_UNAVAILABLE',
+  'DEPTH_LIMIT',
+  'FANOUT_LIMIT',
+  'DESCENDANT_LIMIT',
+  'TOKEN_LIMIT',
+  'OUTPUT_LIMIT',
+  'CALL_LIMIT',
+]);
+
+/** Whether a derived node failed because an effective limit was reached. */
+export function isLimitFailure(node: DerivedChildNode): boolean {
+  if (node.status !== 'failed') {
+    return false;
+  }
+  if (node.failureCategory === 'limit' || node.failureCategory === 'budget') {
+    return true;
+  }
+  return !!node.failureCode && LIMIT_FAILURE_CODES.has(node.failureCode);
+}
+
+/** Human-readable limit-failure label (text always accompanies color). */
+export function limitFailureLabel(node: DerivedChildNode): string {
+  return isLimitFailure(node) ? 'Limit reached' : '';
+}
+
+// ── Billing identities (VAL-SUB-101) ──────────────────────────────────────
+
+/**
+ * Billing-identity text for a child. Permanent (company-agent) children bill
+ * their selected executing agent; ephemeral children bill the root
+ * initiating billing agent. Returns null before routing is committed
+ * (VAL-SUB-101).
+ */
+export function billingIdentityText(
+  routing: RoutingLabel,
+  rootBillingAgentId: string | null,
+): { label: string; agentId: string | null } | null {
+  if (routing.kind !== 'routed') {
+    return null;
+  }
+  if (routing.routingKind === 'ephemeral') {
+    return {
+      label: 'Bills root agent',
+      agentId: routing.billingAgentId ?? rootBillingAgentId ?? null,
+    };
+  }
+  return { label: 'Bills agent', agentId: routing.agentId };
+}
+
+// ── Parent-policy consequence (VAL-SUB-074) ───────────────────────────────
+
+/**
+ * Describe the parent-policy consequence of a failed child for the parent's
+ * remaining work. `require_all` stops dependents; `best_effort` allows
+ * siblings to continue. Returns null when no consequence text applies
+ * (VAL-SUB-074).
+ */
+export function parentPolicyConsequenceText(
+  partialPolicy: string,
+  node: DerivedChildNode,
+): string | null {
+  if (node.status !== 'failed') {
+    return null;
+  }
+  if (partialPolicy === 'best_effort') {
+    return 'Best-effort policy: siblings may continue, and synthesis will report this step as missing.';
+  }
+  return 'Require-all policy: remaining dependents are stopped after this required failure.';
+}
+
+// ── Cost aggregation (VAL-SUB-101) ────────────────────────────────────────
+
+/** Sum the materialized child settled costs from completed events. */
+export function aggregateChildCostCents(nodes: DerivedChildNode[]): number {
+  let sum = 0;
+  for (const n of nodes) {
+    if (n.costCents !== null && n.costCents > 0) {
+      sum += n.costCents;
+    }
+  }
+  return sum;
 }
 
 // ── Derivation ────────────────────────────────────────────────────────────
@@ -246,9 +345,11 @@ export function deriveChildNodes(
 }
 
 /**
- * Apply a `child.*` / `execution.*` lifecycle event to a derived node.
- * Terminal statuses are never overwritten by a non-terminal event
- * (VAL-SUB-025).
+ * Apply a `child.*` / `execution.*` / `limit.*` lifecycle event to a derived
+ * node. Terminal statuses are never overwritten by a non-terminal event
+ * (VAL-SUB-025). A `limit.exceeded` event for a child marks it failed with
+ * the safe limit category so the tree never hangs on a blocked limit
+ * (VAL-SUB-040).
  */
 function applyChildEvent(
   node: DerivedChildNode,
@@ -262,6 +363,7 @@ function applyChildEvent(
         kind: 'routed',
         routingKind: routingKind === 'ephemeral' ? 'ephemeral' : 'company_agent',
         agentId: (payload.executingAgentId as string | null | undefined) ?? null,
+        billingAgentId: (payload.billingAgentId as string | null | undefined) ?? null,
       };
       return;
     }
@@ -278,16 +380,9 @@ function applyChildEvent(
       node.outputSummary = (payload.outputSummary as string | undefined) ?? node.outputSummary;
       return;
     }
-    case 'child.failed': {
-      const code = (payload.code as string | undefined) ?? null;
-      node.status = 'failed';
-      node.failureCategory = (payload.category as string | undefined) ?? node.failureCategory;
-      node.failureCode = code ?? node.failureCode;
-      node.safeErrorMessage =
-        (payload.safeErrorMessage as string | undefined) ?? node.safeErrorMessage;
-      if (code === 'NO_ELIGIBLE_AGENT') {
-        node.routing = { kind: 'no_eligible_agent' };
-      }
+    case 'child.failed':
+    case 'limit.exceeded': {
+      applyFailure(node, type, payload);
       return;
     }
     case 'child.cancel_requested': {
@@ -298,6 +393,29 @@ function applyChildEvent(
     }
     default:
       return;
+  }
+}
+
+/**
+ * Apply a `child.failed` or `limit.exceeded` event to a derived node. A
+ * `limit.exceeded` event defaults the category to `limit` so the tree labels
+ * it explicitly (VAL-SUB-040). A `NO_ELIGIBLE_AGENT` code also clears the
+ * routing kind so no routing label leaks for the exhausted shell.
+ */
+function applyFailure(
+  node: DerivedChildNode,
+  type: string,
+  payload: Record<string, unknown>,
+): void {
+  const code = (payload.code as string | undefined) ?? null;
+  node.status = 'failed';
+  node.failureCategory =
+    (payload.category as string | undefined) ??
+    (type === 'limit.exceeded' ? 'limit' : node.failureCategory);
+  node.failureCode = code ?? node.failureCode;
+  node.safeErrorMessage = (payload.safeErrorMessage as string | undefined) ?? node.safeErrorMessage;
+  if (code === 'NO_ELIGIBLE_AGENT') {
+    node.routing = { kind: 'no_eligible_agent' };
   }
 }
 

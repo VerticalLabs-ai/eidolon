@@ -3721,6 +3721,13 @@ export interface MissionRunSnapshot {
   artifacts: never[];
   links: { ui: string };
   /**
+   * The dedicated subthread ID for this run, if it is a child run with a
+   * Mission subthread projection (VAL-SUB-007, VAL-SUB-103). Null for root
+   * runs or when no subthread projection exists yet (a bounded recovering
+   * state until repair recreates the deterministic link once).
+   */
+  subthreadId?: string | null;
+  /**
    * Result completeness for a completed run (VAL-PLAN-117).
    * - `null`: not applicable (run not completed or no partial policy).
    * - `'full'`: all required steps completed and synthesis criteria met.

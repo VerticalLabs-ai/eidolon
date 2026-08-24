@@ -17,6 +17,7 @@ import {
   ChevronDown,
   HelpCircle,
   Layers,
+  RefreshCw,
 } from 'lucide-react';
 import {
   deriveChildNodes,
@@ -25,9 +26,17 @@ import {
   routingAssignmentText,
   statusBadgeClass,
   formatCents,
+  isTerminalStatus,
+  isLimitFailure,
+  limitFailureLabel,
+  billingIdentityText,
+  parentPolicyConsequenceText,
+  aggregateChildCostCents,
   type ChildStatus,
   type DerivedChildNode,
 } from './mission-child-tree-helpers';
+import { MissionSubtreeCancelDialog } from './MissionSubtreeCancelDialog';
+import { MissionCostBreakdown } from './MissionCostBreakdown';
 
 /**
  * MissionChildTree — authoritative nested child identity, progress,
@@ -108,6 +117,21 @@ function writeExpanded(principalId: string, rootRunId: string, ids: Set<string>)
 }
 
 // ── Status icon (text always accompanies color) ───────────────────────────
+
+/** Format an ISO timestamp as a readable date-time string (VAL-SUB-074). */
+function formatTime(iso: string | null): string {
+  if (!iso) {
+    return '';
+  }
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 function ChildStatusIcon({ status }: { status: ChildStatus }) {
   switch (status) {
@@ -193,6 +217,7 @@ export function MissionChildTree({
   events,
   planRevision,
   principalId = '',
+  rootBillingAgentId = null,
 }: {
   companyId: string;
   projectId: string;
@@ -201,6 +226,10 @@ export function MissionChildTree({
   events: MissionReplayEvent[];
   planRevision: MissionPlanRevision | null | undefined;
   principalId?: string;
+  /** Root initiating billing-agent id. Ephemeral children bill this agent
+   *  (VAL-SUB-101). Null when unknown; the breakdown still reconciles root
+   *  totals. */
+  rootBillingAgentId?: string | null;
 }) {
   // Hooks must run unconditionally (Rules of Hooks). Derive an empty node
   // list when there is no approved plan so the memo/announcement hooks have
@@ -219,6 +248,7 @@ export function MissionChildTree({
     [nodes],
   );
   const announcement = useBatchedTreeAnnouncement(runId, counts);
+  const childSettledCents = useMemo(() => aggregateChildCostCents(nodes), [nodes]);
 
   if (!planRevision || !snapshot.approvedPlanRevisionId || nodes.length === 0) {
     return null;
@@ -252,6 +282,8 @@ export function MissionChildTree({
           {nodes.length} child{nodes.length === 1 ? '' : 'ren'}
         </span>
       </div>
+      {/* Root cost reconciliation with billing identities (VAL-SUB-101). */}
+      <MissionCostBreakdown snapshot={snapshot} childSettledCents={childSettledCents} />
       <ChildNodeList
         companyId={companyId}
         projectId={projectId}
@@ -261,6 +293,8 @@ export function MissionChildTree({
         depth={1}
         maxDepth={maxDepth}
         principalId={principalId}
+        rootBillingAgentId={rootBillingAgentId}
+        partialResultPolicy={snapshot.partialResultPolicy}
       />
     </section>
   );
@@ -276,6 +310,8 @@ function ChildNodeList({
   depth,
   maxDepth,
   principalId,
+  rootBillingAgentId,
+  partialResultPolicy,
 }: {
   companyId: string;
   projectId: string;
@@ -285,6 +321,8 @@ function ChildNodeList({
   depth: number;
   maxDepth: number;
   principalId: string;
+  rootBillingAgentId: string | null;
+  partialResultPolicy: string;
 }) {
   return (
     <ol aria-label={`Child runs at depth ${depth}`} className="space-y-2">
@@ -300,6 +338,8 @@ function ChildNodeList({
           depth={depth}
           maxDepth={maxDepth}
           principalId={principalId}
+          rootBillingAgentId={rootBillingAgentId}
+          partialResultPolicy={partialResultPolicy}
         />
       ))}
     </ol>
@@ -317,6 +357,8 @@ function ChildNode({
   depth,
   maxDepth,
   principalId,
+  rootBillingAgentId,
+  partialResultPolicy,
 }: {
   companyId: string;
   projectId: string;
@@ -327,6 +369,8 @@ function ChildNode({
   depth: number;
   maxDepth: number;
   principalId: string;
+  rootBillingAgentId: string | null;
+  partialResultPolicy: string;
 }) {
   // Expansion state is shared across the root tree (one set of expanded
   // child-run ids) so a grandchild expanded under one parent stays expanded
@@ -339,6 +383,21 @@ function ChildNode({
   useEffect(() => {
     writeExpanded(principalId, rootRunId, expandedSet);
   }, [principalId, rootRunId, expandedSet]);
+
+  // Authoritative child snapshot: provides state_version for stale-action
+  // protection on subtree cancellation (VAL-SUB-083), subthreadId for the
+  // projection-recovering state (VAL-SUB-103), and resultCompleteness /
+  // terminalAt / actualCostCents for authoritative detail rendering
+  // (VAL-SUB-074, VAL-SUB-100). The hook is disabled when no child run id
+  // exists so unmaterialized shells do not fetch.
+  const childSnapshotQuery = useMissionRunSnapshot(
+    companyId,
+    projectId,
+    node.childRunId ?? undefined,
+  );
+  const childSnapshot = childSnapshotQuery.data as MissionRunSnapshot | undefined;
+
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   const isExpanded = node.childRunId ? expandedSet.has(node.childRunId) : false;
   const canExpand = node.childRunId !== null && depth < maxDepth;
@@ -374,6 +433,18 @@ function ChildNode({
       })
     : null;
 
+  // Subthread projection recovery (VAL-SUB-103): when the child exists but
+  // has no usable subthread projection, show a bounded recovering state
+  // instead of the normal open-subthread link. The link reappears once the
+  // projection is repaired (snapshot refetch yields a non-null subthreadId).
+  const subthreadRecovering =
+    !!node.childRunId && !!childSnapshot && (childSnapshot.subthreadId ?? null) === null;
+
+  // Subtree cancellation (VAL-SUB-096): only authorized, nonterminal children
+  // with a materialized run id expose a direct subtree cancel control.
+  const canCancelSubtree =
+    !!node.childRunId && !isTerminalStatus(node.status) && !subthreadRecovering;
+
   return (
     <li
       className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 w-full max-w-full min-w-0 break-words overflow-hidden"
@@ -381,14 +452,22 @@ function ChildNode({
     >
       <ChildNodeHeader node={node} ordinal={ordinal} />
       <ChildRoutingLine node={node} />
-      <ChildNodeDetails node={node} />
+      <ChildNodeDetails
+        node={node}
+        partialResultPolicy={partialResultPolicy}
+        childSnapshot={childSnapshot}
+        billingIdentity={billingIdentityText(node.routing, rootBillingAgentId)}
+      />
       <ChildNodeActions
         node={node}
         canExpand={canExpand}
         isExpanded={isExpanded}
         subthreadHref={subthreadHref}
+        subthreadRecovering={subthreadRecovering}
+        canCancelSubtree={canCancelSubtree}
         expandBtnRef={expandBtnRef}
         onToggle={toggleExpanded}
+        onCancelSubtree={() => setCancelOpen(true)}
       />
 
       {/* Recursive descendant subtree (depth two and beyond). */}
@@ -407,8 +486,23 @@ function ChildNode({
             maxDepth={maxDepth}
             principalId={principalId}
             parentTitle={node.title}
+            rootBillingAgentId={rootBillingAgentId}
+            partialResultPolicy={partialResultPolicy}
           />
         </div>
+      )}
+
+      {/* Subtree cancellation confirmation (VAL-SUB-096, VAL-SUB-083). */}
+      {node.childRunId && (
+        <MissionSubtreeCancelDialog
+          companyId={companyId}
+          projectId={projectId}
+          runId={node.childRunId}
+          childTitle={node.title}
+          open={cancelOpen}
+          onClose={() => setCancelOpen(false)}
+          onRefreshChild={() => childSnapshotQuery.refetch()}
+        />
       )}
     </li>
   );
@@ -476,7 +570,25 @@ function ChildRoutingLine({ node }: { node: DerivedChildNode }) {
 }
 
 /** Stable identity, cost, output, and safe failure details (VAL-SUB-024, 074, 093). */
-function ChildNodeDetails({ node }: { node: DerivedChildNode }) {
+function ChildNodeDetails({
+  node,
+  partialResultPolicy,
+  childSnapshot,
+  billingIdentity,
+}: {
+  node: DerivedChildNode;
+  partialResultPolicy: string;
+  childSnapshot?: MissionRunSnapshot;
+  billingIdentity: { label: string; agentId: string | null } | null;
+}) {
+  // Authoritative timing/cost from the child snapshot when available; fall
+  // back to event-derived cost (VAL-SUB-074, VAL-SUB-073).
+  const terminalAt = childSnapshot?.terminalAt ?? null;
+  const actualCostCents =
+    childSnapshot?.actualCostCents ?? (node.costCents !== null ? node.costCents : null);
+  const resultCompleteness = childSnapshot?.resultCompleteness ?? null;
+  const showTerminalTime = terminalAt !== null && isTerminalStatus(node.status);
+
   return (
     <>
       {node.childRunId && (
@@ -484,52 +596,126 @@ function ChildNodeDetails({ node }: { node: DerivedChildNode }) {
           Run: <code className="font-mono break-all">{node.childRunId}</code>
         </p>
       )}
-      {node.costCents !== null && node.costCents > 0 && (
-        <p className="text-xs text-text-secondary mb-1 break-words" data-testid="child-cost">
-          Cost:{' '}
-          <span className="tabular-nums text-text-primary">{formatCents(node.costCents)}</span>
+      {/* Billing identity (VAL-SUB-101). */}
+      {billingIdentity && (
+        <p className="text-xs text-text-secondary mb-1 break-words" data-testid="child-billing">
+          {billingIdentity.label}
+          {billingIdentity.agentId && (
+            <>
+              {' '}
+              <span className="font-mono break-all text-text-primary">
+                {billingIdentity.agentId}
+              </span>
+            </>
+          )}
         </p>
       )}
+      {actualCostCents !== null && actualCostCents > 0 && (
+        <p className="text-xs text-text-secondary mb-1 break-words" data-testid="child-cost">
+          Cost:{' '}
+          <span className="tabular-nums text-text-primary">{formatCents(actualCostCents)}</span>
+        </p>
+      )}
+      {/* Authoritative timing for terminal children (VAL-SUB-074). */}
+      {showTerminalTime && <ChildTerminalTime status={node.status} terminalAt={terminalAt!} />}
       {node.outputSummary && (
         <p className="text-xs text-text-secondary mb-1 break-words" data-testid="child-output">
           Output: <span className="text-text-primary">{node.outputSummary}</span>
         </p>
       )}
-      {node.status === 'failed' && node.safeErrorMessage && (
-        <div
-          role="alert"
-          className="mt-1 rounded-md border border-error/20 bg-error/10 px-2 py-1.5"
-          data-testid="child-failure"
+      {/* Partial completion is authoritative (VAL-SUB-100). */}
+      {node.status === 'completed' && resultCompleteness === 'partial' && (
+        <p
+          className="text-xs text-warning mb-1 break-words"
+          role="status"
+          data-testid="child-partial-result"
         >
-          <p className="text-xs text-error font-medium mb-0.5">Child failed</p>
-          <p className="text-sm text-text-primary break-words">{node.safeErrorMessage}</p>
-          {node.failureCategory && (
-            <p className="mt-0.5 text-xs text-text-primary">Category: {node.failureCategory}</p>
-          )}
-          {node.failureCode && (
-            <p className="mt-0.5 text-xs text-text-primary">Code: {node.failureCode}</p>
-          )}
-        </div>
+          Completed with partial results
+        </p>
+      )}
+      {/* Safe failure details without secrets (VAL-SUB-074). */}
+      {node.status === 'failed' && node.safeErrorMessage && (
+        <ChildFailureDetail node={node} partialResultPolicy={partialResultPolicy} />
       )}
     </>
   );
 }
 
-/** Expand/collapse descendants + open subthread actions (VAL-SUB-026, 027). */
+/** Authoritative terminal timestamp for a terminal child (VAL-SUB-074). */
+function ChildTerminalTime({ status, terminalAt }: { status: ChildStatus; terminalAt: string }) {
+  const label =
+    status === 'failed' ? 'Failed at' : status === 'cancelled' ? 'Cancelled at' : 'Completed at';
+  return (
+    <p className="text-xs text-text-secondary mb-1 break-words" data-testid="child-terminal-time">
+      {label}: <time dateTime={terminalAt}>{formatTime(terminalAt)}</time>
+    </p>
+  );
+}
+
+/** Safe failure drill-down: limit label, category/code, policy consequence,
+ * and root-retry direction. No prompts, credentials, or provider bodies
+ * (VAL-SUB-074). Terminal children expose no Retry control. */
+function ChildFailureDetail({
+  node,
+  partialResultPolicy,
+}: {
+  node: DerivedChildNode;
+  partialResultPolicy: string;
+}) {
+  const consequence = parentPolicyConsequenceText(partialResultPolicy, node);
+  return (
+    <div
+      role="alert"
+      className="mt-1 rounded-md border border-error/20 bg-error/10 px-2 py-1.5"
+      data-testid="child-failure"
+    >
+      <p className="text-xs text-error font-medium mb-0.5">Child failed</p>
+      {isLimitFailure(node) && (
+        <p className="text-xs text-error font-medium mb-0.5" data-testid="child-limit-label">
+          {limitFailureLabel(node)}
+        </p>
+      )}
+      <p className="text-sm text-text-primary break-words">{node.safeErrorMessage}</p>
+      {node.failureCategory && (
+        <p className="mt-0.5 text-xs text-text-primary">Category: {node.failureCategory}</p>
+      )}
+      {node.failureCode && (
+        <p className="mt-0.5 text-xs text-text-primary">Code: {node.failureCode}</p>
+      )}
+      {consequence && (
+        <p className="mt-0.5 text-xs text-text-secondary" data-testid="child-policy-consequence">
+          {consequence}
+        </p>
+      )}
+      <p className="mt-0.5 text-xs text-text-secondary" data-testid="child-retry-direction">
+        To recover, use Retry Mission on the root run.
+      </p>
+    </div>
+  );
+}
+
+/** Expand/collapse descendants + open subthread + cancel subtree actions
+ * (VAL-SUB-026, 027, 096, 103). */
 function ChildNodeActions({
   node,
   canExpand,
   isExpanded,
   subthreadHref,
+  subthreadRecovering,
+  canCancelSubtree,
   expandBtnRef,
   onToggle,
+  onCancelSubtree,
 }: {
   node: DerivedChildNode;
   canExpand: boolean;
   isExpanded: boolean;
   subthreadHref: string | null;
+  subthreadRecovering: boolean;
+  canCancelSubtree: boolean;
   expandBtnRef: React.Ref<HTMLButtonElement>;
   onToggle: () => void;
+  onCancelSubtree: () => void;
 }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -555,14 +741,37 @@ function ChildNodeActions({
           {isExpanded ? 'Collapse' : 'Descendants'}
         </button>
       )}
-      {subthreadHref && (
-        <Link
-          to={subthreadHref}
-          className="inline-flex items-center gap-1 text-xs font-medium text-accent underline hover:text-accent/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none rounded"
-          aria-label={`Open subthread for ${node.title}`}
+      {subthreadRecovering ? (
+        <span
+          className="inline-flex items-center gap-1 text-xs font-medium text-warning"
+          role="status"
+          aria-live="polite"
+          data-testid="child-subthread-recovering"
         >
-          Open subthread
-        </Link>
+          <RefreshCw className="h-3.5 w-3.5 motion-reduce:animate-none" aria-hidden="true" />
+          Recovering subthread…
+        </span>
+      ) : (
+        subthreadHref && (
+          <Link
+            to={subthreadHref}
+            className="inline-flex items-center gap-1 text-xs font-medium text-accent underline hover:text-accent/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none rounded"
+            aria-label={`Open subthread for ${node.title}`}
+          >
+            Open subthread
+          </Link>
+        )
+      )}
+      {canCancelSubtree && (
+        <button
+          type="button"
+          onClick={onCancelSubtree}
+          aria-label={`Cancel subtree for ${node.title}`}
+          className="inline-flex items-center gap-1 rounded-lg border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-medium text-error transition-colors hover:bg-error/20 focus-visible:ring-2 focus-visible:ring-error/40 focus-visible:outline-none motion-reduce:transition-none"
+        >
+          <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+          Cancel subtree
+        </button>
       )}
     </div>
   );
@@ -585,6 +794,8 @@ function ChildSubtree({
   maxDepth,
   principalId,
   parentTitle,
+  rootBillingAgentId,
+  partialResultPolicy,
 }: {
   companyId: string;
   projectId: string;
@@ -595,6 +806,8 @@ function ChildSubtree({
   maxDepth: number;
   principalId: string;
   parentTitle: string;
+  rootBillingAgentId: string | null;
+  partialResultPolicy: string;
 }) {
   const snapshotQuery = useMissionRunSnapshot(companyId, projectId, childRunId);
   const eventsQuery = useMissionRunEvents(companyId, projectId, childRunId);
@@ -656,6 +869,8 @@ function ChildSubtree({
       depth={depth}
       maxDepth={maxDepth}
       principalId={principalId}
+      rootBillingAgentId={rootBillingAgentId}
+      partialResultPolicy={partialResultPolicy}
     />
   );
 }
