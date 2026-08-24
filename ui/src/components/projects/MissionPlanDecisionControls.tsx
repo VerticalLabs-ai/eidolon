@@ -184,6 +184,21 @@ export function MissionPlanDecisionControls({
         Approve to start execution, revise to request changes, or reject to cancel.
       </p>
 
+      {/* Batched polite live region for meaningful decision state changes
+       * (VAL-PLAN-084). Announces decision applied, stale revision, or error
+       * states without per-event progress noise. High-frequency progress
+       * events are not routed through this region. The pending notice above
+       * handles the in-flight announcement; this region handles outcome
+       * announcements so they are batched rather than per-event. */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="decision-live-region"
+        className="sr-only"
+      >
+        {approveError != null && !staleRevision ? 'Decision could not be applied.' : ''}
+      </div>
+
       {anyPending && (
         <p
           className="mb-2.5 text-xs text-text-secondary"
@@ -218,7 +233,7 @@ export function MissionPlanDecisionControls({
           aria-disabled={!canApproveOrReject || anyPending ? 'true' : undefined}
           aria-label={`Approve plan revision ${revision.revision}`}
           data-testid="plan-approve-button"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-success/30 bg-success/15 px-3 py-1.5 text-xs font-semibold text-success transition-colors hover:bg-success/25 focus-visible:ring-2 focus-visible:ring-success/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-success/30 bg-success/15 px-3 py-1.5 min-h-[44px] text-xs font-semibold text-success transition-colors hover:bg-success/25 focus-visible:ring-2 focus-visible:ring-success/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
         >
           <Check className="h-3.5 w-3.5" aria-hidden="true" />
           {approveMutation.isPending ? 'Approving…' : 'Approve'}
@@ -347,7 +362,7 @@ function ReviseControl({
         aria-disabled={!canRevise || anyPending ? 'true' : undefined}
         aria-label={`Revise plan revision ${revision.revision}`}
         data-testid="plan-revise-button"
-        className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 min-h-[44px] text-xs font-medium text-accent transition-colors hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
       >
         <SquarePen className="h-3.5 w-3.5" aria-hidden="true" />
         Revise
@@ -426,7 +441,7 @@ function RejectControl({
         aria-disabled={!canReject || anyPending ? 'true' : undefined}
         aria-label={`Reject plan revision ${revision.revision}`}
         data-testid="plan-reject-button"
-        className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 bg-error/15 px-3 py-1.5 text-xs font-semibold text-error transition-colors hover:bg-error/25 focus-visible:ring-2 focus-visible:ring-error/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 bg-error/15 px-3 py-1.5 min-h-[44px] text-xs font-semibold text-error transition-colors hover:bg-error/25 focus-visible:ring-2 focus-visible:ring-error/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
       >
         <XOctagon className="h-3.5 w-3.5" aria-hidden="true" />
         Reject
@@ -774,7 +789,7 @@ function PlanFeedbackDialog({
                 onClick={handleDismiss}
                 disabled={isPending}
                 aria-label={mode === 'revise' ? 'Keep current plan' : 'Keep plan'}
-                className="rounded-lg border border-white/[0.08] bg-white/[0.025] px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 motion-reduce:transition-none"
+                className="rounded-lg border border-white/[0.08] bg-white/[0.025] px-4 py-2 min-h-[44px] text-sm font-medium text-text-secondary transition-colors hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 motion-reduce:transition-none"
               >
                 {mode === 'revise' ? 'Keep current plan' : 'Keep plan'}
               </button>
@@ -784,7 +799,7 @@ function PlanFeedbackDialog({
                 disabled={!canConfirm}
                 aria-disabled={!canConfirm ? 'true' : undefined}
                 aria-label={confirmLabel}
-                className={`inline-flex items-center justify-center gap-1.5 rounded-lg border px-4 py-2 text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
+                className={`inline-flex items-center justify-center gap-1.5 rounded-lg border px-4 py-2 min-h-[44px] text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
                   mode === 'reject'
                     ? 'border-error/30 bg-error/15 text-error hover:bg-error/25 focus-visible:ring-error/40'
                     : 'border-accent/30 bg-accent/15 text-accent hover:bg-accent/25 focus-visible:ring-accent/40'

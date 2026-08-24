@@ -150,7 +150,7 @@ export function MissionPlanCard({
         <span className="text-xs text-text-muted" data-testid="plan-revision">
           Revision {revision.revision}
         </span>
-        <span className="text-xs text-text-muted font-mono" data-testid="plan-hash">
+        <span className="text-xs text-text-muted font-mono break-all" data-testid="plan-hash">
           {hashPrefix}
         </span>
       </div>
@@ -318,7 +318,7 @@ function StepTools({ step }: { step: MissionPlanStep }) {
         <span aria-label={`Tools for ${step.stepKey}`}>
           {step.toolAllowlist.map((tool, i) => (
             <span key={tool}>
-              <span className="text-xs text-text-primary font-mono">{tool}</span>
+              <span className="text-xs text-text-primary font-mono break-all">{tool}</span>
               {i < step.toolAllowlist.length - 1 ? (
                 <span className="text-xs text-text-muted">, </span>
               ) : null}
@@ -342,7 +342,7 @@ function StepExpectedOutputs({ step }: { step: MissionPlanStep }) {
         <span aria-label={`Expected outputs for ${step.stepKey}`}>
           {step.expectedOutputs.map((out, i) => (
             <span key={out}>
-              <span className="text-xs text-text-primary font-mono">{out}</span>
+              <span className="text-xs text-text-primary font-mono break-all">{out}</span>
               {i < step.expectedOutputs.length - 1 ? (
                 <span className="text-xs text-text-muted">, </span>
               ) : null}
