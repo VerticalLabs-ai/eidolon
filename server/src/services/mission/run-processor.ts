@@ -13,6 +13,7 @@ import { projectEvent } from './projection.js';
 import { decryptEnvelope } from './ingress.js';
 import { TopologyMaterializer } from './topology-materializer.js';
 import { AgentRouter, type RoutingContext } from './agent-router.js';
+import { EphemeralFallbackRouter, type EphemeralRoutingContext } from './ephemeral-router.js';
 import type { RoutingRequirements, PlanContent } from './plan-schema.js';
 import logger from '../../utils/logger.js';
 
@@ -94,6 +95,15 @@ export interface RunProcessorDeps {
    * lifecycle are owned by later features (m4-f03).
    */
   router?: AgentRouter;
+  /**
+   * Ephemeral fallback router for child runs where no eligible company agent
+   * exists. When the AgentRouter returns non-selected, the processor delegates
+   * to this router to either create an ephemeral child (inheriting parent
+   * policy/billing) or terminally fail the shell with NO_ELIGIBLE_AGENT
+   * (VAL-SUB-019, 021, 022, 023, 090, 091, 114, VAL-MODEQ-043). If not
+   * provided, a default ephemeral router is constructed from the db instance.
+   */
+  ephemeralRouter?: EphemeralFallbackRouter;
 }
 
 interface RunRow {
@@ -428,11 +438,34 @@ export class RunProcessor {
     };
 
     // Route the child. If an eligible agent is found, the router records the
-    // decision atomically. If not, the child remains pending (ephemeral
-    // fallback is m4-f03-ephemeral-fallback).
-    await router.route(ctx);
+    // decision atomically. If not, the child remains pending for ephemeral
+    // fallback (VAL-SUB-019, 021, 022, 023, 090, 091, 114, VAL-MODEQ-043).
+    const routingDecision = await router.route(ctx);
 
-    // Either way, the child was handled (routed or left pending for fallback).
+    if (!routingDecision.selected) {
+      // No eligible company agent — attempt ephemeral fallback or fail
+      // the shell closed with NO_ELIGIBLE_AGENT.
+      const ephemeralRouter =
+        this.deps.ephemeralRouter ??
+        new EphemeralFallbackRouter(this.db, { clock: () => this.now() });
+
+      const ephemeralCtx: EphemeralRoutingContext = {
+        companyId: claim.companyId,
+        projectId: claim.projectId,
+        rootRunId: assignment.rootRunId,
+        parentRunId: assignment.parentRunId,
+        childRunId: claim.runId,
+        stepKey: assignment.stepKey,
+        routingRequirements: reqs,
+        stepBudgetCents,
+        stepTimeoutSeconds,
+        billingAgentId: assignment.billingAgentId,
+      };
+
+      await ephemeralRouter.routeOrFail(ephemeralCtx);
+    }
+
+    // Either way, the child was handled (routed, ephemeral, or failed).
     return true;
   }
 
