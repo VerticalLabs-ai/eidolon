@@ -166,7 +166,7 @@ describe('Firecrawl adapter: response normalization', () => {
     expect(result.providerRequestId).toBe('job-abc');
     expect(result.credits).toBe(2);
     expect(result.sources).toHaveLength(2);
-    expect(result.sources[0].canonicalUrl).toBe('https://one.com');
+    expect(result.sources[0].canonicalUrl).toBe('https://one.com/');
     expect(result.sources[0].title).toBe('Result One');
     expect(result.sources[0].text).toBe('Content one');
     expect(result.sources[0].rank).toBe(0);
@@ -202,7 +202,7 @@ describe('Firecrawl adapter: response normalization', () => {
     );
 
     expect(result.sources).toHaveLength(1);
-    expect(result.sources[0].canonicalUrl).toBe('https://example.com');
+    expect(result.sources[0].canonicalUrl).toBe('https://example.com/');
     expect(result.sources[0].title).toBe('Page Title');
     expect(result.sources[0].text).toBe('# Page Title\n\nPage content.');
     expect(result.sources[0].language).toBe('en');

@@ -45,6 +45,12 @@ import {
 } from './spi.js';
 import { isOperationSupported, getUnsupportedOperationError } from './operations.js';
 import { parseRetryAfter } from './retry-after.js';
+import {
+  isProviderRedirect,
+  createProviderRedirectError,
+  validateProviderOriginUrl,
+} from './ssrf-boundary.js';
+import { validateTargetUrl } from './url-policy.js';
 
 // ---------------------------------------------------------------------------
 // Adapter configuration
@@ -213,8 +219,14 @@ export class TavilyAdapter implements ResearchProvider {
       if (!result.url) {
         continue;
       }
+      // VAL-RES-054: Validate search-result URLs before persistence.
+      // Unsafe URLs are excluded; discovery alone never authorizes use.
+      const urlCheck = validateTargetUrl(result.url);
+      if (!urlCheck.valid) {
+        continue;
+      }
       sources.push({
-        canonicalUrl: result.url,
+        canonicalUrl: urlCheck.canonicalUrl ?? result.url,
         title: normalizeText(result.title),
         retrievedAt: new Date().toISOString(),
         rank: i,
@@ -262,6 +274,20 @@ export class TavilyAdapter implements ResearchProvider {
       );
     }
 
+    // VAL-RES-048/049/050/096: Validate each target URL before sending
+    // to the provider. Unsafe URLs are rejected before provider invocation.
+    for (const rawUrl of urls) {
+      const urlResult = validateTargetUrl(rawUrl);
+      if (!urlResult.valid) {
+        throw new ResearchProviderError(
+          'POLICY_DENIED',
+          urlResult.message ?? 'Target URL rejected by SSRF policy',
+          'tavily',
+          'extract',
+        );
+      }
+    }
+
     const body = {
       urls,
       format: 'markdown',
@@ -287,8 +313,13 @@ export class TavilyAdapter implements ResearchProvider {
       if (!result.url) {
         continue;
       }
+      // VAL-RES-054: Validate extract-result URLs before persistence.
+      const urlCheck = validateTargetUrl(result.url);
+      if (!urlCheck.valid) {
+        continue;
+      }
       sources.push({
-        canonicalUrl: result.url,
+        canonicalUrl: urlCheck.canonicalUrl ?? result.url,
         retrievedAt: new Date().toISOString(),
         rank: i,
         text: text ? capText(text) : undefined,
@@ -326,6 +357,20 @@ export class TavilyAdapter implements ResearchProvider {
     operation: ResearchOperation,
   ): Promise<Response> {
     const url = `${TAVILY_ORIGIN}${path}`;
+
+    // Validate that the URL matches the fixed provider origin and
+    // allowlisted path (VAL-RES-055). This is a compile-time constant
+    // check that prevents any runtime override.
+    const originCheck = validateProviderOriginUrl(url, 'tavily', operation);
+    if (!originCheck.valid) {
+      throw new ResearchProviderError(
+        'POLICY_DENIED',
+        originCheck.message ?? 'Provider origin validation failed',
+        'tavily',
+        operation,
+      );
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, 30_000));
 
@@ -352,78 +397,23 @@ export class TavilyAdapter implements ResearchProvider {
         },
         body: JSON.stringify(body),
         signal: controller.signal,
+        // VAL-RES-092: Never follow redirects from provider origin.
+        // Any 3xx is a policy denial; no credential header is forwarded.
+        redirect: 'manual',
       });
 
-      // VAL-RES-090: 401/403 → PROVIDER_AUTHENTICATION_FAILED (non-retried, non-fallback).
-      if (response.status === 401 || response.status === 403) {
-        throw new ResearchProviderError(
-          'PROVIDER_AUTHENTICATION_FAILED',
-          'Tavily authentication failed',
-          'tavily',
+      // VAL-RES-092: Provider redirects cannot forward credentials.
+      // Any 3xx from the provider origin is denied.
+      if (isProviderRedirect(response.status)) {
+        throw createProviderRedirectError({
+          statusCode: response.status,
+          provider: 'tavily',
           operation,
-          response.status,
-        );
-      }
-      if (response.status === 408) {
-        throw new ResearchProviderError(
-          'PROVIDER_TIMEOUT',
-          'Tavily request timed out',
-          'tavily',
-          operation,
-          408,
-        );
-      }
-      if (response.status === 429) {
-        // Parse Retry-After header (VAL-RES-009).
-        const retryAfterMs = parseRetryAfter(
-          response.headers.get('retry-after'),
-          new Date(),
-          5_000,
-        );
-        throw new ResearchProviderError(
-          'PROVIDER_RATE_LIMITED',
-          'Tavily rate limit exceeded',
-          'tavily',
-          operation,
-          429,
-          retryAfterMs ?? undefined,
-        );
-      }
-      if (response.status === 432 || response.status === 433) {
-        throw new ResearchProviderError(
-          'PROVIDER_QUOTA_EXCEEDED',
-          'Tavily quota exceeded',
-          'tavily',
-          operation,
-          response.status,
-        );
-      }
-      if (response.status >= 500) {
-        // Parse Retry-After for 503 if present (VAL-RES-009).
-        const retryAfterMs = parseRetryAfter(
-          response.headers.get('retry-after'),
-          new Date(),
-          5_000,
-        );
-        throw new ResearchProviderError(
-          'PROVIDER_TRANSIENT',
-          'Tavily server error',
-          'tavily',
-          operation,
-          response.status,
-          retryAfterMs ?? undefined,
-        );
-      }
-      if (response.status >= 400) {
-        throw new ResearchProviderError(
-          'PROVIDER_PERMANENT',
-          'Tavily request rejected',
-          'tavily',
-          operation,
-          response.status,
-        );
+          location: response.headers.get('location') ?? undefined,
+        });
       }
 
+      this.checkHttpStatus(response, operation);
       return response;
     } catch (err) {
       if (err instanceof ResearchProviderError) {
@@ -455,6 +445,72 @@ export class TavilyAdapter implements ResearchProvider {
       );
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // HTTP status check (extracted to reduce doFetch complexity)
+  // -------------------------------------------------------------------------
+
+  private checkHttpStatus(response: Response, operation: ResearchOperation): void {
+    // VAL-RES-090: 401/403 → PROVIDER_AUTHENTICATION_FAILED (non-retried, non-fallback).
+    if (response.status === 401 || response.status === 403) {
+      throw new ResearchProviderError(
+        'PROVIDER_AUTHENTICATION_FAILED',
+        'Tavily authentication failed',
+        'tavily',
+        operation,
+        response.status,
+      );
+    }
+    if (response.status === 408) {
+      throw new ResearchProviderError(
+        'PROVIDER_TIMEOUT',
+        'Tavily request timed out',
+        'tavily',
+        operation,
+        408,
+      );
+    }
+    if (response.status === 429) {
+      const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), new Date(), 5_000);
+      throw new ResearchProviderError(
+        'PROVIDER_RATE_LIMITED',
+        'Tavily rate limit exceeded',
+        'tavily',
+        operation,
+        429,
+        retryAfterMs ?? undefined,
+      );
+    }
+    if (response.status === 432 || response.status === 433) {
+      throw new ResearchProviderError(
+        'PROVIDER_QUOTA_EXCEEDED',
+        'Tavily quota exceeded',
+        'tavily',
+        operation,
+        response.status,
+      );
+    }
+    if (response.status >= 500) {
+      const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), new Date(), 5_000);
+      throw new ResearchProviderError(
+        'PROVIDER_TRANSIENT',
+        'Tavily server error',
+        'tavily',
+        operation,
+        response.status,
+        retryAfterMs ?? undefined,
+      );
+    }
+    if (response.status >= 400) {
+      throw new ResearchProviderError(
+        'PROVIDER_PERMANENT',
+        'Tavily request rejected',
+        'tavily',
+        operation,
+        response.status,
+      );
     }
   }
 

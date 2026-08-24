@@ -55,6 +55,12 @@ import {
 } from './spi.js';
 import { isOperationSupported, getUnsupportedOperationError } from './operations.js';
 import { parseRetryAfter } from './retry-after.js';
+import {
+  isProviderRedirect,
+  createProviderRedirectError,
+  validateProviderOriginUrl,
+} from './ssrf-boundary.js';
+import { validateTargetUrl } from './url-policy.js';
 
 // ---------------------------------------------------------------------------
 // Adapter configuration
@@ -247,8 +253,13 @@ export class FirecrawlAdapter implements ResearchProvider {
       if (!result.url) {
         continue;
       }
+      // VAL-RES-054: Validate search-result URLs before persistence.
+      const urlCheck = validateTargetUrl(result.url);
+      if (!urlCheck.valid) {
+        continue;
+      }
       sources.push({
-        canonicalUrl: result.url,
+        canonicalUrl: urlCheck.canonicalUrl ?? result.url,
         title: normalizeText(result.title ?? result.metadata?.title),
         retrievedAt: new Date().toISOString(),
         rank: i,
@@ -295,7 +306,6 @@ export class FirecrawlAdapter implements ResearchProvider {
         'scrape',
       );
     }
-    // Firecrawl scrape is single-page.
     if (urls.length > 1) {
       throw new ResearchProviderError(
         'INVALID_REQUEST',
@@ -304,6 +314,9 @@ export class FirecrawlAdapter implements ResearchProvider {
         'scrape',
       );
     }
+
+    // VAL-RES-048/049/050/096: Validate the target URL before sending.
+    const urlResult = this.validateSingleTargetUrl(urls[0], 'scrape');
 
     const body = {
       url: urls[0],
@@ -332,7 +345,7 @@ export class FirecrawlAdapter implements ResearchProvider {
 
     const sources: NormalizedResearchSource[] = [];
     const markdown = normalizeText(data.data?.markdown);
-    const sourceUrl = request.urls?.[0] ?? '';
+    const sourceUrl = urlResult.canonicalUrl ?? request.urls?.[0] ?? '';
 
     sources.push({
       canonicalUrl: sourceUrl,
@@ -383,6 +396,20 @@ export class FirecrawlAdapter implements ResearchProvider {
         'firecrawl',
         'structured_extract',
       );
+    }
+
+    // VAL-RES-048/049/050/096: Validate each target URL before sending
+    // to the provider. Unsafe URLs are rejected before provider invocation.
+    for (const rawUrl of urls) {
+      const urlResult = validateTargetUrl(rawUrl);
+      if (!urlResult.valid) {
+        throw new ResearchProviderError(
+          'POLICY_DENIED',
+          urlResult.message ?? 'Target URL rejected by SSRF policy',
+          'firecrawl',
+          'structured_extract',
+        );
+      }
     }
 
     const schema = request.schema;
@@ -448,6 +475,20 @@ export class FirecrawlAdapter implements ResearchProvider {
     operation: ResearchOperation,
   ): Promise<Response> {
     const url = `${FIRECRAWL_ORIGIN}${path}`;
+
+    // Validate that the URL matches the fixed provider origin and
+    // allowlisted path (VAL-RES-055). This is a compile-time constant
+    // check that prevents any runtime override.
+    const originCheck = validateProviderOriginUrl(url, 'firecrawl', operation);
+    if (!originCheck.valid) {
+      throw new ResearchProviderError(
+        'POLICY_DENIED',
+        originCheck.message ?? 'Provider origin validation failed',
+        'firecrawl',
+        operation,
+      );
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, 30_000));
 
@@ -473,78 +514,23 @@ export class FirecrawlAdapter implements ResearchProvider {
         },
         body: JSON.stringify(body),
         signal: controller.signal,
+        // VAL-RES-092: Never follow redirects from provider origin.
+        // Any 3xx is a policy denial; no credential header is forwarded.
+        redirect: 'manual',
       });
 
-      // VAL-RES-090: 401/403 → PROVIDER_AUTHENTICATION_FAILED (non-retried, non-fallback).
-      if (response.status === 401 || response.status === 403) {
-        throw new ResearchProviderError(
-          'PROVIDER_AUTHENTICATION_FAILED',
-          'Firecrawl authentication failed',
-          'firecrawl',
+      // VAL-RES-092: Provider redirects cannot forward credentials.
+      // Any 3xx from the provider origin is denied.
+      if (isProviderRedirect(response.status)) {
+        throw createProviderRedirectError({
+          statusCode: response.status,
+          provider: 'firecrawl',
           operation,
-          response.status,
-        );
-      }
-      if (response.status === 402) {
-        throw new ResearchProviderError(
-          'PROVIDER_QUOTA_EXCEEDED',
-          'Firecrawl payment required',
-          'firecrawl',
-          operation,
-          402,
-        );
-      }
-      if (response.status === 408) {
-        throw new ResearchProviderError(
-          'PROVIDER_TIMEOUT',
-          'Firecrawl request timed out',
-          'firecrawl',
-          operation,
-          408,
-        );
-      }
-      if (response.status === 429) {
-        // Parse Retry-After header (VAL-RES-009).
-        const retryAfterMs = parseRetryAfter(
-          response.headers.get('retry-after'),
-          new Date(),
-          5_000,
-        );
-        throw new ResearchProviderError(
-          'PROVIDER_RATE_LIMITED',
-          'Firecrawl rate limit exceeded',
-          'firecrawl',
-          operation,
-          429,
-          retryAfterMs ?? undefined,
-        );
-      }
-      if (response.status >= 500) {
-        // Parse Retry-After for 503 if present (VAL-RES-009).
-        const retryAfterMs = parseRetryAfter(
-          response.headers.get('retry-after'),
-          new Date(),
-          5_000,
-        );
-        throw new ResearchProviderError(
-          'PROVIDER_TRANSIENT',
-          'Firecrawl server error',
-          'firecrawl',
-          operation,
-          response.status,
-          retryAfterMs ?? undefined,
-        );
-      }
-      if (response.status >= 400) {
-        throw new ResearchProviderError(
-          'PROVIDER_PERMANENT',
-          'Firecrawl request rejected',
-          'firecrawl',
-          operation,
-          response.status,
-        );
+          location: response.headers.get('location') ?? undefined,
+        });
       }
 
+      this.checkHttpStatus(response, operation);
       return response;
     } catch (err) {
       if (err instanceof ResearchProviderError) {
@@ -574,6 +560,92 @@ export class FirecrawlAdapter implements ResearchProvider {
       );
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Target URL validation (extracted to reduce method complexity)
+  // -------------------------------------------------------------------------
+
+  private validateSingleTargetUrl(
+    rawUrl: string,
+    operation: ResearchOperation,
+  ): { valid: boolean; canonicalUrl?: string } {
+    const result = validateTargetUrl(rawUrl);
+    if (!result.valid) {
+      throw new ResearchProviderError(
+        'POLICY_DENIED',
+        result.message ?? 'Target URL rejected by SSRF policy',
+        'firecrawl',
+        operation,
+      );
+    }
+    return { valid: true, canonicalUrl: result.canonicalUrl };
+  }
+
+  // -------------------------------------------------------------------------
+  // HTTP status check (extracted to reduce doFetch complexity)
+  // -------------------------------------------------------------------------
+
+  private checkHttpStatus(response: Response, operation: ResearchOperation): void {
+    // VAL-RES-090: 401/403 → PROVIDER_AUTHENTICATION_FAILED (non-retried, non-fallback).
+    if (response.status === 401 || response.status === 403) {
+      throw new ResearchProviderError(
+        'PROVIDER_AUTHENTICATION_FAILED',
+        'Firecrawl authentication failed',
+        'firecrawl',
+        operation,
+        response.status,
+      );
+    }
+    if (response.status === 402) {
+      throw new ResearchProviderError(
+        'PROVIDER_QUOTA_EXCEEDED',
+        'Firecrawl payment required',
+        'firecrawl',
+        operation,
+        402,
+      );
+    }
+    if (response.status === 408) {
+      throw new ResearchProviderError(
+        'PROVIDER_TIMEOUT',
+        'Firecrawl request timed out',
+        'firecrawl',
+        operation,
+        408,
+      );
+    }
+    if (response.status === 429) {
+      const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), new Date(), 5_000);
+      throw new ResearchProviderError(
+        'PROVIDER_RATE_LIMITED',
+        'Firecrawl rate limit exceeded',
+        'firecrawl',
+        operation,
+        429,
+        retryAfterMs ?? undefined,
+      );
+    }
+    if (response.status >= 500) {
+      const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), new Date(), 5_000);
+      throw new ResearchProviderError(
+        'PROVIDER_TRANSIENT',
+        'Firecrawl server error',
+        'firecrawl',
+        operation,
+        response.status,
+        retryAfterMs ?? undefined,
+      );
+    }
+    if (response.status >= 400) {
+      throw new ResearchProviderError(
+        'PROVIDER_PERMANENT',
+        'Firecrawl request rejected',
+        'firecrawl',
+        operation,
+        response.status,
+      );
     }
   }
 

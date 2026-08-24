@@ -148,7 +148,7 @@ describe('Tavily adapter: response normalization', () => {
     expect(result.providerRequestId).toBe('req-123');
     expect(result.credits).toBe(1);
     expect(result.sources).toHaveLength(2);
-    expect(result.sources[0].canonicalUrl).toBe('https://example.com');
+    expect(result.sources[0].canonicalUrl).toBe('https://example.com/');
     expect(result.sources[0].title).toBe('Example Page');
     expect(result.sources[0].text).toBe('Some content here');
     expect(result.sources[0].score).toBe(0.95);
@@ -185,7 +185,7 @@ describe('Tavily adapter: response normalization', () => {
     expect(result.sources).toHaveLength(1);
     // Only normalized fields are present — no unknown fields leak.
     const source = result.sources[0];
-    expect(source.canonicalUrl).toBe('https://example.com');
+    expect(source.canonicalUrl).toBe('https://example.com/');
     expect((source as unknown as Record<string, unknown>).unknown_field).toBeUndefined();
   });
 
@@ -215,7 +215,7 @@ describe('Tavily adapter: response normalization', () => {
     );
 
     expect(result.sources).toHaveLength(1);
-    expect(result.sources[0].canonicalUrl).toBe('https://example.com');
+    expect(result.sources[0].canonicalUrl).toBe('https://example.com/');
     expect(result.sources[0].text).toBe('Extracted content');
     expect(result.sources[0].contentHash).toBeDefined();
   });
