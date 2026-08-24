@@ -2,26 +2,58 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
-import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision, permanentlyDeleteArtifact, transferArtifactOwnership } from '../services/artifact-service.js';
+import {
+  createArtifact,
+  getArtifact,
+  listArtifacts,
+  updateArtifact,
+  setArtifactStatus,
+  listRevisions,
+  getRevision,
+  permanentlyDeleteArtifact,
+  transferArtifactOwnership,
+} from '../services/artifact-service.js';
 import { moveArtifactToFolder } from '../services/folder-service.js';
 import { runCodeArtifact } from '../services/code-run-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
-import { ArtifactTypeSchema, DashboardContentSchema, formatArtifactValidationIssues, summarizeArtifactValidationIssues } from '@eidolon/shared';
+import {
+  ArtifactTypeSchema,
+  DashboardContentSchema,
+  formatArtifactValidationIssues,
+  summarizeArtifactValidationIssues,
+} from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
-import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel } from '../services/permission-service.js';
+import {
+  resolveAccess,
+  requireAccess,
+  filterAccessibleArtifacts,
+  type AccessLevel,
+} from '../services/permission-service.js';
 import { requireStepUp, type StepUpScope } from '../services/stepup-service.js';
 import { resolveDataSource, type DashboardDataSource } from '../services/dashboard-data-source.js';
 import { diffRevisions } from '../services/diff-service.js';
 import { getLinks } from '../services/link-service.js';
+import { ExportRevisionService } from '../services/mission/research/export-revision-service.js';
+import {
+  buildExportFilename,
+  exportToMarkdown,
+  exportToHtml,
+} from '../services/mission/research/export-service.js';
 import type { DbInstance } from '../types.js';
 
 const CreateBody = z.object({
-  type: ArtifactTypeSchema, title: z.string().trim().min(1).max(500),
-  content: z.unknown(), projectId: z.string().uuid().nullable().optional(), folderId: z.string().uuid().nullable().optional(),
+  type: ArtifactTypeSchema,
+  title: z.string().trim().min(1).max(500),
+  content: z.unknown(),
+  projectId: z.string().uuid().nullable().optional(),
+  folderId: z.string().uuid().nullable().optional(),
 });
 const UpdateBody = z.object({
-  version: z.number().int().positive().optional(), title: z.string().trim().min(1).max(500).optional(),
-  content: z.unknown().optional(), projectId: z.string().uuid().nullable().optional(), message: z.string().max(2000).optional(),
+  version: z.number().int().positive().optional(),
+  title: z.string().trim().min(1).max(500).optional(),
+  content: z.unknown().optional(),
+  projectId: z.string().uuid().nullable().optional(),
+  message: z.string().max(2000).optional(),
   folderId: z.string().uuid().nullable().optional(),
 });
 const ListQuery = z.object({
@@ -30,7 +62,8 @@ const ListQuery = z.object({
   type: ArtifactTypeSchema.optional(),
   status: z.enum(['active', 'archived', 'deleted']).default('active'),
   folderId: z.union([z.string().uuid(), z.literal('null')]).optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
   sort: z.enum(['updatedAt', 'title', 'type', 'createdAt']).optional(),
   order: z.enum(['asc', 'desc']).optional(),
 });
@@ -48,7 +81,11 @@ async function editor(db: DbInstance, companyId: string, req: any) {
     if (await agentBelongsToCompany(db, companyId, agentId)) {
       return { agentId, userId: null, editSource: 'agent' as const };
     }
-    throw new AppError(403, 'AGENT_NOT_IN_COMPANY', 'The specified agent does not belong to this company');
+    throw new AppError(
+      403,
+      'AGENT_NOT_IN_COMPANY',
+      'The specified agent does not belong to this company',
+    );
   }
   return { userId: req.user?.id ?? null, editSource: 'user' as const };
 }
@@ -69,7 +106,14 @@ export function artifactsRouter(db: DbInstance): Router {
     const result = await listArtifacts(db, companyId, { projectId, limit: 50, offset: 0 });
     // Filter by view access (hide no-access artifacts — VAL-TEAM-006/017).
     const { userId, orgRole } = actor(req);
-    const accessibleIds = await filterAccessibleArtifacts(db, companyId, userId, orgRole, result.rows.map((r: any) => r.id), 'view');
+    const accessibleIds = await filterAccessibleArtifacts(
+      db,
+      companyId,
+      userId,
+      orgRole,
+      result.rows.map((r: any) => r.id),
+      'view',
+    );
     const filteredRows = result.rows.filter((r: any) => accessibleIds.includes(r.id));
     res.json({ data: filteredRows, meta: { total: result.total, limit: 50, offset: 0 } });
   });
@@ -96,7 +140,14 @@ export function artifactsRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     const query = (req as any).validated.query;
     // Normalize projectId: 'null' string or unscoped flag → null (unscoped filter)
-    const filters: any = { limit: query.limit, offset: query.offset, status: query.status, type: query.type, sort: query.sort, order: query.order };
+    const filters: any = {
+      limit: query.limit,
+      offset: query.offset,
+      status: query.status,
+      type: query.type,
+      sort: query.sort,
+      order: query.order,
+    };
     if (query.unscoped === true || query.projectId === 'null') {
       filters.projectId = null;
       filters.filterNullProject = true;
@@ -112,9 +163,19 @@ export function artifactsRouter(db: DbInstance): Router {
     const result = await listArtifacts(db, companyId, filters);
     // Filter by view access (hide no-access artifacts — VAL-TEAM-006/017).
     const { userId, orgRole } = actor(req);
-    const accessibleIds = await filterAccessibleArtifacts(db, companyId, userId, orgRole, result.rows.map((r: any) => r.id), 'view');
+    const accessibleIds = await filterAccessibleArtifacts(
+      db,
+      companyId,
+      userId,
+      orgRole,
+      result.rows.map((r: any) => r.id),
+      'view',
+    );
     const filteredRows = result.rows.filter((r: any) => accessibleIds.includes(r.id));
-    res.json({ data: filteredRows, meta: { total: result.total, limit: query.limit, offset: query.offset } });
+    res.json({
+      data: filteredRows,
+      meta: { total: result.total, limit: query.limit, offset: query.offset },
+    });
   });
   router.get('/artifacts/:id/revisions/:version', async (req, res) => {
     const { companyId, id } = routeParams(req);
@@ -122,6 +183,68 @@ export function artifactsRouter(db: DbInstance): Router {
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await getRevision(db, companyId, id, Number(req.params.version)) });
   });
+  // -------------------------------------------------------------------------
+  // Exact-revision citation export (m5-f07-provenance-export-deep-links).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/export?format=markdown|html
+  // Exports the exact positive integer revision as UTF-8 `.md` or sanitized
+  // `.html`, with attachment filename `<sanitized-title>-v<version>.<ext>`,
+  // stable citation ordinals, canonical links, and a bound source list
+  // unchanged by newer edits (VAL-RES-039, VAL-RES-040, VAL-RES-101,
+  // VAL-RES-102). Project-scoped: a cross-project or cross-company revision
+  // returns a non-enumerating 404. Unsupported format → 400
+  // UNSUPPORTED_EXPORT_FORMAT; malformed version → 400 VALIDATION_ERROR.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/export',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      // Validate version is a positive integer (VAL-RES-102: malformed → 400).
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      // Validate format (VAL-RES-102: unsupported → 400 UNSUPPORTED_EXPORT_FORMAT).
+      const format = req.query.format;
+      if (format !== 'markdown' && format !== 'html') {
+        throw new AppError(
+          400,
+          'UNSUPPORTED_EXPORT_FORMAT',
+          'Unsupported export format; use markdown or html',
+        );
+      }
+      // View access on the artifact (company-scoped). Cross-company artifacts
+      // surface a 404 here; cross-project artifacts in the same company pass
+      // access but are rejected by the scoped export loader below.
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      const exportSvc = new ExportRevisionService({ drizzle: db.drizzle, schema: db.schema });
+      const data = await exportSvc.loadExportData(companyId, projectId, artifactId, versionNum);
+      if (!data) {
+        // Non-enumerating 404 for absent, cross-project, or cross-scope
+        // revisions (VAL-RES-102, VAL-RES-022).
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      const filename = buildExportFilename(data.title, data.version, format);
+      const contentType =
+        format === 'markdown' ? 'text/markdown; charset=utf-8' : 'text/html; charset=utf-8';
+      const body =
+        format === 'markdown'
+          ? exportToMarkdown(data.content, data.citations, {
+              title: data.title,
+              version: data.version,
+            })
+          : exportToHtml(data.content, data.citations, {
+              title: data.title,
+              version: data.version,
+            });
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(Buffer.from(body, 'utf8'));
+    },
+  );
   // -------------------------------------------------------------------------
   // Revision diff (M2): structured diff between two revisions.
   // GET /artifacts/:id/revisions/:v1/diff/:v2
@@ -138,7 +261,11 @@ export function artifactsRouter(db: DbInstance): Router {
     const v1Num = Number(v1Raw);
     const v2Num = Number(v2Raw);
     if (!Number.isInteger(v1Num) || v1Num < 1 || !Number.isInteger(v2Num) || v2Num < 1) {
-      throw new AppError(400, 'DIFF_INVALID_VERSION', `Revision versions must be positive integers (got v1=${v1Raw}, v2=${v2Raw})`);
+      throw new AppError(
+        400,
+        'DIFF_INVALID_VERSION',
+        `Revision versions must be positive integers (got v1=${v1Raw}, v2=${v2Raw})`,
+      );
     }
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
@@ -155,7 +282,17 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     const revision = await getRevision(db, companyId, id, Number(req.params.version));
-    const row = await updateArtifact(db, companyId, id, { version: (await getArtifact(db, companyId, id)).version, content: revision.content, message: 'restore revision' }, await editor(db, companyId, req));
+    const row = await updateArtifact(
+      db,
+      companyId,
+      id,
+      {
+        version: (await getArtifact(db, companyId, id)).version,
+        content: revision.content,
+        message: 'restore revision',
+      },
+      await editor(db, companyId, req),
+    );
     res.json({ data: row });
   });
   router.get('/artifacts/:id/revisions', async (req, res) => {
@@ -212,7 +349,9 @@ export function artifactsRouter(db: DbInstance): Router {
     // folder move) via updateArtifact — the folderId is not silently dropped.
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'edit');
-    res.json({ data: await updateArtifact(db, companyId, id, body, await editor(db, companyId, req)) });
+    res.json({
+      data: await updateArtifact(db, companyId, id, body, await editor(db, companyId, req)),
+    });
   });
   router.delete('/artifacts/:id', async (req, res) => {
     const { companyId, id } = routeParams(req);
@@ -227,9 +366,7 @@ export function artifactsRouter(db: DbInstance): Router {
     const permanent = req.query.permanent === 'true';
     if (permanent) {
       const stepUpToken =
-        (req.query.stepUpToken as string | undefined) ??
-        req.get('X-Eidolon-Step-Up-Token') ??
-        null;
+        (req.query.stepUpToken as string | undefined) ?? req.get('X-Eidolon-Step-Up-Token') ?? null;
       await requireStepUp(db, userId, 'artifact_permanent_delete' as StepUpScope, stepUpToken);
       await db.drizzle.insert(db.schema.activityLog).values({
         companyId,
@@ -245,7 +382,9 @@ export function artifactsRouter(db: DbInstance): Router {
       res.json({ data: await permanentlyDeleteArtifact(db, companyId, id) });
       return;
     }
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)) });
+    res.json({
+      data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)),
+    });
     // VAL-SEC-007: direct audit insert for artifact soft-delete with the
     // acting user (the event-based logger skips artifact.deleted).
     await db.drizzle.insert(db.schema.activityLog).values({
@@ -268,9 +407,7 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     const stepUpToken =
-      (req.query.stepUpToken as string | undefined) ??
-      req.get('X-Eidolon-Step-Up-Token') ??
-      null;
+      (req.query.stepUpToken as string | undefined) ?? req.get('X-Eidolon-Step-Up-Token') ?? null;
     await requireStepUp(db, userId, 'artifact_transfer' as StepUpScope, stepUpToken);
     const projectId =
       req.body?.projectId === null || req.body?.projectId === undefined
@@ -287,19 +424,37 @@ export function artifactsRouter(db: DbInstance): Router {
       metadata: { targetProjectId: projectId },
       createdAt: new Date(),
     });
-    res.json({ data: await transferArtifactOwnership(db, companyId, id, { projectId }, await editor(db, companyId, req)) });
+    res.json({
+      data: await transferArtifactOwnership(
+        db,
+        companyId,
+        id,
+        { projectId },
+        await editor(db, companyId, req),
+      ),
+    });
   });
   router.post('/artifacts/:id/archive', async (req, res) => {
     const { companyId, id } = routeParams(req);
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'archived', await editor(db, companyId, req)) });
+    res.json({
+      data: await setArtifactStatus(
+        db,
+        companyId,
+        id,
+        'archived',
+        await editor(db, companyId, req),
+      ),
+    });
   });
   router.post('/artifacts/:id/restore', async (req, res) => {
     const { companyId, id } = routeParams(req);
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)) });
+    res.json({
+      data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)),
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -334,12 +489,21 @@ export function artifactsRouter(db: DbInstance): Router {
     const parsed = DashboardContentSchema.safeParse(artifact.content);
     if (!parsed.success) {
       const summary = summarizeArtifactValidationIssues(parsed.error);
-      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Dashboard content is invalid${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
+      throw new AppError(
+        400,
+        'INVALID_ARTIFACT_CONTENT',
+        `Dashboard content is invalid${summary ? `: ${summary}` : ''}`,
+        formatArtifactValidationIssues(parsed.error),
+      );
     }
     const dataSourceId = req.params.dataSourceId;
     const source = parsed.data.dataSources.find((ds) => ds.id === dataSourceId);
     if (!source) {
-      throw new AppError(404, 'DATA_SOURCE_NOT_FOUND', `Data source ${dataSourceId} not found on dashboard ${id}`);
+      throw new AppError(
+        404,
+        'DATA_SOURCE_NOT_FOUND',
+        `Data source ${dataSourceId} not found on dashboard ${id}`,
+      );
     }
     const resolved = await resolveDataSource(db, companyId, source as DashboardDataSource);
     res.json({ data: resolved });
@@ -358,7 +522,12 @@ export function artifactsRouter(db: DbInstance): Router {
     const parsed = DashboardContentSchema.safeParse(artifact.content);
     if (!parsed.success) {
       const summary = summarizeArtifactValidationIssues(parsed.error);
-      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Dashboard content is invalid${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
+      throw new AppError(
+        400,
+        'INVALID_ARTIFACT_CONTENT',
+        `Dashboard content is invalid${summary ? `: ${summary}` : ''}`,
+        formatArtifactValidationIssues(parsed.error),
+      );
     }
     const results = await Promise.all(
       parsed.data.dataSources.map((ds) =>
