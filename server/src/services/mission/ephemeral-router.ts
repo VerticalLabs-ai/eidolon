@@ -6,6 +6,7 @@ import { policyContentHash, type ResolvedPolicy } from './policy.js';
 import type { ModeLimits } from './modes.js';
 import { BudgetService } from './budget.js';
 import { getServerProviderApiKey } from '../provider-key.js';
+import { AppError } from '../../middleware/error-handler.js';
 
 /**
  * EphemeralFallbackRouter — bounded ephemeral fallback when no eligible
@@ -327,8 +328,21 @@ export class EphemeralFallbackRouter {
         return;
       }
 
-      // All requirements pass — create the ephemeral child.
-      resultRef.value = await this.createEphemeralChild(tx, ctx, parentPolicy);
+      // All requirements pass — create the ephemeral child. If the root
+      // residual is insufficient for the child allocation, allocateChild
+      // throws BUDGET_UNAVAILABLE; catch it and fail the shell closed
+      // instead of propagating an unhandled error (VAL-CROSS-063:
+      // concurrent allocations either succeed within the hold or fail
+      // explicitly without overspending).
+      try {
+        resultRef.value = await this.createEphemeralChild(tx, ctx, parentPolicy);
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'BUDGET_UNAVAILABLE') {
+          resultRef.value = await this.failChild(tx, ctx, 'INSUFFICIENT_ROOT_RESIDUAL');
+        } else {
+          throw err;
+        }
+      }
     });
 
     return resultRef.value!;
@@ -477,6 +491,27 @@ export class EphemeralFallbackRouter {
     const childHash = policyContentHash(childPolicy);
     const childSnapshotId = randomUUID();
 
+    // Create a child budget allocation from the root reservation BEFORE
+    // persisting the policy snapshot. If the root residual is insufficient,
+    // allocateChild throws BUDGET_UNAVAILABLE and no snapshot/run/assignment
+    // writes have occurred, so the caller (routeOrFail) can catch and fail
+    // the shell closed cleanly (VAL-CROSS-063).
+    const budgetService = new BudgetService(this.db, { clock: () => now });
+    const rootReservationId = await this.findRootReservationId(tx, ctx);
+    let allocationId: string | null = null;
+    if (rootReservationId) {
+      const result = await budgetService.allocateChild(tx, {
+        companyId: ctx.companyId,
+        rootReservationId,
+        runId: ctx.childRunId,
+        billingAgentId: ctx.billingAgentId,
+        allocatedCents: ctx.stepBudgetCents,
+        projectId: ctx.projectId,
+        stepKey: ctx.stepKey,
+      });
+      allocationId = result.allocationId;
+    }
+
     // Persist the child policy snapshot as a new immutable row.
     await tx.insert(schema.runPolicySnapshots).values({
       id: childSnapshotId,
@@ -503,23 +538,6 @@ export class EphemeralFallbackRouter {
       contentHash: childHash,
       createdAt: now,
     });
-
-    // Create a child budget allocation from the root reservation.
-    const budgetService = new BudgetService(this.db, { clock: () => now });
-    const rootReservationId = await this.findRootReservationId(tx, ctx);
-    let allocationId: string | null = null;
-    if (rootReservationId) {
-      const result = await budgetService.allocateChild(tx, {
-        companyId: ctx.companyId,
-        rootReservationId,
-        runId: ctx.childRunId,
-        billingAgentId: ctx.billingAgentId,
-        allocatedCents: ctx.stepBudgetCents,
-        projectId: ctx.projectId,
-        stepKey: ctx.stepKey,
-      });
-      allocationId = result.allocationId;
-    }
 
     // Update the child run: set routing kind to ephemeral, no executing agent,
     // set billing agent, update policy snapshot, clear available_at.
