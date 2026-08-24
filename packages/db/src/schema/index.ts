@@ -79,3 +79,5 @@ export { runStepAssignments } from './run_step_assignments.js';
 export { runSchedulingPermits } from './run_scheduling_permits.js';
 export { runDescendantMirrors } from './run_descendant_mirrors.js';
 export { runSynthesisManifests } from './run_synthesis_manifests.js';
+export { researchProviderHealth } from './research_provider_health.js';
+export { researchPricingSnapshots } from './research_pricing_snapshots.js';

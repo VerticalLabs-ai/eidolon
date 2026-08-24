@@ -95,6 +95,8 @@ import {
   runSchedulingPermits,
   runDescendantMirrors,
   runSynthesisManifests,
+  researchProviderHealth,
+  researchPricingSnapshots,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -187,6 +189,8 @@ const SCHEMA_BUNDLE = {
   runSchedulingPermits,
   runDescendantMirrors,
   runSynthesisManifests,
+  researchProviderHealth,
+  researchPricingSnapshots,
 } as const;
 
 export interface BootstrapOptions {
