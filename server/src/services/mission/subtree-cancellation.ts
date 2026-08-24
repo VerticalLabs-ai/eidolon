@@ -240,9 +240,14 @@ export class SubtreeCancellationService {
     }
 
     // Find nonterminal siblings (same parent, not the terminalized child,
-    // not already terminal).
+    // not already terminal). Skip siblings that are already cancel-
+    // requested — the parent's cancellation cascade already emitted their
+    // child.cancel_requested event. Re-emitting would produce a duplicate
+    // event and a stale-sequence collision when a recursive
+    // applyChildTerminalPolicy call (from terminalizing a prior sibling)
+    // has already advanced the sibling's sequence.
     const siblings = await tx.execute(sql`
-      SELECT "id", "status", "last_event_sequence", "state_version"
+      SELECT "id", "status", "last_event_sequence", "state_version", "cancel_requested_at"
       FROM "mission_runs"
       WHERE "company_id" = ${input.companyId}
         AND "project_id" = ${input.projectId}
@@ -256,6 +261,7 @@ export class SubtreeCancellationService {
       status: string;
       last_event_sequence: number;
       state_version: number;
+      cancel_requested_at: Date | null;
     }>;
 
     if (siblingRows.length === 0) {
@@ -269,9 +275,51 @@ export class SubtreeCancellationService {
     const cascadedSiblingIds: string[] = [];
 
     for (const sibling of siblingRows) {
+      // Skip already-cancel-requested siblings — the cascade already
+      // emitted their child.cancel_requested event. The deadline sweep
+      // will terminalize them in their own transactions.
+      if (sibling.cancel_requested_at !== null) {
+        continue;
+      }
+
+      // Atomically re-read and increment the sibling's lastEventSequence
+      // inside the locked transaction. Lock the row with FOR UPDATE so
+      // we always read the latest sequence, preventing stale-sequence
+      // collisions even if a concurrent or recursive call advanced it.
+      const [lockedSibling] = await tx
+        .select({
+          id: schema.missionRuns.id,
+          stateVersion: schema.missionRuns.stateVersion,
+          lastEventSequence: schema.missionRuns.lastEventSequence,
+        })
+        .from(schema.missionRuns)
+        .where(
+          and(
+            eq(schema.missionRuns.companyId, input.companyId),
+            eq(schema.missionRuns.projectId, input.projectId),
+            eq(schema.missionRuns.id, sibling.id),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      if (!lockedSibling) {
+        continue;
+      }
+
+      // Re-check cancel_requested under the lock.
+      const [rechecked] = await tx
+        .select({ cancelRequestedAt: schema.missionRuns.cancelRequestedAt })
+        .from(schema.missionRuns)
+        .where(eq(schema.missionRuns.id, sibling.id))
+        .limit(1);
+      if (rechecked?.cancelRequestedAt !== null && rechecked?.cancelRequestedAt !== undefined) {
+        continue;
+      }
+
       // Set cancel_requested on the sibling.
-      const siblingSeq = sibling.last_event_sequence + 1;
-      const siblingVersion = sibling.state_version + 1;
+      const siblingSeq = Number(lockedSibling.lastEventSequence) + 1;
+      const siblingVersion = lockedSibling.stateVersion + 1;
 
       await tx
         .update(schema.missionRuns)

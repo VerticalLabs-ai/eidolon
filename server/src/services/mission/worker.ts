@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { RENEWAL_INTERVAL_MS, type Claim, type RunCoordinator } from './coordinator.js';
+import logger from '../../utils/logger.js';
 
 /**
  * OrchestrationWorker — the polling loop, lease renewal, and graceful
@@ -264,9 +265,13 @@ export class OrchestrationWorker {
         this.lastDeadlineSweepAt = nowMs;
         try {
           await this.deadlineSweepFn();
-        } catch {
+        } catch (err) {
           // Deadline-sweep failure is non-fatal — the next interval will
           // retry. Keep the timestamp so we don't retry-burst every poll.
+          // Log non-LEASE_NOT_HELD/INVALID_RUN_STATE errors so future
+          // collisions and unexpected failures are visible rather than
+          // silently swallowed (fix-ut-m4-cascade-sequence-collision).
+          this.logDeadlineSweepError(err);
         }
       }
     }
@@ -314,6 +319,26 @@ export class OrchestrationWorker {
     }
 
     this.schedulePoll();
+  }
+
+  /**
+   * Log a deadline-sweep error unless it is an expected concurrency
+   * outcome (LEASE_NOT_HELD or INVALID_RUN_STATE). Those are silently
+   * skipped because they indicate a fenced worker or a race that the
+   * next interval will resolve. All other errors are logged at error
+   * level so future sequence collisions and unexpected failures are
+   * visible rather than silently swallowed.
+   * (fix-ut-m4-cascade-sequence-collision)
+   */
+  private logDeadlineSweepError(err: unknown): void {
+    const code = (err as { code?: string }).code;
+    if (code === 'LEASE_NOT_HELD' || code === 'INVALID_RUN_STATE') {
+      return;
+    }
+    logger.error(
+      { err, workerId: this.workerId },
+      'deadline-sweep error (non-fatal, will retry next interval)',
+    );
   }
 
   private startRenewalLoop(claim: Claim): void {

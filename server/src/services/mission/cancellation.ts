@@ -651,7 +651,7 @@ export class MissionCancellationService {
     }
 
     const siblings = await tx.execute(sql`
-      SELECT "id", "status", "last_event_sequence", "state_version"
+      SELECT "id", "status", "last_event_sequence", "state_version", "cancel_requested_at"
       FROM "mission_runs"
       WHERE "company_id" = ${companyId}
         AND "project_id" = ${projectId}
@@ -665,11 +665,61 @@ export class MissionCancellationService {
       status: string;
       last_event_sequence: number;
       state_version: number;
+      cancel_requested_at: Date | null;
     }>;
 
     for (const sibling of siblingRows) {
-      const siblingSeq = sibling.last_event_sequence + 1;
-      const siblingVersion = sibling.state_version + 1;
+      // Skip siblings that are already cancel-requested — the parent's
+      // cancellation cascade already emitted their child.cancel_requested
+      // event and set their deadline. Re-emitting would produce a
+      // duplicate event and, because the sibling list is queried
+      // un-locked, a stale-sequence collision when a recursive
+      // applyParentPolicyOnChildTerminal call (from terminalizing a
+      // prior sibling) has already advanced the sibling's sequence.
+      // The deadline sweep will terminalize already-cancel-requested
+      // siblings in their own transactions.
+      if (sibling.cancel_requested_at !== null) {
+        continue;
+      }
+
+      // Atomically re-read and increment the sibling's lastEventSequence
+      // inside the locked transaction. Lock the row with FOR UPDATE so
+      // we always read the latest sequence, preventing stale-sequence
+      // collisions even if a concurrent or recursive call advanced it.
+      const [lockedSibling] = await tx
+        .select({
+          id: schema.missionRuns.id,
+          stateVersion: schema.missionRuns.stateVersion,
+          lastEventSequence: schema.missionRuns.lastEventSequence,
+        })
+        .from(schema.missionRuns)
+        .where(
+          and(
+            eq(schema.missionRuns.companyId, companyId),
+            eq(schema.missionRuns.projectId, projectId),
+            eq(schema.missionRuns.id, sibling.id),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      if (!lockedSibling) {
+        continue;
+      }
+
+      // Re-check cancel_requested under the lock — a recursive call may
+      // have already set it.
+      const [rechecked] = await tx
+        .select({ cancelRequestedAt: schema.missionRuns.cancelRequestedAt })
+        .from(schema.missionRuns)
+        .where(eq(schema.missionRuns.id, sibling.id))
+        .limit(1);
+      if (rechecked?.cancelRequestedAt !== null && rechecked?.cancelRequestedAt !== undefined) {
+        continue;
+      }
+
+      const siblingSeq = Number(lockedSibling.lastEventSequence) + 1;
+      const siblingVersion = lockedSibling.stateVersion + 1;
 
       await tx
         .update(schema.missionRuns)
