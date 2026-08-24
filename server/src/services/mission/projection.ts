@@ -5,6 +5,7 @@ import {
   isPlanGovernanceProjectable,
   projectPlanGovernanceEvent,
 } from './plan-governance-projection.js';
+import { isPlanProgressProjectable, projectPlanProgressEvent } from './plan-progress-projection.js';
 
 /**
  * Mission Projection module (VAL-CROSS-075, VAL-CROSS-092, VAL-CROSS-093,
@@ -101,6 +102,15 @@ export async function projectEvent(
   // 099, 119, 127).
   if (isPlanGovernanceProjectable(event.type)) {
     await projectPlanGovernanceEvent(db, event, deps);
+  }
+
+  // Plan progress projection: project approved-plan child execution events
+  // (child.started/completed/failed/cancel_requested) to the matching
+  // project_plan_steps row so the Plans surface tracks execution progress
+  // and terminal outcomes idempotently. Mutable projections never alter the
+  // immutable approved Mission revision used by execution (VAL-CROSS-046).
+  if (isPlanProgressProjectable(event.type)) {
+    await projectPlanProgressEvent(db, event, deps);
   }
 }
 

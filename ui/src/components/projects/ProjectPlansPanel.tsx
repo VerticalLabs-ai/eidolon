@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -7,45 +7,89 @@ import {
   ArrowUp,
   ArrowDown,
   Forward,
-} from "lucide-react";
+  Link2,
+} from 'lucide-react';
 import {
   usePlansWithSteps,
   useCreateProjectPlan,
   useCreatePlanStep,
   useUpdatePlanStep,
   useAdvancePlanGate,
-} from "@/lib/hooks";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Card } from "@/components/ui/Card";
-import type { ProjectPlanDetail, ProjectPlanStep } from "@/lib/api";
+} from '@/lib/hooks';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import type { ProjectPlanDetail, ProjectPlanStep } from '@/lib/api';
+
+/**
+ * Mission linkage extracted from a projected step's `gateConfig`.
+ *
+ * The plan-governance projection writes `{ runId, planRevisionId, stepKey,
+ * contentHash }` into each Mission-linked step's `gateConfig`. A Mission-
+ * linked plan is one whose steps carry this linkage (VAL-CROSS-046,
+ * VAL-CROSS-086). The mutable projection is non-authoritative: Mission
+ * execution reads the immutable approved revision, so legacy edits made in
+ * Plans cannot alter the running work.
+ */
+interface MissionLink {
+  runId: string;
+  planRevisionId: string;
+  contentHash: string;
+}
+
+/** Whether a step is Mission-linked (carries a runId in its gateConfig). */
+function stepMissionLink(step: ProjectPlanStep): MissionLink | null {
+  const cfg = step.gateConfig as Record<string, unknown> | undefined;
+  const runId = cfg?.runId;
+  const planRevisionId = cfg?.planRevisionId;
+  const contentHash = cfg?.contentHash;
+  if (
+    typeof runId === 'string' &&
+    typeof planRevisionId === 'string' &&
+    typeof contentHash === 'string'
+  ) {
+    return { runId, planRevisionId, contentHash };
+  }
+  return null;
+}
+
+/** Whether a plan is Mission-linked (any step carries Mission linkage). */
+function planMissionLink(plan: ProjectPlanDetail): MissionLink | null {
+  for (const step of plan.steps) {
+    const link = stepMissionLink(step);
+    if (link) {
+      return link;
+    }
+  }
+  return null;
+}
 
 const statusVariant: Record<
-  ProjectPlanStep["status"],
-  "default" | "success" | "warning" | "info" | "error"
+  ProjectPlanStep['status'],
+  'default' | 'success' | 'warning' | 'info' | 'error'
 > = {
-  pending: "default",
-  in_progress: "info",
-  completed: "success",
-  blocked: "error",
-  skipped: "warning",
+  pending: 'default',
+  in_progress: 'info',
+  completed: 'success',
+  blocked: 'error',
+  skipped: 'warning',
 };
 
-const statusLabel: Record<ProjectPlanStep["status"], string> = {
-  pending: "Pending",
-  in_progress: "In progress",
-  completed: "Completed",
-  blocked: "Blocked",
-  skipped: "Skipped",
+const statusLabel: Record<ProjectPlanStep['status'], string> = {
+  pending: 'Pending',
+  in_progress: 'In progress',
+  completed: 'Completed',
+  blocked: 'Blocked',
+  skipped: 'Skipped',
 };
 
-const stepTypeLabel: Record<ProjectPlanStep["stepType"], string> = {
-  action: "Action",
-  review_gate: "Review gate",
-  permission_gate: "Permission gate",
+const stepTypeLabel: Record<ProjectPlanStep['stepType'], string> = {
+  action: 'Action',
+  review_gate: 'Review gate',
+  permission_gate: 'Permission gate',
 };
 
-function StatusBadge({ status }: { status: ProjectPlanStep["status"] }) {
+function StatusBadge({ status }: { status: ProjectPlanStep['status'] }) {
   return (
     <span data-testid={`step-status-${status}`}>
       <Badge variant={statusVariant[status]}>{statusLabel[status]}</Badge>
@@ -54,8 +98,10 @@ function StatusBadge({ status }: { status: ProjectPlanStep["status"] }) {
 }
 
 function GateConfig({ config }: { config: Record<string, unknown> }) {
-  const entries = Object.entries(config).filter(([, v]) => v !== null && v !== undefined && v !== "");
-  if (entries.length === 0) return null;
+  const entries = Object.entries(config).filter(
+    ([, v]) => v !== null && v !== undefined && v !== '',
+  );
+  if (entries.length === 0) {return null;}
   return (
     <dl className="mt-1 rounded-md bg-white/[0.03] px-2 py-1 text-[11px] text-text-secondary">
       {entries.map(([key, value]) => (
@@ -75,6 +121,7 @@ function StepRow({
   onReorder,
   onAdvance,
   advancePending,
+  isMissionLinked,
 }: {
   step: ProjectPlanStep;
   isFirst: boolean;
@@ -82,9 +129,13 @@ function StepRow({
   onReorder: (stepId: string, stepOrder: number) => void;
   onAdvance: () => void;
   advancePending: boolean;
+  /** When true, legacy reorder/gate-advance controls are disabled because
+   *  the step belongs to a Mission-linked projection whose authority is the
+   *  immutable approved Mission revision (VAL-CROSS-086). */
+  isMissionLinked: boolean;
 }) {
-  const isGate = step.stepType === "review_gate" || step.stepType === "permission_gate";
-  const canAdvance = step.status === "pending";
+  const isGate = step.stepType === 'review_gate' || step.stepType === 'permission_gate';
+  const canAdvance = step.status === 'pending' && !isMissionLinked;
 
   return (
     <li className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
@@ -95,7 +146,7 @@ function StepRow({
             className="rounded p-0.5 text-text-muted hover:text-accent disabled:opacity-30 disabled:pointer-events-none"
             aria-label={`Move step up`}
             data-testid={`step-up-${step.id}`}
-            disabled={isFirst}
+            disabled={isFirst || isMissionLinked}
             onClick={() => onReorder(step.id, step.stepOrder - 1)}
           >
             <ArrowUp className="h-3 w-3" />
@@ -105,7 +156,7 @@ function StepRow({
             className="rounded p-0.5 text-text-muted hover:text-accent disabled:opacity-30 disabled:pointer-events-none"
             aria-label={`Move step down`}
             data-testid={`step-down-${step.id}`}
-            disabled={isLast}
+            disabled={isLast || isMissionLinked}
             onClick={() => onReorder(step.id, step.stepOrder + 1)}
           >
             <ArrowDown className="h-3 w-3" />
@@ -117,7 +168,10 @@ function StepRow({
             <Badge variant="default">{stepTypeLabel[step.stepType]}</Badge>
             <StatusBadge status={step.status} />
             {step.gateApprovalId && (
-              <span className="text-[11px] text-text-muted" data-testid={`gate-approval-${step.id}`}>
+              <span
+                className="text-[11px] text-text-muted"
+                data-testid={`gate-approval-${step.id}`}
+              >
                 Approval: {step.gateApprovalId}
               </span>
             )}
@@ -153,18 +207,24 @@ function PlanItem({
   advancePlanGate: ReturnType<typeof useAdvancePlanGate>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [stepTitle, setStepTitle] = useState("");
+  const [stepTitle, setStepTitle] = useState('');
+
+  const missionLink = planMissionLink(plan);
+  const isMissionLinked = missionLink !== null;
 
   const steps = [...plan.steps].sort((a, b) => a.stepOrder - b.stepOrder);
-  const completed = steps.filter((s) => s.status === "completed").length;
-  const total = steps.filter((s) => s.status !== "skipped").length;
+  const completed = steps.filter((s) => s.status === 'completed').length;
+  const total = steps.filter((s) => s.status !== 'skipped').length;
 
   function addStep(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isMissionLinked) {
+      return;
+    }
     const trimmed = stepTitle.trim();
-    if (!trimmed || createPlanStep.isPending) return;
+    if (!trimmed || createPlanStep.isPending) {return;}
     createPlanStep.mutate({ planId: plan.id, data: { title: trimmed } });
-    setStepTitle("");
+    setStepTitle('');
   }
 
   return (
@@ -177,7 +237,7 @@ function PlanItem({
           type="button"
           className="shrink-0 rounded p-0.5 text-text-secondary hover:text-accent"
           aria-expanded={expanded}
-          aria-label={`${expanded ? "Collapse" : "Expand"} ${plan.title}`}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${plan.title}`}
           onClick={() => setExpanded((c) => !c)}
         >
           {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
@@ -188,10 +248,45 @@ function PlanItem({
             {completed}/{total} steps · {plan.status}
           </p>
         </div>
-        <Badge variant={plan.status === "active" ? "success" : "default"}>{plan.status}</Badge>
+        <Badge variant={plan.status === 'active' ? 'success' : 'default'}>{plan.status}</Badge>
       </div>
+
+      {isMissionLinked && missionLink && (
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.06] px-3 py-2 text-[11px] text-text-secondary"
+          data-testid={`plan-mission-link-${plan.id}`}
+        >
+          <span className="inline-flex items-center gap-1 text-accent">
+            <Link2 className="h-3 w-3" aria-hidden="true" />
+            Mission-linked
+          </span>
+          <span>
+            Run <span className="font-mono text-text-primary">{missionLink.runId}</span>
+          </span>
+          <span>
+            Revision{' '}
+            <span className="font-mono text-text-primary">{missionLink.planRevisionId}</span>
+          </span>
+          <span>
+            Hash{' '}
+            <span className="font-mono text-text-primary">
+              {missionLink.contentHash.slice(0, 12)}
+            </span>
+          </span>
+        </div>
+      )}
+
       {expanded && (
         <div className="border-t border-white/[0.06] px-3 py-3">
+          {isMissionLinked && (
+            <p
+              className="mb-2 text-xs text-text-muted"
+              data-testid={`plan-mission-readonly-notice-${plan.id}`}
+            >
+              This plan tracks an approved Mission. Steps and progress cannot be edited here —
+              revise the Mission to request a new plan revision.
+            </p>
+          )}
           {steps.length === 0 ? (
             <p className="py-2 text-xs text-text-muted">No steps yet</p>
           ) : (
@@ -207,34 +302,37 @@ function PlanItem({
                   }
                   onAdvance={() => advancePlanGate.mutate({ planId: plan.id, stepId: step.id })}
                   advancePending={advancePlanGate.isPending}
+                  isMissionLinked={isMissionLinked}
                 />
               ))}
             </ul>
           )}
-          <form onSubmit={addStep} className="mt-3 flex gap-2 border-t border-white/[0.06] pt-3">
-            <label className="sr-only" htmlFor={`new-step-${plan.id}`}>
-              Add a step
-            </label>
-            <input
-              id={`new-step-${plan.id}`}
-              aria-label="Add a step"
-              value={stepTitle}
-              onChange={(e) => setStepTitle(e.target.value)}
-              placeholder="Add a step…"
-              data-testid={`new-step-title-${plan.id}`}
-              className="h-8 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus:border-accent/60"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              icon={<Plus className="h-3 w-3" />}
-              disabled={!stepTitle.trim() || createPlanStep.isPending}
-              loading={createPlanStep.isPending}
-              aria-label="Add step"
-            >
-              Add step
-            </Button>
-          </form>
+          {!isMissionLinked && (
+            <form onSubmit={addStep} className="mt-3 flex gap-2 border-t border-white/[0.06] pt-3">
+              <label className="sr-only" htmlFor={`new-step-${plan.id}`}>
+                Add a step
+              </label>
+              <input
+                id={`new-step-${plan.id}`}
+                aria-label="Add a step"
+                value={stepTitle}
+                onChange={(e) => setStepTitle(e.target.value)}
+                placeholder="Add a step…"
+                data-testid={`new-step-title-${plan.id}`}
+                className="h-8 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-text-primary outline-none focus:border-accent/60"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                icon={<Plus className="h-3 w-3" />}
+                disabled={!stepTitle.trim() || createPlanStep.isPending}
+                loading={createPlanStep.isPending}
+                aria-label="Add step"
+              >
+                Add step
+              </Button>
+            </form>
+          )}
         </div>
       )}
     </div>
@@ -254,14 +352,14 @@ export function ProjectPlansPanel({
   const updatePlanStep = useUpdatePlanStep(companyId, projectId);
   const advancePlanGate = useAdvancePlanGate(companyId, projectId);
 
-  const [newPlanTitle, setNewPlanTitle] = useState("");
+  const [newPlanTitle, setNewPlanTitle] = useState('');
 
   function submitPlan(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = newPlanTitle.trim();
-    if (!trimmed || createPlan.isPending) return;
+    if (!trimmed || createPlan.isPending) {return;}
     createPlan.mutate({ title: trimmed });
-    setNewPlanTitle("");
+    setNewPlanTitle('');
   }
 
   return (

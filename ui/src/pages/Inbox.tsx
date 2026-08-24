@@ -73,10 +73,16 @@ function isToday(iso: string): boolean {
 function formatRelative(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diff / 60_000);
-  if (mins < 1) {return 'just now';}
-  if (mins < 60) {return `${mins}m`;}
+  if (mins < 1) {
+    return 'just now';
+  }
+  if (mins < 60) {
+    return `${mins}m`;
+  }
   const hours = Math.round(mins / 60);
-  if (hours < 24) {return `${hours}h`;}
+  if (hours < 24) {
+    return `${hours}h`;
+  }
   return `${Math.round(hours / 24)}d`;
 }
 
@@ -135,7 +141,9 @@ function InboxFeed({ companyId }: { companyId: string }) {
 
   // Default selection = first unread, else first item
   useEffect(() => {
-    if (selectedId && items.some((i) => i.id === selectedId)) {return;}
+    if (selectedId && items.some((i) => i.id === selectedId)) {
+      return;
+    }
     const firstUnread = items.find((i) => !i.readAt);
     setSelectedId((firstUnread ?? items[0])?.id ?? null);
   }, [items, selectedId]);
@@ -143,7 +151,9 @@ function InboxFeed({ companyId }: { companyId: string }) {
   const doMarkRead = useCallback(
     (id: string) => {
       const item = items.find((i) => i.id === id);
-      if (!item || item.readAt) {return;} // already read — no-op
+      if (!item || item.readAt) {
+        return;
+      } // already read — no-op
       markRead.mutate([id]);
     },
     [items, markRead],
@@ -151,7 +161,9 @@ function InboxFeed({ companyId }: { companyId: string }) {
 
   const markAllVisible = useCallback(() => {
     const unreadIds = items.filter((i) => !i.readAt).map((i) => i.id);
-    if (unreadIds.length === 0) {return;}
+    if (unreadIds.length === 0) {
+      return;
+    }
     markRead.mutate(unreadIds);
   }, [items, markRead]);
 
@@ -174,19 +186,27 @@ function InboxFeed({ companyId }: { companyId: string }) {
       ) {
         return;
       }
-      if (ev.metaKey || ev.ctrlKey || ev.altKey) {return;}
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) {
+        return;
+      }
 
-      if (items.length === 0) {return;}
+      if (items.length === 0) {
+        return;
+      }
       const currentIdx = items.findIndex((i) => i.id === selectedId);
 
       if (ev.key === 'j' || ev.key === 'ArrowDown') {
         ev.preventDefault();
         const next = items[Math.min(currentIdx + 1, items.length - 1)];
-        if (next) {setSelectedId(next.id);}
+        if (next) {
+          setSelectedId(next.id);
+        }
       } else if (ev.key === 'k' || ev.key === 'ArrowUp') {
         ev.preventDefault();
         const prev = items[Math.max(currentIdx - 1, 0)];
-        if (prev) {setSelectedId(prev.id);}
+        if (prev) {
+          setSelectedId(prev.id);
+        }
       } else if (ev.key === 'a' || ev.key === 'y') {
         // Gmail-style: `y` archives the current conversation. We keep `a`
         // as an alias for discoverability.
@@ -194,12 +214,16 @@ function InboxFeed({ companyId }: { companyId: string }) {
         if (selectedId) {
           doMarkRead(selectedId);
           const next = items[Math.min(currentIdx + 1, items.length - 1)];
-          if (next && next.id !== selectedId) {setSelectedId(next.id);}
+          if (next && next.id !== selectedId) {
+            setSelectedId(next.id);
+          }
         }
       } else if (ev.key === 'u') {
         // Gmail-style: `u` marks unread.
         ev.preventDefault();
-        if (selectedId) {markSelectedUnread(selectedId);}
+        if (selectedId) {
+          markSelectedUnread(selectedId);
+        }
       } else if (ev.key === 'o' || ev.key === 'Enter') {
         ev.preventDefault();
         const selected = items.find((i) => i.id === selectedId);
@@ -438,7 +462,9 @@ function SwipeableInboxRow({
         )}
         onClick={() => {
           // Ignore clicks that actually came from a drag
-          if (Math.abs(dragX) > 4) {return;}
+          if (Math.abs(dragX) > 4) {
+            return;
+          }
           onSelect();
         }}
         onDoubleClick={(e) => {
@@ -475,6 +501,14 @@ function SwipeableInboxRow({
             </p>
             {item.priority && priorityVariant[item.priority] && (
               <Badge variant={priorityVariant[item.priority]}>{item.priority}</Badge>
+            )}
+            {item.actionable && (item.kind === 'mission_question' || item.kind === 'approval') && (
+              <span
+                className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                data-testid={`needs-action-${item.id}`}
+              >
+                Needs action
+              </span>
             )}
           </div>
           {item.subtitle && (
@@ -561,10 +595,24 @@ function DetailPane({
       )}
 
       <div className="flex-1 overflow-auto p-5 text-xs text-text-secondary">
-        <p>
-          Open the linked {item.taskId ? 'task thread' : item.kind} to review the current state and
-          complete the available action.
-        </p>
+        {item.kind === 'mission_question' || item.kind === 'approval' ? (
+          <div className="space-y-2">
+            <p>
+              Marking this read or archived does not answer, approve, reject, or cancel the Mission
+              action. It only clears this inbox notification.
+            </p>
+            <p>
+              Open the linked{' '}
+              {item.kind === 'mission_question' ? 'Mission question' : 'Mission plan approval'} to
+              submit the domain command that resolves it.
+            </p>
+          </div>
+        ) : (
+          <p>
+            Open the linked {item.taskId ? 'task thread' : item.kind} to review the current state
+            and complete the available action.
+          </p>
+        )}
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-white/[0.06] bg-black/15 p-3">
