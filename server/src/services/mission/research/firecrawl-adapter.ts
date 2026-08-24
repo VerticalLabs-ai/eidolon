@@ -62,6 +62,9 @@ import {
 } from './ssrf-boundary.js';
 import { validateTargetUrl } from './url-policy.js';
 import { detectInjectionRisk, redactSecrets } from './content-isolation.js';
+import { validateResearchRequest } from './request-validation.js';
+import { readBoundedResponseBody } from './bounded-body-reader.js';
+import { createOperationDeadline } from './operation-deadline.js';
 
 // ---------------------------------------------------------------------------
 // Adapter configuration
@@ -76,6 +79,12 @@ export interface FirecrawlAdapterConfig {
    * fixed origin or disable policy.
    */
   fetch?: FetchFn;
+  /**
+   * Optional externally-provided deadline AbortSignal (test seam). When
+   * supplied, the adapter uses this signal as the operation deadline
+   * instead of creating its own.
+   */
+  deadlineSignal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,10 +169,12 @@ function capText(text: string): string {
 export class FirecrawlAdapter implements ResearchProvider {
   private readonly apiKey: string;
   private readonly fetchFn: FetchFn;
+  private readonly deadlineSignal?: AbortSignal;
 
   constructor(config: FirecrawlAdapterConfig) {
     this.apiKey = config.apiKey;
     this.fetchFn = config.fetch ?? fetch;
+    this.deadlineSignal = config.deadlineSignal;
   }
 
   supports(operation: ResearchOperation): boolean {
@@ -186,17 +197,39 @@ export class FirecrawlAdapter implements ResearchProvider {
       );
     }
 
-    // 3. Dispatch to the operation handler.
-    switch (request.operation) {
-      case 'search':
-        return this.executeSearch(request, context);
-      case 'scrape':
-        return this.executeScrape(request, context);
-      case 'structured_extract':
-        return this.executeStructuredExtract(request, context);
-      default:
-        // Unreachable — capability check above already rejected this.
-        throw getUnsupportedOperationError('firecrawl', request.operation);
+    // 3. Shared request validation (VAL-RES-056): query/result/URL caps,
+    //    finite timeout, supported operation — before any network work.
+    const validation = validateResearchRequest(
+      request,
+      (op) => isOperationSupported('firecrawl', op),
+      'firecrawl',
+    );
+    if (!validation.ok) {
+      throw validation.error;
+    }
+
+    // 4. Operation deadline (VAL-RES-060, VAL-RES-093): 15s search /
+    //    30s scrape/structured_extract, bounded by the request timeout.
+    const deadline =
+      this.deadlineSignal !== undefined
+        ? { signal: this.deadlineSignal, clear() {} }
+        : createOperationDeadline(request.operation, request.timeoutMs);
+
+    try {
+      // 5. Dispatch to the operation handler.
+      switch (request.operation) {
+        case 'search':
+          return await this.executeSearch(request, context, deadline.signal);
+        case 'scrape':
+          return await this.executeScrape(request, context, deadline.signal);
+        case 'structured_extract':
+          return await this.executeStructuredExtract(request, context, deadline.signal);
+        default:
+          // Unreachable — capability check above already rejected this.
+          throw getUnsupportedOperationError('firecrawl', request.operation);
+      }
+    } finally {
+      deadline.clear();
     }
   }
 
@@ -207,6 +240,7 @@ export class FirecrawlAdapter implements ResearchProvider {
   private async executeSearch(
     request: ResearchRequest,
     context: ResearchCallContext,
+    deadlineSignal: AbortSignal,
   ): Promise<ResearchResult> {
     const query = request.query;
     if (!query || query.trim().length === 0) {
@@ -218,6 +252,7 @@ export class FirecrawlAdapter implements ResearchProvider {
       );
     }
 
+    // Validation (VAL-RES-056) already guaranteed 1–20; clamp defensively.
     const limit = Math.min(Math.max(1, request.maxResults), 20);
     const body = {
       query,
@@ -231,11 +266,15 @@ export class FirecrawlAdapter implements ResearchProvider {
     const response = await this.doFetch(
       PROVIDER_PATHS.firecrawl.search,
       body,
-      request.timeoutMs,
       context,
       'search',
+      deadlineSignal,
     );
-    const data = await this.parseResponse<FirecrawlSearchResponse>(response, 'search');
+    const data = await this.parseResponse<FirecrawlSearchResponse>(
+      response,
+      'search',
+      deadlineSignal,
+    );
 
     if (data.success === false) {
       throw new ResearchProviderError(
@@ -301,6 +340,7 @@ export class FirecrawlAdapter implements ResearchProvider {
   private async executeScrape(
     request: ResearchRequest,
     context: ResearchCallContext,
+    deadlineSignal: AbortSignal,
   ): Promise<ResearchResult> {
     const urls = request.urls;
     if (!urls || urls.length === 0) {
@@ -333,11 +373,15 @@ export class FirecrawlAdapter implements ResearchProvider {
     const response = await this.doFetch(
       PROVIDER_PATHS.firecrawl.scrape,
       body,
-      request.timeoutMs,
       context,
       'scrape',
+      deadlineSignal,
     );
-    const data = await this.parseResponse<FirecrawlScrapeResponse>(response, 'scrape');
+    const data = await this.parseResponse<FirecrawlScrapeResponse>(
+      response,
+      'scrape',
+      deadlineSignal,
+    );
 
     if (data.success === false) {
       throw new ResearchProviderError(
@@ -388,6 +432,7 @@ export class FirecrawlAdapter implements ResearchProvider {
   private async executeStructuredExtract(
     request: ResearchRequest,
     context: ResearchCallContext,
+    deadlineSignal: AbortSignal,
   ): Promise<ResearchResult> {
     const urls = request.urls;
     if (!urls || urls.length === 0) {
@@ -398,6 +443,7 @@ export class FirecrawlAdapter implements ResearchProvider {
         'structured_extract',
       );
     }
+    // Validation (VAL-RES-056) already guaranteed ≤ 20; retained as guard.
     if (urls.length > 20) {
       throw new ResearchProviderError(
         'INVALID_REQUEST',
@@ -440,11 +486,15 @@ export class FirecrawlAdapter implements ResearchProvider {
     const response = await this.doFetch(
       PROVIDER_PATHS.firecrawl.structured_extract,
       body,
-      request.timeoutMs,
       context,
       'structured_extract',
+      deadlineSignal,
     );
-    const data = await this.parseResponse<FirecrawlExtractResponse>(response, 'structured_extract');
+    const data = await this.parseResponse<FirecrawlExtractResponse>(
+      response,
+      'structured_extract',
+      deadlineSignal,
+    );
 
     if (data.success === false) {
       throw new ResearchProviderError(
@@ -479,9 +529,9 @@ export class FirecrawlAdapter implements ResearchProvider {
   private async doFetch(
     path: string,
     body: Record<string, unknown>,
-    timeoutMs: number,
     context: ResearchCallContext,
     operation: ResearchOperation,
+    deadlineSignal: AbortSignal,
   ): Promise<Response> {
     const url = `${FIRECRAWL_ORIGIN}${path}`;
 
@@ -498,21 +548,21 @@ export class FirecrawlAdapter implements ResearchProvider {
       );
     }
 
+    // VAL-RES-060/093: the operation deadline covers DNS/connect, upload,
+    // headers, and decoded body streaming. Combine it with the caller's
+    // cancellation signal into one abort source.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, 30_000));
-
-    if (context.signal) {
-      if (context.signal.aborted) {
-        clearTimeout(timeout);
-        throw new ResearchProviderError(
-          'CANCELLED',
-          'Research call cancelled before dispatch',
-          'firecrawl',
-          operation,
-        );
-      }
-      context.signal.addEventListener('abort', () => controller.abort());
+    const abort = () => controller.abort();
+    if (deadlineSignal.aborted || context.signal?.aborted) {
+      throw new ResearchProviderError(
+        'CANCELLED',
+        'Research call cancelled before dispatch',
+        'firecrawl',
+        operation,
+      );
     }
+    deadlineSignal.addEventListener('abort', abort, { once: true });
+    context.signal?.addEventListener('abort', abort, { once: true });
 
     try {
       const response = await this.fetchFn(url, {
@@ -568,7 +618,8 @@ export class FirecrawlAdapter implements ResearchProvider {
         operation,
       );
     } finally {
-      clearTimeout(timeout);
+      deadlineSignal.removeEventListener('abort', abort);
+      context.signal?.removeEventListener('abort', abort);
     }
   }
 
@@ -662,7 +713,11 @@ export class FirecrawlAdapter implements ResearchProvider {
   // Response parsing (bounded, schema-validated)
   // -------------------------------------------------------------------------
 
-  private async parseResponse<T>(response: Response, operation: ResearchOperation): Promise<T> {
+  private async parseResponse<T>(
+    response: Response,
+    operation: ResearchOperation,
+    deadlineSignal: AbortSignal,
+  ): Promise<T> {
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
       throw new ResearchProviderError(
@@ -673,37 +728,15 @@ export class FirecrawlAdapter implements ResearchProvider {
       );
     }
 
-    const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
-    const contentLength = response.headers.get('content-length');
-    if (contentLength && parseInt(contentLength, 10) > MAX_RESPONSE_BYTES) {
-      throw new ResearchProviderError(
-        'MALFORMED_RESPONSE',
-        'Firecrawl response exceeds maximum size',
-        'firecrawl',
-        operation,
-      );
-    }
-
-    let text: string;
-    try {
-      text = await response.text();
-    } catch {
-      throw new ResearchProviderError(
-        'MALFORMED_RESPONSE',
-        'Failed to read Firecrawl response body',
-        'firecrawl',
-        operation,
-      );
-    }
-
-    if (Buffer.from(text, 'utf8').length > MAX_RESPONSE_BYTES) {
-      throw new ResearchProviderError(
-        'MALFORMED_RESPONSE',
-        'Firecrawl response exceeds maximum size',
-        'firecrawl',
-        operation,
-      );
-    }
+    // VAL-RES-057/093: stream and count decoded bytes rather than calling
+    // an unbounded body reader. Aborts at 5 MiB or when the deadline fires.
+    const text = await readBoundedResponseBody(
+      response,
+      operation,
+      'firecrawl',
+      undefined,
+      deadlineSignal,
+    );
 
     let data: unknown;
     try {

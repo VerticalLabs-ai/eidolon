@@ -200,6 +200,13 @@ export interface NormalizedSourcePersistenceRecord {
   normalizedText?: string;
   /** Byte count of the normalized text (UTF-8). */
   byteCount: number;
+  /**
+   * True when the original text exceeded 1 MiB and was deterministically
+   * truncated (VAL-RES-058). Persisted as truncation metadata so consumers
+   * know the retained text is a bounded prefix; no citation may point
+   * outside the retained text.
+   */
+  truncated: boolean;
   /** Bounded display metadata (VAL-RES-098). */
   title?: string;
   author?: string;
@@ -259,10 +266,13 @@ export function normalizeSourceForPersistence(
   });
 
   const normalizedText = source.text !== undefined ? normalizeText(source.text) : undefined;
+  const originalByteCount =
+    normalizedText !== undefined ? Buffer.byteLength(normalizedText, 'utf8') : 0;
   const cappedText =
     normalizedText !== undefined
       ? truncateToBytes(normalizedText, MAX_NORMALIZED_TEXT_BYTES)
       : undefined;
+  const truncated = cappedText !== undefined && originalByteCount > MAX_NORMALIZED_TEXT_BYTES;
   const contentHash = cappedText !== undefined ? sha256Hex(cappedText) : undefined;
   const byteCount = cappedText !== undefined ? Buffer.byteLength(cappedText, 'utf8') : 0;
 
@@ -274,6 +284,7 @@ export function normalizeSourceForPersistence(
     contentHash,
     normalizedText: cappedText,
     byteCount,
+    truncated,
     title: meta.title,
     author: meta.author,
     mimeType: meta.mimeType,

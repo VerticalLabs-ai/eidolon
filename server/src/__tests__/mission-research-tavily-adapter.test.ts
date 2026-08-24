@@ -77,17 +77,26 @@ describe('Tavily adapter: request payload shape', () => {
     expect(body.include_usage).toBe(true);
   });
 
-  it('caps max_results at 20', async () => {
+  it('accepts max_results at the 20 boundary and rejects over-limit before dispatch', async () => {
     const { fn, calls } = createMockFetch(() => jsonResponse({ results: [], request_id: 'req-1' }));
     const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch: fn });
 
+    // Boundary (20) is accepted and dispatched as 20.
     await adapter.execute(
-      { operation: 'search', query: 'test', maxResults: 100, timeoutMs: 5000 },
+      { operation: 'search', query: 'test', maxResults: 20, timeoutMs: 5000 },
       baseContext,
     );
-
     const body = JSON.parse(calls[0]!.init.body as string);
     expect(body.max_results).toBe(20);
+
+    // One-over (21) is rejected before any fetch (VAL-RES-056).
+    await expect(
+      adapter.execute(
+        { operation: 'search', query: 'test', maxResults: 21, timeoutMs: 5000 },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(calls).toHaveLength(1);
   });
 
   it('sends POST to /extract with urls array for extract operation', async () => {
