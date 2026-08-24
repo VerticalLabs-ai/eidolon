@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, desc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
@@ -178,9 +178,21 @@ export class PlanPublicationService {
       }
     }
 
-    // 5. Determine the next revision number and supersede the prior proposal.
+    // 5. Determine the next revision number and supersede the prior
+    //    proposal. The parent revision is the most recent revision for the
+    //    run regardless of status (proposed, superseded, approved, or
+    //    rejected), so a revision after approval/reject-revise links
+    //    correctly to its parent and the revision number monotonically
+    //    increases (VAL-PLAN-032, VAL-PLAN-037, VAL-PLAN-039, VAL-PLAN-101).
+    const priorRevision = await this.findLatestRevision(tx, run.companyId, run.id);
+    const nextRevision = priorRevision ? priorRevision.revision + 1 : 1;
+
+    // Supersede any existing current `proposed` revision for the run.
+    // After a revision request or reject-revise, there is no `proposed`
+    // revision (the prior was already superseded/rejected), so this is a
+    // no-op in that case. After an approval + queued revision request, the
+    // approved revision was already superseded by applyRevisionRequest.
     const priorProposed = await this.findCurrentProposed(tx, run.companyId, run.id);
-    const nextRevision = priorProposed ? priorProposed.revision + 1 : 1;
 
     if (priorProposed) {
       await tx
@@ -202,7 +214,7 @@ export class PlanPublicationService {
       projectId: run.projectId,
       runId: run.id,
       revision: nextRevision,
-      parentRevisionId: priorProposed?.id ?? null,
+      parentRevisionId: priorRevision?.id ?? null,
       status: 'proposed',
       content: content as unknown as Record<string, unknown>,
       contentHash,
@@ -303,7 +315,7 @@ export class PlanPublicationService {
         revision: nextRevision,
         contentHash,
         approvalId,
-        parentRevisionId: priorProposed?.id ?? null,
+        parentRevisionId: priorRevision?.id ?? null,
       },
       actorType,
       actorId,
@@ -350,6 +362,38 @@ export class PlanPublicationService {
           eq(schema.runPlanRevisions.status, 'proposed'),
         ),
       )
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Find the latest revision for a run regardless of status (proposed,
+   * superseded, approved, or rejected). Used to determine the next
+   * monotonic revision number and the parent revision link when
+   * replanning after a revision request, reject-revise, or post-approval
+   * queued revision (VAL-PLAN-032, VAL-PLAN-037, VAL-PLAN-039,
+   * VAL-PLAN-101). Returns null when the run has no revisions yet.
+   */
+  async findLatestRevision(
+    tx: Tx,
+    companyId: string,
+    runId: string,
+  ): Promise<{ id: string; revision: number; contentHash: string } | null> {
+    const schema = this.db.schema;
+    const rows = await tx
+      .select({
+        id: schema.runPlanRevisions.id,
+        revision: schema.runPlanRevisions.revision,
+        contentHash: schema.runPlanRevisions.contentHash,
+      })
+      .from(schema.runPlanRevisions)
+      .where(
+        and(
+          eq(schema.runPlanRevisions.companyId, companyId),
+          eq(schema.runPlanRevisions.runId, runId),
+        ),
+      )
+      .orderBy(desc(schema.runPlanRevisions.revision))
       .limit(1);
     return rows[0] ?? null;
   }

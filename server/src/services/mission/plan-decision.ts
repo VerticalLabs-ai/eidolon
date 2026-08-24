@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
 import {
@@ -287,20 +287,36 @@ export class PlanDecisionService {
       this.deps.failpointHook('approve_after_approval_resolved');
     }
 
-    // Set the binding decision.
+    // Set the binding decision and mark it as the current execution
+    // authorization. Any prior current authorization for this run is
+    // cleared first so at most one binding carries the flag
+    // (VAL-PLAN-102, VAL-PLAN-121). The historical approved binding
+    // retains decision='approved' but loses current-authorization status.
+    await tx
+      .update(schema.runPlanApprovalBindings)
+      .set({ isCurrentAuthorization: false })
+      .where(
+        and(
+          eq(schema.runPlanApprovalBindings.companyId, run.companyId),
+          eq(schema.runPlanApprovalBindings.runId, run.id),
+          eq(schema.runPlanApprovalBindings.isCurrentAuthorization, true),
+        ),
+      );
+
+    // Failpoint: after binding set (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('approve_after_binding_set');
+    }
+
     await tx
       .update(schema.runPlanApprovalBindings)
       .set({
         decision: 'approved',
         decidingUserId: actorId,
         decidedAt: now,
+        isCurrentAuthorization: true,
       })
       .where(eq(schema.runPlanApprovalBindings.id, binding.id));
-
-    // Failpoint: after binding set (VAL-PLAN-107).
-    if (this.deps.failpointHook) {
-      this.deps.failpointHook('approve_after_binding_set');
-    }
 
     // Set the revision status to approved.
     await tx
@@ -490,13 +506,16 @@ export class PlanDecisionService {
       );
     }
 
-    // Resolve the approval as rejected.
+    // Resolve the approval as rejected. The rejection reason is encrypted
+    // at rest in the revision row's `feedback` column (set below) and is
+    // NOT stored as plaintext in the approval's resolutionNote
+    // (VAL-PLAN-116, VAL-PLAN-129). The approval row records only the
+    // disposition metadata; exact text is field-level protected.
     await tx
       .update(schema.approvals)
       .set({
         status: 'rejected',
         resolvedByUserId: actorId,
-        resolutionNote: processedReason.redacted,
         resolvedAt: now,
         updatedAt: now,
       })
@@ -575,10 +594,20 @@ export class PlanDecisionService {
       // Feedback was already validated above (before any state change).
       const processedFeedback = processFeedback(body.feedback!);
 
-      // Supersede the current revision (it's already set to rejected above;
-      // but per VAL-PLAN-041, reject-with-revise resolves the gate as
-      // rejected, and the run returns to planning). Clear the current
-      // revision pointer so the planner produces a fresh proposal.
+      // Update the revision's feedback column to store the encrypted
+      // revision feedback (not just the rejection reason) so the planner
+      // and the scoped history endpoint can access it (VAL-PLAN-111,
+      // VAL-PLAN-116, VAL-PLAN-129).
+      await tx
+        .update(schema.runPlanRevisions)
+        .set({
+          feedback: encryptReason(processedFeedback.redacted),
+          updatedAt: now,
+        })
+        .where(eq(schema.runPlanRevisions.id, body.revisionId));
+
+      // Clear the current revision pointer so the planner produces a
+      // fresh proposal.
       seq += 1;
       await tx
         .update(schema.missionRuns)
@@ -593,7 +622,11 @@ export class PlanDecisionService {
         })
         .where(eq(schema.missionRuns.id, run.id));
 
-      // Append plan.revision_requested event with the feedback.
+      // Append plan.revision_requested event. Feedback text is NEVER
+      // included in the broad event payload (VAL-PLAN-116, VAL-PLAN-129).
+      // It is encrypted at rest in the revision row's `feedback` column
+      // (set above when the revision status was set to rejected) and
+      // exposed only through the scoped, role-gated plan history endpoint.
       await tx.insert(schema.runEvents).values({
         companyId: run.companyId,
         projectId: run.projectId,
@@ -605,8 +638,8 @@ export class PlanDecisionService {
           revisionId: body.revisionId,
           revision: revision.revision,
           contentHash: revision.contentHash,
-          feedback: processedFeedback.redacted,
           decidingUserId: actorId,
+          disposition: 'revise',
         },
         actorType,
         actorId,
@@ -686,9 +719,30 @@ export class PlanDecisionService {
    * revision without a rejection decision, resolves the approval as
    * cancelled (superseded_without_decision), clears current/approved
    * pointers, transitions to `planning`, and appends the
-   * `plan.revision_requested` event with feedback (VAL-PLAN-037, 041).
+   * `plan.revision_requested` event (VAL-PLAN-037, 041).
    *
-   * Steps 4–6 are the same as approve.
+   * **Post-approval branching (VAL-PLAN-039, VAL-PLAN-101):** A revision
+   * request is legal from `awaiting_approval` or, after approval, while
+   * `queued` before any approved-step effect or child shell starts. A
+   * queued revision atomically revokes execution eligibility: it clears
+   * the run's `approved_plan_revision_id`, clears the current
+   * authorization flag on the prior approved binding (the historical
+   * decision remains readable), cancels the unresolved approval if any,
+   * supersedes the approved revision, and returns the run to `planning`
+   * for a fresh proposal and fresh approval.
+   *
+   * After any approved-step effect starts (`execution.started`,
+   * `child.created`, `child.started`, `tool.started`, `synthesis.started`,
+   * `artifact.committed`), revision returns 409
+   * `EXECUTION_ALREADY_STARTED` and directs cancel/retry without changing
+   * the original run (VAL-PLAN-101).
+   *
+   * Feedback is never included in the broad journal event payload
+   * (VAL-PLAN-116). It is encrypted at rest in the revision row's
+   * `feedback` column and exposed only through the scoped, role-gated plan
+   * history endpoint (VAL-PLAN-111, VAL-PLAN-129).
+   *
+   * Steps 5–6 (revision identity and hash) are the same as approve.
    */
   async applyRevisionRequest(
     tx: Tx,
@@ -701,15 +755,35 @@ export class PlanDecisionService {
     const schema = this.db.schema;
     const now = this.now();
 
-    // Step 4: legal run state.
-    if (run.status !== 'awaiting_approval') {
+    // Step 4: legal run state. Revision is allowed from awaiting_approval
+    // or, after approval, while queued before any approved-step effect
+    // starts (VAL-PLAN-039, VAL-PLAN-101).
+    const isAwaitingApproval = run.status === 'awaiting_approval';
+    const isQueuedPostApproval = run.status === 'queued';
+    if (!isAwaitingApproval && !isQueuedPostApproval) {
       throw new PlanDecisionError(
         new AppError(
           409,
           'INVALID_RUN_STATE',
-          'Plan revision request is only allowed from awaiting_approval',
+          'Plan revision request is only allowed from awaiting_approval or queued before execution starts',
         ),
       );
+    }
+
+    // Post-approval queued revision: verify no approved-step effect has
+    // started (VAL-PLAN-101). If any forbidden event exists, revision is
+    // rejected with EXECUTION_ALREADY_STARTED and the run is unchanged.
+    if (isQueuedPostApproval) {
+      const started = await this.hasApprovedStepEffectStarted(tx, run.companyId, run.id);
+      if (started) {
+        throw new PlanDecisionError(
+          new AppError(
+            409,
+            'EXECUTION_ALREADY_STARTED',
+            'Plan revision is not allowed after execution has started. Cancel and retry to start a new run.',
+          ),
+        );
+      }
     }
 
     // Step 5: current same-run revision identity.
@@ -789,7 +863,6 @@ export class PlanDecisionService {
         .update(schema.approvals)
         .set({
           status: 'cancelled',
-          resolutionNote: processedFeedback.redacted,
           resolvedAt: now,
           updatedAt: now,
         })
@@ -801,7 +874,28 @@ export class PlanDecisionService {
       this.deps.failpointHook('revision_after_approval_resolved');
     }
 
-    // Transition the run to planning.
+    // Post-approval queued revision: revoke execution eligibility
+    // (VAL-PLAN-039, VAL-PLAN-101). Clear the current authorization flag
+    // on any approved binding for this run and clear the run's approved
+    // pointer. The historical approved binding remains readable but is no
+    // longer the current execution authorization (VAL-PLAN-102).
+    if (isQueuedPostApproval) {
+      await tx
+        .update(schema.runPlanApprovalBindings)
+        .set({ isCurrentAuthorization: false })
+        .where(
+          and(
+            eq(schema.runPlanApprovalBindings.companyId, run.companyId),
+            eq(schema.runPlanApprovalBindings.runId, run.id),
+            eq(schema.runPlanApprovalBindings.isCurrentAuthorization, true),
+          ),
+        );
+    }
+
+    // Transition the run to planning. Clear the current revision pointer
+    // so the planner produces a fresh proposal. For post-approval queued
+    // revision, also clear the approved pointer so no execution can start
+    // until a fresh approval (VAL-PLAN-039, VAL-PLAN-101).
     const newVersion = run.stateVersion + 1;
     const seq = Number(run.lastEventSequence) + 1;
 
@@ -810,6 +904,7 @@ export class PlanDecisionService {
       .set({
         status: 'planning',
         currentPlanRevisionId: null,
+        approvedPlanRevisionId: isQueuedPostApproval ? null : run.approvedPlanRevisionId,
         stateVersion: newVersion,
         lastEventSequence: seq,
         availableAt: now,
@@ -822,7 +917,10 @@ export class PlanDecisionService {
       this.deps.failpointHook('revision_after_run_planning');
     }
 
-    // Append the plan.revision_requested event.
+    // Append the plan.revision_requested event. Feedback text is NEVER
+    // included in the broad event payload (VAL-PLAN-116, VAL-PLAN-129).
+    // It is encrypted at rest in the revision row and exposed only through
+    // the scoped, role-gated plan history endpoint.
     await tx.insert(schema.runEvents).values({
       companyId: run.companyId,
       projectId: run.projectId,
@@ -834,8 +932,8 @@ export class PlanDecisionService {
         revisionId: body.revisionId,
         revision: revision.revision,
         contentHash: revision.contentHash,
-        feedback: processedFeedback.redacted,
         requestingUserId: actorId,
+        postApproval: isQueuedPostApproval,
       },
       actorType,
       actorId,
@@ -854,6 +952,47 @@ export class PlanDecisionService {
       lastEventSequence: seq,
       decision: 'revision_requested',
     };
+  }
+
+  // -- post-approval effect detection (VAL-PLAN-101) ----------------------
+
+  /**
+   * Check whether any approved-step effect has started for a run. A
+   * post-approval queued revision is legal only before any of these
+   * events exist (VAL-PLAN-039, VAL-PLAN-101):
+   * - `execution.started` — approved step execution began
+   * - `child.created` / `child.started` — a child shell was created/started
+   * - `tool.started` — an approved-step tool was invoked
+   * - `synthesis.started` — synthesis began
+   * - `artifact.committed` — an artifact was committed
+   *
+   * Returns true if any such event exists (scoped to company/run), false
+   * otherwise. Called within the locked transaction so the result is
+   * consistent with the run state under the lock.
+   */
+  private async hasApprovedStepEffectStarted(
+    tx: Tx,
+    companyId: string,
+    runId: string,
+  ): Promise<boolean> {
+    const effectTypes = [
+      'execution.started',
+      'child.created',
+      'child.started',
+      'tool.started',
+      'synthesis.started',
+      'artifact.committed',
+    ];
+    const rows = (await tx.execute(sql`
+      SELECT 1 FROM "run_events"
+      WHERE "company_id" = ${companyId} AND "run_id" = ${runId}
+        AND "type" IN (${sql.join(
+          effectTypes.map((t) => sql`${t}`),
+          sql`, `,
+        )})
+      LIMIT 1
+    `)) as unknown as Array<Record<string, unknown>>;
+    return rows.length > 0;
   }
 
   // -- policy revalidation (deny-only) --------------------------------------

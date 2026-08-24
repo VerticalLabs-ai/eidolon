@@ -15,6 +15,11 @@ import {
   decodeCursor,
 } from '../services/mission/snapshot.js';
 import { MissionPlanSnapshotService } from '../services/mission/plan-snapshot.js';
+import {
+  MissionPlanHistoryService,
+  decodePlanRevisionCursor,
+  MAX_PLAN_REVISIONS_PER_PAGE,
+} from '../services/mission/plan-history.js';
 import { MissionReplayService } from '../services/mission/replay.js';
 import { MissionStreamService } from '../services/mission/stream.js';
 import { MissionCommandService, type RunCommandType } from '../services/mission/commands.js';
@@ -98,6 +103,13 @@ const CommandsQuery = z.object({
  *  cursor ordered by (ordinal, id) (VAL-MODEQ-148). */
 const QuestionSetsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_QUESTION_SETS_PER_PAGE).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+/** Plan revision history query: bounded page (max 50) with opaque keyset
+ *  cursor ordered by (revision, id) (VAL-PLAN-111). */
+const PlanRevisionsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(MAX_PLAN_REVISIONS_PER_PAGE).default(50),
   cursor: z.string().max(512).optional(),
 });
 
@@ -543,6 +555,56 @@ export function missionRunsRouter(db: DbInstance): Router {
     const planRevision = await service.getCurrentPlanRevision(companyId, projectId, runId);
 
     res.json({ data: { planRevision } });
+  });
+
+  // GET /:runId/plan/revisions — scoped, bounded, restart-stable plan
+  // revision history with opaque keyset cursors, immutable content/hash,
+  // parent relation, gate outcome, current-authorization flag, actor/time,
+  // and role-gated feedback access (VAL-PLAN-111, VAL-PLAN-129).
+  //
+  // Owner/admin/member with project content access receive redacted-safe
+  // exact feedback (decrypted). Viewers receive decision metadata only
+  // (feedback omitted). Reads do not require the mission flag, mirroring
+  // the snapshot/events/commands read policy so an operator can review
+  // plan history during a kill switch. Cross-scope IDs return 404.
+  router.get('/:runId/plan/revisions', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const parsed = PlanRevisionsQuery.safeParse(req.query);
+    if (!parsed.success) {
+      throw parsed.error;
+    }
+    const { limit, cursor } = parsed.data;
+
+    // Decode the cursor early so a malformed cursor is a 400, not a 500.
+    decodePlanRevisionCursor(cursor);
+
+    // Determine feedback access by permission: viewers (company.view only)
+    // receive decision metadata only (feedback omitted); contributors
+    // (content.create) see redacted-safe exact feedback (VAL-PLAN-111,
+    // VAL-PLAN-129).
+    const role = (req.organizationMembership?.role ?? 'viewer') as
+      'owner' | 'admin' | 'member' | 'viewer';
+    const includeFeedback = hasPermission(role, 'content.create');
+
+    const service = new MissionPlanHistoryService(db);
+    const result = await service.listRevisions({
+      companyId,
+      projectId,
+      runId,
+      limit,
+      cursor,
+      includeFeedback,
+    });
+
+    res.json({
+      data: {
+        revisions: result.revisions,
+        nextCursor: result.nextCursor,
+      },
+    });
   });
 
   // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId/events

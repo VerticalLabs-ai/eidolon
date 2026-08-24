@@ -65,7 +65,12 @@ export const MUTATION_MATRIX: Record<string, MutationMatrixEntry> = {
     ifMatch: 'required',
     successStatus: 202,
     alreadyTerminalBehavior: 'rejected-invalid-state',
-    legalSourceStates: ['awaiting_approval'],
+    // Legal from awaiting_approval, or from queued after approval but
+    // before any approved-step effect or child shell starts. A queued
+    // revision atomically revokes execution eligibility and returns the
+    // run to planning for fresh approval (VAL-PLAN-039, VAL-PLAN-101).
+    // After execution starts, revision returns 409 EXECUTION_ALREADY_STARTED.
+    legalSourceStates: ['awaiting_approval', 'queued'],
   },
   'plan.approve': {
     type: 'plan.approve',
