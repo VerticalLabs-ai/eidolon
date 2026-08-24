@@ -12,7 +12,8 @@ import { BudgetService } from './budget.js';
 import { projectEvent } from './projection.js';
 import { decryptEnvelope } from './ingress.js';
 import { TopologyMaterializer } from './topology-materializer.js';
-import type { PlanContent } from './plan-schema.js';
+import { AgentRouter, type RoutingContext } from './agent-router.js';
+import type { RoutingRequirements, PlanContent } from './plan-schema.js';
 import logger from '../../utils/logger.js';
 
 /**
@@ -83,6 +84,16 @@ export interface RunProcessorDeps {
    * provided, a default materializer is constructed from the db instance.
    */
   materializer?: TopologyMaterializer;
+  /**
+   * Agent router for child runs with `pending_routing` assignments. When a
+   * claimed child run has a pending_routing step assignment, the processor
+   * delegates to the router to select an eligible company agent, emit
+   * `child.routed`, and set the executing agent (VAL-SUB-008 through 016,
+   * 041, 088). If not provided, a default router is constructed from the db
+   * instance. Ephemeral fallback, capacity reservation, and policy/permit
+   * lifecycle are owned by later features (m4-f03).
+   */
+  router?: AgentRouter;
 }
 
 interface RunRow {
@@ -179,6 +190,20 @@ export class RunProcessor {
         await this.projectRunEvents(claim);
         return;
       }
+    }
+
+    // Child routing (VAL-SUB-008 through 016, 041, 088):
+    // When a claimed child run has a `pending_routing` step assignment, the
+    // processor delegates to the agent router to filter and score same-company
+    // agents by status, capability, exact tools/domains, runtime, permission,
+    // budget, timeout, and deterministic score tuple. If an eligible agent is
+    // found, the router emits `child.routed`, sets the executing agent, and
+    // sets the assignment to `routed`. The child is then not re-claimable
+    // until m4-f03 reserves capacity and transitions it to execution. If no
+    // eligible agent exists, the child remains pending (ephemeral fallback is
+    // m4-f03-ephemeral-fallback).
+    if (await this.maybeHandleChildRouting(claim, signal, data)) {
+      return;
     }
 
     // VAL-MODEQ-151: Root agent revocation is deny-only.
@@ -303,6 +328,111 @@ export class RunProcessor {
 
     // The root oversees children; do not execute a single LLM call.
     // Children are queued and claimable by the worker.
+    return true;
+  }
+
+  // -- internal: child routing (VAL-SUB-008 through 016, 041, 088) ---------
+
+  /**
+   * Check whether a claimed run is a child with a pending_routing assignment
+   * and, if so, delegate to the agent router. Returns true if the child was
+   * handled (routed or left pending for ephemeral fallback), false if the
+   * run should proceed to direct execution.
+   */
+  private async maybeHandleChildRouting(
+    claim: Claim,
+    signal: AbortSignal,
+    data: RunAndPolicy,
+  ): Promise<boolean> {
+    if (data.run.parentRunId === null || data.run.status !== 'queued' || signal.aborted) {
+      return false;
+    }
+    const handled = await this.handleChildRouting(claim, data.run, data.policy);
+    if (handled) {
+      await this.projectRunEvents(claim);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Handle child routing for a claimed child run with a pending_routing
+   * assignment. Delegates to the AgentRouter to filter, score, and select
+   * an eligible same-company agent. If an agent is found, the router emits
+   * `child.routed` and sets the executing agent. Returns true if the child
+   * was handled (routed or no eligible agent), false if the child does not
+   * have a pending_routing assignment and should proceed to direct execution.
+   *
+   * Ephemeral fallback, capacity reservation, immutable child policy
+   * derivation, and scheduling permits are owned by m4-f03 and
+   * m4-f03-ephemeral-fallback.
+   */
+  private async handleChildRouting(
+    claim: Claim,
+    run: RunRow,
+    policy: PolicyInfo | null,
+  ): Promise<boolean> {
+    const schema = this.db.schema;
+
+    // Check if this child has a step assignment with pending_routing status.
+    const [assignment] = await this.db.drizzle
+      .select({
+        id: schema.runStepAssignments.id,
+        stepKey: schema.runStepAssignments.stepKey,
+        assignmentStatus: schema.runStepAssignments.assignmentStatus,
+        routingRequirements: schema.runStepAssignments.routingRequirements,
+        billingAgentId: schema.runStepAssignments.billingAgentId,
+        rootRunId: schema.runStepAssignments.rootRunId,
+        parentRunId: schema.runStepAssignments.parentRunId,
+      })
+      .from(schema.runStepAssignments)
+      .where(
+        and(
+          eq(schema.runStepAssignments.companyId, claim.companyId),
+          eq(schema.runStepAssignments.runId, claim.runId),
+        ),
+      )
+      .limit(1);
+
+    // No assignment or not pending_routing → not a routing candidate.
+    if (!assignment || assignment.assignmentStatus !== 'pending_routing') {
+      return false;
+    }
+
+    const router = this.deps.router ?? new AgentRouter(this.db, { clock: () => this.now() });
+
+    // Extract routing requirements from the assignment.
+    const reqs = assignment.routingRequirements as RoutingRequirements | null;
+    if (!reqs) {
+      // No routing requirements — cannot route. Leave pending for m4-f03.
+      return true;
+    }
+
+    // Derive step budget and timeout from the policy limits.
+    const stepBudgetCents = policy?.limits?.costCents ?? 100;
+    const stepTimeoutSeconds = policy?.limits?.durationSeconds ?? 300;
+    const parentProvider = policy?.provider ?? 'anthropic';
+
+    const ctx: RoutingContext = {
+      companyId: claim.companyId,
+      projectId: claim.projectId,
+      rootRunId: assignment.rootRunId,
+      parentRunId: assignment.parentRunId,
+      childRunId: claim.runId,
+      stepKey: assignment.stepKey,
+      routingRequirements: reqs,
+      stepBudgetCents,
+      stepTimeoutSeconds,
+      billingAgentId: assignment.billingAgentId,
+      parentProvider,
+    };
+
+    // Route the child. If an eligible agent is found, the router records the
+    // decision atomically. If not, the child remains pending (ephemeral
+    // fallback is m4-f03-ephemeral-fallback).
+    await router.route(ctx);
+
+    // Either way, the child was handled (routed or left pending for fallback).
     return true;
   }
 
