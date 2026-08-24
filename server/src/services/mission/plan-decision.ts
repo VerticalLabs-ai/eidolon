@@ -954,6 +954,35 @@ export class PlanDecisionService {
     };
   }
 
+  // -- root-deadline expiry while awaiting approval (VAL-PLAN-115) ---------
+
+  /**
+   * Terminalize a run whose root deadline has expired while in
+   * `awaiting_approval` (VAL-PLAN-115). Delegates to the standalone
+   * {@link terminalizeForApprovalDeadlineExpiry} module.
+   *
+   * Must be called inside a locked transaction where the run row is
+   * already locked via `FOR UPDATE`.
+   */
+  async terminalizeForDeadlineExpiry(
+    tx: Tx,
+    run: MissionRunRow,
+    opts: {
+      actorType?: 'user' | 'agent' | 'system';
+      actorId?: string | null;
+      traceId?: string | null;
+    } = {},
+  ): Promise<{ terminalized: boolean; stateVersion: number; lastEventSequence: number }> {
+    const { terminalizeForApprovalDeadlineExpiry } = await import('./plan-deadline-expiry.js');
+    return terminalizeForApprovalDeadlineExpiry(
+      this.db,
+      tx,
+      run,
+      { clock: () => this.now() },
+      opts,
+    );
+  }
+
   // -- post-approval effect detection (VAL-PLAN-101) ----------------------
 
   /**

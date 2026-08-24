@@ -28,6 +28,87 @@ import type { DbInstance } from '../../types.js';
  * tenant-sensitive material.
  */
 
+/**
+ * The complete governance gate outcome enum (VAL-PLAN-121).
+ *
+ * A plan revision's content/identity is immutable; its one governance gate
+ * has exactly one of these outcomes. The outcome is *derived* from the
+ * immutable revision status, the approval binding's decision, and the run's
+ * terminal state — it is not a stored enum. This keeps plan content, gate
+ * outcome, and execution authorization orthogonal.
+ *
+ *  - `open`: the gate is still open (revision is `proposed`, run is
+ *    nonterminal and in `awaiting_approval`).
+ *  - `approved`: a human owner/admin approved the exact revision
+ *    (binding.decision = 'approved').
+ *  - `rejected`: a human owner/admin rejected the exact revision
+ *    (binding.decision = 'rejected').
+ *  - `superseded_without_decision`: a member revision request superseded
+ *    the proposal without a rejection decision (revision.status =
+ *    'superseded').
+ *  - `cancelled_without_decision`: the run was cancelled while the
+ *    proposal was still open (revision.status = 'proposed', run.status =
+ *    'cancelled', no decision recorded).
+ *  - `expired_without_decision`: the root deadline expired while the
+ *    proposal was still open (revision.status = 'proposed', run.status =
+ *    'failed', failureCode = 'TIME_LIMIT', no decision recorded).
+ */
+export type GateOutcome =
+  | 'open'
+  | 'approved'
+  | 'rejected'
+  | 'superseded_without_decision'
+  | 'cancelled_without_decision'
+  | 'expired_without_decision';
+
+/**
+ * Derive the governance gate outcome for a revision from immutable records
+ * (VAL-PLAN-121). The outcome is computed from the revision status, the
+ * binding's decision, and the run's terminal state.
+ */
+function deriveGateOutcome(
+  revisionStatus: string,
+  bindingDecision: string | null,
+  runStatus: string | null,
+  runFailureCode: string | null,
+): GateOutcome | null {
+  // If there's a binding with an explicit decision, that wins.
+  if (bindingDecision === 'approved') {
+    return 'approved';
+  }
+  if (bindingDecision === 'rejected') {
+    return 'rejected';
+  }
+
+  // No binding or no decision — derive from revision status and run state.
+  if (revisionStatus === 'superseded') {
+    return 'superseded_without_decision';
+  }
+
+  if (revisionStatus === 'proposed') {
+    // The gate was open when the run terminalized or is still open.
+    if (runStatus === 'cancelled') {
+      return 'cancelled_without_decision';
+    }
+    if (runStatus === 'failed' && runFailureCode === 'TIME_LIMIT') {
+      return 'expired_without_decision';
+    }
+    // Still open (nonterminal) or terminalized by other means.
+    return 'open';
+  }
+
+  // Revision was approved/rejected but no binding decision was recorded
+  // (shouldn't normally happen, but handle gracefully).
+  if (revisionStatus === 'approved') {
+    return 'approved';
+  }
+  if (revisionStatus === 'rejected') {
+    return 'rejected';
+  }
+
+  return null;
+}
+
 /** Maximum plan revisions returned per page (VAL-PLAN-111). */
 export const MAX_PLAN_REVISIONS_PER_PAGE = 50;
 
@@ -39,7 +120,7 @@ export interface PlanRevisionHistoryEntry {
   contentHash: string;
   parentRevisionId: string | null;
   /** Gate outcome for the linked approval binding, or null if no binding. */
-  gateOutcome: string | null;
+  gateOutcome: GateOutcome | null;
   /** Whether this revision's binding is the current execution authorization. */
   isCurrentAuthorization: boolean;
   decidedByUserId: string | null;
@@ -132,9 +213,15 @@ export class MissionPlanHistoryService {
     const { companyId, projectId, runId, limit, cursor, includeFeedback } = input;
     const schema = this.db.schema;
 
-    // 1. Verify the run exists in scope (non-enumerating 404).
+    // 1. Verify the run exists in scope (non-enumerating 404). Also load
+    //    the run's status and failure code so the gate outcome can be
+    //    derived for cancelled/expired proposals (VAL-PLAN-121).
     const [run] = await this.db.drizzle
-      .select({ id: schema.missionRuns.id })
+      .select({
+        id: schema.missionRuns.id,
+        status: schema.missionRuns.status,
+        failureCode: schema.missionRuns.failureCode,
+      })
       .from(schema.missionRuns)
       .where(
         and(
@@ -211,7 +298,8 @@ export class MissionPlanHistoryService {
       }
     }
 
-    // 4. Build history entries with role-gated feedback.
+    // 4. Build history entries with role-gated feedback and derived gate
+    //    outcome (VAL-PLAN-121).
     const revisions: PlanRevisionHistoryEntry[] = page.map((r) => {
       const binding = bindingsByRevision.get(r.id);
       let feedback: string | null = null;
@@ -224,13 +312,19 @@ export class MissionPlanHistoryService {
           feedback = null;
         }
       }
+      const gateOutcome = deriveGateOutcome(
+        r.status,
+        binding?.decision ?? null,
+        run.status,
+        run.failureCode,
+      );
       return {
         id: r.id,
         revision: r.revision,
         status: r.status,
         contentHash: r.contentHash,
         parentRevisionId: r.parentRevisionId,
-        gateOutcome: binding?.decision ?? null,
+        gateOutcome,
         isCurrentAuthorization: binding?.isCurrentAuthorization ?? false,
         decidedByUserId: r.decidedByUserId,
         decidedAt: r.decidedAt ? r.decidedAt.toISOString() : null,

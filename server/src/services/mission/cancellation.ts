@@ -256,6 +256,36 @@ export class MissionCancellationService {
       }
     }
 
+    // Close the governance gate as `cancelled_without_decision` when the
+    // run is cancelled while a plan proposal is still open (VAL-PLAN-109,
+    // VAL-PLAN-121). The binding's `decision` stays null and the revision
+    // status stays `proposed`, so the derived gate outcome is
+    // `cancelled_without_decision`. The approval row is resolved as
+    // `cancelled` so it no longer appears pending.
+    if (run.currentPlanRevisionId) {
+      const [binding] = await tx
+        .select()
+        .from(schema.runPlanApprovalBindings)
+        .where(
+          and(
+            eq(schema.runPlanApprovalBindings.companyId, run.companyId),
+            eq(schema.runPlanApprovalBindings.runId, run.id),
+            eq(schema.runPlanApprovalBindings.planRevisionId, run.currentPlanRevisionId),
+          ),
+        )
+        .limit(1);
+      if (binding) {
+        await tx
+          .update(schema.approvals)
+          .set({
+            status: 'cancelled',
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(schema.approvals.id, binding.approvalId));
+      }
+    }
+
     const newVersion = baseVersion + 1;
     const seq = baseSeq + 1;
 

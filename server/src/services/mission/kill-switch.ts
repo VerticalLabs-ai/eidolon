@@ -316,6 +316,33 @@ export class MissionKillSwitchService {
             return;
           }
 
+          // VAL-PLAN-115: When the absolute Mission deadline expires in
+          // awaiting_approval, fail the run with category `limit` and code
+          // `TIME_LIMIT` and close the governance gate as
+          // `expired_without_decision`. This is a terminalization
+          // transaction, not a cancellation — the run did not get
+          // cancelled, it ran out of time while awaiting a human approval
+          // decision. No separate approval TTL exists; the root deadline
+          // is the only timer. Approval at/after expiry returns 409
+          // INVALID_RUN_STATE because the run is now `failed`.
+          if (locked.status === 'awaiting_approval') {
+            const { terminalizeForApprovalDeadlineExpiry } =
+              await import('./plan-deadline-expiry.js');
+            await terminalizeForApprovalDeadlineExpiry(
+              this.db,
+              tx,
+              locked,
+              { clock: () => now },
+              {
+                actorType: 'system',
+                actorId: null,
+                traceId: null,
+              },
+            );
+            count++;
+            return;
+          }
+
           // Request cancellation (sets the deadline).
           const cancelResult = await cancelService.requestCancellation(tx, locked, {
             companyId: run.companyId,
