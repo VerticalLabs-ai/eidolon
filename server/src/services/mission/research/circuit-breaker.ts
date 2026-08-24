@@ -33,10 +33,36 @@
 import { and, eq, gt, lt } from 'drizzle-orm';
 import type { DbInstance } from '../../../types.js';
 import { isProviderWideFailure } from './health-classification.js';
-import type { ResearchProviderErrorCode, ResearchOperation } from './spi.js';
+import {
+  ResearchProviderError,
+  type ResearchProviderErrorCode,
+  type ResearchOperation,
+} from './spi.js';
 import type { ResearchProviderName } from './origins.js';
 
 type Tx = Parameters<Parameters<DbInstance['drizzle']['transaction']>[0]>[0];
+
+// ---------------------------------------------------------------------------
+// Default sleep (real timer, abortable) — used by waitForProbeEligibility
+// ---------------------------------------------------------------------------
+
+function defaultCircuitSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -73,6 +99,12 @@ export interface CircuitBreakerDeps {
   halfOpenLeaseMs?: number;
   /** Latency sample window size. */
   latencyWindow?: number;
+  /**
+   * Injectable sleep function for `waitForProbeEligibility`. Production uses
+   * a real timer-based sleep that respects AbortSignal. Tests inject an
+   * instant no-op or a controllable mock.
+   */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 /** Read-only health snapshot (privacy-safe: no tenant data). */
@@ -114,6 +146,7 @@ export class ResearchCircuitBreaker {
   private readonly openDurationMs: number;
   private readonly halfOpenLeaseMs: number;
   private readonly latencyWindow: number;
+  private readonly sleepFn: (ms: number, signal?: AbortSignal) => Promise<void>;
 
   constructor(
     private db: DbInstance,
@@ -124,6 +157,7 @@ export class ResearchCircuitBreaker {
     this.openDurationMs = deps.openDurationMs ?? DEFAULT_OPEN_DURATION_MS;
     this.halfOpenLeaseMs = deps.halfOpenLeaseMs ?? DEFAULT_HALF_OPEN_LEASE_MS;
     this.latencyWindow = deps.latencyWindow ?? DEFAULT_LATENCY_WINDOW;
+    this.sleepFn = deps.sleep ?? defaultCircuitSleep;
   }
 
   // -------------------------------------------------------------------------
@@ -422,6 +456,63 @@ export class ResearchCircuitBreaker {
       .returning({ id: schema.researchProviderHealth.id });
 
     return result.length;
+  }
+
+  // -------------------------------------------------------------------------
+  // Abortable wait (VAL-RES-094)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Wait for the circuit to become probe-eligible (closed or half-open
+   * past the open-until deadline), respecting caller cancellation.
+   *
+   * When the circuit is open, sleeps for `retryAfterMs` using an abortable
+   * sleep. If the AbortSignal fires during the wait, the wait is cleared
+   * promptly and a `CANCELLED` error is thrown — no later provider attempt
+   * or fallback may start (VAL-RES-094).
+   *
+   * When the circuit is already closed or probe-eligible, returns
+   * immediately without sleeping.
+   *
+   * @param signal Optional AbortSignal for caller cancellation.
+   * @throws ResearchProviderError('CANCELLED') if the signal aborts during
+   *   the wait.
+   */
+  async waitForProbeEligibility(
+    provider: ResearchProviderName,
+    operation: ResearchOperation,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    // Check cancellation before any DB work.
+    if (signal?.aborted) {
+      throw new ResearchProviderError(
+        'CANCELLED',
+        'Research call cancelled before circuit wait',
+        provider,
+        operation,
+      );
+    }
+
+    const health = await this.getHealth(provider, operation);
+
+    // Circuit is closed or already probe-eligible — no wait needed.
+    if (!health.open || health.retryAfterMs <= 0) {
+      return;
+    }
+
+    // Circuit is open — sleep for the remaining open duration, respecting
+    // cancellation.
+    try {
+      await this.sleepFn(health.retryAfterMs, signal);
+    } catch {
+      // Sleep was aborted — cancellation wins.
+      throw new ResearchProviderError(
+        'CANCELLED',
+        'Research call cancelled during half-open circuit wait',
+        provider,
+        operation,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------

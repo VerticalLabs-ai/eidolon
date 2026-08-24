@@ -120,6 +120,20 @@ export async function executeWithFallback(
     const entry = providers[i]!;
     const isLast = i === providers.length - 1;
 
+    // Cancellation fence (VAL-RES-061, VAL-RES-094): check the caller's
+    // AbortSignal before each provider attempt. If cancellation arrived
+    // between providers (during a fallback gap), no further provider
+    // attempt or fallback may start. This is complementary to the
+    // per-attempt check inside executeWithRetry.
+    if (context.signal?.aborted) {
+      throw new ResearchProviderError(
+        'CANCELLED',
+        'Research call cancelled before provider attempt',
+        entry.name,
+        request.operation,
+      );
+    }
+
     // Build a context with the shared logical call ID.
     const providerContext: ResearchCallContext = {
       ...context,

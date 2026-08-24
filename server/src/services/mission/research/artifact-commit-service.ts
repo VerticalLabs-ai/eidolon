@@ -132,6 +132,15 @@ export class ArtifactCommitService {
       const provenanceId = randomUUID();
       const encryptedContent = encryptContent(input.content);
 
+      // 0. Cancellation fence (VAL-RES-062, VAL-RES-063): check the run's
+      //    status inside this transaction before any artifact, citation, or
+      //    provenance row is written. If the run is cancelled or has a
+      //    pending cancellation request, reject the commit so no late
+      //    artifact becomes visible — even if the remote provider later
+      //    returns. Prior evidence (source revisions) committed before
+      //    cancellation remains immutable and auditable.
+      await this.fenceCancelledRun(tx, input.companyId, input.runId);
+
       // 1. Lock the artifact row and verify the optimistic version
       //    (VAL-RES-100). FOR UPDATE serializes concurrent edits; a stale
       //    expectedVersion is rejected before any citation/provenance row
@@ -246,6 +255,36 @@ export class ArtifactCommitService {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Cancellation fence (VAL-RES-062, VAL-RES-063): query the run's status
+   * and cancellation state inside the current transaction. If the run is
+   * cancelled or has a pending cancellation request, throw `RUN_CANCELLED`
+   * so the entire transaction rolls back — no artifact, citation, or
+   * provenance row becomes visible. Prior evidence (source revisions)
+   * committed independently before cancellation remains immutable.
+   */
+  private async fenceCancelledRun(tx: Tx, companyId: string, runId: string): Promise<void> {
+    const rows = (await tx.execute(sql`
+      SELECT "status", "cancel_requested_at"
+      FROM "mission_runs"
+      WHERE "id" = ${runId} AND "company_id" = ${companyId}
+      LIMIT 1
+    `)) as unknown as { status: string; cancel_requested_at: Date | null }[];
+
+    if (rows.length === 0) {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Run not found in scope');
+    }
+
+    const run = rows[0]!;
+    if (run.status === 'cancelled' || run.cancel_requested_at !== null) {
+      throw new AppError(
+        409,
+        'RUN_CANCELLED',
+        'Cannot commit artifact for a cancelled or cancel-requested run',
+      );
+    }
+  }
 
   /**
    * Validate the commit input shape before any database work. Keeps the
