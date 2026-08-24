@@ -51,6 +51,7 @@ import {
   validateProviderOriginUrl,
 } from './ssrf-boundary.js';
 import { validateTargetUrl } from './url-policy.js';
+import { detectInjectionRisk, redactSecrets } from './content-isolation.js';
 
 // ---------------------------------------------------------------------------
 // Adapter configuration
@@ -225,16 +226,20 @@ export class TavilyAdapter implements ResearchProvider {
       if (!urlCheck.valid) {
         continue;
       }
+      // VAL-RES-044/046: Isolate hostile content. Redact secrets and
+      // detect injection-risk patterns before persisting source text.
+      const { redacted } = redactSecrets(text);
+      const safeText = redacted ? capText(redacted) : undefined;
       sources.push({
         canonicalUrl: urlCheck.canonicalUrl ?? result.url,
         title: normalizeText(result.title),
         retrievedAt: new Date().toISOString(),
         rank: i,
         score: typeof result.score === 'number' ? result.score : undefined,
-        text: text ? capText(text) : undefined,
-        contentHash: text ? hashContent(capText(text)) : undefined,
-        byteCount: text ? Buffer.from(capText(text), 'utf8').length : undefined,
-        injectionRiskLabels: [],
+        text: safeText,
+        contentHash: safeText ? hashContent(safeText) : undefined,
+        byteCount: safeText ? Buffer.from(safeText, 'utf8').length : undefined,
+        injectionRiskLabels: detectInjectionRisk(safeText),
       });
     }
 
@@ -318,14 +323,18 @@ export class TavilyAdapter implements ResearchProvider {
       if (!urlCheck.valid) {
         continue;
       }
+      // VAL-RES-044/046: Isolate hostile content. Redact secrets and
+      // detect injection-risk patterns before persisting source text.
+      const { redacted } = redactSecrets(text);
+      const safeText = redacted ? capText(redacted) : undefined;
       sources.push({
         canonicalUrl: urlCheck.canonicalUrl ?? result.url,
         retrievedAt: new Date().toISOString(),
         rank: i,
-        text: text ? capText(text) : undefined,
-        contentHash: text ? hashContent(capText(text)) : undefined,
-        byteCount: text ? Buffer.from(capText(text), 'utf8').length : undefined,
-        injectionRiskLabels: [],
+        text: safeText,
+        contentHash: safeText ? hashContent(safeText) : undefined,
+        byteCount: safeText ? Buffer.from(safeText, 'utf8').length : undefined,
+        injectionRiskLabels: detectInjectionRisk(safeText),
       });
     }
 

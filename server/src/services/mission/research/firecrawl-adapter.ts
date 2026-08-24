@@ -61,6 +61,7 @@ import {
   validateProviderOriginUrl,
 } from './ssrf-boundary.js';
 import { validateTargetUrl } from './url-policy.js';
+import { detectInjectionRisk, redactSecrets } from './content-isolation.js';
 
 // ---------------------------------------------------------------------------
 // Adapter configuration
@@ -258,19 +259,23 @@ export class FirecrawlAdapter implements ResearchProvider {
       if (!urlCheck.valid) {
         continue;
       }
+      // VAL-RES-044/046: Isolate hostile content. Redact secrets and
+      // detect injection-risk patterns before persisting source text.
+      const { redacted } = redactSecrets(text);
+      const safeText = redacted ? capText(redacted) : undefined;
       sources.push({
         canonicalUrl: urlCheck.canonicalUrl ?? result.url,
         title: normalizeText(result.title ?? result.metadata?.title),
         retrievedAt: new Date().toISOString(),
         rank: i,
-        text: text ? capText(text) : undefined,
-        contentHash: text ? hashContent(capText(text)) : undefined,
-        byteCount: text ? Buffer.from(capText(text), 'utf8').length : undefined,
+        text: safeText,
+        contentHash: safeText ? hashContent(safeText) : undefined,
+        byteCount: safeText ? Buffer.from(safeText, 'utf8').length : undefined,
         language: result.metadata?.language,
         providerMetadata: {
           firecrawlJobId: data.id,
         },
-        injectionRiskLabels: [],
+        injectionRiskLabels: detectInjectionRisk(safeText),
       });
     }
 
@@ -347,16 +352,20 @@ export class FirecrawlAdapter implements ResearchProvider {
     const markdown = normalizeText(data.data?.markdown);
     const sourceUrl = urlResult.canonicalUrl ?? request.urls?.[0] ?? '';
 
+    // VAL-RES-044/046: Isolate hostile content. Redact secrets and
+    // detect injection-risk patterns before persisting source text.
+    const { redacted } = redactSecrets(markdown);
+    const safeText = redacted ? capText(redacted) : undefined;
     sources.push({
       canonicalUrl: sourceUrl,
       title: normalizeText(data.data?.metadata?.title),
       retrievedAt: new Date().toISOString(),
       rank: 0,
-      text: markdown ? capText(markdown) : undefined,
-      contentHash: markdown ? hashContent(capText(markdown)) : undefined,
-      byteCount: markdown ? Buffer.from(capText(markdown), 'utf8').length : undefined,
+      text: safeText,
+      contentHash: safeText ? hashContent(safeText) : undefined,
+      byteCount: safeText ? Buffer.from(safeText, 'utf8').length : undefined,
       language: data.data?.metadata?.language,
-      injectionRiskLabels: [],
+      injectionRiskLabels: detectInjectionRisk(safeText),
     });
 
     const warnings: string[] = [];
