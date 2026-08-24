@@ -6,11 +6,17 @@ import {
   useMissionRunEvents,
   useMissionRequestText,
   useMissionRunStream,
+  useMissionCurrentPlanRevision,
   useCancelMissionRun,
   useRetryMissionRun,
 } from '@/lib/hooks';
 import { useSession } from '@/lib/auth';
-import type { MissionRunSummary, MissionRunSnapshot, MissionReplayEvent } from '@/lib/api';
+import type {
+  MissionRunSummary,
+  MissionRunSnapshot,
+  MissionReplayEvent,
+  MissionPlanRevision,
+} from '@/lib/api';
 import { type MissionLinkTarget } from '@eidolon/shared';
 import {
   CheckCircle2,
@@ -29,6 +35,7 @@ import { MissionQuestionCard } from './MissionQuestionCard';
 import { MissionQuestionHistory } from './MissionQuestionHistory';
 import { MissionPlanCard } from './MissionPlanCard';
 import { MissionStepProgress } from './MissionStepProgress';
+import { MissionChildTree } from './MissionChildTree';
 import { clearRunDrafts } from '@/lib/mission-drafts';
 
 /** Terminal run statuses. */
@@ -287,6 +294,19 @@ export function MissionRunCard({
   const isRootRun = !snapshot || (snapshot.depth ?? 0) === 0;
   const canRetry = isRetryEligible(authoritativeStatus, isRootRun);
 
+  // Fetch the current/approved plan revision for the authoritative nested
+  // child tree. TanStack Query deduplicates this with the identical call
+  // inside MissionStepProgress by query key, so no extra network request
+  // is issued. Only fetched for root runs with an approved plan
+  // (VAL-SUB-024..094).
+  const planRevisionQuery = useMissionCurrentPlanRevision(
+    companyId,
+    projectId,
+    run.id,
+    snapshot?.approvedPlanRevisionId ?? null,
+  );
+  const planRevisionForTree = planRevisionQuery.data as MissionPlanRevision | null | undefined;
+
   // When the confirmation dialog closes, restore focus to the originating
   // Cancel control so focus is never lost to the document body
   // (VAL-RUN-090). Native <dialog> restoration handles real browsers; this
@@ -381,6 +401,23 @@ export function MissionRunCard({
           currentPlanRevisionId={snapshot.currentPlanRevisionId}
           snapshot={snapshot}
           events={events}
+        />
+      )}
+      {/* Authoritative nested child tree: identity, routing, progress, and
+       * reversible subthread navigation. Renders only for root runs with an
+       * approved plan and materialized children (VAL-SUB-020, 024, 025,
+       * 026, 027, 028, 068, 069, 089, 093, 094). The tree is a pure
+       * projection of the root journal events + approved plan topology;
+       * deeper descendants are fetched authoritatively on expand. */}
+      {snapshot?.approvedPlanRevisionId && isRootRun && (
+        <MissionChildTree
+          companyId={companyId}
+          projectId={projectId}
+          runId={run.id}
+          snapshot={snapshot}
+          events={events}
+          planRevision={planRevisionForTree}
+          principalId={principalId}
         />
       )}
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />

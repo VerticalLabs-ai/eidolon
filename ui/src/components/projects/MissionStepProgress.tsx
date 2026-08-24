@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMissionCurrentPlanRevision } from '@/lib/hooks';
 import type {
   MissionPlanRevision,
@@ -264,6 +264,33 @@ export function MissionStepProgress({
     currentPlanRevisionId,
   );
 
+  const revision = planQuery.data as MissionPlanRevision | null | undefined;
+
+  // Compute step outcomes and aggregate counts before any early return so
+  // the batched-announcement hook is always called unconditionally (Rules
+  // of Hooks). When there is no revision yet, counts are zero.
+  const outcomes = useMemo(() => deriveStepOutcomes(events), [events]);
+  const stepStatusCounts = useMemo(() => {
+    if (!revision) {
+      return { running: 0, completed: 0, failed: 0 };
+    }
+    const steps = revision.content.steps;
+    return {
+      running: steps.filter((s) => (outcomes.get(s.stepKey)?.status ?? 'pending') === 'running')
+        .length,
+      completed: steps.filter((s) => (outcomes.get(s.stepKey)?.status ?? 'pending') === 'completed')
+        .length,
+      failed: steps.filter((s) => (outcomes.get(s.stepKey)?.status ?? 'pending') === 'failed')
+        .length,
+    };
+  }, [revision, outcomes]);
+  const announcement = useBatchedStepAnnouncement(
+    runId,
+    stepStatusCounts.running,
+    stepStatusCounts.completed,
+    stepStatusCounts.failed,
+  );
+
   // Only render when an approved plan exists. During execution the current
   // revision equals the approved one; after a queued revision the run
   // returns to planning and there is no execution progress to show.
@@ -271,12 +298,10 @@ export function MissionStepProgress({
     return null;
   }
 
-  const revision = planQuery.data as MissionPlanRevision | null | undefined;
   if (!revision) {
     return null;
   }
 
-  const outcomes = deriveStepOutcomes(events);
   const steps = revision.content.steps;
   const completedStepKeys = new Set(
     steps
@@ -284,16 +309,9 @@ export function MissionStepProgress({
       .map((s) => s.stepKey),
   );
 
-  const runningCount = steps.filter(
-    (s) => (outcomes.get(s.stepKey)?.status ?? 'pending') === 'running',
-  ).length;
-  const completedCount = completedStepKeys.size;
-  const failedCount = steps.filter(
-    (s) => (outcomes.get(s.stepKey)?.status ?? 'pending') === 'failed',
-  ).length;
+  const runningCount = stepStatusCounts.running;
 
   const fanOut = revision.content.limits.fanOut ?? 0;
-  const announcement = useBatchedStepAnnouncement(runId, runningCount, completedCount, failedCount);
 
   const hashPrefix = revision.contentHash.slice(0, 12);
   const partialPolicy = revision.content.partialResultPolicy;
