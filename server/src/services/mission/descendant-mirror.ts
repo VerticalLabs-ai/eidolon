@@ -73,6 +73,11 @@ const MIRRORABLE_EVENT_TYPES = new Set([
   'synthesis.completed',
 ]);
 
+/** Whether a run status is terminal (immutable). */
+function isTerminalStatus(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
 export interface MirrorInput {
   companyId: string;
   projectId: string;
@@ -301,7 +306,9 @@ export class DescendantMirrorService {
     const watermarks = await this.getAllWatermarks(rootRunId);
 
     for (const desc of descendants) {
-      if (desc.id === rootRunId) {continue;}
+      if (desc.id === rootRunId) {
+        continue;
+      }
       const latest = Number(desc.lastEventSequence);
       const watermark = watermarks.get(desc.id) ?? 0;
       result.set(desc.id, {
@@ -312,5 +319,223 @@ export class DescendantMirrorService {
     }
 
     return result;
+  }
+
+  /**
+   * Ensure all relevant terminal descendant source events have been mirrored
+   * to the root journal before root synthesis/terminalization closes the run
+   * (VAL-SUB-112).
+   *
+   * For each terminal descendant, this fills any mirror gap between the
+   * per-descendant watermark and the descendant's latest source sequence by
+   * reading the authoritative local descendant events and mirroring them.
+   * Projection repair may fill gaps before terminalization; root close emits
+   * final mirrors first and then closes with no later descendant mirror.
+   *
+   * Nonterminal descendants are not "relevant terminal watermarks": they are
+   * reported as incomplete so the caller does not close the root while
+   * descendants are still active. (Composite root close is gated by the
+   * synthesis module; this method provides the mirror-completion guarantee.)
+   *
+   * Must be called inside a locked transaction where the root run row is
+   * already locked via `FOR UPDATE` (so no concurrent terminalization can
+   * interleave). Each filled mirror uses {@link mirrorDescendantEvent} and
+   * therefore inherits uniqueness, de-cycling, and no-post-terminal behavior.
+   *
+   * Returns `{ complete, filled }`:
+   *  - `complete` is true only when every descendant is terminal AND fully
+   *    mirrored up to its latest source sequence.
+   *  - `filled` is the number of mirror gaps closed in this call.
+   */
+  async ensureMirrorsCompleteBeforeTerminal(
+    tx: Tx,
+    input: {
+      companyId: string;
+      projectId: string;
+      rootRunId: string;
+      actorType?: 'user' | 'agent' | 'system';
+      actorId?: string | null;
+      traceId?: string | null;
+    },
+  ): Promise<{ complete: boolean; filled: number }> {
+    const schema = this.db.schema;
+    const actorType = input.actorType ?? 'system';
+    const actorId = input.actorId ?? null;
+    const traceId = input.traceId ?? null;
+
+    // Read the root under the caller's lock to confirm it is not already
+    // terminal (no post-terminal mirror is legal).
+    const [rootRun] = await tx
+      .select({ status: schema.missionRuns.status })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, input.companyId),
+          eq(schema.missionRuns.id, input.rootRunId),
+        ),
+      )
+      .limit(1);
+
+    if (!rootRun) {
+      return { complete: false, filled: 0 };
+    }
+    if (isTerminalStatus(rootRun.status)) {
+      // Root already terminal: no post-terminal mirror. Nothing to fill.
+      return { complete: true, filled: 0 };
+    }
+
+    // Gather all descendants of this root (excluding the root itself).
+    const descendants = await tx
+      .select({
+        id: schema.missionRuns.id,
+        status: schema.missionRuns.status,
+        lastEventSequence: schema.missionRuns.lastEventSequence,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, input.companyId),
+          eq(schema.missionRuns.rootRunId, input.rootRunId),
+        ),
+      )
+      .for('update');
+
+    const watermarks = await this.getAllWatermarks(input.rootRunId);
+    let filled = 0;
+    let allTerminalAndComplete = true;
+
+    for (const desc of descendants) {
+      if (desc.id === input.rootRunId) {
+        continue;
+      }
+      const latest = Number(desc.lastEventSequence);
+      const watermark = watermarks.get(desc.id) ?? 0;
+
+      if (!isTerminalStatus(desc.status)) {
+        // A nonterminal descendant means the root must not close yet.
+        allTerminalAndComplete = false;
+        continue;
+      }
+      if (watermark >= latest) {
+        continue; // already fully mirrored
+      }
+      filled += await this.fillDescendantMirrorGaps(
+        tx,
+        {
+          companyId: input.companyId,
+          projectId: input.projectId,
+          rootRunId: input.rootRunId,
+          actorType,
+          actorId,
+          traceId,
+        },
+        desc.id,
+        watermark,
+      );
+    }
+
+    // Re-verify completeness after filling, reading within this transaction
+    // so uncommitted mirrors are visible (an outer-connection read would not
+    // see rows inserted in `tx`).
+    const finalWatermarks = await this.readWatermarksTx(tx, input.rootRunId);
+    for (const desc of descendants) {
+      if (desc.id === input.rootRunId) {
+        continue;
+      }
+      if (!isTerminalStatus(desc.status)) {
+        allTerminalAndComplete = false;
+        continue;
+      }
+      const latest = Number(desc.lastEventSequence);
+      const watermark = finalWatermarks.get(desc.id) ?? 0;
+      if (watermark < latest) {
+        allTerminalAndComplete = false;
+      }
+    }
+
+    return { complete: allTerminalAndComplete, filled };
+  }
+
+  /**
+   * Read and mirror the authoritative local descendant source events above
+   * the current watermark, in source-sequence order. Returns the number of
+   * new mirrors created.
+   */
+  private async fillDescendantMirrorGaps(
+    tx: Tx,
+    input: {
+      companyId: string;
+      projectId: string;
+      rootRunId: string;
+      actorType: 'user' | 'agent' | 'system';
+      actorId: string | null;
+      traceId: string | null;
+    },
+    descendantRunId: string,
+    watermark: number,
+  ): Promise<number> {
+    const schema = this.db.schema;
+    const missingRows = await tx
+      .select({
+        sequence: schema.runEvents.sequence,
+        type: schema.runEvents.type,
+        payload: schema.runEvents.payload,
+        actorType: schema.runEvents.actorType,
+        actorId: schema.runEvents.actorId,
+        traceId: schema.runEvents.traceId,
+      })
+      .from(schema.runEvents)
+      .where(
+        and(
+          eq(schema.runEvents.companyId, input.companyId),
+          eq(schema.runEvents.runId, descendantRunId),
+        ),
+      )
+      .orderBy(schema.runEvents.sequence);
+
+    let filled = 0;
+    for (const ev of missingRows) {
+      const srcSeq = Number(ev.sequence);
+      if (srcSeq <= watermark) {
+        continue; // already mirrored below the watermark
+      }
+      const result = await this.mirrorDescendantEvent(tx, {
+        companyId: input.companyId,
+        projectId: input.projectId,
+        rootRunId: input.rootRunId,
+        descendantRunId,
+        sourceSequence: srcSeq,
+        sourceEventType: ev.type,
+        sourcePayload: ev.payload as Record<string, unknown>,
+        actorType: (ev.actorType as 'user' | 'agent' | 'system' | null) ?? input.actorType,
+        actorId: ev.actorId ?? input.actorId,
+        traceId: ev.traceId ?? input.traceId,
+      });
+      if (result.created) {
+        filled += 1;
+      }
+    }
+    return filled;
+  }
+
+  /**
+   * Read per-descendant watermarks within a transaction (so uncommitted
+   * mirror rows inserted in `tx` are visible).
+   */
+  private async readWatermarksTx(tx: Tx, rootRunId: string): Promise<Map<string, number>> {
+    const schema = this.db.schema;
+    const rows = await tx
+      .select({
+        descendantRunId: schema.runDescendantMirrors.descendantRunId,
+        maxSeq: sql<number>`coalesce(max(${schema.runDescendantMirrors.sourceSequence}), 0)`,
+      })
+      .from(schema.runDescendantMirrors)
+      .where(eq(schema.runDescendantMirrors.rootRunId, rootRunId))
+      .groupBy(schema.runDescendantMirrors.descendantRunId);
+    const map = new Map<string, number>();
+    for (const row of rows) {
+      map.set(row.descendantRunId, Number(row.maxSeq));
+    }
+    return map;
   }
 }

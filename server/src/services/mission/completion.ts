@@ -138,6 +138,116 @@ export class MissionCompletionService {
       );
     }
 
+    // VAL-SUB-112: Root mirror is complete before terminal close. For a root
+    // run, ensure every relevant terminal descendant source event has been
+    // mirrored to the root journal before the root closes. Final mirrors are
+    // emitted first, then the root closes with no later descendant mirror
+    // (mirrorDescendantEvent refuses post-terminal mirrors). A root with
+    // nonterminal descendants cannot complete — composite close is gated by
+    // synthesis. Flat roots (no descendants) are a no-op.
+    if (run.parentRunId === null) {
+      const { DescendantMirrorService } = await import('./descendant-mirror.js');
+      const mirrorService = new DescendantMirrorService(this.db, { clock: () => now });
+      const mirrorResult = await mirrorService.ensureMirrorsCompleteBeforeTerminal(tx, {
+        companyId: run.companyId,
+        projectId: run.projectId,
+        rootRunId: run.id,
+        actorType,
+        actorId,
+        traceId,
+      });
+      if (!mirrorResult.complete) {
+        throw new AppError(
+          409,
+          'INVALID_RUN_STATE',
+          'Cannot complete a root run while descendants are nonterminal or mirrors are incomplete',
+        );
+      }
+      // Re-read the run after mirror writes (last_event_sequence advanced).
+      const [refetched] = await tx
+        .select()
+        .from(schema.missionRuns)
+        .where(eq(schema.missionRuns.id, run.id))
+        .for('update')
+        .limit(1);
+      if (refetched && refetched.terminalAt !== null) {
+        return {
+          statusCode: 200,
+          stateVersion: refetched.stateVersion,
+          terminalized: false,
+          status: refetched.status,
+          lastEventSequence: Number(refetched.lastEventSequence),
+        };
+      }
+      // Use the refetched row (if any) so sequence arithmetic accounts for
+      // the mirror events just appended.
+      const current = refetched ?? run;
+      const newVersion2 = current.stateVersion + 1;
+      const seq2 = Number(current.lastEventSequence) + 1;
+
+      await tx
+        .update(schema.missionRuns)
+        .set({
+          status: 'completed',
+          terminalAt: now,
+          leaseOwner: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          availableAt: null,
+          stateVersion: newVersion2,
+          lastEventSequence: seq2,
+          updatedAt: now,
+        })
+        .where(eq(schema.missionRuns.id, run.id));
+
+      await tx.insert(schema.runEvents).values({
+        companyId: run.companyId,
+        projectId: run.projectId,
+        runId: run.id,
+        sequence: seq2,
+        type: 'run.completed',
+        schemaVersion: 1,
+        payload: {},
+        actorType,
+        actorId,
+        traceId,
+        occurredAt: now,
+      });
+
+      // Release residual budget.
+      const budgetService2 = new BudgetService(this.db, { clock: () => now });
+      await budgetService2.release(tx, { companyId: run.companyId, runId: run.id });
+
+      const budgetSeq2 = seq2 + 1;
+      await tx
+        .update(schema.missionRuns)
+        .set({ lastEventSequence: budgetSeq2, updatedAt: now })
+        .where(eq(schema.missionRuns.id, run.id));
+
+      await tx.insert(schema.runEvents).values({
+        companyId: run.companyId,
+        projectId: run.projectId,
+        runId: run.id,
+        sequence: budgetSeq2,
+        type: 'budget.released',
+        schemaVersion: 1,
+        payload: {},
+        actorType,
+        actorId,
+        traceId,
+        occurredAt: now,
+      });
+
+      return {
+        statusCode: 200,
+        stateVersion: budgetSeq2 > newVersion2 ? budgetSeq2 : newVersion2,
+        terminalized: true,
+        status: 'completed',
+        lastEventSequence: budgetSeq2,
+      };
+    }
+
     // Transition to completed.
     const newVersion = run.stateVersion + 1;
     const seq = Number(run.lastEventSequence) + 1;

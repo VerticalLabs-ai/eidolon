@@ -3,6 +3,7 @@ import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
 import { isFeatureEnabled } from '../feature-flags.js';
 import { MissionCancellationService } from './cancellation.js';
+import { computeChildDeadline, computeRootDeadline } from './run-deadline-expiry.js';
 
 /**
  * Mission Kill Switch module (VAL-CROSS-055, VAL-CROSS-056, VAL-CROSS-090,
@@ -158,6 +159,16 @@ export class MissionKillSwitchService {
   async enforceDeadlines(): Promise<EnforceDeadlinesResult> {
     const now = this.now();
     let terminalized = 0;
+
+    // 0. Terminalize queued children whose effective child deadline has
+    //    passed with `limit/TIME_LIMIT` before another external call can
+    //    start (VAL-SUB-098). This runs before the root-deadline sweep so
+    //    that waiting/dependency-blocked/queued children expire with
+    //    TIME_LIMIT (they ran out of time) rather than being cancelled by
+    //    the root-deadline cascade. Active running/synthesizing/planning
+    //    work past the root deadline is still handled by the cancellation
+    //    cascade below.
+    terminalized += await this.enforceChildDeadlines(now);
 
     // 1. Terminalize runs with a passed cancellation deadline.
     terminalized += await this.enforceCancellationDeadlines(now);
@@ -453,6 +464,138 @@ export class MissionKillSwitchService {
       }
       throw err;
     }
+  }
+
+  // -- internal: child deadline enforcement (VAL-SUB-098) -------------------
+
+  /**
+   * Find queued child runs (parent_run_id IS NOT NULL, status = 'queued')
+   * without a cancellation request whose effective child deadline has
+   * passed, and terminalize each with `limit/TIME_LIMIT` before another
+   * external call can start.
+   *
+   * The effective child deadline is the minimum of:
+   *  - the child's own allowance (child createdAt + child durationSeconds);
+   *  - the parent's deadline (parent createdAt + parent durationSeconds); and
+   *  - the root's deadline (root createdAt + root durationSeconds).
+   *
+   * A child can never outlive its parent or root. Dependency-blocked shells
+   * are `queued` with a pending assignment, so they are covered here.
+   *
+   * This is a terminalization, not a cancellation: the child ran out of
+   * time, it was not cancel-requested. Stale leases are fenced (the lease
+   * is cleared during terminalization).
+   */
+  private async enforceChildDeadlines(now: Date): Promise<number> {
+    const schema = this.db.schema;
+
+    const queuedChildren = await this.db.drizzle
+      .select({
+        id: schema.missionRuns.id,
+        companyId: schema.missionRuns.companyId,
+        projectId: schema.missionRuns.projectId,
+        rootRunId: schema.missionRuns.rootRunId,
+        parentRunId: schema.missionRuns.parentRunId,
+        createdAt: schema.missionRuns.createdAt,
+        policySnapshotId: schema.missionRuns.policySnapshotId,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          isNotNull(schema.missionRuns.parentRunId),
+          eq(schema.missionRuns.status, 'queued'),
+          isNull(schema.missionRuns.terminalAt),
+          isNull(schema.missionRuns.cancelRequestedAt),
+        ),
+      );
+
+    let count = 0;
+
+    for (const child of queuedChildren) {
+      const childDuration = await this.readDurationSeconds(child.policySnapshotId);
+
+      const [parent] = await this.db.drizzle
+        .select({
+          createdAt: schema.missionRuns.createdAt,
+          policySnapshotId: schema.missionRuns.policySnapshotId,
+        })
+        .from(schema.missionRuns)
+        .where(eq(schema.missionRuns.id, child.parentRunId!))
+        .limit(1);
+      const [root] = await this.db.drizzle
+        .select({
+          createdAt: schema.missionRuns.createdAt,
+          policySnapshotId: schema.missionRuns.policySnapshotId,
+        })
+        .from(schema.missionRuns)
+        .where(eq(schema.missionRuns.id, child.rootRunId))
+        .limit(1);
+
+      if (!parent || !root) {
+        continue;
+      }
+
+      const parentDuration = await this.readDurationSeconds(parent.policySnapshotId);
+      const rootDuration = await this.readDurationSeconds(root.policySnapshotId);
+      const parentDeadline = computeRootDeadline(parent.createdAt, parentDuration);
+      const rootDeadline = computeRootDeadline(root.createdAt, rootDuration);
+      const childDeadline = computeChildDeadline(
+        child.createdAt,
+        childDuration,
+        parentDeadline,
+        rootDeadline,
+      );
+
+      if (childDeadline > now) {
+        continue; // child deadline hasn't passed yet
+      }
+
+      try {
+        await this.db.drizzle.transaction(async (tx) => {
+          const [locked] = await tx
+            .select()
+            .from(schema.missionRuns)
+            .where(eq(schema.missionRuns.id, child.id))
+            .for('update')
+            .limit(1);
+
+          if (!locked || ['completed', 'failed', 'cancelled'].includes(locked.status)) {
+            return; // already terminal
+          }
+          if (locked.cancelRequestedAt !== null) {
+            return; // cancellation already requested; leave to cascade
+          }
+          if (locked.status !== 'queued') {
+            return; // advanced since our query
+          }
+
+          const { terminalizeForDeadlineExpiry } = await import('./run-deadline-expiry.js');
+          const result = await terminalizeForDeadlineExpiry(
+            this.db,
+            tx,
+            locked,
+            { clock: () => now },
+            { actorType: 'system', actorId: null, traceId: null },
+          );
+          if (result.terminalized) {
+            count++;
+          }
+        });
+      } catch (err) {
+        if (
+          err instanceof AppError &&
+          (err.code === 'LEASE_NOT_HELD' || err.code === 'INVALID_RUN_STATE')
+        ) {
+          continue;
+        }
+        if (err instanceof Error && (err as { code?: string }).code === 'LEASE_NOT_HELD') {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    return count;
   }
 
   // -- internal: read duration from policy snapshot --------------------------
