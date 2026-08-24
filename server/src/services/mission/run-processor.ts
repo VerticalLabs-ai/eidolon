@@ -15,6 +15,8 @@ import { TopologyMaterializer } from './topology-materializer.js';
 import { AgentRouter, type RoutingContext } from './agent-router.js';
 import { EphemeralFallbackRouter, type EphemeralRoutingContext } from './ephemeral-router.js';
 import type { RoutingRequirements, PlanContent } from './plan-schema.js';
+import { PLATFORM_HARD_CAPS } from './modes.js';
+import type { TreePolicyLimits } from './tree-limits.js';
 import logger from '../../utils/logger.js';
 
 /**
@@ -299,6 +301,29 @@ export class RunProcessor {
       return false;
     }
 
+    // Load the root policy snapshot limits for tree limit enforcement
+    // (VAL-SUB-029, 032, 039).
+    let policyLimits: TreePolicyLimits | undefined;
+    if (run.policySnapshotId) {
+      const [snapshot] = await this.db.drizzle
+        .select({ limits: schema.runPolicySnapshots.limits })
+        .from(schema.runPolicySnapshots)
+        .where(eq(schema.runPolicySnapshots.id, run.policySnapshotId))
+        .limit(1);
+      if (snapshot?.limits) {
+        const l = snapshot.limits as Record<string, number>;
+        policyLimits = {
+          depth: l.depth ?? PLATFORM_HARD_CAPS.depth,
+          fanOut: l.fanOut ?? PLATFORM_HARD_CAPS.fanOut,
+          descendants: l.descendants ?? PLATFORM_HARD_CAPS.descendants,
+          providerCalls: l.providerCalls ?? PLATFORM_HARD_CAPS.providerCalls,
+          totalTokens: l.totalTokens ?? PLATFORM_HARD_CAPS.totalTokens,
+          outputBytes: l.outputBytes ?? PLATFORM_HARD_CAPS.outputBytes,
+          costCents: l.costCents ?? PLATFORM_HARD_CAPS.costCents,
+        };
+      }
+    }
+
     // Materialize the topology in a fenced transaction. The fence ensures
     // a stale worker cannot materialize after lease loss.
     await this.db.drizzle.transaction(async (tx) => {
@@ -333,6 +358,7 @@ export class RunProcessor {
         'system',
         claim.leaseOwner,
         null,
+        policyLimits,
       );
     });
 

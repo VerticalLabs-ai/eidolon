@@ -4,6 +4,7 @@ import type { DbInstance } from '../../types.js';
 import { encryptEnvelope } from './ingress.js';
 import type { PlanContent, PlanStep } from './plan-schema.js';
 import { SubthreadProjectionService } from './subthread-projection.js';
+import { TreeLimitsService, type TreePolicyLimits } from './tree-limits.js';
 
 /**
  * TopologyMaterializer — materializes an approved plan topology into stable
@@ -87,6 +88,12 @@ export class TopologyMaterializer {
     actorType: 'user' | 'agent' | 'system' = 'system',
     actorId: string | null = null,
     traceId: string | null = null,
+    /**
+     * Effective root policy limits for tree limit enforcement
+     * (VAL-SUB-029, 032, 039). When provided, depth and descendant
+     * limits are enforced transactionally before creating child shells.
+     */
+    policyLimits?: TreePolicyLimits,
   ): Promise<MaterializeResult> {
     const schema = this.db.schema;
     const now = this.now();
@@ -120,6 +127,25 @@ export class TopologyMaterializer {
         lastEventSequence: Number(rootRun.lastEventSequence),
         stateVersion: rootRun.stateVersion,
       };
+    }
+
+    // Enforce tree limits (depth + descendants) before creating any child
+    // shells (VAL-SUB-029, 032, 039). This is transactional and race-safe:
+    // the root run is locked FOR UPDATE inside enforceTopologyLimits.
+    if (policyLimits) {
+      const treeLimits = new TreeLimitsService(this.db, { clock: () => now });
+      // Compute the depth of each non-root step.
+      const childDepths = nonRootSteps.map((step) => this.computeDepth(plan, step));
+      await treeLimits.enforceTopologyLimits(tx, {
+        rootRunId: rootRun.id,
+        companyId: rootRun.companyId,
+        projectId: rootRun.projectId,
+        childDepths,
+        policyLimits,
+        actorType,
+        actorId,
+        traceId,
+      });
     }
 
     // Build stepKey → runId map. Root steps map to the root run.
