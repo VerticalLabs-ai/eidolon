@@ -599,6 +599,13 @@ const NON_IDENTITY_CLASSIFICATIONS: PiiFieldClassification[] = [
     protection: 'company-owned',
     why: 'Template snapshot of artifact content. Reusable company asset that may contain personal data; confidential.',
   },
+  {
+    table: 'run_plan_revisions',
+    column: 'content',
+    sensitivity: 'confidential',
+    protection: 'company-owned',
+    why: 'Validated PlanContentV1 for a Mission plan revision. May reference people, sensitive objectives, or internal decisions; confidential company content.',
+  },
   // --- Metadata: JSONB blobs that may carry arbitrary personal data ---------
   {
     table: 'agents',

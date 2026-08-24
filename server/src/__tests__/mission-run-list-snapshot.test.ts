@@ -580,15 +580,39 @@ describe('Mission run aggregate ETag (VAL-RUN-129)', () => {
     },
     {
       name: 'currentPlanRevisionId pointer',
-      patch: { current_plan_revision_id: 'plan-001' },
+      patch: { current_plan_revision_id: 'plan-current-001' },
       field: 'currentPlanRevisionId',
-      expect: 'plan-001',
+      expect: 'plan-current-001',
+      /** Insert a real run_plan_revisions row so the FK constraint passes. */
+      setup: async (db: AnyDb, runId: string, companyId: string, projectId: string) => {
+        const now = new Date();
+        await db.drizzle.execute(sql`
+          INSERT INTO "run_plan_revisions"
+            ("id", "company_id", "project_id", "run_id", "revision", "status", "content", "content_hash", "created_at", "updated_at")
+          VALUES
+            ('plan-current-001', ${companyId}, ${projectId}, ${runId}, 1, 'proposed',
+             '{"schemaVersion":1,"objective":"test","steps":[],"synthesis":{"mode":"require_all"},"partialResultPolicy":"require_all","limits":{}}'::jsonb,
+             'testhash000000000000000000000000000000000000000000000000000000001', ${now}, ${now})
+        `);
+      },
     },
     {
       name: 'approvedPlanRevisionId pointer',
-      patch: { approved_plan_revision_id: 'plan-001' },
+      patch: { approved_plan_revision_id: 'plan-approved-001' },
       field: 'approvedPlanRevisionId',
-      expect: 'plan-001',
+      expect: 'plan-approved-001',
+      /** Insert a real run_plan_revisions row so the FK constraint passes. */
+      setup: async (db: AnyDb, runId: string, companyId: string, projectId: string) => {
+        const now = new Date();
+        await db.drizzle.execute(sql`
+          INSERT INTO "run_plan_revisions"
+            ("id", "company_id", "project_id", "run_id", "revision", "status", "content", "content_hash", "created_at", "updated_at")
+          VALUES
+            ('plan-approved-001', ${companyId}, ${projectId}, ${runId}, 1, 'approved',
+             '{"schemaVersion":1,"objective":"test","steps":[],"synthesis":{"mode":"require_all"},"partialResultPolicy":"require_all","limits":{}}'::jsonb,
+             'testhash000000000000000000000000000000000000000000000000000000002', ${now}, ${now})
+        `);
+      },
     },
     {
       name: 'cancellation request',

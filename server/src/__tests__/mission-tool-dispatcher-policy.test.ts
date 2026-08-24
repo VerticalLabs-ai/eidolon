@@ -147,6 +147,24 @@ function countEvents(events: Array<Record<string, unknown>>, type: string): numb
   return events.filter((e) => e.type === type).length;
 }
 
+/** Insert a real run_plan_revisions row so FK constraints on mission_runs pass. */
+async function seedPlanRevision(
+  db: AnyDb,
+  ctx: { companyId: string; projectId: string; runId: string },
+): Promise<string> {
+  const planRevId = randomUUID();
+  const now = new Date();
+  await db.drizzle.execute(sql`
+    INSERT INTO "run_plan_revisions"
+      ("id", "company_id", "project_id", "run_id", "revision", "status", "content", "content_hash", "created_at", "updated_at")
+    VALUES
+      (${planRevId}, ${ctx.companyId}, ${ctx.projectId}, ${ctx.runId}, 1, 'approved',
+       '{"schemaVersion":1,"objective":"test","steps":[],"synthesis":{"mode":"require_all"},"partialResultPolicy":"require_all","limits":{}}'::jsonb,
+       'testhash000000000000000000000000000000000000000000000000000000000', ${now}, ${now})
+  `);
+  return planRevId;
+}
+
 afterEach(async () => {
   await closeTestServers();
 });
@@ -173,7 +191,7 @@ describe('VAL-RUN-124: Tool dispatcher denies before external effect', () => {
     const claim = await claimRun(ctx.db, ctx.runId);
     await setToolAllowlist(ctx.db, ctx.policySnapshotId, opts.tools ?? TOOLS);
     if (opts.approved) {
-      const planRevId = randomUUID();
+      const planRevId = await seedPlanRevision(ctx.db, ctx);
       await setRunStatus(ctx.db, ctx.runId, 'running', {
         leaseOwner: claim.leaseOwner,
         leaseToken: claim.leaseToken,
@@ -567,7 +585,7 @@ describe('VAL-RUN-125: Replay-safe tool classes recover correctly', () => {
     const claim = await claimRun(ctx.db, ctx.runId);
     await setToolAllowlist(ctx.db, ctx.policySnapshotId, TOOLS);
 
-    const planRevId = randomUUID();
+    const planRevId = await seedPlanRevision(ctx.db, ctx);
     await setRunStatus(ctx.db, ctx.runId, 'running', {
       leaseOwner: claim.leaseOwner,
       leaseToken: claim.leaseToken,
@@ -899,11 +917,12 @@ describe('Tool dispatcher lifecycle', () => {
     const ctx = await freshRun('lifecycle-complete');
     const claim = await claimRun(ctx.db, ctx.runId);
     await setToolAllowlist(ctx.db, ctx.policySnapshotId, TOOLS);
+    const planRevId = await seedPlanRevision(ctx.db, ctx);
     await setRunStatus(ctx.db, ctx.runId, 'running', {
       leaseOwner: claim.leaseOwner,
       leaseToken: claim.leaseToken,
       leaseExpiresAt: claim.leaseExpiresAt,
-      approvedPlanRevisionId: randomUUID(),
+      approvedPlanRevisionId: planRevId,
     });
 
     const dispatcher = new ToolDispatcher(ctx.db);
@@ -960,11 +979,12 @@ describe('Tool dispatcher lifecycle', () => {
     const ctx = await freshRun('lifecycle-fail');
     const claim = await claimRun(ctx.db, ctx.runId);
     await setToolAllowlist(ctx.db, ctx.policySnapshotId, TOOLS);
+    const planRevId = await seedPlanRevision(ctx.db, ctx);
     await setRunStatus(ctx.db, ctx.runId, 'running', {
       leaseOwner: claim.leaseOwner,
       leaseToken: claim.leaseToken,
       leaseExpiresAt: claim.leaseExpiresAt,
-      approvedPlanRevisionId: randomUUID(),
+      approvedPlanRevisionId: planRevId,
     });
 
     const dispatcher = new ToolDispatcher(ctx.db);

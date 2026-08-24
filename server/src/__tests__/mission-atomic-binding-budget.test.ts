@@ -221,6 +221,24 @@ async function getApprovedRevision(db: AnyDb, runId: string) {
   };
 }
 
+/** Look up a specific revision by ID directly (regardless of run pointers). */
+async function getRevisionById(db: AnyDb, revisionId: string) {
+  const rows = (await db.drizzle.execute(sql`
+    SELECT "id", "revision", "status", "content_hash", "content"
+    FROM "run_plan_revisions" WHERE "id" = ${revisionId}
+  `)) as unknown as Array<Record<string, unknown>>;
+  if (!rows[0]) {
+    return null;
+  }
+  return {
+    id: rows[0]['id'] as string,
+    revision: rows[0]['revision'] as number,
+    status: rows[0]['status'] as string,
+    contentHash: rows[0]['content_hash'] as string,
+    content: rows[0]['content'] as Record<string, unknown>,
+  };
+}
+
 async function getEvents(db: AnyDb, runId: string) {
   const rows = (await db.drizzle.execute(sql`
     SELECT "sequence", "type", "payload", "actor_type", "actor_id"
@@ -410,8 +428,9 @@ describe('VAL-PLAN-031: Approved content is immutable', () => {
     const expectedHash = approvedBefore!.contentHash;
     const expectedContent = approvedBefore!.content;
 
-    // Attempt to revise the approved plan — should be rejected because
-    // the run is now queued, not awaiting_approval.
+    // Attempt to revise the approved plan. Per VAL-PLAN-039/VAL-PLAN-101,
+    // revision from queued (before any approved-step effect) is legal and
+    // creates a new revision; the approved revision must remain immutable.
     const reviseRes = await request(ctx.app)
       .post(`${ctx.base}/${ctx.runId}/plan/revisions`)
       .set('Idempotency-Key', `revise-${randomUUID()}`)
@@ -422,15 +441,16 @@ describe('VAL-PLAN-031: Approved content is immutable', () => {
         contentHash: ctx.revision!.contentHash,
         feedback: 'Try to change the approved plan',
       })
-      .expect(409);
-    expect(reviseRes.body.code).toBe('INVALID_RUN_STATE');
+      .expect(202);
 
-    // The approved revision content and hash are unchanged.
-    const approvedAfter = await getApprovedRevision(db, ctx.runId);
-    expect(approvedAfter).not.toBeNull();
-    expect(approvedAfter!.contentHash).toBe(expectedHash);
-    expect(approvedAfter!.content).toEqual(expectedContent);
-    expect(approvedAfter!.status).toBe('approved');
+    // The originally approved revision's content and hash are immutable.
+    // Per VAL-PLAN-039/101, revision from queued supersedes the approved
+    // revision and clears the run's approved pointer, but the original
+    // revision row must remain unchanged (immutable content/hash).
+    const originalAfter = await getRevisionById(db, ctx.revision!.id);
+    expect(originalAfter).not.toBeNull();
+    expect(originalAfter!.contentHash).toBe(expectedHash);
+    expect(originalAfter!.content).toEqual(expectedContent);
 
     await closeTestDb();
   });

@@ -71,7 +71,7 @@ export const MISSION_MUTATION_CONTRACT: MissionMutationContract = {
       ifMatch: 'required',
       successStatus: 202,
       alreadyTerminalBehavior: 'rejected-invalid-state',
-      legalSourceStates: ['awaiting_approval'],
+      legalSourceStates: ['awaiting_approval', 'queued'],
     },
     'plan.approve': {
       type: 'plan.approve',

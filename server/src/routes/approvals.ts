@@ -200,9 +200,25 @@ export function approvalsRouter(db: DbInstance): Router {
     // hash-bound governance and produce a divergent approval row. When the
     // approval is a plan_gate, the route either delegates with the
     // Mission-bound fields or refuses without resolving the approval.
+    // Legacy plan_gate approvals (created by the project-plans advance-step
+    // flow without a Mission binding) fall through to the generic decide path.
     if (existing.kind === 'plan_gate') {
-      await handlePlanGateDecision(db, req, res, existing, body);
-      return;
+      const [binding] = await db.drizzle
+        .select()
+        .from(db.schema.runPlanApprovalBindings)
+        .where(
+          and(
+            eq(db.schema.runPlanApprovalBindings.companyId, companyId),
+            eq(db.schema.runPlanApprovalBindings.approvalId, existing.id),
+          ),
+        )
+        .limit(1);
+
+      if (binding) {
+        await handlePlanGateDecision(db, req, res, existing, body);
+        return;
+      }
+      // No Mission binding → legacy plan_gate approval, fall through to generic.
     }
 
     const row = await db.drizzle.transaction(async (tx) => {
