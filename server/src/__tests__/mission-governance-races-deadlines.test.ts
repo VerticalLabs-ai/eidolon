@@ -679,7 +679,8 @@ describe('VAL-PLAN-051: Terminal decisions cannot be overwritten', () => {
     row = await getRunRow(ctx.db, ctx.runId);
     expect(row!.status).toBe('running');
 
-    // Revision from running → INVALID_RUN_STATE (running is not queued).
+    // Revision from running with execution.started event →
+    // EXECUTION_ALREADY_STARTED (VAL-SUB-095).
     const reviseRes = await reviseCurrentPlan(
       ctx.app,
       ctx.base,
@@ -690,7 +691,7 @@ describe('VAL-PLAN-051: Terminal decisions cannot be overwritten', () => {
       'Too late to revise',
     );
     expect(reviseRes.status).toBe(409);
-    expect(reviseRes.body.code).toBe('INVALID_RUN_STATE');
+    expect(reviseRes.body.code).toBe('EXECUTION_ALREADY_STARTED');
 
     // Run remains running.
     const rowAfter = await getRunRow(ctx.db, ctx.runId);

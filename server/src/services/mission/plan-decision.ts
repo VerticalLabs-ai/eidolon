@@ -56,6 +56,9 @@ import { BudgetService } from './budget.js';
 type Tx = Parameters<Parameters<DbInstance['drizzle']['transaction']>[0]>[0];
 type MissionRunRow = DbInstance['schema']['missionRuns']['$inferSelect'];
 
+/** Terminal lifecycle statuses (VAL-RUN-117). */
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
 /** Body shape for plan.approve. */
 export interface PlanApproveBody {
   revisionId: string;
@@ -761,6 +764,23 @@ export class PlanDecisionService {
     const isAwaitingApproval = run.status === 'awaiting_approval';
     const isQueuedPostApproval = run.status === 'queued';
     if (!isAwaitingApproval && !isQueuedPostApproval) {
+      // Non-awaiting, non-queued state. If the run is non-terminal and
+      // execution has started (running, synthesizing with approved-step
+      // effects), revision is rejected with EXECUTION_ALREADY_STARTED
+      // (VAL-SUB-095, VAL-PLAN-101). Terminal states return
+      // INVALID_RUN_STATE per the mutation matrix alreadyTerminalBehavior.
+      if (!TERMINAL_STATUSES.has(run.status)) {
+        const started = await this.hasApprovedStepEffectStarted(tx, run.companyId, run.id);
+        if (started) {
+          throw new PlanDecisionError(
+            new AppError(
+              409,
+              'EXECUTION_ALREADY_STARTED',
+              'Plan revision is not allowed after execution has started. Cancel and retry to start a new run.',
+            ),
+          );
+        }
+      }
       throw new PlanDecisionError(
         new AppError(
           409,

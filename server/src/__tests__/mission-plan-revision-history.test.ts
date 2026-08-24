@@ -428,10 +428,10 @@ describe('VAL-PLAN-039 + 101: Post-approval revision branches safely', () => {
       'Too late',
     );
 
-    // Running state is not awaiting_approval or queued → INVALID_RUN_STATE.
-    // (The run is running, not queued, so it fails the state check first.)
+    // Running state with execution.started event → EXECUTION_ALREADY_STARTED
+    // (VAL-SUB-095: execution-started plans cannot be revised in place).
     expect(reviseRes.status).toBe(409);
-    expect(reviseRes.body.code).toBe('INVALID_RUN_STATE');
+    expect(reviseRes.body.code).toBe('EXECUTION_ALREADY_STARTED');
 
     // Run remains unchanged.
     const rowAfter = await getRunRow(db, runId);
