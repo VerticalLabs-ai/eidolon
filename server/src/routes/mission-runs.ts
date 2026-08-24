@@ -30,6 +30,7 @@ import {
   MAX_QUESTION_SETS_PER_PAGE,
 } from '../services/mission/question-set-history.js';
 import { MissionProjectionRepairService } from '../services/mission/projection-repair.js';
+import { MissionPlanGovernanceProjectionService } from '../services/mission/plan-governance-projection.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import { redactCanaries } from '../services/mission/reason-security.js';
 import {
@@ -1084,6 +1085,24 @@ export function missionRunsRouter(db: DbInstance): Router {
         nextCursor: result.nextCursor,
       },
     });
+  });
+
+  // GET /:runId/governance-projection — scoped, read-only governance
+  // projection convergence status. Exposes whether each governance surface
+  // (plan_approval, project_plan, project_plan_step, thread_item,
+  // activity_log) has converged (active link) or is lagging (failed/missing).
+  // This is a read-only surface — it never authorizes execution. Available
+  // to authorized readers including viewers; does not require the mission
+  // flag (VAL-PLAN-119, VAL-PLAN-098).
+  router.get('/:runId/governance-projection', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    await validateProjectOwnership(db, companyId, projectId);
+    const service = new MissionPlanGovernanceProjectionService(db);
+    const status = await service.readGovernanceStatus(companyId, projectId, runId);
+    if (status.runStatus === 'not_found') {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    }
+    res.json({ data: status });
   });
 
   // Mission error sanitizer: converts any error thrown by a Mission route

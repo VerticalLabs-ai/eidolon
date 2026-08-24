@@ -1,6 +1,10 @@
 import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { DbInstance } from '../../types.js';
+import {
+  isPlanGovernanceProjectable,
+  projectPlanGovernanceEvent,
+} from './plan-governance-projection.js';
 
 /**
  * Mission Projection module (VAL-CROSS-075, VAL-CROSS-092, VAL-CROSS-093,
@@ -88,6 +92,15 @@ export async function projectEvent(
     } catch (err) {
       await projectionService.recordProjectionFailure(db, event, 'activity_log', err, now);
     }
+  }
+
+  // Plan governance projection: project plan.proposed/approved/rejected/
+  // revision_requested to project_plans, project_plan_steps, and
+  // plan_approval surfaces idempotently. Projection failure is caught and
+  // recorded — it never authorizes execution (VAL-PLAN-060..064, 066, 098,
+  // 099, 119, 127).
+  if (isPlanGovernanceProjectable(event.type)) {
+    await projectPlanGovernanceEvent(db, event, deps);
   }
 }
 

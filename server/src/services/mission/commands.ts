@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, desc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
@@ -564,6 +564,19 @@ export class MissionCommandService {
       });
       // Increment command counter for a newly applied command (not a replay).
       incrementMissionCommand(type, 'applied');
+
+      // Post-commit plan governance projection (VAL-PLAN-060..064, 066, 098,
+      // 099, 119, 127). The authoritative transaction has committed; now
+      // project the plan governance event to mutable surfaces (project_plans,
+      // project_plan_steps, plan_approval). Projection failure is caught and
+      // recorded as a retryable error — it never authorizes execution and
+      // never affects the command result. The run transitions to queued only
+      // via the authoritative applyApprove in the locked transaction, not via
+      // this projection.
+      if (type === 'plan.approve' || type === 'plan.reject' || type === 'plan.revision_request') {
+        await this.projectPlanGovernancePostCommit(companyId, projectId, runId);
+      }
+
       return this.toResult(outcome);
     } catch (err) {
       if (err instanceof IdempotencyReplayError) {
@@ -650,6 +663,65 @@ export class MissionCommandService {
         }
       }
       throw err;
+    }
+  }
+
+  // -- post-commit plan governance projection (VAL-PLAN-060..064, 066, 098, 099, 119, 127) --
+
+  /**
+   * After the authoritative plan decision transaction commits, project the
+   * latest plan governance event to mutable governance surfaces. Projection
+   * failure is caught and recorded as a retryable error — it never
+   * authorizes execution and never affects the command result.
+   */
+  private async projectPlanGovernancePostCommit(
+    companyId: string,
+    projectId: string,
+    runId: string,
+  ): Promise<void> {
+    try {
+      const schema = this.db.schema;
+      // Read the latest plan governance event from the journal.
+      const events = await this.db.drizzle
+        .select()
+        .from(schema.runEvents)
+        .where(
+          and(
+            eq(schema.runEvents.companyId, companyId),
+            eq(schema.runEvents.runId, runId),
+            inArray(schema.runEvents.type, [
+              'plan.proposed',
+              'plan.approved',
+              'plan.rejected',
+              'plan.revision_requested',
+            ]),
+          ),
+        )
+        .orderBy(desc(schema.runEvents.sequence));
+
+      const { projectPlanGovernanceEvent } = await import('./plan-governance-projection.js');
+      for (const evt of events) {
+        await projectPlanGovernanceEvent(
+          this.db,
+          {
+            runId: evt.runId,
+            companyId: evt.companyId,
+            projectId: evt.projectId,
+            sequence: Number(evt.sequence),
+            type: evt.type,
+            payload: evt.payload as Record<string, unknown>,
+            actorType: evt.actorType as 'user' | 'agent' | 'system' | null,
+            actorId: evt.actorId,
+            traceId: evt.traceId,
+            occurredAt: evt.occurredAt,
+          },
+          { clock: () => this.now() },
+        );
+      }
+    } catch {
+      // Projection failure is non-fatal. It is recorded as a failed link
+      // by the projection service and retried idempotently. It does NOT
+      // authorize execution or affect the command result (VAL-PLAN-098).
     }
   }
 
