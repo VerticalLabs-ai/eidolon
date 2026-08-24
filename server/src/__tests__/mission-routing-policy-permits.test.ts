@@ -979,7 +979,7 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
     expect(result.parentPermitId).toBeTruthy();
 
     // Two permits in the DB.
-    const permits = await scheduling.getPermitsForRun(childRunId);
+    const permits = await scheduling.getPermitsForRun(childRunId, scope.companyId);
     expect(permits.length).toBe(2);
     expect(permits.some((p) => p.permitKind === 'root_running')).toBe(true);
     expect(permits.some((p) => p.permitKind === 'parent_running')).toBe(true);
@@ -1084,18 +1084,18 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
 
     // Release.
     const r1 = await db.drizzle.transaction(async (tx) => {
-      return scheduling.releasePermits(tx, childRunId);
+      return scheduling.releasePermits(tx, childRunId, scope.companyId);
     });
     expect(r1.released).toBe(2);
 
     // Release again — idempotent, no permits to release.
     const r2 = await db.drizzle.transaction(async (tx) => {
-      return scheduling.releasePermits(tx, childRunId);
+      return scheduling.releasePermits(tx, childRunId, scope.companyId);
     });
     expect(r2.released).toBe(0);
 
     // All permits are released.
-    const permits = await scheduling.getPermitsForRun(childRunId);
+    const permits = await scheduling.getPermitsForRun(childRunId, scope.companyId);
     expect(permits.every((p) => p.status === 'released')).toBe(true);
     expect(permits.every((p) => p.releasedAt !== null)).toBe(true);
   });
@@ -1140,7 +1140,7 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
 
     // Release child 1's permits.
     await db.drizzle.transaction(async (tx) => {
-      await scheduling.releasePermits(tx, child1);
+      await scheduling.releasePermits(tx, child1, scope.companyId);
     });
 
     // Now child 2 can acquire (slot freed).
@@ -1156,7 +1156,7 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
       });
     });
 
-    const permits = await scheduling.getPermitsForRun(child2);
+    const permits = await scheduling.getPermitsForRun(child2, scope.companyId);
     expect(permits.length).toBe(2);
     expect(permits.every((p) => p.status === 'held')).toBe(true);
   });
@@ -1180,7 +1180,7 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
 
     // Release (child enters awaiting_input).
     await db.drizzle.transaction(async (tx) => {
-      await scheduling.releasePermits(tx, childRunId);
+      await scheduling.releasePermits(tx, childRunId, scope.companyId);
     });
 
     // Reacquire (child resumes from awaiting_input).
@@ -1201,7 +1201,7 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
 
     // The child has 2 permits total (reactivated, not duplicated).
     // One lifecycle per permit — no duplicate rows (VAL-SUB-109).
-    const permits = await scheduling.getPermitsForRun(childRunId);
+    const permits = await scheduling.getPermitsForRun(childRunId, scope.companyId);
     expect(permits.length).toBe(2);
     expect(permits.every((p) => p.status === 'held')).toBe(true);
   });
@@ -1225,12 +1225,12 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
     // Simulate cancellation, failure, and recovery all releasing.
     for (let i = 0; i < 3; i++) {
       await db.drizzle.transaction(async (tx) => {
-        await scheduling.releasePermits(tx, childRunId);
+        await scheduling.releasePermits(tx, childRunId, scope.companyId);
       });
     }
 
     // Only 2 permits were ever held, and all are released.
-    const permits = await scheduling.getPermitsForRun(childRunId);
+    const permits = await scheduling.getPermitsForRun(childRunId, scope.companyId);
     expect(permits.length).toBe(2);
     expect(permits.every((p) => p.status === 'released')).toBe(true);
   });
@@ -1302,14 +1302,24 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
     expect(losers.length).toBe(1);
 
     // The authoritative held-permit count never exceeds the cap.
-    const heldRoot = await scheduling.countHeldPermits(db.drizzle, rootRunId, 'root_running');
-    const heldParent = await scheduling.countHeldPermits(db.drizzle, rootRunId, 'parent_running');
+    const heldRoot = await scheduling.countHeldPermits(
+      db.drizzle,
+      rootRunId,
+      'root_running',
+      scope.companyId,
+    );
+    const heldParent = await scheduling.countHeldPermits(
+      db.drizzle,
+      rootRunId,
+      'parent_running',
+      scope.companyId,
+    );
     expect(heldRoot).toBe(1);
     expect(heldParent).toBe(1);
 
     // The losing child holds no permits.
     const loserRunId = r1.acquired ? child2 : child1;
-    const loserPermits = await scheduling.getPermitsForRun(loserRunId);
+    const loserPermits = await scheduling.getPermitsForRun(loserRunId, scope.companyId);
     expect(loserPermits.length).toBe(0);
   });
 });

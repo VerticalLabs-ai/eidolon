@@ -980,7 +980,12 @@ describe('Tree limits and counters (VAL-SUB-029,031,032,034,035,036,037,039,099,
       // countRunningDescendants counts status='running' rows, but permits
       // are held while children are still 'queued'. The permit count is
       // the authoritative concurrency measure.
-      const permits = await scheduling.countHeldPermits(db.drizzle, rootRunId, 'root_running');
+      const permits = await scheduling.countHeldPermits(
+        db.drizzle,
+        rootRunId,
+        'root_running',
+        companyId,
+      );
       expect(permits).toBe(4);
 
       // 5th child should be denied.

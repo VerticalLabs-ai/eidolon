@@ -285,9 +285,12 @@ export class RunProcessor {
    * Check whether a run has any direct children (is a composite).
    */
   private async runHasChildren(claim: Claim, runId: string): Promise<boolean> {
+    // projectId-scoped so a child-count query can never match another
+    // project's runs (defense-in-depth, fix-misc-company-scoping).
     const result = await this.db.drizzle.execute(sql`
       SELECT count(*)::int AS cnt FROM "mission_runs"
       WHERE "company_id" = ${claim.companyId}
+        AND "project_id" = ${claim.projectId}
         AND "parent_run_id" = ${runId}
     `);
     const rows = result as unknown as Array<{ cnt: number }>;

@@ -900,17 +900,23 @@ describe('VAL-CROSS-025: Bounded parallel child tree', () => {
 
     // The cap is exactly reached: 4 held root_running permits, no more can be
     // admitted without releasing one (no limit is silently exceeded).
-    const held = await scheduling.countHeldPermits(db.drizzle, rootRunId, 'root_running');
+    const held = await scheduling.countHeldPermits(
+      db.drizzle,
+      rootRunId,
+      'root_running',
+      scope.companyId,
+    );
     expect(held).toBe(fanOut);
 
     // Releasing one permit allows the 5th child to acquire a slot.
     await db.drizzle.transaction(async (tx) => {
-      await scheduling.releasePermits(tx, childIds[0]);
+      await scheduling.releasePermits(tx, childIds[0], scope.companyId);
     });
     const heldAfterRelease = await scheduling.countHeldPermits(
       db.drizzle,
       rootRunId,
       'root_running',
+      scope.companyId,
     );
     expect(heldAfterRelease).toBe(fanOut - 1);
 
@@ -928,7 +934,12 @@ describe('VAL-CROSS-025: Bounded parallel child tree', () => {
     expect(fifth.rootPermitId).toBeDefined();
 
     // Back at the cap after the 5th acquires the freed slot.
-    const heldFinal = await scheduling.countHeldPermits(db.drizzle, rootRunId, 'root_running');
+    const heldFinal = await scheduling.countHeldPermits(
+      db.drizzle,
+      rootRunId,
+      'root_running',
+      scope.companyId,
+    );
     expect(heldFinal).toBe(fanOut);
   });
 });

@@ -458,6 +458,7 @@ export class EphemeralFallbackRouter {
       .from(schema.budgetAllocations)
       .where(
         and(
+          eq(schema.budgetAllocations.companyId, ctx.companyId),
           eq(schema.budgetAllocations.billingAgentId, ctx.billingAgentId),
           sql`${schema.budgetAllocations.status} IN ('held', 'partially_settled')`,
         ),

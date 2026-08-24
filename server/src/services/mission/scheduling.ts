@@ -95,12 +95,75 @@ export class SchedulingService {
     // worker blocks until the first commits, then sees the updated count.
     await this.lockRootAndParent(tx, ctx);
 
-    // Count held root_running permits for this root run.
+    // Idempotent re-acquire check: if permits already exist for this run
+    // (held or released), short-circuit BEFORE the limit checks. This
+    // ensures an idempotent re-acquire for a child that already holds
+    // permits returns the existing IDs instead of throwing LIMIT_EXCEEDED
+    // when the child is itself the permit holder at the cap
+    // (fix-misc-company-scoping).
+    const existing = await tx
+      .select({
+        id: schema.runSchedulingPermits.id,
+        permitKind: schema.runSchedulingPermits.permitKind,
+        status: schema.runSchedulingPermits.status,
+      })
+      .from(schema.runSchedulingPermits)
+      .where(
+        and(
+          eq(schema.runSchedulingPermits.companyId, ctx.companyId),
+          eq(schema.runSchedulingPermits.runId, ctx.runId),
+        ),
+      );
+
+    const heldPermits = existing.filter((e) => e.status === 'held');
+    if (heldPermits.length >= 2) {
+      // Already held — return existing IDs (idempotent).
+      const root = heldPermits.find((p) => p.permitKind === 'root_running');
+      const parent = heldPermits.find((p) => p.permitKind === 'parent_running');
+      return {
+        rootPermitId: root?.id ?? heldPermits[0].id,
+        parentPermitId: parent?.id ?? heldPermits[1].id,
+      };
+    }
+
+    // If permits exist but are released (reacquire after awaiting_input),
+    // reactivate them back to held. This maintains one lifecycle per permit
+    // — no duplicate rows (VAL-SUB-109). This also short-circuits before the
+    // limit checks so a re-acquire at the cap does not throw.
+    const releasedPermits = existing.filter((e) => e.status === 'released');
+    if (releasedPermits.length >= 2) {
+      // Reactivate existing released permits.
+      await tx
+        .update(schema.runSchedulingPermits)
+        .set({
+          status: 'held',
+          acquiredAt: now,
+          releasedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(schema.runSchedulingPermits.companyId, ctx.companyId),
+            eq(schema.runSchedulingPermits.runId, ctx.runId),
+            eq(schema.runSchedulingPermits.status, 'released'),
+          ),
+        );
+
+      const root = releasedPermits.find((p) => p.permitKind === 'root_running');
+      const parent = releasedPermits.find((p) => p.permitKind === 'parent_running');
+      return {
+        rootPermitId: root?.id ?? releasedPermits[0].id,
+        parentPermitId: parent?.id ?? releasedPermits[1].id,
+      };
+    }
+
+    // Count held root_running permits for this root run (companyId-scoped).
     const [rootCount] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(schema.runSchedulingPermits)
       .where(
         and(
+          eq(schema.runSchedulingPermits.companyId, ctx.companyId),
           eq(schema.runSchedulingPermits.rootRunId, ctx.rootRunId),
           eq(schema.runSchedulingPermits.permitKind, 'root_running'),
           eq(schema.runSchedulingPermits.status, 'held'),
@@ -117,12 +180,13 @@ export class SchedulingService {
       );
     }
 
-    // Count held parent_running permits for this parent run.
+    // Count held parent_running permits for this parent run (companyId-scoped).
     const [parentCount] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(schema.runSchedulingPermits)
       .where(
         and(
+          eq(schema.runSchedulingPermits.companyId, ctx.companyId),
           eq(schema.runSchedulingPermits.parentRunId, ctx.parentRunId),
           eq(schema.runSchedulingPermits.permitKind, 'parent_running'),
           eq(schema.runSchedulingPermits.status, 'held'),
@@ -144,57 +208,6 @@ export class SchedulingService {
     // production.
     if (this.deps.onAfterPermitCount) {
       await this.deps.onAfterPermitCount();
-    }
-
-    // Check if permits already exist (idempotent reacquire after
-    // awaiting_input, or first acquire).
-    const existing = await tx
-      .select({
-        id: schema.runSchedulingPermits.id,
-        permitKind: schema.runSchedulingPermits.permitKind,
-        status: schema.runSchedulingPermits.status,
-      })
-      .from(schema.runSchedulingPermits)
-      .where(eq(schema.runSchedulingPermits.runId, ctx.runId));
-
-    const heldPermits = existing.filter((e) => e.status === 'held');
-    if (heldPermits.length >= 2) {
-      // Already held — return existing IDs (idempotent).
-      const root = heldPermits.find((p) => p.permitKind === 'root_running');
-      const parent = heldPermits.find((p) => p.permitKind === 'parent_running');
-      return {
-        rootPermitId: root?.id ?? heldPermits[0].id,
-        parentPermitId: parent?.id ?? heldPermits[1].id,
-      };
-    }
-
-    // If permits exist but are released (reacquire after awaiting_input),
-    // update them back to held. This maintains one lifecycle per permit —
-    // no duplicate rows (VAL-SUB-109).
-    const releasedPermits = existing.filter((e) => e.status === 'released');
-    if (releasedPermits.length >= 2) {
-      // Reactivate existing released permits.
-      await tx
-        .update(schema.runSchedulingPermits)
-        .set({
-          status: 'held',
-          acquiredAt: now,
-          releasedAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(schema.runSchedulingPermits.runId, ctx.runId),
-            eq(schema.runSchedulingPermits.status, 'released'),
-          ),
-        );
-
-      const root = releasedPermits.find((p) => p.permitKind === 'root_running');
-      const parent = releasedPermits.find((p) => p.permitKind === 'parent_running');
-      return {
-        rootPermitId: root?.id ?? releasedPermits[0].id,
-        parentPermitId: parent?.id ?? releasedPermits[1].id,
-      };
     }
 
     // Insert root_running permit.
@@ -287,16 +300,18 @@ export class SchedulingService {
    *
    * Must be called inside a transaction.
    */
-  async releasePermits(tx: Tx, runId: string): Promise<{ released: number }> {
+  async releasePermits(tx: Tx, runId: string, companyId: string): Promise<{ released: number }> {
     const schema = this.db.schema;
     const now = this.now();
 
-    // Find held permits for this run.
+    // Find held permits for this run (companyId-scoped — defense-in-depth
+    // so a release can never touch another company's permit rows).
     const heldPermits = await tx
       .select({ id: schema.runSchedulingPermits.id })
       .from(schema.runSchedulingPermits)
       .where(
         and(
+          eq(schema.runSchedulingPermits.companyId, companyId),
           eq(schema.runSchedulingPermits.runId, runId),
           eq(schema.runSchedulingPermits.status, 'held'),
         ),
@@ -306,7 +321,7 @@ export class SchedulingService {
       return { released: 0 };
     }
 
-    // Release all held permits.
+    // Release all held permits (companyId-scoped).
     await tx
       .update(schema.runSchedulingPermits)
       .set({
@@ -316,6 +331,7 @@ export class SchedulingService {
       })
       .where(
         and(
+          eq(schema.runSchedulingPermits.companyId, companyId),
           eq(schema.runSchedulingPermits.runId, runId),
           eq(schema.runSchedulingPermits.status, 'held'),
         ),
@@ -338,19 +354,20 @@ export class SchedulingService {
   async reacquirePermits(tx: Tx, ctx: AcquirePermitsContext): Promise<AcquirePermitsResult> {
     // Release any existing permits first (defensive — should be released
     // when the child entered awaiting_input).
-    await this.releasePermits(tx, ctx.runId);
+    await this.releasePermits(tx, ctx.runId, ctx.companyId);
 
     // Acquire fresh permits.
     return this.acquireRunningPermits(tx, ctx);
   }
 
   /**
-   * Count held permits of a specific kind for a root run.
+   * Count held permits of a specific kind for a root run (companyId-scoped).
    */
   async countHeldPermits(
     runner: Tx | DbInstance['drizzle'],
     rootRunId: string,
     permitKind: 'root_running' | 'parent_running',
+    companyId: string,
   ): Promise<number> {
     const schema = this.db.schema;
     const [row] = await runner
@@ -358,6 +375,7 @@ export class SchedulingService {
       .from(schema.runSchedulingPermits)
       .where(
         and(
+          eq(schema.runSchedulingPermits.companyId, companyId),
           eq(schema.runSchedulingPermits.rootRunId, rootRunId),
           eq(schema.runSchedulingPermits.permitKind, permitKind),
           eq(schema.runSchedulingPermits.status, 'held'),
@@ -367,13 +385,18 @@ export class SchedulingService {
   }
 
   /**
-   * Get all permits for a run (for inspection/testing).
+   * Get all permits for a run (companyId-scoped, for inspection/testing).
    */
-  async getPermitsForRun(runId: string) {
+  async getPermitsForRun(runId: string, companyId: string) {
     const schema = this.db.schema;
     return this.db.drizzle
       .select()
       .from(schema.runSchedulingPermits)
-      .where(eq(schema.runSchedulingPermits.runId, runId));
+      .where(
+        and(
+          eq(schema.runSchedulingPermits.companyId, companyId),
+          eq(schema.runSchedulingPermits.runId, runId),
+        ),
+      );
   }
 }
