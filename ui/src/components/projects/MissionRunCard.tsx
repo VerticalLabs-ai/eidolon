@@ -323,6 +323,7 @@ export function MissionRunCard({
       <RunCardMeta run={run} snapshot={snapshot} status={authoritativeStatus} />
       <RunCardStreamStatus stream={stream} isTerminal={isTerminal} />
       <RunCardQueueHealth snapshot={snapshot} status={authoritativeStatus} />
+      <RunCardWaitingState status={authoritativeStatus} />
       <RunCardStaleRead
         snapshotError={snapshotQuery.isError && !!snapshotQuery.data}
         eventsError={eventsQuery.isError && !!eventsQuery.data}
@@ -369,6 +370,8 @@ export function MissionRunCard({
         />
       )}
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
+      <RunCardDecisionHistory events={events} />
+      <RunCardResultCompleteness snapshot={snapshot} status={authoritativeStatus} />
       <RunCardRetryControl
         companyId={companyId}
         projectId={projectId}
@@ -977,6 +980,157 @@ function RunCardCancelledDetail({
         ) : null}
         .
       </p>
+    </div>
+  );
+}
+
+/** Waiting state indicator: explicit text for plan generation and approval
+ *  application pending states (VAL-PLAN-091).
+ *
+ * - While the run is `planning`: "Generating plan — preparing a proposed
+ *   plan for your review." This tells the user what is waiting without
+ *   implying execution has begun.
+ * - While the run is `awaiting_approval`: the plan card already shows the
+ *   proposed plan and decision controls; no extra waiting indicator is
+ *   needed here (the status text "Awaiting approval" is explicit).
+ *
+ * Cancel/navigation options remain available for all nonterminal states
+ * (the cancel button is rendered separately). The waiting text uses
+ * `role="status"` with `aria-live="polite"` so assistive tech announces
+ * the waiting state without being noisy. */
+function RunCardWaitingState({ status }: { status: string }) {
+  if (status === 'planning') {
+    return (
+      <p
+        className="mb-3 text-xs text-text-secondary"
+        role="status"
+        aria-live="polite"
+        data-testid="run-waiting-state"
+      >
+        Generating plan — preparing a proposed plan for your review.
+      </p>
+    );
+  }
+  return null;
+}
+
+/** Plan decision history: immutable revision, feedback, decision, actor,
+ *  timestamp, and content hash remain reviewable (VAL-PLAN-100).
+ *
+ * Filters the journal events to plan-related types and renders each as a
+ * chronological entry with its revision number, content hash prefix,
+ * deciding actor, and timestamp. Feedback from revision requests and
+ * reasons from rejections are included when present in the sanitized
+ * payload. No later action rewrites prior records — the journal is
+ * append-only and the history renders events in sequence order. */
+function RunCardDecisionHistory({ events }: { events: MissionReplayEvent[] }) {
+  const PLAN_EVENT_TYPES = new Set([
+    'plan.proposed',
+    'plan.approved',
+    'plan.rejected',
+    'plan.revision_requested',
+    'plan.projected',
+  ]);
+  const planEvents = events.filter((e) => PLAN_EVENT_TYPES.has(e.type));
+  if (planEvents.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mb-1" data-testid="decision-history">
+      <p className="text-xs font-medium text-text-secondary mb-1">Decision history</p>
+      <ol aria-label="Plan decision history" className="space-y-1.5">
+        {planEvents.map((event) => (
+          <DecisionHistoryItem key={event.sequence} event={event} />
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/** Human-readable label for a plan event type. */
+function planEventLabel(type: string): string {
+  switch (type) {
+    case 'plan.proposed':
+      return 'Plan proposed';
+    case 'plan.approved':
+      return 'Plan approved';
+    case 'plan.rejected':
+      return 'Plan rejected';
+    case 'plan.revision_requested':
+      return 'Revision requested';
+    case 'plan.projected':
+      return 'Plan projected';
+    default:
+      return type;
+  }
+}
+
+/** One decision history entry with revision, hash, actor, and timestamp. */
+function DecisionHistoryItem({ event }: { event: MissionReplayEvent }) {
+  const payload = event.payload ?? {};
+  const revision = payload.revision as number | undefined;
+  const contentHash = payload.contentHash as string | undefined;
+  const hashPrefix = contentHash ? contentHash.slice(0, 12) : null;
+  const feedback = payload.feedback as string | undefined;
+  const reason = payload.reason as string | undefined;
+  const actorLabel =
+    event.actorType && event.actorId
+      ? `${event.actorType} ${event.actorId}`
+      : event.actorType
+        ? event.actorType
+        : null;
+
+  return (
+    <li
+      className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-1.5 text-xs"
+      aria-label={`${planEventLabel(event.type)} at sequence ${event.sequence}`}
+    >
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="text-text-primary font-medium">{planEventLabel(event.type)}</span>
+        {revision !== undefined && <span className="text-text-muted">Revision {revision}</span>}
+        {hashPrefix && <span className="text-text-muted font-mono">{hashPrefix}</span>}
+        {actorLabel && <span className="text-text-muted">by {actorLabel}</span>}
+        <time dateTime={event.occurredAt} className="ml-auto text-text-muted shrink-0">
+          {formatTime(event.occurredAt)}
+        </time>
+      </div>
+      {feedback && <p className="mt-0.5 text-text-secondary break-words">Feedback: {feedback}</p>}
+      {reason && <p className="mt-0.5 text-text-secondary break-words">Reason: {reason}</p>}
+    </li>
+  );
+}
+
+/** Result completeness indicator for completed runs (VAL-PLAN-117).
+ *
+ * Renders the durable `resultCompleteness` field from the authoritative
+ * snapshot as explicit text. `null` renders nothing. `'full'` shows
+ * "Result: complete". `'partial'` shows "Result: partial — some steps did
+ * not complete successfully". The text is never color-only. */
+function RunCardResultCompleteness({
+  snapshot,
+  status,
+}: {
+  snapshot?: MissionRunSnapshot;
+  status: string;
+}) {
+  if (status !== 'completed' || !snapshot) {
+    return null;
+  }
+  const completeness = snapshot.resultCompleteness;
+  if (completeness === null || completeness === undefined) {
+    return null;
+  }
+  const label =
+    completeness === 'full'
+      ? 'Result: complete'
+      : 'Result: partial — some steps did not complete successfully';
+  return (
+    <div
+      data-testid="result-completeness"
+      className="mb-3 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2"
+      role="status"
+    >
+      <p className="text-xs text-text-primary">{label}</p>
     </div>
   );
 }

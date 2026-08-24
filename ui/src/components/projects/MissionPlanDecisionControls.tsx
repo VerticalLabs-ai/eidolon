@@ -184,6 +184,17 @@ export function MissionPlanDecisionControls({
         Approve to start execution, revise to request changes, or reject to cancel.
       </p>
 
+      {anyPending && (
+        <p
+          className="mb-2.5 text-xs text-text-secondary"
+          role="status"
+          aria-live="polite"
+          data-testid="decision-pending-notice"
+        >
+          Applying your decision…
+        </p>
+      )}
+
       {approveError != null && !staleRevision && (
         <p
           ref={(el) => {

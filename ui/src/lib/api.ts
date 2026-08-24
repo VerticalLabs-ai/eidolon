@@ -3720,6 +3720,14 @@ export interface MissionRunSnapshot {
   };
   artifacts: never[];
   links: { ui: string };
+  /**
+   * Result completeness for a completed run (VAL-PLAN-117).
+   * - `null`: not applicable (run not completed or no partial policy).
+   * - `'full'`: all required steps completed and synthesis criteria met.
+   * - `'partial'`: best-effort run where some steps failed but approved
+   *   completion criteria permitted a partial result.
+   */
+  resultCompleteness?: 'full' | 'partial' | null;
   /** Server-derived queue health: "unavailable" when no worker heartbeat for >= 30s. */
   queueHealth?: 'available' | 'unavailable';
   /**
