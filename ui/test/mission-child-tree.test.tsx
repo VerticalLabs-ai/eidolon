@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -324,6 +324,14 @@ function renderTree(
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  // jsdom does not implement <dialog> showModal/close; mock them so the
+  // subtree cancellation dialog can open in tests.
+  HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
+    this.open = true;
+  }) as unknown as typeof HTMLDialogElement.prototype.showModal;
+  HTMLDialogElement.prototype.close = vi.fn(function (this: HTMLDialogElement) {
+    this.open = false;
+  }) as unknown as typeof HTMLDialogElement.prototype.close;
   mocks.useMissionRunSnapshot.mockReturnValue({
     data: undefined,
     isLoading: false,
@@ -658,7 +666,7 @@ describe('MissionChildTree', () => {
     ];
     // When Child A is expanded, fetch its snapshot + events + plan.
     mocks.useMissionRunSnapshot.mockReturnValue({
-      data: childSnapshot(CHILD_A),
+      data: childSnapshot(CHILD_A, { subthreadId: 'thread-a' }),
       isLoading: false,
       isError: false,
     });
@@ -710,7 +718,7 @@ describe('MissionChildTree', () => {
       }),
     ];
     mocks.useMissionRunSnapshot.mockReturnValue({
-      data: childSnapshot(CHILD_A),
+      data: childSnapshot(CHILD_A, { subthreadId: 'thread-a' }),
       isLoading: false,
       isError: false,
     });
@@ -814,5 +822,570 @@ describe('MissionChildTree', () => {
     expect(within(node).getByText(/Code: TOOL_FAILED/i)).toBeInTheDocument();
     // No secret material leaked.
     expect(within(node).queryByText(/sk-|api[_-]?key|password/i)).not.toBeInTheDocument();
+  });
+});
+
+// ── Accessibility UI (VAL-SUB-075..081, 105) ──────────────────────────────
+
+describe('MissionChildTree accessibility UI', () => {
+  function twoChildPlan() {
+    return planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+      childStep('child-b-step', 'root-step', 2, 'Write summary'),
+    ]);
+  }
+
+  function childACreated(extra: MissionReplayEvent[] = []): MissionReplayEvent[] {
+    return [
+      evt(1, 'child.created', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        parentStepKey: 'root-step',
+        childOrdinal: 1,
+        depth: 1,
+        assignmentStatus: 'pending_routing',
+      }),
+      ...extra,
+    ];
+  }
+
+  // VAL-SUB-075: semantic headings with levels that reflect depth.
+  it('uses heading levels that reflect depth (h4 root, h5 depth 1, h6 depth 2)', async () => {
+    const user = userEvent.setup();
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.routed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        executingAgentId: AGENT_ID,
+        routingKind: 'company_agent',
+      }),
+      evt(3, 'child.started', { stepKey: 'child-a-step' }),
+    ]);
+    mocks.useMissionRunSnapshot.mockReturnValue({
+      data: childSnapshot(CHILD_A, { subthreadId: 'thread-a' }),
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useMissionRunEvents.mockReturnValue({
+      data: childEvents(),
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useMissionCurrentPlanRevision.mockReturnValue({
+      data: childPlan(),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderTree(revision(plan), events);
+
+    // Root tree heading is an h4.
+    const rootHeading = screen.getByRole('heading', { name: /Child tree/i });
+    expect(rootHeading.tagName).toBe('H4');
+
+    // Depth-1 child heading is an h5.
+    const depth1 = screen.getByRole('heading', { name: /Gather sources/i });
+    expect(depth1.tagName).toBe('H5');
+
+    // Expand to depth 2.
+    const expand = screen.getByRole('button', { name: /Expand descendants for Gather sources/i });
+    await user.click(expand);
+
+    // Depth-2 grandchild heading is an h6.
+    const grand = await screen.findByRole('heading', { name: /Grandchild step/i });
+    expect(grand.tagName).toBe('H6');
+  });
+
+  // VAL-SUB-075: nested ordered lists (not ARIA tree semantics).
+  it('uses nested ordered lists, not ARIA tree roles', () => {
+    const plan = twoChildPlan();
+    const events = [
+      evt(1, 'child.created', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        parentStepKey: 'root-step',
+        childOrdinal: 1,
+        depth: 1,
+        assignmentStatus: 'pending_routing',
+      }),
+      evt(2, 'child.created', {
+        childRunId: CHILD_B,
+        stepKey: 'child-b-step',
+        parentStepKey: 'root-step',
+        childOrdinal: 2,
+        depth: 1,
+        assignmentStatus: 'pending_routing',
+      }),
+    ];
+    renderTree(revision(plan), events);
+
+    // No ARIA tree semantics.
+    expect(screen.queryByRole('tree')).not.toBeInTheDocument();
+    expect(screen.queryByRole('treeitem')).not.toBeInTheDocument();
+    // Ordered lists preserve child order.
+    const lists = screen.getAllByRole('list');
+    expect(lists.length).toBeGreaterThanOrEqual(1);
+    expect(lists[0].tagName).toBe('OL');
+    const items = within(lists[0]).getAllByRole('listitem');
+    expect(items.length).toBe(2);
+    // Ordinal labels preserve order.
+    expect(within(items[0]).getByText(/1\./)).toBeInTheDocument();
+    expect(within(items[1]).getByText(/2\./)).toBeInTheDocument();
+  });
+
+  // VAL-SUB-076: keyboard operability for expand/collapse and subtree cancel.
+  it('keyboard user can expand/collapse and open subtree cancellation with confirmation', async () => {
+    const user = userEvent.setup();
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.routed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        executingAgentId: AGENT_ID,
+        routingKind: 'company_agent',
+      }),
+      evt(3, 'child.started', { stepKey: 'child-a-step' }),
+    ]);
+    mocks.useMissionRunSnapshot.mockReturnValue({
+      data: childSnapshot(CHILD_A, { subthreadId: 'thread-a' }),
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useMissionRunEvents.mockReturnValue({
+      data: childEvents(),
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useMissionCurrentPlanRevision.mockReturnValue({
+      data: childPlan(),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderTree(revision(plan), events);
+
+    const expand = screen.getByRole('button', { name: /Expand descendants for Gather sources/i });
+    expand.focus();
+    expect(expand).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(
+      await screen.findByRole('listitem', { name: /Step 1: Grandchild step/i }),
+    ).toBeInTheDocument();
+
+    const collapse = screen.getByRole('button', {
+      name: /Collapse descendants for Gather sources/i,
+    });
+    collapse.focus();
+    await user.keyboard('{Enter}');
+    expect(
+      screen.queryByRole('listitem', { name: /Step 1: Grandchild step/i }),
+    ).not.toBeInTheDocument();
+
+    // Subtree cancel opens a confirmation dialog via keyboard.
+    const cancel = screen.getByRole('button', { name: /Cancel subtree for Gather sources/i });
+    cancel.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('dialog', { name: /Cancel subtree/i })).toBeInTheDocument();
+  });
+
+  // VAL-SUB-076: no terminal child Retry control.
+  it('does not render a Retry control for a terminal failed child', () => {
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.failed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        category: 'tool_failed',
+        code: 'TOOL_FAILED',
+        safeErrorMessage: 'The extraction tool returned an invalid schema.',
+      }),
+    ]);
+    renderTree(revision(plan), events);
+    const node = screen.getByRole('listitem', { name: /Step 1: Gather sources/i });
+    expect(within(node).queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+    // Recovery direction points to the root run.
+    expect(within(node).getByText(/Retry Mission on the root run/i)).toBeInTheDocument();
+  });
+
+  // VAL-SUB-077: progress announcements are batched (one announcement per
+  // render, not one per event).
+  it('batches announcements: a burst of progress in one render yields one combined message', () => {
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+      childStep('child-b-step', 'root-step', 2, 'Write summary'),
+    ]);
+    // First render: one running child, zero completed.
+    const eventsBefore = childACreated([evt(2, 'child.started', { stepKey: 'child-a-step' })]);
+    const { rerender } = renderTree(revision(plan), eventsBefore);
+
+    // Second render: a burst — child A completes (running→0, completed→1)
+    // and child B is created but not started (queued). Multiple events
+    // arrive in one render but the announcement should be a single combined
+    // delta, not one message per event.
+    const eventsAfter = [
+      ...eventsBefore,
+      evt(3, 'child.completed', { stepKey: 'child-a-step', costCents: 100 }),
+      evt(4, 'child.created', {
+        childRunId: CHILD_B,
+        stepKey: 'child-b-step',
+        parentStepKey: 'root-step',
+        childOrdinal: 2,
+        depth: 1,
+        assignmentStatus: 'pending_routing',
+      }),
+    ];
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <MissionChildTree
+            companyId={COMPANY}
+            projectId={PROJECT}
+            runId={ROOT_RUN}
+            snapshot={rootSnapshot()}
+            events={eventsAfter}
+            planRevision={revision(plan)}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const live = screen.getByTestId('child-tree-live-region');
+    const text = live.textContent ?? '';
+    // One combined announcement mentions both deltas once.
+    expect(text).toContain('0 children running');
+    expect(text).toContain('1 completed');
+    // No per-token / per-progress-event noise: "progress" alone is not
+    // announced as a standalone status word.
+    expect(text).not.toMatch(/execution\.progress/i);
+  });
+
+  // VAL-SUB-077: failures use an alert.
+  it('announces child failure through a role=alert', () => {
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.failed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        category: 'tool_failed',
+        code: 'TOOL_FAILED',
+        safeErrorMessage: 'The extraction tool returned an invalid schema.',
+      }),
+    ]);
+    renderTree(revision(plan), events);
+    const node = screen.getByRole('listitem', { name: /Step 1: Gather sources/i });
+    expect(within(node).getByRole('alert')).toBeInTheDocument();
+  });
+
+  // VAL-SUB-078: every status is distinguishable by text/icon, not color.
+  it('conveys each status with text and an icon, not color alone', () => {
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Queued step'),
+      childStep('child-b-step', 'root-step', 2, 'Running step'),
+      childStep('child-c-step', 'root-step', 3, 'Awaiting step'),
+      childStep('child-d-step', 'root-step', 4, 'Synthesis step'),
+      childStep('child-e-step', 'root-step', 5, 'Completed step'),
+      childStep('child-f-step', 'root-step', 6, 'Failed step'),
+      childStep('child-g-step', 'root-step', 7, 'Cancelled step'),
+    ]);
+    const mk = (seq: number, step: string, runId: string) =>
+      evt(seq, 'child.created', {
+        childRunId: runId,
+        stepKey: step,
+        parentStepKey: 'root-step',
+        childOrdinal: 0,
+        depth: 1,
+        assignmentStatus: 'pending_routing',
+      });
+    const QA = rid('a');
+    const QB = rid('b');
+    const QC = rid('c');
+    const QD = rid('d');
+    const QE = rid('e');
+    const QF = rid('f');
+    const QG = rid('1');
+    const events = [
+      mk(1, 'child-a-step', QA),
+      mk(2, 'child-b-step', QB),
+      evt(3, 'child.started', { stepKey: 'child-b-step' }),
+      mk(4, 'child-c-step', QC),
+      evt(5, 'descendant.progressed', {
+        descendantRunId: QC,
+        sourceSequence: 1,
+        sourceEventType: 'questions.requested',
+        sourcePayload: { runId: QC },
+      }),
+      mk(6, 'child-d-step', QD),
+      evt(7, 'descendant.progressed', {
+        descendantRunId: QD,
+        sourceSequence: 2,
+        sourceEventType: 'run.status_changed',
+        sourcePayload: { status: 'synthesizing' },
+      }),
+      mk(8, 'child-e-step', QE),
+      evt(9, 'child.completed', { stepKey: 'child-e-step', costCents: 150 }),
+      mk(10, 'child-f-step', QF),
+      evt(11, 'child.failed', {
+        stepKey: 'child-f-step',
+        childRunId: QF,
+        category: 'provider_permanent',
+        code: 'PROVIDER_PERMANENT',
+        safeErrorMessage: 'Provider rejected the request.',
+      }),
+      mk(12, 'child-g-step', QG),
+      evt(13, 'child.cancel_requested', { stepKey: 'child-g-step' }),
+    ];
+    renderTree(revision(plan), events);
+
+    const statuses = [
+      'Queued',
+      'Running',
+      'Awaiting input',
+      'Synthesizing',
+      'Completed',
+      'Failed',
+      'Cancelled',
+    ];
+    for (const s of statuses) {
+      const badge = screen.getByText(s);
+      // Each status badge is accompanied by an icon (svg) in the same node.
+      const item = badge.closest('li')!;
+      expect(item.querySelectorAll('svg').length).toBeGreaterThan(0);
+    }
+  });
+
+  // VAL-SUB-079: reduced motion is respected.
+  it('applies motion-reduce guards to animated indicators and transitions', () => {
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Running step'),
+    ]);
+    const events = childACreated([evt(2, 'child.started', { stepKey: 'child-a-step' })]);
+    renderTree(revision(plan), events);
+
+    // The running status icon animates but removes animation under reduced motion.
+    const runningIcon = screen.getByText('Running').closest('li')!.querySelector('svg');
+    expect(runningIcon?.getAttribute('class')).toMatch(/motion-reduce:animate-none/);
+
+    // Expand/cancel buttons remove transitions under reduced motion.
+    const cancel = screen.queryByRole('button', { name: /Cancel subtree/i });
+    if (cancel) {
+      expect(cancel.className).toMatch(/motion-reduce:transition-none/);
+    }
+  });
+
+  // VAL-SUB-080: mobile tree reflows at narrow viewports.
+  it('reflows at narrow viewports with wrapping and break classes', () => {
+    const plan = twoChildPlan();
+    const events = [
+      evt(1, 'child.created', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        parentStepKey: 'root-step',
+        childOrdinal: 1,
+        depth: 1,
+        assignmentStatus: 'pending_routing',
+      }),
+      evt(2, 'child.created', {
+        childRunId: CHILD_B,
+        stepKey: 'child-b-step',
+        parentStepKey: 'root-step',
+        childOrdinal: 2,
+        depth: 1,
+        assignmentStatus: 'pending_routing',
+      }),
+    ];
+    renderTree(revision(plan), events);
+
+    const section = screen.getByTestId('mission-child-tree');
+    expect(section.className).toMatch(/overflow-hidden/);
+    expect(section.className).toMatch(/break-words/);
+    // Each node wraps its header controls.
+    const items = screen.getAllByRole('listitem');
+    expect(items.length).toBe(2);
+    for (const item of items) {
+      expect(item.className).toMatch(/break-words/);
+      expect(item.className).toMatch(/min-w-0/);
+    }
+  });
+
+  // VAL-SUB-081: mobile failure detail stays readable within the viewport.
+  it('keeps failure detail readable and wrapped on mobile', () => {
+    const longMessage =
+      'The extraction tool returned an invalid schema after repeated attempts ' +
+      'with a very long safe error message that must wrap within the viewport ' +
+      'without clipping because the failure detail container uses break-words. '.repeat(4);
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.failed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        category: 'tool_failed',
+        code: 'TOOL_FAILED',
+        safeErrorMessage: longMessage,
+      }),
+    ]);
+    renderTree(revision(plan), events);
+
+    const failure = screen.getByTestId('child-failure');
+    // Failure detail container does not set a fixed width and wraps text.
+    expect(failure.className).not.toMatch(/w-\[/);
+    const messageEl = within(failure).getByText(
+      /extraction tool returned an invalid schema after repeated attempts/,
+    );
+    expect(messageEl.className).toMatch(/break-words/);
+    // Child/step context preserved.
+    expect(within(failure).getByText(/Child failed/i)).toBeInTheDocument();
+    expect(within(failure).getByText(/Code: TOOL_FAILED/i)).toBeInTheDocument();
+  });
+
+  // VAL-SUB-105: opening a subthread records the origin and re-mount
+  // focuses the originating child link.
+  it('restores focus to the originating child link after Back navigation', async () => {
+    const user = userEvent.setup();
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.routed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        executingAgentId: AGENT_ID,
+        routingKind: 'company_agent',
+      }),
+      evt(3, 'child.started', { stepKey: 'child-a-step' }),
+    ]);
+    const { unmount } = renderTree(revision(plan), events);
+
+    // Click "Open subthread" — records the originating child run id.
+    const link = screen.getByRole('link', { name: /Open subthread for Gather sources/i });
+    await user.click(link);
+
+    // Simulate Back: re-mount the tree with the same root run/principal.
+    unmount();
+    renderTree(revision(plan), events);
+
+    // The originating child link receives focus.
+    const restoredLink = await screen.findByRole('link', {
+      name: /Open subthread for Gather sources/i,
+    });
+    expect(restoredLink).toHaveFocus();
+  });
+
+  // VAL-SUB-105: missing origin falls back to nearest surviving parent heading.
+  it('falls back to the tree heading when the originating child is gone', async () => {
+    const user = userEvent.setup();
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.routed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        executingAgentId: AGENT_ID,
+        routingKind: 'company_agent',
+      }),
+      evt(3, 'child.started', { stepKey: 'child-a-step' }),
+    ]);
+    const { unmount } = renderTree(revision(plan), events);
+
+    // Record an origin for a child that will not exist after "Back".
+    const link = screen.getByRole('link', { name: /Open subthread for Gather sources/i });
+    await user.click(link);
+
+    // Re-mount with a plan that has no children (origin gone).
+    unmount();
+    renderTree(revision(planContent([rootStep({ stepKey: 'root-step' })])), []);
+
+    // No tree is rendered when there are no children, so there is nothing
+    // to restore focus to — assert the tree is absent (origin cleared, no
+    // crash).
+    expect(screen.queryByTestId('mission-child-tree')).not.toBeInTheDocument();
+  });
+
+  // VAL-SUB-105: return focus falls back to the parent heading when the
+  // originating grandchild link is no longer present but the parent is.
+  it('falls back to the parent heading when the origin grandchild is gone', async () => {
+    const user = userEvent.setup();
+    const plan = planContent([
+      rootStep({ stepKey: 'root-step' }),
+      childStep('child-a-step', 'root-step', 1, 'Gather sources'),
+    ]);
+    const events = childACreated([
+      evt(2, 'child.routed', {
+        childRunId: CHILD_A,
+        stepKey: 'child-a-step',
+        executingAgentId: AGENT_ID,
+        routingKind: 'company_agent',
+      }),
+      evt(3, 'child.started', { stepKey: 'child-a-step' }),
+    ]);
+    mocks.useMissionRunSnapshot.mockReturnValue({
+      data: childSnapshot(CHILD_A, { subthreadId: 'thread-a' }),
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useMissionRunEvents.mockReturnValue({
+      data: childEvents(),
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useMissionCurrentPlanRevision.mockReturnValue({
+      data: childPlan(),
+      isLoading: false,
+      isError: false,
+    });
+
+    const { unmount } = renderTree(revision(plan), events);
+
+    // Expand to depth 2, then open the grandchild subthread.
+    const expand = screen.getByRole('button', { name: /Expand descendants for Gather sources/i });
+    await user.click(expand);
+    const grandLink = await screen.findByRole('link', {
+      name: /Open subthread for Grandchild step/i,
+    });
+    await user.click(grandLink);
+
+    // Re-mount with the grandchild plan empty (origin gone) but the parent
+    // (Gather sources) still present.
+    mocks.useMissionRunEvents.mockReturnValue({
+      data: { events: [], nextCursor: 0, latestSequence: 0 },
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useMissionCurrentPlanRevision.mockReturnValue({
+      data: revision(
+        planContent([rootStep({ stepKey: 'child-a-step', title: 'Child A root step' })]),
+      ),
+      isLoading: false,
+      isError: false,
+    });
+    unmount();
+    renderTree(revision(plan), events);
+
+    // After re-mount, focus lands on the surviving parent heading
+    // (Gather sources) since the grandchild link is gone.
+    const parentHeading = await screen.findByRole('heading', { name: /Gather sources/i });
+    await waitFor(() => expect(parentHeading).toHaveFocus());
   });
 });

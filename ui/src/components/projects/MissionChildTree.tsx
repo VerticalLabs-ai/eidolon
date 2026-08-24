@@ -116,6 +116,76 @@ function writeExpanded(principalId: string, rootRunId: string, ids: Set<string>)
   }
 }
 
+// ── Return-focus target (VAL-SUB-105) ─────────────────────────────────────
+//
+// When a user opens a child subthread and later returns via Back, focus
+// must move to the originating child link, or the nearest surviving parent
+// heading if the origin is gone. The origin is recorded in sessionStorage
+// keyed by root run + principal so it survives reload/navigation.
+
+const RETURN_SCOPE = 'mission-child-tree-return';
+
+interface ReturnTarget {
+  originChildRunId: string;
+  fallbackHeadingId: string | null;
+}
+
+function returnStorageKey(principalId: string, rootRunId: string): string {
+  return `${RETURN_SCOPE}:${principalId}:${rootRunId}`;
+}
+
+/** Record the originating child for return-focus before subthread navigation. */
+function recordReturnTarget(
+  principalId: string,
+  rootRunId: string,
+  originChildRunId: string,
+  fallbackHeadingId: string | null,
+): void {
+  try {
+    sessionStorage.setItem(
+      returnStorageKey(principalId, rootRunId),
+      JSON.stringify({ originChildRunId, fallbackHeadingId } satisfies ReturnTarget),
+    );
+  } catch {
+    // sessionStorage may be unavailable; return-focus is a convenience.
+  }
+}
+
+/** Read and clear the pending return-focus target, if any. */
+function readReturnTarget(principalId: string, rootRunId: string): ReturnTarget | null {
+  try {
+    const raw = sessionStorage.getItem(returnStorageKey(principalId, rootRunId));
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<ReturnTarget>;
+    if (typeof parsed.originChildRunId === 'string') {
+      return {
+        originChildRunId: parsed.originChildRunId,
+        fallbackHeadingId:
+          typeof parsed.fallbackHeadingId === 'string' ? parsed.fallbackHeadingId : null,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Remove the pending return-focus target after it has been consumed. */
+function clearReturnTarget(principalId: string, rootRunId: string): void {
+  try {
+    sessionStorage.removeItem(returnStorageKey(principalId, rootRunId));
+  } catch {
+    // sessionStorage may be unavailable; silent failure is safe.
+  }
+}
+
+/** Escape a string for safe use in a CSS attribute selector. */
+function cssEscape(value: string): string {
+  return value.replace(/["\\]/g, '\\$&');
+}
+
 // ── Status icon (text always accompanies color) ───────────────────────────
 
 /** Format an ISO timestamp as a readable date-time string (VAL-SUB-074). */
@@ -183,7 +253,7 @@ function useBatchedTreeAnnouncement(
     if (prev.running !== -1) {
       const parts: string[] = [];
       if (counts.running !== prev.running) {
-        parts.push(`${counts.running} child${counts.running === 1 ? '' : 's'} running`);
+        parts.push(`${counts.running} child${counts.running === 1 ? '' : 'ren'} running`);
       }
       if (counts.completed !== prev.completed) {
         parts.push(`${counts.completed} completed`);
@@ -249,18 +319,111 @@ export function MissionChildTree({
   );
   const announcement = useBatchedTreeAnnouncement(runId, counts);
   const childSettledCents = useMemo(() => aggregateChildCostCents(nodes), [nodes]);
+  const sectionRef = useRef<HTMLElement>(null);
+
+  // Return-focus restoration (VAL-SUB-105): after Back navigation, move
+  // focus to the originating child link, or the nearest surviving parent
+  // heading if the origin is gone. The target is consumed once.
+  //
+  // Two triggers:
+  // 1. Mount / nodes-arrival — handles full page reload and fresh mount
+  //    after Back (the section may not be ready immediately, so retries
+  //    cover async snapshot/event fetches).
+  // 2. `popstate` — handles SPA Back/Forward where the root card stays
+  //    mounted (the run list keeps it in the DOM) and no remount occurs.
+  useEffect(() => {
+    const target = readReturnTarget(principalId, runId);
+    if (!target) {
+      return;
+    }
+    const section = sectionRef.current;
+    if (!section) {
+      return;
+    }
+    let cancelled = false;
+    const originSelector = `[data-return-origin="${cssEscape(target.originChildRunId)}"]`;
+    const attempt = (retries: number) => {
+      if (cancelled) {
+        return;
+      }
+      const link = section.querySelector<HTMLElement>(originSelector);
+      if (link) {
+        link.focus();
+        if (typeof link.scrollIntoView === 'function') {
+          link.scrollIntoView({ block: 'center' });
+        }
+        clearReturnTarget(principalId, runId);
+        return;
+      }
+      if (retries > 0) {
+        setTimeout(() => attempt(retries - 1), 60);
+        return;
+      }
+      // Origin gone: focus the nearest surviving parent heading, then the
+      // tree heading as a final fallback (VAL-SUB-105).
+      const fb = target.fallbackHeadingId
+        ? section.querySelector<HTMLElement>(`#${cssEscape(target.fallbackHeadingId)}`)
+        : null;
+      const heading =
+        fb ?? section.querySelector<HTMLElement>(`#child-tree-heading-${cssEscape(runId)}`);
+      heading?.focus();
+      clearReturnTarget(principalId, runId);
+    };
+    attempt(6);
+    return () => {
+      cancelled = true;
+    };
+  }, [principalId, runId, nodes.length]);
+
+  // SPA Back/Forward: the root card stays mounted in the run list, so the
+  // mount effect above does not re-run. Listen for `popstate` to restore
+  // focus synchronously (the tree is already rendered at that point).
+  useEffect(() => {
+    function onPopState() {
+      const target = readReturnTarget(principalId, runId);
+      if (!target) {
+        return;
+      }
+      const section = sectionRef.current;
+      if (!section) {
+        return;
+      }
+      const link = section.querySelector<HTMLElement>(
+        `[data-return-origin="${cssEscape(target.originChildRunId)}"]`,
+      );
+      if (link) {
+        link.focus();
+        if (typeof link.scrollIntoView === 'function') {
+          link.scrollIntoView({ block: 'center' });
+        }
+        clearReturnTarget(principalId, runId);
+        return;
+      }
+      const fb = target.fallbackHeadingId
+        ? section.querySelector<HTMLElement>(`#${cssEscape(target.fallbackHeadingId)}`)
+        : null;
+      const heading =
+        fb ?? section.querySelector<HTMLElement>(`#child-tree-heading-${cssEscape(runId)}`);
+      heading?.focus();
+      clearReturnTarget(principalId, runId);
+    }
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [principalId, runId]);
 
   if (!planRevision || !snapshot.approvedPlanRevisionId || nodes.length === 0) {
     return null;
   }
 
   const maxDepth = planRevision.content.limits.depth ?? 0;
+  const rootHeadingId = `child-tree-heading-${runId}`;
 
   return (
     <section
+      ref={sectionRef}
       id={`mission-child-tree-${runId}`}
       data-testid="mission-child-tree"
-      aria-labelledby={`child-tree-heading-${runId}`}
+      aria-labelledby={rootHeadingId}
       className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 w-full max-w-full break-words overflow-hidden"
     >
       <span
@@ -273,8 +436,9 @@ export function MissionChildTree({
       </span>
       <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h4
-          id={`child-tree-heading-${runId}`}
-          className="text-sm font-semibold text-text-primary font-display"
+          id={rootHeadingId}
+          tabIndex={-1}
+          className="text-sm font-semibold text-text-primary font-display focus-visible:outline-none"
         >
           Child tree
         </h4>
@@ -295,6 +459,7 @@ export function MissionChildTree({
         principalId={principalId}
         rootBillingAgentId={rootBillingAgentId}
         partialResultPolicy={snapshot.partialResultPolicy}
+        parentHeadingId={rootHeadingId}
       />
     </section>
   );
@@ -312,6 +477,7 @@ function ChildNodeList({
   principalId,
   rootBillingAgentId,
   partialResultPolicy,
+  parentHeadingId,
 }: {
   companyId: string;
   projectId: string;
@@ -323,6 +489,7 @@ function ChildNodeList({
   principalId: string;
   rootBillingAgentId: string | null;
   partialResultPolicy: string;
+  parentHeadingId: string;
 }) {
   return (
     <ol aria-label={`Child runs at depth ${depth}`} className="space-y-2">
@@ -340,6 +507,7 @@ function ChildNodeList({
           principalId={principalId}
           rootBillingAgentId={rootBillingAgentId}
           partialResultPolicy={partialResultPolicy}
+          parentHeadingId={parentHeadingId}
         />
       ))}
     </ol>
@@ -359,6 +527,7 @@ function ChildNode({
   principalId,
   rootBillingAgentId,
   partialResultPolicy,
+  parentHeadingId,
 }: {
   companyId: string;
   projectId: string;
@@ -371,7 +540,11 @@ function ChildNode({
   principalId: string;
   rootBillingAgentId: string | null;
   partialResultPolicy: string;
+  parentHeadingId: string;
 }) {
+  // Stable heading id for this node, used as the focus-return fallback for
+  // its own descendants (VAL-SUB-105) and for scroll targeting.
+  const headingId = `child-node-${node.childRunId ?? node.stepKey}`;
   // Expansion state is shared across the root tree (one set of expanded
   // child-run ids) so a grandchild expanded under one parent stays expanded
   // when a sibling updates. Persisted to sessionStorage for reload/Back
@@ -450,7 +623,7 @@ function ChildNode({
       className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 w-full max-w-full min-w-0 break-words overflow-hidden"
       aria-label={`Step ${ordinal}: ${node.title}`}
     >
-      <ChildNodeHeader node={node} ordinal={ordinal} />
+      <ChildNodeHeader node={node} ordinal={ordinal} depth={depth} headingId={headingId} />
       <ChildRoutingLine node={node} />
       <ChildNodeDetails
         node={node}
@@ -468,6 +641,9 @@ function ChildNode({
         expandBtnRef={expandBtnRef}
         onToggle={toggleExpanded}
         onCancelSubtree={() => setCancelOpen(true)}
+        principalId={principalId}
+        rootRunId={rootRunId}
+        parentHeadingId={parentHeadingId}
       />
 
       {/* Recursive descendant subtree (depth two and beyond). */}
@@ -488,6 +664,7 @@ function ChildNode({
             parentTitle={node.title}
             rootBillingAgentId={rootBillingAgentId}
             partialResultPolicy={partialResultPolicy}
+            parentHeadingId={headingId}
           />
         </div>
       )}
@@ -508,18 +685,34 @@ function ChildNode({
   );
 }
 
-/** Node header: status icon, ordinal, title, status badge, needs-input, depth. */
-function ChildNodeHeader({ node, ordinal }: { node: DerivedChildNode; ordinal: number }) {
+/** Node header: status icon, ordinal, title, status badge, needs-input, depth.
+ * The heading level reflects tree depth (h5 at depth 1, h6 at depth 2) so
+ * the document outline mirrors the nesting (VAL-SUB-075). */
+function ChildNodeHeader({
+  node,
+  ordinal,
+  depth,
+  headingId,
+}: {
+  node: DerivedChildNode;
+  ordinal: number;
+  depth: number;
+  headingId: string;
+}) {
+  // Heading level: root tree is h4; depth 1 → h5, depth 2 → h6, capped at h6.
+  const level = Math.min(4 + depth, 6);
+  const HeadingTag = `h${level}` as 'h5' | 'h6';
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-1 min-w-0">
       <ChildStatusIcon status={node.status} />
       <span className="text-xs tabular-nums text-text-muted shrink-0">{ordinal}.</span>
-      <h5
-        className="text-sm font-medium text-text-primary break-words min-w-0"
-        id={`child-node-${node.childRunId ?? node.stepKey}`}
+      <HeadingTag
+        className="text-sm font-medium text-text-primary break-words min-w-0 focus-visible:outline-none"
+        id={headingId}
+        tabIndex={-1}
       >
         {node.title}
-      </h5>
+      </HeadingTag>
       <span
         className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusBadgeClass(node.status)}`}
         data-testid={`child-status-${node.status}`}
@@ -695,7 +888,7 @@ function ChildFailureDetail({
 }
 
 /** Expand/collapse descendants + open subthread + cancel subtree actions
- * (VAL-SUB-026, 027, 096, 103). */
+ * (VAL-SUB-026, 027, 096, 103, 105). */
 function ChildNodeActions({
   node,
   canExpand,
@@ -706,6 +899,9 @@ function ChildNodeActions({
   expandBtnRef,
   onToggle,
   onCancelSubtree,
+  principalId,
+  rootRunId,
+  parentHeadingId,
 }: {
   node: DerivedChildNode;
   canExpand: boolean;
@@ -716,7 +912,19 @@ function ChildNodeActions({
   expandBtnRef: React.Ref<HTMLButtonElement>;
   onToggle: () => void;
   onCancelSubtree: () => void;
+  principalId: string;
+  rootRunId: string;
+  parentHeadingId: string;
 }) {
+  // Record the originating child before subthread navigation so Back can
+  // restore focus to this link (or the nearest surviving parent heading)
+  // (VAL-SUB-105).
+  function handleOpenSubthread() {
+    if (node.childRunId) {
+      recordReturnTarget(principalId, rootRunId, node.childRunId, parentHeadingId);
+    }
+  }
+
   return (
     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
       {canExpand && (
@@ -752,9 +960,12 @@ function ChildNodeActions({
           Recovering subthread…
         </span>
       ) : (
-        subthreadHref && (
+        subthreadHref &&
+        node.childRunId && (
           <Link
             to={subthreadHref}
+            onClick={handleOpenSubthread}
+            data-return-origin={node.childRunId}
             className="inline-flex items-center gap-1 text-xs font-medium text-accent underline hover:text-accent/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none rounded"
             aria-label={`Open subthread for ${node.title}`}
           >
@@ -796,6 +1007,7 @@ function ChildSubtree({
   parentTitle,
   rootBillingAgentId,
   partialResultPolicy,
+  parentHeadingId,
 }: {
   companyId: string;
   projectId: string;
@@ -808,6 +1020,7 @@ function ChildSubtree({
   parentTitle: string;
   rootBillingAgentId: string | null;
   partialResultPolicy: string;
+  parentHeadingId: string;
 }) {
   const snapshotQuery = useMissionRunSnapshot(companyId, projectId, childRunId);
   const eventsQuery = useMissionRunEvents(companyId, projectId, childRunId);
@@ -871,6 +1084,7 @@ function ChildSubtree({
       principalId={principalId}
       rootBillingAgentId={rootBillingAgentId}
       partialResultPolicy={partialResultPolicy}
+      parentHeadingId={parentHeadingId}
     />
   );
 }
