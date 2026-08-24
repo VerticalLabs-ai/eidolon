@@ -1,7 +1,11 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { DbInstance } from '../../types.js';
-import type { ProjectableEvent, ProjectionDeps } from './projection.js';
+import {
+  appendProjectionJournalEvent,
+  type ProjectableEvent,
+  type ProjectionDeps,
+} from './projection.js';
 import { parsePlanContent, type PlanContent } from './plan-schema.js';
 
 /**
@@ -559,39 +563,27 @@ export class MissionPlanGovernanceProjectionService {
       });
     }
 
-    // Emit projection.failed journal event (non-authoritative, does not
-    // affect run state_version — it's a repair-tracking event).
-    const [run] = await this.db.drizzle
-      .select({ lastSeq: schema.missionRuns.lastEventSequence })
-      .from(schema.missionRuns)
-      .where(eq(schema.missionRuns.id, event.runId))
-      .limit(1);
-
-    if (run) {
-      const seq = Number(run.lastSeq) + 1;
-      await this.db.drizzle.insert(schema.runEvents).values({
-        companyId: event.companyId,
-        projectId: event.projectId,
-        runId: event.runId,
-        sequence: seq,
-        type: 'projection.failed',
-        schemaVersion: 1,
-        payload: {
-          surface,
-          eventSequence: event.sequence,
-          revisionId,
-          error: errorMessage,
-        },
-        actorType: 'system',
-        actorId: null,
-        traceId: event.traceId,
-        occurredAt: now,
-      });
-      await this.db.drizzle
-        .update(schema.missionRuns)
-        .set({ lastEventSequence: seq, updatedAt: now })
-        .where(eq(schema.missionRuns.id, event.runId));
-    }
+    // Emit projection.failed journal event under a locked transaction
+    // (SELECT FOR UPDATE on mission_runs) so concurrent projection
+    // failures cannot produce duplicate or missing sequence numbers
+    // (RunEvent Journal invariant). The failed link above remains the
+    // retryable record of the failure; this event is the observable
+    // journal marker and is non-authoritative — it does not change
+    // state_version and does not authorize execution (VAL-PLAN-098).
+    await appendProjectionJournalEvent(this.db, {
+      runId: event.runId,
+      companyId: event.companyId,
+      projectId: event.projectId,
+      type: 'projection.failed',
+      payload: {
+        surface,
+        eventSequence: event.sequence,
+        revisionId,
+        error: errorMessage,
+      },
+      traceId: event.traceId,
+      occurredAt: now,
+    });
   }
 
   /**

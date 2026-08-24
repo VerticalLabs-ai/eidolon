@@ -62,6 +62,96 @@ export interface RepairResult {
   surfaceId: string | null;
 }
 
+/** Projection-tracking journal event types appendable via the locked helper. */
+export type ProjectionJournalEventType = 'projection.failed' | 'projection.repaired';
+
+export interface AppendProjectionJournalEventInput {
+  runId: string;
+  companyId: string;
+  projectId: string;
+  type: ProjectionJournalEventType;
+  payload: Record<string, unknown>;
+  traceId?: string | null;
+  occurredAt: Date;
+  /**
+   * When true, skip appending if the run is in a terminal state. Used by
+   * `projection.repaired` so post-terminalization repair does not append
+   * to the closed run journal (VAL-RUN-034).
+   */
+  skipIfTerminal?: boolean;
+}
+
+/**
+ * Append a projection-tracking journal event (`projection.failed` or
+ * `projection.repaired`) under a locked transaction that holds
+ * `mission_runs` `FOR UPDATE`, computes `sequence = last_event_sequence + 1`,
+ * inserts the `run_events` row, and bumps the run counter in one
+ * transaction.
+ *
+ * This honors the architecture's RunEvent Journal invariant: the writer
+ * locks `mission_runs`, computes the next sequence, inserts the event, and
+ * updates the counter atomically. Concurrent projection failures (or
+ * concurrent repair) on the same run cannot produce duplicate or missing
+ * sequence numbers — the row lock serializes sequence allocation.
+ *
+ * Projection-tracking events are non-authoritative: they do not change
+ * `state_version` and never authorize execution. A projection failure is
+ * still recorded as a retryable `failed` link in `run_projection_links` by
+ * the caller; this helper only appends the observable journal event.
+ *
+ * Returns the appended sequence, or `null` if the run was not found or
+ * (when `skipIfTerminal`) the run was terminal and the append was skipped.
+ */
+export async function appendProjectionJournalEvent(
+  db: DbInstance,
+  input: AppendProjectionJournalEventInput,
+): Promise<number | null> {
+  const schema = db.schema;
+  return db.drizzle.transaction(async (tx) => {
+    const [run] = await tx
+      .select({
+        lastEventSequence: schema.missionRuns.lastEventSequence,
+        status: schema.missionRuns.status,
+      })
+      .from(schema.missionRuns)
+      .where(eq(schema.missionRuns.id, input.runId))
+      .for('update')
+      .limit(1);
+
+    if (!run) {
+      return null;
+    }
+
+    if (input.skipIfTerminal) {
+      const isTerminal =
+        run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+      if (isTerminal) {
+        return null;
+      }
+    }
+
+    const seq = Number(run.lastEventSequence) + 1;
+    await tx.insert(schema.runEvents).values({
+      companyId: input.companyId,
+      projectId: input.projectId,
+      runId: input.runId,
+      sequence: seq,
+      type: input.type,
+      schemaVersion: 1,
+      payload: input.payload,
+      actorType: 'system',
+      actorId: null,
+      traceId: input.traceId ?? null,
+      occurredAt: input.occurredAt,
+    });
+    await tx
+      .update(schema.missionRuns)
+      .set({ lastEventSequence: seq, updatedAt: input.occurredAt })
+      .where(eq(schema.missionRuns.id, input.runId));
+    return seq;
+  });
+}
+
 /**
  * Idempotently project a run event to mutable surfaces.
  *
@@ -346,33 +436,21 @@ export class MissionProjectionService {
       });
     }
 
-    // Emit projection.failed journal event.
-    const [run] = await db.drizzle
-      .select({ lastSeq: schema.missionRuns.lastEventSequence })
-      .from(schema.missionRuns)
-      .where(eq(schema.missionRuns.id, event.runId))
-      .limit(1);
-
-    if (run) {
-      const seq = Number(run.lastSeq) + 1;
-      await db.drizzle.insert(schema.runEvents).values({
-        companyId: event.companyId,
-        projectId: event.projectId,
-        runId: event.runId,
-        sequence: seq,
-        type: 'projection.failed',
-        schemaVersion: 1,
-        payload: { surface, eventSequence: event.sequence, error: errorMessage },
-        actorType: 'system',
-        actorId: null,
-        traceId: event.traceId,
-        occurredAt: now,
-      });
-      await db.drizzle
-        .update(schema.missionRuns)
-        .set({ lastEventSequence: seq, updatedAt: now })
-        .where(eq(schema.missionRuns.id, event.runId));
-    }
+    // Emit projection.failed journal event under a locked transaction
+    // (SELECT FOR UPDATE on mission_runs) so concurrent projection
+    // failures cannot produce duplicate or missing sequence numbers
+    // (RunEvent Journal invariant). The failed link above remains the
+    // retryable record of the failure; this event is the observable
+    // journal marker and is non-authoritative.
+    await appendProjectionJournalEvent(db, {
+      runId: event.runId,
+      companyId: event.companyId,
+      projectId: event.projectId,
+      type: 'projection.failed',
+      payload: { surface, eventSequence: event.sequence, error: errorMessage },
+      traceId: event.traceId,
+      occurredAt: now,
+    });
   }
 
   /**
@@ -381,7 +459,6 @@ export class MissionProjectionService {
    * does NOT append to the closed run journal — it only updates the
    * projection surface, the link, and the activity log.
    */
-  // eslint-disable-next-line complexity -- sequential repair logic is inherently branchy
   async repair(input: RepairInput): Promise<RepairResult> {
     const schema = this.db.schema;
     const now = this.now();
@@ -482,30 +559,20 @@ export class MissionProjectionService {
       .where(eq(schema.runProjectionLinks.id, link.id));
 
     // Check if the run is terminal — if so, do NOT append to the run journal.
-    const isTerminal =
-      run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
-
-    if (!isTerminal) {
-      // Emit projection.repaired journal event.
-      const seq = Number(run.lastEventSequence) + 1;
-      await this.db.drizzle.insert(schema.runEvents).values({
-        companyId,
-        projectId,
-        runId,
-        sequence: seq,
-        type: 'projection.repaired',
-        schemaVersion: 1,
-        payload: { surface, eventSequence: eventSeq, linkId: link.id },
-        actorType: 'system',
-        actorId: null,
-        traceId: traceId ?? null,
-        occurredAt: now,
-      });
-      await this.db.drizzle
-        .update(schema.missionRuns)
-        .set({ lastEventSequence: seq, updatedAt: now })
-        .where(eq(schema.missionRuns.id, runId));
-    }
+    // The append itself is performed under a locked transaction
+    // (SELECT FOR UPDATE on mission_runs) via appendProjectionJournalEvent
+    // with skipIfTerminal, so the terminal check and sequence allocation
+    // are atomic and concurrent repairs cannot corrupt the journal.
+    await appendProjectionJournalEvent(this.db, {
+      runId,
+      companyId,
+      projectId,
+      type: 'projection.repaired',
+      payload: { surface, eventSequence: eventSeq, linkId: link.id },
+      traceId: traceId ?? null,
+      occurredAt: now,
+      skipIfTerminal: true,
+    });
 
     // Always write an activity log entry for the repair (even after terminalization).
     const repairActivityId = randomUUID();
