@@ -28,6 +28,7 @@ import { MissionCancelDialog } from './MissionCancelDialog';
 import { MissionQuestionCard } from './MissionQuestionCard';
 import { MissionQuestionHistory } from './MissionQuestionHistory';
 import { MissionPlanCard } from './MissionPlanCard';
+import { MissionStepProgress } from './MissionStepProgress';
 import { clearRunDrafts } from '@/lib/mission-drafts';
 
 /** Terminal run statuses. */
@@ -367,6 +368,19 @@ export function MissionRunCard({
           role={sessionRole ? role : undefined}
           principalId={principalId}
           onRefreshSnapshot={() => snapshotQuery.refetch()}
+        />
+      )}
+      {/* Approved step progress and outcomes, derived from the
+       * authoritative snapshot and ordered event journal. Renders only
+       * when an approved plan revision exists (VAL-PLAN-067..074, 065). */}
+      {snapshot?.approvedPlanRevisionId && (
+        <MissionStepProgress
+          companyId={companyId}
+          projectId={projectId}
+          runId={run.id}
+          currentPlanRevisionId={snapshot.currentPlanRevisionId}
+          snapshot={snapshot}
+          events={events}
         />
       )}
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
