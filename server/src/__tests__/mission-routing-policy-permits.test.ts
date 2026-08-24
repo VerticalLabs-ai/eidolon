@@ -1234,4 +1234,82 @@ describe('Child scheduling permits (VAL-SUB-109)', () => {
     expect(permits.length).toBe(2);
     expect(permits.every((p) => p.status === 'released')).toBe(true);
   });
+
+  it('concurrent workers cannot over-acquire beyond the fan-out hard cap (VAL-SUB-109)', async () => {
+    // Regression: acquireRunningPermits must acquire a FOR UPDATE lock on
+    // the root run before counting held permits, so two concurrent workers
+    // competing for one remaining running slot cannot both pass the limit
+    // check and over-acquire beyond the platform fan-out hard cap.
+    //
+    // A deterministic delay seam (onAfterPermitCount) is injected so both
+    // workers reach the count simultaneously: without the FOR UPDATE fence
+    // both read 0 held permits and both insert (over-acquire); with the
+    // fence the first worker holds the root-run row lock through the delay,
+    // so the second blocks until the first commits and then sees count=1.
+    const rootRunId = await createRootRun();
+    // parentFanOut = 1 → only one running child permitted under this parent.
+    const parentFanOut = 1;
+
+    const child1 = await createChildRun(rootRunId, rootRunId, 0);
+    const child2 = await createChildRun(rootRunId, rootRunId, 1);
+
+    // Shared barrier: resolve once both workers have finished their counts.
+    let counted = 0;
+    let releaseCounts: () => void = () => {};
+    const bothCounted = new Promise<void>((resolve) => {
+      releaseCounts = resolve;
+    });
+    const delaySeam = async () => {
+      counted += 1;
+      if (counted === 2) {
+        releaseCounts();
+      }
+      // Wait until both workers have counted (or timeout) before inserting.
+      await Promise.race([bothCounted, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+    };
+    // Rebuild the service with the delay seam injected.
+    scheduling = new SchedulingService(db, {
+      clock: () => new Date(),
+      onAfterPermitCount: delaySeam,
+    });
+
+    const attempt = (runId: string) =>
+      db.drizzle
+        .transaction(async (tx) => {
+          await scheduling.acquireRunningPermits(tx, {
+            companyId: scope.companyId,
+            projectId: scope.projectId,
+            rootRunId,
+            parentRunId: rootRunId,
+            runId,
+            rootFanOut: PLATFORM_HARD_CAPS.fanOut,
+            parentFanOut,
+          });
+          return { acquired: true as const };
+        })
+        .catch((e) => {
+          expect(e).toBeInstanceOf(AppError);
+          expect((e as AppError).code).toBe('LIMIT_EXCEEDED');
+          return { acquired: false as const };
+        });
+
+    const [r1, r2] = await Promise.all([attempt(child1), attempt(child2)]);
+
+    // Exactly one worker acquires; the other is rejected.
+    const winners = [r1, r2].filter((r) => r.acquired);
+    const losers = [r1, r2].filter((r) => !r.acquired);
+    expect(winners.length).toBe(1);
+    expect(losers.length).toBe(1);
+
+    // The authoritative held-permit count never exceeds the cap.
+    const heldRoot = await scheduling.countHeldPermits(db.drizzle, rootRunId, 'root_running');
+    const heldParent = await scheduling.countHeldPermits(db.drizzle, rootRunId, 'parent_running');
+    expect(heldRoot).toBe(1);
+    expect(heldParent).toBe(1);
+
+    // The losing child holds no permits.
+    const loserRunId = r1.acquired ? child2 : child1;
+    const loserPermits = await scheduling.getPermitsForRun(loserRunId);
+    expect(loserPermits.length).toBe(0);
+  });
 });

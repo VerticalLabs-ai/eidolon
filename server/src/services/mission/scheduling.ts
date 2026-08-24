@@ -31,6 +31,14 @@ type Tx = Parameters<Parameters<DbInstance['drizzle']['transaction']>[0]>[0];
 
 export interface SchedulingDeps {
   clock?: () => Date;
+  /**
+   * Optional deterministic-test seam invoked after the held-permit count
+   * checks pass and before permit rows are inserted. Production never sets
+   * this. It lets concurrency regression tests force two workers to reach
+   * the count simultaneously so a missing FOR UPDATE fence reliably
+   * over-acquires (VAL-SUB-109).
+   */
+  onAfterPermitCount?: () => Promise<void>;
 }
 
 /** Context for acquiring running permits. */
@@ -79,6 +87,14 @@ export class SchedulingService {
     const schema = this.db.schema;
     const now = this.now();
 
+    // Acquire a FOR UPDATE lock on the root run (and parent run) before
+    // counting held permits (VAL-SUB-109). Without this fence, two
+    // concurrent workers can both read 0 held permits from a plain SELECT
+    // and both insert, over-acquiring beyond the platform fan-out hard cap.
+    // The row lock serializes the count+insert critical section: the second
+    // worker blocks until the first commits, then sees the updated count.
+    await this.lockRootAndParent(tx, ctx);
+
     // Count held root_running permits for this root run.
     const [rootCount] = await tx
       .select({ count: sql<number>`count(*)::int` })
@@ -121,6 +137,13 @@ export class SchedulingService {
         'LIMIT_EXCEEDED',
         `Parent running permit limit reached (${parentRunning}/${parentLimit}).`,
       );
+    }
+
+    // Deterministic-test seam: pause after both count checks pass so
+    // concurrent workers overlap before inserting (VAL-SUB-109). No-op in
+    // production.
+    if (this.deps.onAfterPermitCount) {
+      await this.deps.onAfterPermitCount();
     }
 
     // Check if permits already exist (idempotent reacquire after
@@ -207,6 +230,51 @@ export class SchedulingService {
     });
 
     return { rootPermitId, parentPermitId };
+  }
+
+  /**
+   * Acquire a `FOR UPDATE` lock on the root run and parent run before
+   * counting held permits (VAL-SUB-109). Lock order is root-then-parent,
+   * mirroring BudgetService.allocateChild and AgentRouter.routeChild, to
+   * avoid deadlocks. Re-locking the same row (root === parent) within one
+   * transaction is a no-op. Must be called inside a transaction.
+   */
+  private async lockRootAndParent(tx: Tx, ctx: AcquirePermitsContext): Promise<void> {
+    const schema = this.db.schema;
+
+    const [rootRun] = await tx
+      .select()
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, ctx.companyId),
+          eq(schema.missionRuns.id, ctx.rootRunId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+
+    if (!rootRun) {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Root run not found.');
+    }
+
+    if (ctx.parentRunId !== ctx.rootRunId) {
+      const [parentRun] = await tx
+        .select()
+        .from(schema.missionRuns)
+        .where(
+          and(
+            eq(schema.missionRuns.companyId, ctx.companyId),
+            eq(schema.missionRuns.id, ctx.parentRunId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      if (!parentRun) {
+        throw new AppError(404, 'RUN_NOT_FOUND', 'Parent run not found.');
+      }
+    }
   }
 
   /**
