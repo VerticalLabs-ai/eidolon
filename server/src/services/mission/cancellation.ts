@@ -148,9 +148,15 @@ export class MissionCancellationService {
     // Cascade cancellation to nonterminal descendants.
     await this.cascadeToDescendants(tx, run, now, deadline, input, traceId);
 
-    // For non-lease states, terminalize immediately. The first cancel from
-    // a nonterminal state always returns 202 (VAL-RUN-117).
-    if (NON_LEASE_STATES.has(run.status)) {
+    // Terminalize immediately if there is no active worker lease.
+    // Non-lease states (draft, awaiting_input, planning, awaiting_approval)
+    // never have a lease. Lease states (queued, running, synthesizing)
+    // without an active lease also have no worker to observe the
+    // cancellation, so they are terminalized immediately
+    // (VAL-SUB-046, VAL-SUB-050).
+    const hasActiveLease =
+      run.leaseOwner !== null && run.leaseExpiresAt !== null && run.leaseExpiresAt > now;
+    if (!hasActiveLease) {
       const result = await this.terminalize(tx, run.companyId, run.projectId, run.id, {
         actorType: input.actorType,
         actorId: input.actorId,
@@ -158,11 +164,30 @@ export class MissionCancellationService {
         fromVersion: newVersion,
         fromSequence: seq,
       });
+
+      // VAL-SUB-050: If this is a child run that was terminalized, apply
+      // the parent's snapshotted partial_result_policy. Under require_all,
+      // cascade cancellation to remaining required siblings. Under
+      // best_effort, allow siblings to continue.
+      if (result.terminalized && run.parentRunId !== null && run.parentRunId !== run.id) {
+        await this.applyParentPolicyOnChildTerminal(
+          tx,
+          run.companyId,
+          run.projectId,
+          run.id,
+          run.parentRunId,
+          run.rootRunId,
+          'cancelled',
+          input,
+          traceId,
+        );
+      }
+
       return { ...result, statusCode: 202 };
     }
 
-    // For lease states, the worker will terminalize when it observes the
-    // cancellation. Return 202 with the deadline.
+    // For lease states with an active lease, the worker will terminalize
+    // when it observes the cancellation. Return 202 with the deadline.
     return {
       statusCode: 202,
       stateVersion: newVersion,
@@ -233,6 +258,30 @@ export class MissionCancellationService {
         'INVALID_RUN_STATE',
         'Cannot terminalize a run without a cancellation request',
       );
+    }
+
+    // Subtree-terminal barrier (VAL-SUB-048, VAL-SUB-110):
+    // A cancelling run cannot terminally cancel until every descendant
+    // in its subtree is terminal. If nonterminal descendants exist, return
+    // without terminalizing — the worker or deadline enforcer will retry
+    // via tryTerminalizeIfReady once descendants settle.
+    const hasNonterminal = await this.checkNonterminalDescendants(
+      tx,
+      run.companyId,
+      run.projectId,
+      run.id,
+    );
+    if (hasNonterminal) {
+      return {
+        statusCode: 200,
+        stateVersion: run.stateVersion,
+        terminalized: false,
+        status: run.status,
+        cancellationDeadlineAt: run.cancellationDeadlineAt
+          ? run.cancellationDeadlineAt.toISOString()
+          : null,
+        lastEventSequence: Number(run.lastEventSequence),
+      };
     }
 
     const baseVersion = opts.fromVersion ?? run.stateVersion;
@@ -418,6 +467,7 @@ export class MissionCancellationService {
       const childSeq = child.last_event_sequence + 1;
       const childVersion = child.state_version + 1;
 
+      // Set cancel_requested on the descendant.
       await tx
         .update(schema.missionRuns)
         .set({
@@ -446,7 +496,238 @@ export class MissionCancellationService {
         traceId,
         occurredAt: now,
       });
+
+      // VAL-SUB-046: Queued children must lose execution eligibility,
+      // release their lease/allocation, and never emit child.started.
+      // For non-lease-state descendants (draft, awaiting_input, planning,
+      // awaiting_approval), terminalize immediately — they have no active
+      // worker to observe the cancellation (VAL-SUB-045).
+      if (NON_LEASE_STATES.has(child.status)) {
+        // Terminalize the non-lease-state child immediately.
+        await this.terminalize(tx, child.company_id, child.project_id, child.id, {
+          actorType: input.actorType,
+          actorId: input.actorId,
+          traceId,
+          fromVersion: childVersion,
+          fromSequence: childSeq,
+        });
+      } else if (child.status === 'queued') {
+        // Queued child: clear lease (if any), remove execution eligibility,
+        // and release budget allocation (VAL-SUB-046).
+        await tx
+          .update(schema.missionRuns)
+          .set({
+            leaseOwner: null,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+            availableAt: null,
+            updatedAt: now,
+          })
+          .where(eq(schema.missionRuns.id, child.id));
+
+        // Release the child's budget allocation.
+        const budgetService = new BudgetService(this.db, { clock: () => now });
+        await budgetService.release(tx, {
+          companyId: child.company_id,
+          runId: child.id,
+        });
+      }
+      // Running/synthesizing children: the worker will observe
+      // cancel_requested at bounded checkpoints and terminalize
+      // (VAL-SUB-047).
     }
+  }
+
+  /**
+   * Check whether a run has any nonterminal descendants in its subtree.
+   * Uses a recursive CTE to walk the parent_run_id chain.
+   * (VAL-SUB-048, VAL-SUB-110)
+   *
+   * Must be called inside a locked transaction.
+   */
+  private async checkNonterminalDescendants(
+    tx: Tx,
+    companyId: string,
+    projectId: string,
+    runId: string,
+  ): Promise<boolean> {
+    const result = await tx.execute(sql`
+      WITH RECURSIVE descendants AS (
+        SELECT "id", "status"
+        FROM "mission_runs"
+        WHERE "company_id" = ${companyId}
+          AND "project_id" = ${projectId}
+          AND "parent_run_id" = ${runId}
+          AND "status" NOT IN ('completed', 'failed', 'cancelled')
+        UNION ALL
+        SELECT c."id", c."status"
+        FROM "mission_runs" c
+        INNER JOIN descendants d ON c."parent_run_id" = d."id"
+        WHERE c."company_id" = ${companyId}
+          AND c."project_id" = ${projectId}
+          AND c."status" NOT IN ('completed', 'failed', 'cancelled')
+      )
+      SELECT count(*)::int AS cnt FROM descendants
+    `);
+
+    const rows = result as unknown as Array<{ cnt: number }>;
+    return rows.length > 0 && Number(rows[0]!.cnt) > 0;
+  }
+
+  /**
+   * Apply the parent's partial_result_policy when a child reaches a
+   * terminal state. Under `require_all`, cascade cancellation to
+   * remaining nonterminal siblings. Under `best_effort`, allow siblings
+   * to continue. Also updates the child's step assignment with the
+   * terminal result (VAL-SUB-050, VAL-SUB-110).
+   *
+   * Must be called inside a locked transaction.
+   */
+  private async applyParentPolicyOnChildTerminal(
+    tx: Tx,
+    companyId: string,
+    projectId: string,
+    childRunId: string,
+    parentRunId: string,
+    rootRunId: string,
+    terminalStatus: 'completed' | 'failed' | 'cancelled',
+    input: RequestCancellationInput,
+    traceId: string | null,
+  ): Promise<void> {
+    const schema = this.db.schema;
+    const now = this.now();
+
+    // 1. Update the child's step assignment.
+    await tx
+      .update(schema.runStepAssignments)
+      .set({
+        assignmentStatus: terminalStatus,
+        resultStatus: terminalStatus,
+        updatedAt: now,
+      })
+      .where(eq(schema.runStepAssignments.runId, childRunId));
+
+    // 2. Read the parent's partial_result_policy.
+    const [parentRun] = await tx
+      .select({
+        partialResultPolicy: schema.missionRuns.partialResultPolicy,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, companyId),
+          eq(schema.missionRuns.projectId, projectId),
+          eq(schema.missionRuns.id, parentRunId),
+        ),
+      )
+      .limit(1);
+
+    const parentPolicy = (parentRun?.partialResultPolicy ?? 'require_all') as
+      'require_all' | 'best_effort';
+
+    // 3. Under require_all, cascade cancellation to remaining nonterminal
+    //    siblings. Under best_effort, allow siblings to continue.
+    if (parentPolicy !== 'require_all') {
+      return;
+    }
+
+    const siblings = await tx.execute(sql`
+      SELECT "id", "status", "last_event_sequence", "state_version"
+      FROM "mission_runs"
+      WHERE "company_id" = ${companyId}
+        AND "project_id" = ${projectId}
+        AND "parent_run_id" = ${parentRunId}
+        AND "id" != ${childRunId}
+        AND "status" NOT IN ('completed', 'failed', 'cancelled')
+    `);
+
+    const siblingRows = siblings as unknown as Array<{
+      id: string;
+      status: string;
+      last_event_sequence: number;
+      state_version: number;
+    }>;
+
+    for (const sibling of siblingRows) {
+      const siblingSeq = sibling.last_event_sequence + 1;
+      const siblingVersion = sibling.state_version + 1;
+
+      await tx
+        .update(schema.missionRuns)
+        .set({
+          cancelRequestedAt: now,
+          cancelRequestedBy: input.actorId,
+          cancellationDeadlineAt: new Date(now.getTime() + 60_000),
+          stateVersion: siblingVersion,
+          lastEventSequence: siblingSeq,
+          updatedAt: now,
+        })
+        .where(eq(schema.missionRuns.id, sibling.id));
+
+      await tx.insert(schema.runEvents).values({
+        companyId,
+        projectId,
+        runId: sibling.id,
+        sequence: siblingSeq,
+        type: 'child.cancel_requested',
+        schemaVersion: 1,
+        payload: {
+          parentRunId,
+          reason: 'require_all_policy_cascade',
+          cancelledSibling: childRunId,
+        },
+        actorType: input.actorType,
+        actorId: input.actorId,
+        traceId,
+        occurredAt: now,
+      });
+
+      // Terminalize the sibling immediately if it has no active lease.
+      const hasActiveLease = await this.checkActiveLease(tx, companyId, projectId, sibling.id, now);
+      if (!hasActiveLease) {
+        await this.terminalize(tx, companyId, projectId, sibling.id, {
+          actorType: input.actorType,
+          actorId: input.actorId,
+          traceId,
+          fromVersion: siblingVersion,
+          fromSequence: siblingSeq,
+        });
+      }
+    }
+  }
+
+  /**
+   * Check whether a run has an active (non-expired) lease.
+   */
+  private async checkActiveLease(
+    tx: Tx,
+    companyId: string,
+    projectId: string,
+    runId: string,
+    now: Date,
+  ): Promise<boolean> {
+    const schema = this.db.schema;
+    const [run] = await tx
+      .select({
+        leaseOwner: schema.missionRuns.leaseOwner,
+        leaseExpiresAt: schema.missionRuns.leaseExpiresAt,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, companyId),
+          eq(schema.missionRuns.projectId, projectId),
+          eq(schema.missionRuns.id, runId),
+        ),
+      )
+      .limit(1);
+    return (
+      run?.leaseOwner !== null &&
+      run?.leaseOwner !== undefined &&
+      run?.leaseExpiresAt !== null &&
+      run.leaseExpiresAt > now
+    );
   }
 
   private async loadRootRun(
