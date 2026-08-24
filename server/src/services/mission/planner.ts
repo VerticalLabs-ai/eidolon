@@ -390,6 +390,7 @@ export class PlannerService {
       failureCategory: (row['failure_category'] as string) ?? null,
       failureCode: (row['failure_code'] as string) ?? null,
       safeErrorMessage: (row['safe_error_message'] as string) ?? null,
+      resultCompleteness: (row['result_completeness'] as 'full' | 'partial') ?? null,
       startedAt: (row['started_at'] as Date) ?? null,
       terminalAt: (row['terminal_at'] as Date) ?? null,
       createdAt: row['created_at'] as Date,

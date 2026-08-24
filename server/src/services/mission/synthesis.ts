@@ -408,6 +408,8 @@ export class MissionSynthesisService {
 
     if (shouldFail) {
       // VAL-SUB-051: Fail the parent under require_all.
+      // VAL-CROSS-091: resultCompleteness stays null for a failed run
+      // (missing mandatory criteria is failed, not partial).
       await tx
         .update(schema.missionRuns)
         .set({
@@ -517,6 +519,10 @@ export class MissionSynthesisService {
     }
 
     // Success path (all children completed, or best_effort with gaps disclosed).
+    // VAL-CROSS-091: resultCompleteness is 'full' when all children completed,
+    // 'partial' when best_effort synthesis completed with disclosed gaps.
+    const completeness: 'full' | 'partial' = hasFailures ? 'partial' : 'full';
+
     await tx
       .update(schema.missionRuns)
       .set({
@@ -527,6 +533,7 @@ export class MissionSynthesisService {
         leaseExpiresAt: null,
         heartbeatAt: null,
         availableAt: null,
+        resultCompleteness: completeness,
         stateVersion: run.stateVersion + 2,
         lastEventSequence: completedSeq,
         updatedAt: now,
@@ -577,6 +584,7 @@ export class MissionSynthesisService {
         outcome,
         parentPolicy,
         hasGaps: hasFailures,
+        resultCompleteness: completeness,
       },
       actorType,
       actorId,

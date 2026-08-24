@@ -148,7 +148,9 @@ async function getRunRow(db: AnyDb, runId: string) {
            "lease_owner", "lease_token"
     FROM "mission_runs" WHERE "id" = ${runId}
   `)) as unknown as Array<Record<string, unknown>>;
-  if (!rows[0]) {return null;}
+  if (!rows[0]) {
+    return null;
+  }
   const row = rows[0];
   return {
     status: row['status'] as string,
@@ -625,6 +627,7 @@ describe('VAL-PLAN-103: Proposal and governance gate are atomically linked', () 
       failureCategory: (rawRow['failure_category'] as string) ?? null,
       failureCode: (rawRow['failure_code'] as string) ?? null,
       safeErrorMessage: (rawRow['safe_error_message'] as string) ?? null,
+      resultCompleteness: (rawRow['result_completeness'] as 'full' | 'partial') ?? null,
       startedAt: (rawRow['started_at'] as Date) ?? null,
       terminalAt: (rawRow['terminal_at'] as Date) ?? null,
       createdAt: rawRow['created_at'] as Date,

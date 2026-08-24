@@ -79,6 +79,18 @@ export interface RunSnapshot {
   failureCategory: string | null;
   failureCode: string | null;
   safeErrorMessage: string | null;
+  /**
+   * Durable result completeness outcome (VAL-CROSS-091, VAL-CROSS-102).
+   *
+   * `null` until a completion outcome is determined (nonterminal, failed,
+   * or cancelled before synthesis). `full` when all required children
+   * completed and synthesis succeeded, or a direct (non-composite) run
+   * completed. `partial` when best-effort synthesis completed with
+   * disclosed gaps. This field governs synthesis, artifact metadata,
+   * parent tree, Project Plan, Activity, and cards; no surface infers a
+   * conflicting label.
+   */
+  resultCompleteness: 'full' | 'partial' | null;
   startedAt: string | null;
   terminalAt: string | null;
   createdAt: string;
@@ -628,6 +640,7 @@ export class MissionSnapshotService {
       failureCategory: run.failureCategory,
       failureCode: run.failureCode,
       safeErrorMessage: run.safeErrorMessage,
+      resultCompleteness: (run.resultCompleteness as 'full' | 'partial' | null) ?? null,
       startedAt: run.startedAt ? run.startedAt.toISOString() : null,
       terminalAt: run.terminalAt ? run.terminalAt.toISOString() : null,
       createdAt: run.createdAt.toISOString(),

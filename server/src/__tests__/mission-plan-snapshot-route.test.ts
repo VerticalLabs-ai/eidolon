@@ -189,6 +189,7 @@ function mapRun(rawRow: Record<string, unknown>) {
     failureCategory: (rawRow['failure_category'] as string) ?? null,
     failureCode: (rawRow['failure_code'] as string) ?? null,
     safeErrorMessage: (rawRow['safe_error_message'] as string) ?? null,
+    resultCompleteness: (rawRow['result_completeness'] as 'full' | 'partial') ?? null,
     startedAt: (rawRow['started_at'] as Date) ?? null,
     terminalAt: (rawRow['terminal_at'] as Date) ?? null,
     createdAt: rawRow['created_at'] as Date,

@@ -195,6 +195,7 @@ export class MissionCompletionService {
           leaseExpiresAt: null,
           heartbeatAt: null,
           availableAt: null,
+          resultCompleteness: 'full',
           stateVersion: newVersion2,
           lastEventSequence: seq2,
           updatedAt: now,
@@ -249,6 +250,9 @@ export class MissionCompletionService {
     }
 
     // Transition to completed.
+    // VAL-CROSS-091: A direct (non-composite) completion is always 'full'.
+    // Composite completions go through the synthesis service which sets
+    // 'full' or 'partial' based on child outcomes.
     const newVersion = run.stateVersion + 1;
     const seq = Number(run.lastEventSequence) + 1;
 
@@ -262,6 +266,7 @@ export class MissionCompletionService {
         leaseExpiresAt: null,
         heartbeatAt: null,
         availableAt: null,
+        resultCompleteness: 'full',
         stateVersion: newVersion,
         lastEventSequence: seq,
         updatedAt: now,

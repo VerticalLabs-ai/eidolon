@@ -138,6 +138,19 @@ export const missionRuns = pgTable(
     failureCategory: text('failure_category'),
     failureCode: text('failure_code'),
     safeErrorMessage: text('safe_error_message'),
+    /**
+     * Durable result completeness outcome (VAL-CROSS-091, VAL-CROSS-102).
+     *
+     * `null` until a completion outcome is determined (nonterminal, failed,
+     * or cancelled before synthesis). `full` when all required children
+     * completed and synthesis succeeded. `partial` when best-effort
+     * synthesis completed with disclosed gaps. This field governs synthesis,
+     * artifact metadata, parent tree, Project Plan, Activity, and cards;
+     * no surface infers a conflicting label.
+     */
+    resultCompleteness: text('result_completeness', {
+      enum: ['full', 'partial'],
+    }),
     startedAt: timestamp('started_at', { mode: 'date', precision: 3, withTimezone: true }),
     terminalAt: timestamp('terminal_at', { mode: 'date', precision: 3, withTimezone: true }),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
