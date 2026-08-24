@@ -1,6 +1,6 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import { missionErrorSanitizer } from '../middleware/mission-error-sanitizer.js';
@@ -31,6 +31,7 @@ import {
 } from '../services/mission/question-set-history.js';
 import { MissionProjectionRepairService } from '../services/mission/projection-repair.js';
 import { MissionPlanGovernanceProjectionService } from '../services/mission/plan-governance-projection.js';
+import { SourceAvailabilityService } from '../services/mission/research/source-availability-service.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import { redactCanaries } from '../services/mission/reason-security.js';
 import {
@@ -112,6 +113,18 @@ const QuestionSetsQuery = z.object({
 const PlanRevisionsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_PLAN_REVISIONS_PER_PAGE).default(50),
   cursor: z.string().max(512).optional(),
+});
+
+/** Availability check body: explicit, nonmutating source availability refresh
+ *  (VAL-RES-119). The body carries only the safe result of a bounded,
+ *  cancellable URL/network probe — never credentials, provider bodies, or
+ *  retrieved content. */
+const AvailabilityCheckBody = z.object({
+  status: z.enum(['available', 'unavailable', 'unknown']),
+  httpStatus: z.number().int().min(100).max(599).optional(),
+  warning: z.string().max(500).optional(),
+  logicalCallId: z.string().min(1).max(200).optional(),
+  attemptId: z.string().uuid().optional(),
 });
 
 /** Shared optional lower-limit override shape for retry. */
@@ -1103,6 +1116,76 @@ export function missionRunsRouter(db: DbInstance): Router {
       throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
     }
     res.json({ data: status });
+  });
+
+  // POST /:runId/source-revisions/:sourceRevisionId/availability-checks
+  // Explicit, nonmutating source availability refresh (VAL-RES-119). An
+  // authorized, idempotent, separately budgeted and cancellable logical call
+  // under current URL/network policy. Appends availability metadata linked
+  // to the immutable revision but never mutates the source revision,
+  // citation, artifact, or original retrieval. No automatic polling occurs.
+  router.post(
+    '/:runId/source-revisions/:sourceRevisionId/availability-checks',
+    validate(AvailabilityCheckBody),
+    async (req, res) => {
+      const { companyId, projectId, runId, sourceRevisionId } = routeParams(req);
+      requireMissionEnabled(companyId);
+      await validateProjectOwnership(db, companyId, projectId);
+
+      const role = (req.organizationMembership?.role ?? 'viewer') as
+        'owner' | 'admin' | 'member' | 'viewer';
+      if (!hasPermission(role, 'content.create')) {
+        throw new AppError(403, 'INSUFFICIENT_PERMISSION', 'Insufficient permission');
+      }
+
+      const rawKey = req.get('Idempotency-Key');
+      const idempotencyKey = validateIdempotencyKey(rawKey);
+
+      const body = req.body as {
+        status: 'available' | 'unavailable' | 'unknown';
+        httpStatus?: number;
+        warning?: string;
+        logicalCallId?: string;
+        attemptId?: string;
+      };
+
+      const rootRunIdRow = (await db.drizzle.execute(
+        sql`SELECT "root_run_id" FROM "mission_runs" WHERE "id" = ${runId} AND "company_id" = ${companyId} LIMIT 1`,
+      )) as unknown as { root_run_id: string }[];
+      if (rootRunIdRow.length === 0) {
+        throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+      }
+
+      const service = new SourceAvailabilityService(db);
+      const result = await service.recordAvailabilityCheck({
+        companyId,
+        projectId,
+        runId,
+        rootRunId: rootRunIdRow[0]!.root_run_id,
+        sourceRevisionId,
+        logicalCallId: body.logicalCallId ?? `${runId}:availability:${idempotencyKey}`,
+        idempotencyKey,
+        attemptId: body.attemptId,
+        status: body.status,
+        httpStatus: body.httpStatus,
+        warning: body.warning,
+      });
+
+      res.status(result.replayed ? 200 : 201).json({ data: result });
+    },
+  );
+
+  // GET /:runId/source-revisions/:sourceRevisionId/availability-checks
+  // List bounded availability-check records for a source revision (safe
+  // metadata only, scoped by company/project). Read-only; does not require
+  // the mission flag (VAL-RES-119).
+  router.get('/:runId/source-revisions/:sourceRevisionId/availability-checks', async (req, res) => {
+    const { companyId, projectId, runId, sourceRevisionId } = routeParams(req);
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const service = new SourceAvailabilityService(db);
+    const checks = await service.listAvailabilityChecks(companyId, projectId, sourceRevisionId);
+    res.json({ data: { checks, runId, sourceRevisionId } });
   });
 
   // Mission error sanitizer: converts any error thrown by a Mission route

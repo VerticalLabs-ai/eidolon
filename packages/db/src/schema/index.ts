@@ -92,3 +92,5 @@ export {
   citationCarryForwardOutcomes,
   carryForwardOutcomeEnum,
 } from './research_citations.js';
+export { researchAttempts } from './research_attempts.js';
+export { researchSourceAvailabilityChecks } from './research_source_availability_checks.js';

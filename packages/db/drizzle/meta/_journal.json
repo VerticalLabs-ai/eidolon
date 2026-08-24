@@ -365,6 +365,13 @@
       "when": 1788726000000,
       "tag": "0051_citation_carry_forward_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1788812400000,
+      "tag": "0052_research_attempt_accounting",
+      "breakpoints": true
     }
   ]
 }
