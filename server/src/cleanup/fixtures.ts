@@ -133,22 +133,45 @@ const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
   'routines',
   'agent_skills',
   'company_skills',
+  // run_plan_approval_bindings MUST precede approvals: its
+  // approval_id → approvals.id FK is ON DELETE NO ACTION. Deleting
+  // approvals first raises "update or delete on table 'approvals'
+  // violates foreign key constraint … on table 'run_plan_approval_bindings'".
+  'run_plan_approval_bindings',
   'approvals',
   'project_decisions',
   'project_outcomes',
   'project_plan_steps',
   'project_plans',
-  // Mission tables — must be deleted before project_threads (mission_runs
-  // .project_thread_id CASCADE), before run_policy_snapshots (mission_runs
-  // .policy_snapshot_id NO ACTION), and before agents (mission_runs /
-  // budget_*.billing_agent_id NO ACTION). Children deleted before parents:
-  // run_events → run_commands → budget_allocations → budget_reservations →
-  // mission_runs → run_policy_snapshots.
+  // Mission child tables — must be deleted before mission_runs (cascade),
+  // before run_policy_snapshots (mission_runs.policy_snapshot_id NO ACTION),
+  // and before agents (mission_runs / budget_*.billing_agent_id NO ACTION).
+  // Children are deleted before parents; per-table counts are reported
+  // explicitly instead of relying on the mission_runs/company cascade.
+  //   run_events → run_commands → budget_* → step/permit/synthesis/mirror/
+  //   question/projection/tool → run_plan_revisions → mission_runs →
+  //   run_policy_snapshots
   'run_events',
   'run_commands',
   'budget_settlements',
   'budget_allocations',
   'budget_reservations',
+  'run_step_assignments',
+  'run_scheduling_permits',
+  'run_synthesis_manifests',
+  'run_descendant_mirrors',
+  'run_question_answers',
+  'run_questions',
+  'run_question_sets',
+  'run_projection_links',
+  'run_tool_invocations',
+  // run_plan_revisions: mission_runs.current_plan_revision_id and
+  // approved_plan_revision_id reference this table with ON DELETE NO ACTION.
+  // executeDeletion nulls those columns BEFORE this delete runs (see the
+  // special-case in the phase 2-4 loop). run_step_assignments,
+  // run_synthesis_manifests, and run_plan_approval_bindings (which reference
+  // run_plan_revisions via CASCADE) are already deleted above.
+  'run_plan_revisions',
   'mission_runs',
   'run_policy_snapshots',
   'project_threads',
@@ -347,6 +370,17 @@ async function executeDeletion(runner: SqlRunner, staleHours?: number): Promise<
 
     // Phase 2-4 — direct tables in dependency order
     for (const table of ALL_DIRECT_TABLES) {
+      // run_plan_revisions is referenced by mission_runs.current_plan_revision_id
+      // and approved_plan_revision_id via ON DELETE NO ACTION. Null those
+      // pointers out BEFORE deleting the revisions so the NO ACTION check
+      // passes. All other tables that reference run_plan_revisions
+      // (run_step_assignments, run_synthesis_manifests, run_plan_approval_bindings)
+      // use ON DELETE CASCADE and are already deleted above.
+      if (table === 'run_plan_revisions') {
+        await tx.query(
+          `UPDATE mission_runs SET current_plan_revision_id = NULL, approved_plan_revision_id = NULL WHERE company_id IN (${sub})`,
+        );
+      }
       const rows = await tx.query<{ id: string }>(
         `DELETE FROM ${table} WHERE company_id IN (${sub}) RETURNING id`,
       );

@@ -54,7 +54,13 @@ async function createTestRunner(): Promise<{
 
   const runner = impl as unknown as SqlRunner;
 
-  return { runner, pglite, close: async () => { await pglite.close(); } };
+  return {
+    runner,
+    pglite,
+    close: async () => {
+      await pglite.close();
+    },
+  };
 }
 
 /** Insert a company with the testFixture marker. */
@@ -205,8 +211,96 @@ async function insertFolder(
   return id;
 }
 
+/** Insert a project thread for a company/project. */
+async function insertProjectThread(
+  runner: SqlRunner,
+  companyId: string,
+  projectId: string,
+  title: string,
+): Promise<string> {
+  const id = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO project_threads (id, company_id, project_id, title, type, status, created_at, updated_at) VALUES ('${id}', '${companyId}', '${projectId}', '${title}', 'conversation', 'active', '${ts}', '${ts}')`,
+  );
+  return id;
+}
+
+/**
+ * Insert a Mission run for a company/project/thread. Optionally set the
+ * current/approved plan revision pointers (used to exercise the NO ACTION
+ * FK from mission_runs → run_plan_revisions).
+ */
+async function insertMissionRun(
+  runner: SqlRunner,
+  companyId: string,
+  projectId: string,
+  threadId: string,
+  options?: { currentPlanRevisionId?: string; approvedPlanRevisionId?: string },
+): Promise<string> {
+  const id = randomUUID();
+  const ts = new Date().toISOString();
+  const currentPlan = options?.currentPlanRevisionId ?? null;
+  const approvedPlan = options?.approvedPlanRevisionId ?? null;
+  await runner.query(
+    `INSERT INTO mission_runs (id, company_id, project_id, project_thread_id, root_run_id, request_envelope, request_content_hash, resolved_mode, status, current_plan_revision_id, approved_plan_revision_id, created_at, updated_at) VALUES ('${id}', '${companyId}', '${projectId}', '${threadId}', '${id}', 'encrypted-envelope', 'hash-${id}', 'deep_work', 'awaiting_approval', ${currentPlan ? `'${currentPlan}'` : 'NULL'}, ${approvedPlan ? `'${approvedPlan}'` : 'NULL'}, '${ts}', '${ts}')`,
+  );
+  return id;
+}
+
+/** Insert an immutable plan revision for a run. */
+async function insertPlanRevision(
+  runner: SqlRunner,
+  companyId: string,
+  projectId: string,
+  runId: string,
+  revision: number,
+): Promise<string> {
+  const id = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO run_plan_revisions (id, company_id, project_id, run_id, revision, status, content, content_hash, created_at, updated_at) VALUES ('${id}', '${companyId}', '${projectId}', '${runId}', ${revision}, 'approved', '{"objective":"test"}', 'hash-rev-${id}', '${ts}', '${ts}')`,
+  );
+  return id;
+}
+
+/** Insert a plan_gate approval for a company/project. */
+async function insertPlanGateApproval(
+  runner: SqlRunner,
+  companyId: string,
+  projectId: string,
+): Promise<string> {
+  const id = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO approvals (id, company_id, project_id, kind, title, status, created_at, updated_at) VALUES ('${id}', '${companyId}', '${projectId}', 'plan_gate', '__mtest__ plan gate', 'approved', '${ts}', '${ts}')`,
+  );
+  return id;
+}
+
+/** Insert a run_plan_approval_binding linking a revision to an approval. */
+async function insertApprovalBinding(
+  runner: SqlRunner,
+  companyId: string,
+  projectId: string,
+  runId: string,
+  planRevisionId: string,
+  approvalId: string,
+): Promise<string> {
+  const id = randomUUID();
+  const ts = new Date().toISOString();
+  await runner.query(
+    `INSERT INTO run_plan_approval_bindings (id, company_id, project_id, run_id, plan_revision_id, content_hash, approval_id, decision, is_current_authorization, created_at) VALUES ('${id}', '${companyId}', '${projectId}', '${runId}', '${planRevisionId}', 'hash-rev-${planRevisionId}', '${approvalId}', 'approved', true, '${ts}')`,
+  );
+  return id;
+}
+
 /** Count rows in a table for a given company_id (or by id for the companies table). */
-async function countForCompany(runner: SqlRunner, table: string, companyId: string): Promise<number> {
+async function countForCompany(
+  runner: SqlRunner,
+  table: string,
+  companyId: string,
+): Promise<number> {
   const column = table === 'companies' ? 'id' : 'company_id';
   const rows = await runner.query<{ count: string }>(
     `SELECT count(*) as count FROM ${table} WHERE ${column} = '${companyId}'`,
@@ -338,11 +432,15 @@ describe('Cleanup script logic', () => {
   // VAL-CLEAN-006: Stale-hours filters by fixture age
   it('stale-hours only removes fixtures older than N hours', async () => {
     // Old fixture (48 hours ago) — should be removed
-    const oldFixtureId = await insertFixtureCompany(runner, '__mtest__ old-fixture', { hoursAgo: 48 });
+    const oldFixtureId = await insertFixtureCompany(runner, '__mtest__ old-fixture', {
+      hoursAgo: 48,
+    });
     await insertAgent(runner, oldFixtureId, 'Old Agent');
 
     // Recent fixture (1 hour ago) — should be preserved
-    const recentFixtureId = await insertFixtureCompany(runner, '__mtest__ recent-fixture', { hoursAgo: 1 });
+    const recentFixtureId = await insertFixtureCompany(runner, '__mtest__ recent-fixture', {
+      hoursAgo: 1,
+    });
     await insertAgent(runner, recentFixtureId, 'Recent Agent');
 
     const result = await runCleanup(runner, { execute: true, staleHours: 6 });
@@ -401,22 +499,34 @@ describe('Cleanup script logic', () => {
     }
 
     // Verify indirect children are gone
-    const chunks = await runner.query<{ count: string }>(`SELECT count(*) as count FROM knowledge_chunks WHERE id = '${chunkId}'`);
+    const chunks = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM knowledge_chunks WHERE id = '${chunkId}'`,
+    );
     expect(parseInt(chunks[0]?.count ?? '0', 10)).toBe(0);
 
-    const docs = await runner.query<{ count: string }>(`SELECT count(*) as count FROM knowledge_documents WHERE id = '${docId}'`);
+    const docs = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM knowledge_documents WHERE id = '${docId}'`,
+    );
     expect(parseInt(docs[0]?.count ?? '0', 10)).toBe(0);
 
-    const versions = await runner.query<{ count: string }>(`SELECT count(*) as count FROM prompt_versions WHERE id = '${versionId}'`);
+    const versions = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM prompt_versions WHERE id = '${versionId}'`,
+    );
     expect(parseInt(versions[0]?.count ?? '0', 10)).toBe(0);
 
-    const templates = await runner.query<{ count: string }>(`SELECT count(*) as count FROM prompt_templates WHERE id = '${templateId}'`);
+    const templates = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM prompt_templates WHERE id = '${templateId}'`,
+    );
     expect(parseInt(templates[0]?.count ?? '0', 10)).toBe(0);
 
-    const comments = await runner.query<{ count: string }>(`SELECT count(*) as count FROM approval_comments WHERE id = '${commentId}'`);
+    const comments = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM approval_comments WHERE id = '${commentId}'`,
+    );
     expect(parseInt(comments[0]?.count ?? '0', 10)).toBe(0);
 
-    const approvals = await runner.query<{ count: string }>(`SELECT count(*) as count FROM approvals WHERE id = '${approvalId}'`);
+    const approvals = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM approvals WHERE id = '${approvalId}'`,
+    );
     expect(parseInt(approvals[0]?.count ?? '0', 10)).toBe(0);
 
     // Verify the company itself is gone
@@ -517,7 +627,15 @@ describe('Cleanup script logic', () => {
     await runCleanup(runner, { execute: true });
 
     // No rows in any table should reference the deleted company
-    for (const table of ['agents', 'tasks', 'projects', 'goals', 'knowledge_documents', 'knowledge_chunks', 'prompt_templates']) {
+    for (const table of [
+      'agents',
+      'tasks',
+      'projects',
+      'goals',
+      'knowledge_documents',
+      'knowledge_chunks',
+      'prompt_templates',
+    ]) {
       expect(await countForCompany(runner, table, fixtureId)).toBe(0);
     }
 
@@ -707,5 +825,171 @@ describe('Cleanup script logic', () => {
     // Nothing deleted
     expect(await countForCompany(runner, 'artifact_folders', fixtureId)).toBe(1);
     expect(await countForCompany(runner, 'companies', fixtureId)).toBe(1);
+  });
+
+  // M4 fix: cleanup must delete run_plan_approval_bindings BEFORE approvals
+  // (approval_id → approvals.id is ON DELETE NO ACTION) and must null out
+  // mission_runs.current_plan_revision_id / approved_plan_revision_id before
+  // deleting run_plan_revisions (those FKs are ON DELETE NO ACTION). A
+  // fixture company with approved plans and bindings must clean up without
+  // any FK constraint error.
+  it('removes fixture with approved plans and approval bindings without FK errors', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ plan-bindings');
+    const projectId = await insertProject(runner, fixtureId, 'Mission Project');
+    const threadId = await insertProjectThread(runner, fixtureId, projectId, 'Mission Thread');
+    const runId = await insertMissionRun(runner, fixtureId, projectId, threadId);
+    const revisionId = await insertPlanRevision(runner, fixtureId, projectId, runId, 1);
+    const approvalId = await insertPlanGateApproval(runner, fixtureId, projectId);
+    const bindingId = await insertApprovalBinding(
+      runner,
+      fixtureId,
+      projectId,
+      runId,
+      revisionId,
+      approvalId,
+    );
+
+    // Point the run at the approved revision (NO ACTION FK back-reference).
+    await runner.query(
+      `UPDATE mission_runs SET current_plan_revision_id = '${revisionId}', approved_plan_revision_id = '${revisionId}' WHERE id = '${runId}'`,
+    );
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    // Everything is gone — no FK violation aborted the transaction.
+    expect(await countForCompany(runner, 'companies', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'mission_runs', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'run_plan_revisions', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'run_plan_approval_bindings', fixtureId)).toBe(0);
+    expect(await countForCompany(runner, 'approvals', fixtureId)).toBe(0);
+
+    // The specific binding + approval rows are gone.
+    const bindingGone = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM run_plan_approval_bindings WHERE id = '${bindingId}'`,
+    );
+    expect(parseInt(bindingGone[0]?.count ?? '0', 10)).toBe(0);
+
+    const approvalGone = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM approvals WHERE id = '${approvalId}'`,
+    );
+    expect(parseInt(approvalGone[0]?.count ?? '0', 10)).toBe(0);
+  });
+
+  // M4 fix: all newer mission tables are deleted in FK dependency order.
+  // Creates one row in each newer mission table and verifies cleanup
+  // removes them all without FK errors.
+  it('removes all newer mission tables (child runs, permits, synthesis, mirrors, questions, projections, tool invocations) without FK errors', async () => {
+    const fixtureId = await insertFixtureCompany(runner, '__mtest__ mission-children');
+    const projectId = await insertProject(runner, fixtureId, 'Mission Project');
+    const threadId = await insertProjectThread(runner, fixtureId, projectId, 'Mission Thread');
+
+    // Root run + an approved plan revision (needed by step assignments + synthesis).
+    const rootRunId = await insertMissionRun(runner, fixtureId, projectId, threadId);
+    const revisionId = await insertPlanRevision(runner, fixtureId, projectId, rootRunId, 1);
+    await runner.query(
+      `UPDATE mission_runs SET current_plan_revision_id = '${revisionId}', approved_plan_revision_id = '${revisionId}' WHERE id = '${rootRunId}'`,
+    );
+
+    // Child run for step assignment.
+    const childRunId = await insertMissionRun(runner, fixtureId, projectId, threadId, undefined);
+    await runner.query(
+      `UPDATE mission_runs SET parent_run_id = '${rootRunId}', root_run_id = '${rootRunId}', depth = 1, child_ordinal = 1 WHERE id = '${childRunId}'`,
+    );
+
+    const ts = new Date().toISOString();
+
+    // run_step_assignments
+    const stepAssignId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_step_assignments (id, company_id, project_id, root_run_id, parent_run_id, run_id, step_key, node_kind, approved_plan_revision_id, approved_content_hash, assignment_status, created_at, updated_at) VALUES ('${stepAssignId}', '${fixtureId}', '${projectId}', '${rootRunId}', '${rootRunId}', '${childRunId}', 'step-1', 'child', '${revisionId}', 'hash-rev-${revisionId}', 'routed', '${ts}', '${ts}')`,
+    );
+
+    // run_scheduling_permits
+    const permitId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_scheduling_permits (id, company_id, project_id, root_run_id, parent_run_id, run_id, permit_kind, status, acquired_at, created_at, updated_at) VALUES ('${permitId}', '${fixtureId}', '${projectId}', '${rootRunId}', '${rootRunId}', '${childRunId}', 'root_running', 'held', '${ts}', '${ts}', '${ts}')`,
+    );
+
+    // run_synthesis_manifests
+    const manifestId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_synthesis_manifests (id, company_id, project_id, run_id, root_run_id, approved_plan_revision_id, approved_content_hash, synthesis_ordinal, manifest, manifest_hash, status, created_at) VALUES ('${manifestId}', '${fixtureId}', '${projectId}', '${rootRunId}', '${rootRunId}', '${revisionId}', 'hash-rev-${revisionId}', 1, '[]', 'manifest-hash', 'started', '${ts}')`,
+    );
+
+    // run_descendant_mirrors
+    const mirrorId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_descendant_mirrors (id, company_id, project_id, root_run_id, descendant_run_id, source_sequence, source_event_type, root_event_sequence, created_at) VALUES ('${mirrorId}', '${fixtureId}', '${projectId}', '${rootRunId}', '${childRunId}', 1, 'child.started', 1, '${ts}')`,
+    );
+
+    // run_question_sets
+    const questionSetId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_question_sets (id, company_id, project_id, run_id, ordinal, version, status, created_at) VALUES ('${questionSetId}', '${fixtureId}', '${projectId}', '${rootRunId}', 1, 1, 'answered', '${ts}')`,
+    );
+
+    // run_questions
+    const questionId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_questions (id, company_id, project_id, run_id, question_set_id, question_key, "order", type, label, required, created_at) VALUES ('${questionId}', '${fixtureId}', '${projectId}', '${rootRunId}', '${questionSetId}', 'q1', 0, 'boolean', 'Proceed?', 1, '${ts}')`,
+    );
+
+    // run_question_answers
+    const answerId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_question_answers (id, company_id, project_id, run_id, question_set_id, question_id, question_key, answer_revision, value, content_hash, actor_type, created_at) VALUES ('${answerId}', '${fixtureId}', '${projectId}', '${rootRunId}', '${questionSetId}', '${questionId}', 'q1', 1, 'true', 'answer-hash', 'user', '${ts}')`,
+    );
+
+    // run_projection_links
+    const projectionLinkId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_projection_links (id, company_id, project_id, run_id, surface, surface_id, surface_key, status, created_at, updated_at) VALUES ('${projectionLinkId}', '${fixtureId}', '${projectId}', '${rootRunId}', 'thread_item', 'item-1', 'thread_item:1', 'active', '${ts}', '${ts}')`,
+    );
+
+    // run_tool_invocations
+    const toolInvocationId = randomUUID();
+    await runner.query(
+      `INSERT INTO run_tool_invocations (id, company_id, project_id, run_id, step_key, attempt, tool_id, ordinal, replay_class, state, created_at, updated_at) VALUES ('${toolInvocationId}', '${fixtureId}', '${projectId}', '${rootRunId}', 'root', 1, 'research.search', 0, 'read_only', 'succeeded', '${ts}', '${ts}')`,
+    );
+
+    // run_plan_approval_bindings (with a plan_gate approval) — exercises
+    // the approval_id → approvals.id NO ACTION FK ordering.
+    const approvalId = await insertPlanGateApproval(runner, fixtureId, projectId);
+    await insertApprovalBinding(runner, fixtureId, projectId, rootRunId, revisionId, approvalId);
+
+    const result = await runCleanup(runner, { execute: true });
+
+    expect(result.mode).toBe('execute');
+    expect(result.companyCount).toBe(1);
+
+    // Every newer mission table is explicitly reported in tableCounts
+    // (proves the cleanup deletes them in ordered fashion, not via cascade).
+    const expectedTables = [
+      'run_step_assignments',
+      'run_scheduling_permits',
+      'run_synthesis_manifests',
+      'run_descendant_mirrors',
+      'run_question_answers',
+      'run_questions',
+      'run_question_sets',
+      'run_projection_links',
+      'run_tool_invocations',
+      'run_plan_revisions',
+      'run_plan_approval_bindings',
+    ];
+    for (const table of expectedTables) {
+      const entry = result.tableCounts.find((c) => c.table === table);
+      expect(entry, `${table} should be reported in tableCounts`).toBeDefined();
+      expect(entry?.count, `${table} should have count > 0`).toBeGreaterThan(0);
+    }
+
+    // All mission tables cleared for the fixture company.
+    for (const table of ['mission_runs', ...expectedTables]) {
+      expect(await countForCompany(runner, table, fixtureId)).toBe(0);
+    }
+    expect(await countForCompany(runner, 'companies', fixtureId)).toBe(0);
   });
 });
