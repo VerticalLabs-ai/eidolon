@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { DbInstance } from '../../types.js';
 import { encryptEnvelope } from './ingress.js';
 import type { PlanContent, PlanStep } from './plan-schema.js';
+import { SubthreadProjectionService } from './subthread-projection.js';
 
 /**
  * TopologyMaterializer — materializes an approved plan topology into stable
@@ -223,6 +224,22 @@ export class TopologyMaterializer {
         billingAgentId: rootRun.billingAgentId,
         createdAt: now,
         updatedAt: now,
+      });
+
+      // Create a dedicated nested subthread projection for the child
+      // (VAL-SUB-007). The subthread is company/project scoped, marked
+      // is_mission_subthread=true, and linked via run_projection_links
+      // with a deterministic surface_key so repeated projection processing
+      // does not create duplicate subthreads.
+      const subthreadService = new SubthreadProjectionService(this.db, {
+        clock: () => now,
+      });
+      await subthreadService.projectChildSubthread(tx, {
+        companyId: rootRun.companyId,
+        projectId: rootRun.projectId,
+        runId: childRunId,
+        title: step.title,
+        rootThreadId: rootRun.projectThreadId,
       });
 
       // Emit child.created event on the root run journal.

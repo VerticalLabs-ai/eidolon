@@ -6,6 +6,7 @@ import {
   projectPlanGovernanceEvent,
 } from './plan-governance-projection.js';
 import { isPlanProgressProjectable, projectPlanProgressEvent } from './plan-progress-projection.js';
+import { DescendantMirrorService } from './descendant-mirror.js';
 
 /**
  * Mission Projection module (VAL-CROSS-075, VAL-CROSS-092, VAL-CROSS-093,
@@ -202,6 +203,13 @@ export async function projectEvent(
   if (isPlanProgressProjectable(event.type)) {
     await projectPlanProgressEvent(db, event, deps);
   }
+
+  // Descendant mirror: mirror authoritative local descendant lifecycle
+  // events to the root run journal as `descendant.progressed/v1` events
+  // (VAL-SUB-058, VAL-SUB-092). Only events from child runs (parentRunId
+  // !== null) are mirrored, and only mirrorable event types. The mirror is
+  // idempotent via run_descendant_mirrors uniqueness and prevents cycles.
+  await maybeMirrorDescendantEvent(db, event, deps);
 }
 
 function isThreadProjectable(eventType: string): boolean {
@@ -647,5 +655,83 @@ function deriveActivityAction(eventType: string): string {
       return 'mission.run.cancelled';
     default:
       return `mission.${eventType}`;
+  }
+}
+
+/**
+ * Mirror an authoritative local descendant lifecycle event to the root run
+ * journal as a `descendant.progressed/v1` event (VAL-SUB-058, VAL-SUB-092).
+ *
+ * Only events from child runs (parentRunId !== null) are mirrored. The
+ * mirror is idempotent via run_descendant_mirrors uniqueness and prevents
+ * cycles by only mirroring authoritative local descendant events, never
+ * other mirrors. No post-terminal mirror is legal.
+ *
+ * This function is non-throwing: mirror failures are logged but do not
+ * roll back the authoritative event or block other projections.
+ */
+async function maybeMirrorDescendantEvent(
+  db: DbInstance,
+  event: ProjectableEvent,
+  deps: ProjectionDeps,
+): Promise<void> {
+  // Only mirror events from descendant runs (not root runs).
+  // We check if the event's run has a parentRunId (i.e., it's a child).
+  const schema = db.schema;
+  const [run] = await db.drizzle
+    .select({
+      parentRunId: schema.missionRuns.parentRunId,
+      rootRunId: schema.missionRuns.rootRunId,
+    })
+    .from(schema.missionRuns)
+    .where(eq(schema.missionRuns.id, event.runId))
+    .limit(1);
+
+  // Not a descendant (root run or not found) — skip mirroring.
+  if (!run || run.parentRunId === null || run.rootRunId === event.runId) {
+    return;
+  }
+
+  // Don't mirror projection-tracking events or mirror events themselves
+  // (prevents cycles — VAL-SUB-058).
+  if (event.type === 'projection.failed' || event.type === 'projection.repaired') {
+    return;
+  }
+  if (event.type === 'descendant.progressed') {
+    return;
+  }
+
+  const mirrorService = new DescendantMirrorService(db, deps);
+  try {
+    await db.drizzle.transaction(async (tx) => {
+      // Lock the root run for atomic sequence allocation.
+      await tx
+        .select()
+        .from(schema.missionRuns)
+        .where(
+          and(
+            eq(schema.missionRuns.companyId, event.companyId),
+            eq(schema.missionRuns.id, run.rootRunId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      await mirrorService.mirrorDescendantEvent(tx, {
+        companyId: event.companyId,
+        projectId: event.projectId,
+        rootRunId: run.rootRunId,
+        descendantRunId: event.runId,
+        sourceSequence: event.sequence,
+        sourceEventType: event.type,
+        sourcePayload: event.payload,
+        actorType: event.actorType,
+        actorId: event.actorId,
+        traceId: event.traceId,
+      });
+    });
+  } catch {
+    // Mirror failure is non-fatal — it's retried idempotently on the next
+    // projection pass. The unique constraint ensures no duplicate mirrors.
   }
 }

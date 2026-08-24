@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { MentionSchema } from '@eidolon/shared';
 import { validate } from '../middleware/validate.js';
@@ -13,7 +13,13 @@ import { backgroundWork } from '../services/background-work.js';
 
 const THREAD_TYPES = ['conversation', 'plan_review', 'decision_review', 'standup'] as const;
 const THREAD_STATUSES = ['active', 'archived'] as const;
-const ITEM_KINDS = ['comment', 'interaction', 'decision', 'approval_link', 'execution_event'] as const;
+const ITEM_KINDS = [
+  'comment',
+  'interaction',
+  'decision',
+  'approval_link',
+  'execution_event',
+] as const;
 const ITEM_STATUSES = ['pending', 'accepted', 'rejected', 'answered', 'linked'] as const;
 const INTERACTION_TYPES = ['suggested_tasks', 'confirmation', 'form'] as const;
 
@@ -27,6 +33,13 @@ const CreateThreadBody = z.object({
 const ThreadListQuery = z.object({
   status: z.enum(THREAD_STATUSES).optional(),
   type: z.enum(THREAD_TYPES).optional(),
+  /**
+   * Mission subthreads are excluded from default thread lists unless
+   * `includeMissionSubthreads=true` (VAL-SUB-102). They are read-only
+   * projections of child run progress and should not clutter regular
+   * thread navigation.
+   */
+  includeMissionSubthreads: z.coerce.boolean().default(false),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -83,11 +96,30 @@ export function projectThreadsRouter(db: DbInstance): Router {
     return row;
   }
 
-  async function getThreadItemOrThrow(
+  /**
+   * Guard: reject generic thread/message/item mutations on Mission
+   * subthreads (VAL-SUB-102). Mission subthreads are read-only projections
+   * of child run progress. Generic writes return HTTP 409
+   * `MISSION_SUBTHREAD_READ_ONLY`. Explicit Mission question, cancellation,
+   * and legal retry actions bypass this guard because they are routed
+   * through the Mission command endpoints, not the generic thread routes.
+   */
+  async function rejectIfMissionSubthread(
     companyId: string,
-    projectThreadId: string,
-    itemId: string,
-  ) {
+    projectId: string,
+    threadId: string,
+  ): Promise<void> {
+    const thread = await getThreadOrThrow(companyId, projectId, threadId);
+    if (thread.isMissionSubthread === true) {
+      throw new AppError(
+        409,
+        'MISSION_SUBTHREAD_READ_ONLY',
+        'Mission subthreads are read-only projections and cannot accept generic thread mutations',
+      );
+    }
+  }
+
+  async function getThreadItemOrThrow(companyId: string, projectThreadId: string, itemId: string) {
     const [row] = await db.drizzle
       .select()
       .from(taskThreadItems)
@@ -128,6 +160,13 @@ export function projectThreadsRouter(db: DbInstance): Router {
 
     if (query.type) {
       conditions.push(eq(projectThreads.type, query.type));
+    }
+
+    // Exclude Mission subthreads from default lists unless explicitly
+    // requested (VAL-SUB-102). Mission subthreads are read-only projections
+    // and should not clutter regular thread navigation.
+    if (!query.includeMissionSubthreads) {
+      conditions.push(ne(projectThreads.isMissionSubthread, true));
     }
 
     const rows = await db.drizzle
@@ -229,7 +268,7 @@ export function projectThreadsRouter(db: DbInstance): Router {
     const now = new Date();
 
     await validateProjectOwnership(db, companyId, projectId);
-    await getThreadOrThrow(companyId, projectId, threadId);
+    await rejectIfMissionSubthread(companyId, projectId, threadId);
 
     if (body.idempotencyKey) {
       const [existing] = await db.drizzle
@@ -309,58 +348,54 @@ export function projectThreadsRouter(db: DbInstance): Router {
   });
 
   // PATCH /api/companies/:companyId/projects/:projectId/threads/:threadId/items/:itemId
-  router.patch(
-    '/:threadId/items/:itemId',
-    validate(ResolveInteractionBody),
-    async (req, res) => {
-      const body = req.body as z.infer<typeof ResolveInteractionBody>;
-      const { companyId, projectId, threadId, itemId } = routeParams(req);
-      const now = new Date();
+  router.patch('/:threadId/items/:itemId', validate(ResolveInteractionBody), async (req, res) => {
+    const body = req.body as z.infer<typeof ResolveInteractionBody>;
+    const { companyId, projectId, threadId, itemId } = routeParams(req);
+    const now = new Date();
 
-      await validateProjectOwnership(db, companyId, projectId);
-      await getThreadOrThrow(companyId, projectId, threadId);
-      const item = await getThreadItemOrThrow(companyId, threadId, itemId);
+    await validateProjectOwnership(db, companyId, projectId);
+    await rejectIfMissionSubthread(companyId, projectId, threadId);
+    const item = await getThreadItemOrThrow(companyId, threadId, itemId);
 
-      if (item.kind !== 'interaction') {
-        throw new AppError(
-          400,
-          'THREAD_ITEM_NOT_INTERACTION',
-          'Only interaction items can be resolved',
-        );
-      }
+    if (item.kind !== 'interaction') {
+      throw new AppError(
+        400,
+        'THREAD_ITEM_NOT_INTERACTION',
+        'Only interaction items can be resolved',
+      );
+    }
 
-      if (item.status !== 'pending') {
-        return res.json({ data: item });
-      }
+    if (item.status !== 'pending') {
+      return res.json({ data: item });
+    }
 
-      const payload: Record<string, unknown> = {
-        ...(item.payload as Record<string, unknown>),
-        answers: body.answers ?? {},
-      };
+    const payload: Record<string, unknown> = {
+      ...(item.payload as Record<string, unknown>),
+      answers: body.answers ?? {},
+    };
 
-      const [updated] = await db.drizzle
-        .update(taskThreadItems)
-        .set({
-          status: body.status,
-          payload,
-          resolutionNote: body.note ?? null,
-          resolvedByUserId: req.user?.id ?? null,
-          resolvedAt: now,
-          updatedAt: now,
-        } as any)
-        .where(eq(taskThreadItems.id, item.id))
-        .returning();
+    const [updated] = await db.drizzle
+      .update(taskThreadItems)
+      .set({
+        status: body.status,
+        payload,
+        resolutionNote: body.note ?? null,
+        resolvedByUserId: req.user?.id ?? null,
+        resolvedAt: now,
+        updatedAt: now,
+      } as any)
+      .where(eq(taskThreadItems.id, item.id))
+      .returning();
 
-      eventBus.emitEvent({
-        type: 'project.thread.item.updated',
-        companyId,
-        payload: { threadId, itemId, item: updated },
-        timestamp: now.toISOString(),
-      });
+    eventBus.emitEvent({
+      type: 'project.thread.item.updated',
+      companyId,
+      payload: { threadId, itemId, item: updated },
+      timestamp: now.toISOString(),
+    });
 
-      res.json({ data: updated });
-    },
-  );
+    res.json({ data: updated });
+  });
 
   // PATCH /api/companies/:companyId/projects/:projectId/threads/:threadId/items/:itemId/content
   // VAL-MENTION-011: edit a thread item's content and reconcile mentions
@@ -373,19 +408,19 @@ export function projectThreadsRouter(db: DbInstance): Router {
       const now = new Date();
 
       await validateProjectOwnership(db, companyId, projectId);
-      await getThreadOrThrow(companyId, projectId, threadId);
+      await rejectIfMissionSubthread(companyId, projectId, threadId);
       const item = await getThreadItemOrThrow(companyId, threadId, itemId);
 
       // Reconcile mentions: resolve new mentions, keep existing retained ones
       const mentionService = new MentionService(db);
-      let reconciledMentions = item.mentions as any[] ?? [];
+      let reconciledMentions = (item.mentions as any[]) ?? [];
 
       if (body.mentions !== undefined) {
         // Resolve all incoming mentions against the company
         const resolved = [];
         for (const m of body.mentions) {
           const valid = await mentionService.resolveMention(companyId, m.entityType, m.entityId);
-          if (valid) resolved.push(m);
+          if (valid) {resolved.push(m);}
         }
         // Reconcile: keep existing mentions that are still present (by entityId),
         // add new ones, drop removed ones. This preserves stable IDs for retained mentions.
@@ -422,8 +457,12 @@ export function projectThreadsRouter(db: DbInstance): Router {
       // Dispatch any newly added mentions (agent wake / user notification) —
       // tracked fire-and-forget so tests can drain deterministically.
       if (body.mentions !== undefined) {
-        const oldIds = new Set((item.mentions as any[] ?? []).map((m) => `${m.entityType}:${m.entityId}`));
-        const newMentions = reconciledMentions.filter((m) => !oldIds.has(`${m.entityType}:${m.entityId}`));
+        const oldIds = new Set(
+          ((item.mentions as any[]) ?? []).map((m) => `${m.entityType}:${m.entityId}`),
+        );
+        const newMentions = reconciledMentions.filter(
+          (m) => !oldIds.has(`${m.entityType}:${m.entityId}`),
+        );
         if (newMentions.length > 0) {
           backgroundWork.fire(
             mentionService.dispatchMentions({
@@ -443,7 +482,7 @@ export function projectThreadsRouter(db: DbInstance): Router {
         // mentions that were removed by this edit. Removed agent mentions
         // should not trigger a delayed agent response the user no longer wants.
         const newIds = new Set(reconciledMentions.map((m) => `${m.entityType}:${m.entityId}`));
-        const removedAgentMentions = (item.mentions as any[] ?? []).filter(
+        const removedAgentMentions = ((item.mentions as any[]) ?? []).filter(
           (m) => m.entityType === 'agent' && !newIds.has(`${m.entityType}:${m.entityId}`),
         );
         if (removedAgentMentions.length > 0) {

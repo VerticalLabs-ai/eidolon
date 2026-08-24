@@ -3,6 +3,7 @@ import { AppError } from '../../middleware/error-handler.js';
 import { buildMissionUiLink } from '@eidolon/shared';
 import type { DbInstance, EidolonDbSchema } from '../../types.js';
 import { MissionWorkerHealthService, type QueueHealth } from './worker-health.js';
+import { SubthreadProjectionService } from './subthread-projection.js';
 
 /** Inferred row types for the authoritative tables read by snapshots. */
 type MissionRunRow = EidolonDbSchema['missionRuns']['$inferSelect'];
@@ -106,6 +107,13 @@ export interface RunSnapshot {
   /** Output links. Empty until the artifact/provenance feature populates them. */
   artifacts: never[];
   links: { ui: string };
+  /**
+   * The dedicated subthread ID for this run, if it is a child run with a
+   * Mission subthread projection (VAL-SUB-007). Null for root runs or when
+   * no subthread projection exists. The subthread is company/project scoped
+   * (VAL-SUB-043) and read-only (VAL-SUB-102).
+   */
+  subthreadId: string | null;
   /**
    * Worker availability derived from the most recent worker heartbeat age
    * (VAL-RUN-088). `"unavailable"` when no worker heartbeat has been
@@ -331,6 +339,19 @@ export class MissionSnapshotService {
       remainingWallMs = deadline.getTime() - this.now().getTime();
     }
 
+    // Resolve the dedicated subthread for this run, if it is a child run
+    // with a Mission subthread projection (VAL-SUB-007, VAL-SUB-043).
+    let subthreadId: string | null = null;
+    if (run.parentRunId !== null) {
+      const subthreadService = new SubthreadProjectionService(this.db);
+      const subthread = await subthreadService.getSubthreadForRun(
+        run.companyId,
+        run.projectId,
+        run.id,
+      );
+      subthreadId = subthread?.threadId ?? null;
+    }
+
     return this.toSnapshot(
       run,
       reservation,
@@ -341,6 +362,7 @@ export class MissionSnapshotService {
       currentQuestionSet,
       deadlineAt,
       remainingWallMs,
+      subthreadId,
     );
   }
 
@@ -548,6 +570,7 @@ export class MissionSnapshotService {
     currentQuestionSet: RunSnapshot['currentQuestionSet'],
     deadlineAt: string | null,
     remainingWallMs: number | null,
+    subthreadId: string | null,
   ): RunSnapshot {
     const { companyId, projectId } = run;
     return {
@@ -633,6 +656,7 @@ export class MissionSnapshotService {
           runId: run.id,
         }),
       },
+      subthreadId,
       queueHealth,
       deadlineAt,
       remainingWallMs,
