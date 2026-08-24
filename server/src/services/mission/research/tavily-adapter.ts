@@ -44,6 +44,7 @@ import {
   ResearchProviderError,
 } from './spi.js';
 import { isOperationSupported, getUnsupportedOperationError } from './operations.js';
+import { parseRetryAfter } from './retry-after.js';
 
 // ---------------------------------------------------------------------------
 // Adapter configuration
@@ -145,10 +146,10 @@ export class TavilyAdapter implements ResearchProvider {
       throw getUnsupportedOperationError('tavily', request.operation);
     }
 
-    // 2. Credential check.
+    // 2. Credential check (VAL-RES-090: missing credential before dispatch).
     if (!this.apiKey) {
       throw new ResearchProviderError(
-        'MISSING_CREDENTIAL',
+        'PROVIDER_CREDENTIAL_UNAVAILABLE',
         'Tavily API key is not configured',
         'tavily',
         request.operation,
@@ -200,8 +201,9 @@ export class TavilyAdapter implements ResearchProvider {
       body,
       request.timeoutMs,
       context,
+      'search',
     );
-    const data = await this.parseResponse<TavilySearchResponse>(response);
+    const data = await this.parseResponse<TavilySearchResponse>(response, 'search');
 
     const sources: NormalizedResearchSource[] = [];
     const results = Array.isArray(data.results) ? data.results : [];
@@ -273,8 +275,9 @@ export class TavilyAdapter implements ResearchProvider {
       body,
       request.timeoutMs,
       context,
+      'extract',
     );
-    const data = await this.parseResponse<TavilyExtractResponse>(response);
+    const data = await this.parseResponse<TavilyExtractResponse>(response, 'extract');
 
     const sources: NormalizedResearchSource[] = [];
     const results = Array.isArray(data.results) ? data.results : [];
@@ -320,6 +323,7 @@ export class TavilyAdapter implements ResearchProvider {
     body: Record<string, unknown>,
     timeoutMs: number,
     context: ResearchCallContext,
+    operation: ResearchOperation,
   ): Promise<Response> {
     const url = `${TAVILY_ORIGIN}${path}`;
     const controller = new AbortController();
@@ -333,7 +337,7 @@ export class TavilyAdapter implements ResearchProvider {
           'CANCELLED',
           'Research call cancelled before dispatch',
           'tavily',
-          'search',
+          operation,
         );
       }
       context.signal.addEventListener('abort', () => controller.abort());
@@ -350,22 +354,39 @@ export class TavilyAdapter implements ResearchProvider {
         signal: controller.signal,
       });
 
-      if (response.status === 401) {
+      // VAL-RES-090: 401/403 → PROVIDER_AUTHENTICATION_FAILED (non-retried, non-fallback).
+      if (response.status === 401 || response.status === 403) {
         throw new ResearchProviderError(
-          'MISSING_CREDENTIAL',
+          'PROVIDER_AUTHENTICATION_FAILED',
           'Tavily authentication failed',
           'tavily',
-          'search',
-          401,
+          operation,
+          response.status,
+        );
+      }
+      if (response.status === 408) {
+        throw new ResearchProviderError(
+          'PROVIDER_TIMEOUT',
+          'Tavily request timed out',
+          'tavily',
+          operation,
+          408,
         );
       }
       if (response.status === 429) {
+        // Parse Retry-After header (VAL-RES-009).
+        const retryAfterMs = parseRetryAfter(
+          response.headers.get('retry-after'),
+          new Date(),
+          5_000,
+        );
         throw new ResearchProviderError(
           'PROVIDER_RATE_LIMITED',
           'Tavily rate limit exceeded',
           'tavily',
-          'search',
+          operation,
           429,
+          retryAfterMs ?? undefined,
         );
       }
       if (response.status === 432 || response.status === 433) {
@@ -373,17 +394,24 @@ export class TavilyAdapter implements ResearchProvider {
           'PROVIDER_QUOTA_EXCEEDED',
           'Tavily quota exceeded',
           'tavily',
-          'search',
+          operation,
           response.status,
         );
       }
       if (response.status >= 500) {
+        // Parse Retry-After for 503 if present (VAL-RES-009).
+        const retryAfterMs = parseRetryAfter(
+          response.headers.get('retry-after'),
+          new Date(),
+          5_000,
+        );
         throw new ResearchProviderError(
           'PROVIDER_TRANSIENT',
           'Tavily server error',
           'tavily',
-          'search',
+          operation,
           response.status,
+          retryAfterMs ?? undefined,
         );
       }
       if (response.status >= 400) {
@@ -391,7 +419,7 @@ export class TavilyAdapter implements ResearchProvider {
           'PROVIDER_PERMANENT',
           'Tavily request rejected',
           'tavily',
-          'search',
+          operation,
           response.status,
         );
       }
@@ -402,11 +430,20 @@ export class TavilyAdapter implements ResearchProvider {
         throw err;
       }
       if (err instanceof DOMException && err.name === 'AbortError') {
+        // Distinguish cancellation from timeout.
+        if (context.signal?.aborted) {
+          throw new ResearchProviderError(
+            'CANCELLED',
+            'Research call cancelled',
+            'tavily',
+            operation,
+          );
+        }
         throw new ResearchProviderError(
           'PROVIDER_TIMEOUT',
-          'Tavily request timed out or was aborted',
+          'Tavily request timed out',
           'tavily',
-          'search',
+          operation,
         );
       }
       // Network error.
@@ -414,7 +451,7 @@ export class TavilyAdapter implements ResearchProvider {
         'PROVIDER_TRANSIENT',
         'Tavily network error',
         'tavily',
-        'search',
+        operation,
       );
     } finally {
       clearTimeout(timeout);
@@ -425,14 +462,14 @@ export class TavilyAdapter implements ResearchProvider {
   // Response parsing (bounded, schema-validated)
   // -------------------------------------------------------------------------
 
-  private async parseResponse<T>(response: Response): Promise<T> {
+  private async parseResponse<T>(response: Response, operation: ResearchOperation): Promise<T> {
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
       throw new ResearchProviderError(
         'MALFORMED_RESPONSE',
         'Tavily returned non-JSON content type',
         'tavily',
-        'search',
+        operation,
       );
     }
 
@@ -444,7 +481,7 @@ export class TavilyAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Tavily response exceeds maximum size',
         'tavily',
-        'search',
+        operation,
       );
     }
 
@@ -456,7 +493,7 @@ export class TavilyAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Failed to read Tavily response body',
         'tavily',
-        'search',
+        operation,
       );
     }
 
@@ -465,7 +502,7 @@ export class TavilyAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Tavily response exceeds maximum size',
         'tavily',
-        'search',
+        operation,
       );
     }
 
@@ -477,7 +514,7 @@ export class TavilyAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Tavily returned malformed JSON',
         'tavily',
-        'search',
+        operation,
       );
     }
 
@@ -486,7 +523,7 @@ export class TavilyAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Tavily response is not a JSON object',
         'tavily',
-        'search',
+        operation,
       );
     }
 

@@ -138,6 +138,8 @@ export type ResearchProviderErrorCode =
   | 'UNSUPPORTED_OPERATION'
   | 'INVALID_REQUEST'
   | 'MISSING_CREDENTIAL'
+  | 'PROVIDER_CREDENTIAL_UNAVAILABLE'
+  | 'PROVIDER_AUTHENTICATION_FAILED'
   | 'PROVIDER_TIMEOUT'
   | 'PROVIDER_QUOTA_EXCEEDED'
   | 'PROVIDER_RATE_LIMITED'
@@ -146,7 +148,8 @@ export type ResearchProviderErrorCode =
   | 'MALFORMED_RESPONSE'
   | 'POLICY_DENIED'
   | 'BUDGET_EXHAUSTED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'RESEARCH_NO_USABLE_SOURCES';
 
 export class ResearchProviderError extends Error {
   constructor(
@@ -155,6 +158,11 @@ export class ResearchProviderError extends Error {
     public readonly provider: ResearchProviderName,
     public readonly operation: ResearchOperation,
     public readonly statusCode?: number,
+    /**
+     * Parsed Retry-After value in milliseconds (from HTTP 429/503 responses).
+     * Used by the retry executor to honor bounded Retry-After delays.
+     */
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'ResearchProviderError';

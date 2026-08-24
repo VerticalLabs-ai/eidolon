@@ -316,7 +316,7 @@ describe('Tavily adapter: malformed output rejection', () => {
 // ---------------------------------------------------------------------------
 
 describe('Tavily adapter: missing credential', () => {
-  it('rejects with MISSING_CREDENTIAL when apiKey is empty', async () => {
+  it('rejects with PROVIDER_CREDENTIAL_UNAVAILABLE when apiKey is empty', async () => {
     const { fn } = createMockFetch(() => jsonResponse({ results: [] }));
     const adapter = new TavilyAdapter({ apiKey: '', fetch: fn });
 
@@ -325,7 +325,25 @@ describe('Tavily adapter: missing credential', () => {
         { operation: 'search', query: 'test', maxResults: 5, timeoutMs: 5000 },
         baseContext,
       ),
-    ).rejects.toMatchObject({ code: 'MISSING_CREDENTIAL' });
+    ).rejects.toMatchObject({ code: 'PROVIDER_CREDENTIAL_UNAVAILABLE' });
+  });
+
+  it('rejects with PROVIDER_AUTHENTICATION_FAILED on 401 response', async () => {
+    const { fn } = createMockFetch(
+      () =>
+        new Response('{"error":"unauthorized"}', {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    const adapter = new TavilyAdapter({ apiKey: 'invalid-key', fetch: fn });
+
+    await expect(
+      adapter.execute(
+        { operation: 'search', query: 'test', maxResults: 5, timeoutMs: 5000 },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_AUTHENTICATION_FAILED' });
   });
 });
 

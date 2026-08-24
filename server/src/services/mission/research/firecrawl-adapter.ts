@@ -54,6 +54,7 @@ import {
   ResearchProviderError,
 } from './spi.js';
 import { isOperationSupported, getUnsupportedOperationError } from './operations.js';
+import { parseRetryAfter } from './retry-after.js';
 
 // ---------------------------------------------------------------------------
 // Adapter configuration
@@ -168,10 +169,10 @@ export class FirecrawlAdapter implements ResearchProvider {
       throw getUnsupportedOperationError('firecrawl', request.operation);
     }
 
-    // 2. Credential check.
+    // 2. Credential check (VAL-RES-090: missing credential before dispatch).
     if (!this.apiKey) {
       throw new ResearchProviderError(
-        'MISSING_CREDENTIAL',
+        'PROVIDER_CREDENTIAL_UNAVAILABLE',
         'Firecrawl API key is not configured',
         'firecrawl',
         request.operation,
@@ -225,8 +226,9 @@ export class FirecrawlAdapter implements ResearchProvider {
       body,
       request.timeoutMs,
       context,
+      'search',
     );
-    const data = await this.parseResponse<FirecrawlSearchResponse>(response);
+    const data = await this.parseResponse<FirecrawlSearchResponse>(response, 'search');
 
     if (data.success === false) {
       throw new ResearchProviderError(
@@ -315,8 +317,9 @@ export class FirecrawlAdapter implements ResearchProvider {
       body,
       request.timeoutMs,
       context,
+      'scrape',
     );
-    const data = await this.parseResponse<FirecrawlScrapeResponse>(response);
+    const data = await this.parseResponse<FirecrawlScrapeResponse>(response, 'scrape');
 
     if (data.success === false) {
       throw new ResearchProviderError(
@@ -403,8 +406,9 @@ export class FirecrawlAdapter implements ResearchProvider {
       body,
       request.timeoutMs,
       context,
+      'structured_extract',
     );
-    const data = await this.parseResponse<FirecrawlExtractResponse>(response);
+    const data = await this.parseResponse<FirecrawlExtractResponse>(response, 'structured_extract');
 
     if (data.success === false) {
       throw new ResearchProviderError(
@@ -441,6 +445,7 @@ export class FirecrawlAdapter implements ResearchProvider {
     body: Record<string, unknown>,
     timeoutMs: number,
     context: ResearchCallContext,
+    operation: ResearchOperation,
   ): Promise<Response> {
     const url = `${FIRECRAWL_ORIGIN}${path}`;
     const controller = new AbortController();
@@ -453,7 +458,7 @@ export class FirecrawlAdapter implements ResearchProvider {
           'CANCELLED',
           'Research call cancelled before dispatch',
           'firecrawl',
-          'search',
+          operation,
         );
       }
       context.signal.addEventListener('abort', () => controller.abort());
@@ -470,13 +475,14 @@ export class FirecrawlAdapter implements ResearchProvider {
         signal: controller.signal,
       });
 
-      if (response.status === 401) {
+      // VAL-RES-090: 401/403 → PROVIDER_AUTHENTICATION_FAILED (non-retried, non-fallback).
+      if (response.status === 401 || response.status === 403) {
         throw new ResearchProviderError(
-          'MISSING_CREDENTIAL',
+          'PROVIDER_AUTHENTICATION_FAILED',
           'Firecrawl authentication failed',
           'firecrawl',
-          'search',
-          401,
+          operation,
+          response.status,
         );
       }
       if (response.status === 402) {
@@ -484,7 +490,7 @@ export class FirecrawlAdapter implements ResearchProvider {
           'PROVIDER_QUOTA_EXCEEDED',
           'Firecrawl payment required',
           'firecrawl',
-          'search',
+          operation,
           402,
         );
       }
@@ -493,26 +499,40 @@ export class FirecrawlAdapter implements ResearchProvider {
           'PROVIDER_TIMEOUT',
           'Firecrawl request timed out',
           'firecrawl',
-          'search',
+          operation,
           408,
         );
       }
       if (response.status === 429) {
+        // Parse Retry-After header (VAL-RES-009).
+        const retryAfterMs = parseRetryAfter(
+          response.headers.get('retry-after'),
+          new Date(),
+          5_000,
+        );
         throw new ResearchProviderError(
           'PROVIDER_RATE_LIMITED',
           'Firecrawl rate limit exceeded',
           'firecrawl',
-          'search',
+          operation,
           429,
+          retryAfterMs ?? undefined,
         );
       }
       if (response.status >= 500) {
+        // Parse Retry-After for 503 if present (VAL-RES-009).
+        const retryAfterMs = parseRetryAfter(
+          response.headers.get('retry-after'),
+          new Date(),
+          5_000,
+        );
         throw new ResearchProviderError(
           'PROVIDER_TRANSIENT',
           'Firecrawl server error',
           'firecrawl',
-          'search',
+          operation,
           response.status,
+          retryAfterMs ?? undefined,
         );
       }
       if (response.status >= 400) {
@@ -520,7 +540,7 @@ export class FirecrawlAdapter implements ResearchProvider {
           'PROVIDER_PERMANENT',
           'Firecrawl request rejected',
           'firecrawl',
-          'search',
+          operation,
           response.status,
         );
       }
@@ -531,18 +551,26 @@ export class FirecrawlAdapter implements ResearchProvider {
         throw err;
       }
       if (err instanceof DOMException && err.name === 'AbortError') {
+        if (context.signal?.aborted) {
+          throw new ResearchProviderError(
+            'CANCELLED',
+            'Research call cancelled',
+            'firecrawl',
+            operation,
+          );
+        }
         throw new ResearchProviderError(
           'PROVIDER_TIMEOUT',
-          'Firecrawl request timed out or was aborted',
+          'Firecrawl request timed out',
           'firecrawl',
-          'search',
+          operation,
         );
       }
       throw new ResearchProviderError(
         'PROVIDER_TRANSIENT',
         'Firecrawl network error',
         'firecrawl',
-        'search',
+        operation,
       );
     } finally {
       clearTimeout(timeout);
@@ -553,14 +581,14 @@ export class FirecrawlAdapter implements ResearchProvider {
   // Response parsing (bounded, schema-validated)
   // -------------------------------------------------------------------------
 
-  private async parseResponse<T>(response: Response): Promise<T> {
+  private async parseResponse<T>(response: Response, operation: ResearchOperation): Promise<T> {
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
       throw new ResearchProviderError(
         'MALFORMED_RESPONSE',
         'Firecrawl returned non-JSON content type',
         'firecrawl',
-        'search',
+        operation,
       );
     }
 
@@ -571,7 +599,7 @@ export class FirecrawlAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Firecrawl response exceeds maximum size',
         'firecrawl',
-        'search',
+        operation,
       );
     }
 
@@ -583,7 +611,7 @@ export class FirecrawlAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Failed to read Firecrawl response body',
         'firecrawl',
-        'search',
+        operation,
       );
     }
 
@@ -592,7 +620,7 @@ export class FirecrawlAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Firecrawl response exceeds maximum size',
         'firecrawl',
-        'search',
+        operation,
       );
     }
 
@@ -604,7 +632,7 @@ export class FirecrawlAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Firecrawl returned malformed JSON',
         'firecrawl',
-        'search',
+        operation,
       );
     }
 
@@ -613,7 +641,7 @@ export class FirecrawlAdapter implements ResearchProvider {
         'MALFORMED_RESPONSE',
         'Firecrawl response is not a JSON object',
         'firecrawl',
-        'search',
+        operation,
       );
     }
 
