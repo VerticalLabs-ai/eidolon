@@ -6,6 +6,8 @@ import { getDb } from './bootstrap.js';
 import { RunCoordinator } from './services/mission/coordinator.js';
 import { OrchestrationWorker } from './services/mission/worker.js';
 import { RunProcessor } from './services/mission/run-processor.js';
+import { PlannerService } from './services/mission/planner.js';
+import { ProductionPlanGenerator } from './services/mission/planner-harness.js';
 import { MissionKillSwitchService } from './services/mission/kill-switch.js';
 import { MissionWorkerHealthService } from './services/mission/worker-health.js';
 import logger from './utils/logger.js';
@@ -37,7 +39,16 @@ async function main(): Promise<void> {
   const { db, client } = await getDb({ runMigrations: false, maxConnections: 5 });
 
   const coordinator = new RunCoordinator(db);
-  const processor = new RunProcessor(db);
+  // Wire the production planner into the run processor. Runs entering the
+  // `planning` state with planningPolicy.strategy='always' invoke the planner
+  // to generate a structured plan, publish it as a plan revision, and
+  // transition to `awaiting_approval` (VAL-PLAN-007/008/009).
+  //
+  // The production generator calls the real Anthropic API. The test-only
+  // `PlannerTestHarness` is gated by `MISSION_PLANNER_HARNESS` and is never
+  // constructed here — the env gate stays closed in production.
+  const planner = new PlannerService(db, { generator: new ProductionPlanGenerator() });
+  const processor = new RunProcessor(db, { planner });
   const killSwitch = new MissionKillSwitchService(db);
   const workerHealth = new MissionWorkerHealthService(db);
   const workerId = `worker-${randomUUID().slice(0, 8)}`;
