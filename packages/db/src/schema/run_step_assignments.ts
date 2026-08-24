@@ -1,9 +1,19 @@
-import { pgTable, text, integer, timestamp, jsonb, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  text,
+  integer,
+  boolean,
+  timestamp,
+  jsonb,
+  uniqueIndex,
+  index,
+} from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { companies } from './companies.js';
 import { projects } from './projects.js';
 import { missionRuns } from './mission_runs.js';
 import { runPlanRevisions } from './run_plan_revisions.js';
+import { runPolicySnapshots } from './run_policy_snapshots.js';
 
 /**
  * `run_step_assignments` binds one approved plan step to one child run.
@@ -110,6 +120,26 @@ export const runStepAssignments = pgTable(
     failureCode: text('failure_code'),
     /** Safe error message (for failed children). */
     safeErrorMessage: text('safe_error_message'),
+    /**
+     * Immutable child execution-policy snapshot committed at routing time
+     * (VAL-SUB-087, VAL-SUB-108). Null before routing; set once when the
+     * child is routed and never changed. The child run's policy_snapshot_id
+     * is also updated to point to this snapshot.
+     */
+    childPolicySnapshotId: text('child_policy_snapshot_id').references(
+      () => runPolicySnapshots.id,
+      { onDelete: 'set null' },
+    ),
+    /** Canonical content hash of the child policy snapshot (VAL-SUB-087). */
+    childPolicyContentHash: text('child_policy_content_hash'),
+    /**
+     * Whether the agent admission slot is currently held (VAL-SUB-086).
+     * Set to true when routing atomically reserves one agent admission
+     * slot; set to false when the slot is released on terminalization or
+     * pre-start failure. This is the authoritative capacity reservation
+     * flag — concurrent routers check this under a row lock.
+     */
+    admissionSlotHeld: boolean('admission_slot_held').notNull().default(false),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),

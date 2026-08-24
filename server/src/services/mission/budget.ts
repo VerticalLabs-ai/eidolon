@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
 
@@ -680,5 +680,146 @@ export class BudgetService {
       .from(schema.budgetSettlements)
       .where(eq(schema.budgetSettlements.runId, runId));
     return rows.length;
+  }
+
+  /**
+   * Allocate from an existing root reservation for a child run
+   * (VAL-SUB-086, VAL-SUB-109).
+   *
+   * Child allocations do NOT double-reserve company funds — they draw from
+   * the root hold's unallocated residual. This method:
+   *  1. Locks the root reservation.
+   *  2. Computes the unallocated residual (reserved - settled - released -
+   *     sum of other active child allocations).
+   *  3. If the requested allocation exceeds the residual, throws 409
+   *     BUDGET_UNAVAILABLE.
+   *  4. Inserts a new budget_allocation for the child run.
+   *
+   * Must be called inside a locked transaction (the routing transaction).
+   *
+   * @returns The allocation ID and allocated cents.
+   */
+  async allocateChild(
+    tx: Tx,
+    input: {
+      companyId: string;
+      rootReservationId: string;
+      runId: string;
+      billingAgentId: string | null;
+      allocatedCents: number;
+    },
+  ): Promise<{ allocationId: string; allocatedCents: number }> {
+    const schema = this.db.schema;
+    const now = this.now();
+
+    // Lock the root reservation.
+    const [reservation] = await tx
+      .select()
+      .from(schema.budgetReservations)
+      .where(
+        and(
+          eq(schema.budgetReservations.companyId, input.companyId),
+          eq(schema.budgetReservations.id, input.rootReservationId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+
+    if (!reservation) {
+      throw new AppError(
+        404,
+        'BUDGET_RESERVATION_NOT_FOUND',
+        'Root budget reservation not found for child allocation',
+      );
+    }
+
+    // Sum all existing active CHILD allocations for this root reservation
+    // (held or partially_settled — not released/settled), EXCLUDING the
+    // root run's own allocation. The root allocation IS the reservation;
+    // child allocations draw from the root's unallocated residual.
+    const existingAllocations = await tx
+      .select({
+        allocatedCents: schema.budgetAllocations.allocatedCents,
+        settledCents: schema.budgetAllocations.settledCents,
+        releasedCents: schema.budgetAllocations.releasedCents,
+      })
+      .from(schema.budgetAllocations)
+      .where(
+        and(
+          eq(schema.budgetAllocations.rootReservationId, input.rootReservationId),
+          sql`${schema.budgetAllocations.status} IN ('held', 'partially_settled')`,
+          ne(schema.budgetAllocations.runId, reservation.runId),
+        ),
+      );
+
+    // Also get the root allocation to compute how much the root has consumed.
+    const [rootAllocation] = await tx
+      .select({
+        allocatedCents: schema.budgetAllocations.allocatedCents,
+        settledCents: schema.budgetAllocations.settledCents,
+        releasedCents: schema.budgetAllocations.releasedCents,
+      })
+      .from(schema.budgetAllocations)
+      .where(
+        and(
+          eq(schema.budgetAllocations.rootReservationId, input.rootReservationId),
+          eq(schema.budgetAllocations.runId, reservation.runId),
+        ),
+      )
+      .limit(1);
+
+    const totalChildAllocatedActive = existingAllocations.reduce(
+      (sum, r) => sum + (r.allocatedCents - r.releasedCents),
+      0,
+    );
+
+    // Unallocated residual = root allocation - root settled - root released -
+    // active child allocations. This is the amount available for new child
+    // allocations without double-reserving company funds.
+    const rootConsumed = (rootAllocation?.settledCents ?? 0) + (rootAllocation?.releasedCents ?? 0);
+    const residualCents =
+      (rootAllocation?.allocatedCents ?? reservation.reservedCents) -
+      rootConsumed -
+      totalChildAllocatedActive;
+
+    if (input.allocatedCents > residualCents) {
+      throw new AppError(
+        409,
+        'BUDGET_UNAVAILABLE',
+        `Child allocation (${input.allocatedCents}c) exceeds unallocated root residual (${residualCents}c).`,
+      );
+    }
+
+    // Insert the child allocation.
+    const [allocation] = await tx
+      .insert(schema.budgetAllocations)
+      .values({
+        companyId: input.companyId,
+        rootReservationId: input.rootReservationId,
+        runId: input.runId,
+        billingAgentId: input.billingAgentId,
+        allocatedCents: input.allocatedCents,
+        settledCents: 0,
+        releasedCents: 0,
+        status: 'held',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: schema.budgetAllocations.id });
+
+    return { allocationId: allocation.id, allocatedCents: input.allocatedCents };
+  }
+
+  /**
+   * Find the root reservation ID for a run.
+   */
+  async getRootReservationId(runId: string): Promise<string | null> {
+    const schema = this.db.schema;
+    const [reservation] = await this.db.drizzle
+      .select({ id: schema.budgetReservations.id })
+      .from(schema.budgetReservations)
+      .where(eq(schema.budgetReservations.runId, runId))
+      .limit(1);
+    return reservation?.id ?? null;
   }
 }

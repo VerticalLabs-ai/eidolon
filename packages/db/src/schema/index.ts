@@ -76,3 +76,4 @@ export { runQuestionAnswers } from './run_question_answers.js';
 export { runPlanRevisions } from './run_plan_revisions.js';
 export { runPlanApprovalBindings } from './run_plan_approval_bindings.js';
 export { runStepAssignments } from './run_step_assignments.js';
+export { runSchedulingPermits } from './run_scheduling_permits.js';

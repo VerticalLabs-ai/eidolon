@@ -1,6 +1,16 @@
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import type { DbInstance } from '../../types.js';
 import type { RoutingRequirements } from './plan-schema.js';
+import {
+  deriveChildPolicy,
+  childPolicyContentHash,
+  checkRoutedAgentEligibility,
+  type AgentPolicySettings,
+} from './child-policy.js';
+import type { ResolvedPolicy } from './policy.js';
+import type { ModeLimits } from './modes.js';
+import { BudgetService } from './budget.js';
 
 /**
  * AgentRouter — deterministic permanent-agent eligibility and scoring for
@@ -162,18 +172,34 @@ export class AgentRouter {
   /**
    * Route a pending-routing child step to an eligible company agent.
    *
-   * If an eligible agent is found, atomically records the routing decision:
-   * emits `child.routed` on the root run journal, sets `executing_agent_id`
-   * and `routing_kind='company_agent'` on the child run and step assignment,
-   * and sets the assignment status to `routed`. The child's `available_at`
-   * is cleared so it is not re-claimed until the next feature (m4-f03)
-   * reserves capacity and transitions it to execution.
+   * This method performs atomic capacity reservation (VAL-SUB-086):
+   * concurrent routers competing for one remaining permanent-agent slot
+   * produce at most one reservation/assignment. The agent row is locked
+   * (FOR UPDATE) inside the transaction and capacity is rechecked under the
+   * lock. If the highest-scored candidate is now at capacity, the next
+   * eligible candidate is tried (rescored fresh). Losers rescore fresh
+   * candidates or fail.
+   *
+   * On successful routing, this method also:
+   * - Derives and persists one immutable child execution-policy snapshot
+   *   (parent policy ∩ approved node ∩ selected agent current policy)
+   *   (VAL-SUB-087, VAL-SUB-108).
+   * - Creates a child budget allocation from the root reservation
+   *   (VAL-SUB-086).
+   * - Sets `admission_slot_held=true` on the step assignment.
+   * - Emits `child.routed` on the root run journal.
+   * - Clears the child's `available_at` so it is not re-claimed until
+   *   execution acquires running permits (VAL-SUB-109).
    *
    * If no eligible agent exists, returns a non-selected decision. The child
    * remains pending; ephemeral fallback is owned by m4-f03-ephemeral-fallback.
    *
    * Routing is idempotent: re-routing an already-routed child returns the
-   * same decision without duplicating events.
+   * same decision without duplicating events or snapshots.
+   *
+   * After `child.routed`, Phase 1 never reroutes or substitutes that run
+   * (VAL-SUB-087). Later revocation fails it `AGENT_BECAME_INELIGIBLE`
+   * before the next effect (see `checkAndFailRevokedAgent`).
    */
   async route(ctx: RoutingContext): Promise<RoutingDecision> {
     // Idempotency: check if this child is already routed. If so, return the
@@ -198,20 +224,68 @@ export class AgentRouter {
       };
     }
 
-    const winner = this.selectWinner(eligible, ctx.routingRequirements);
+    // Sort eligible candidates by deterministic score tuple (VAL-SUB-088).
+    const sortedEligible = this.sortEligible(eligible);
 
-    // Atomically record the routing decision.
+    // Try each eligible candidate inside a transaction with atomic capacity
+    // reservation (VAL-SUB-086). The first candidate that still has capacity
+    // under a row lock wins.
+    const routingResultRef: { value: { winnerAgentId: string; decision: RoutingDecision } | null } =
+      { value: null };
+
     await this.db.drizzle.transaction(async (tx) => {
-      await this.recordRouting(tx, ctx, winner.agentId);
+      // Re-check idempotency inside the transaction (another router may
+      // have routed this child while we were loading candidates).
+      const alreadyRouted = await this.checkExistingRoutingInTx(tx, ctx);
+      if (alreadyRouted) {
+        routingResultRef.value = {
+          winnerAgentId: alreadyRouted.winnerAgentId!,
+          decision: alreadyRouted,
+        };
+        return;
+      }
+
+      // Try each eligible candidate in score order. The first one that
+      // still has capacity under a row lock wins.
+      for (const candidate of sortedEligible) {
+        const agentRow = await this.lockAndRecheckAgent(tx, ctx, candidate.agentId);
+        if (!agentRow) {
+          // Agent became ineligible (status changed, etc.) — try next.
+          continue;
+        }
+
+        // This candidate has capacity — route to it.
+        await this.recordRoutingWithPolicy(tx, ctx, agentRow);
+
+        routingResultRef.value = {
+          winnerAgentId: candidate.agentId,
+          decision: {
+            selected: true,
+            winnerAgentId: candidate.agentId,
+            routingKind: 'company_agent',
+            reason: 'company_agent',
+            candidates: scored,
+          },
+        };
+        return;
+      }
+
+      // No candidate had capacity after rescoring — all slots were taken by
+      // concurrent routers. Return a non-selected decision.
+      routingResultRef.value = null;
     });
 
-    return {
-      selected: true,
-      winnerAgentId: winner.agentId,
-      routingKind: 'company_agent',
-      reason: 'company_agent',
-      candidates: scored,
-    };
+    if (!routingResultRef.value) {
+      return {
+        selected: false,
+        winnerAgentId: null,
+        routingKind: null,
+        reason: 'NO_ELIGIBLE_AGENT',
+        candidates: scored,
+      };
+    }
+
+    return routingResultRef.value.decision;
   }
 
   /**
@@ -247,6 +321,213 @@ export class AgentRouter {
     }
 
     return undefined;
+  }
+
+  /**
+   * Check if the child is already routed, inside a transaction.
+   */
+  private async checkExistingRoutingInTx(
+    tx: Tx,
+    ctx: RoutingContext,
+  ): Promise<RoutingDecision | undefined> {
+    const schema = this.db.schema;
+    const [assignment] = await tx
+      .select({
+        assignmentStatus: schema.runStepAssignments.assignmentStatus,
+        executingAgentId: schema.runStepAssignments.executingAgentId,
+        routingKind: schema.runStepAssignments.routingKind,
+      })
+      .from(schema.runStepAssignments)
+      .where(
+        and(
+          eq(schema.runStepAssignments.companyId, ctx.companyId),
+          eq(schema.runStepAssignments.rootRunId, ctx.rootRunId),
+          eq(schema.runStepAssignments.stepKey, ctx.stepKey),
+        ),
+      )
+      .limit(1);
+
+    if (assignment && assignment.assignmentStatus === 'routed' && assignment.executingAgentId) {
+      return {
+        selected: true,
+        winnerAgentId: assignment.executingAgentId,
+        routingKind: (assignment.routingKind as 'company_agent') ?? 'company_agent',
+        reason: 'company_agent',
+        candidates: [],
+      };
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Lock the agent row (FOR UPDATE) and recheck eligibility under the lock
+   * (VAL-SUB-086). Returns the agent's current settings if still eligible
+   * with capacity, or null if the agent became ineligible or is at capacity.
+   *
+   * This is the atomic capacity reservation: concurrent routers competing
+   * for one remaining slot will serialize on this lock. The first to acquire
+   * it sees capacity and proceeds; the second sees the updated count and
+   * fails (returns null), causing the caller to try the next candidate.
+   */
+  private async lockAndRecheckAgent(
+    tx: Tx,
+    ctx: RoutingContext,
+    agentId: string,
+  ): Promise<AgentPolicySettings | null> {
+    const schema = this.db.schema;
+
+    // Lock the agent row.
+    const [agent] = await tx
+      .select({
+        id: schema.agents.id,
+        status: schema.agents.status,
+        provider: schema.agents.provider,
+        model: schema.agents.model,
+        capabilities: schema.agents.capabilities,
+        toolsEnabled: schema.agents.toolsEnabled,
+        allowedDomains: schema.agents.allowedDomains,
+        permissions: schema.agents.permissions,
+        maxConcurrentTasks: schema.agents.maxConcurrentTasks,
+        executionTimeoutSeconds: schema.agents.executionTimeoutSeconds,
+        budgetMonthlyCents: schema.agents.budgetMonthlyCents,
+        spentMonthlyCents: schema.agents.spentMonthlyCents,
+      })
+      .from(schema.agents)
+      .where(and(eq(schema.agents.id, agentId), eq(schema.agents.companyId, ctx.companyId)))
+      .for('update')
+      .limit(1);
+
+    if (!agent) {
+      return null;
+    }
+
+    // Recheck status (VAL-SUB-011).
+    const ELIGIBLE_STATUSES = new Set(['idle', 'working']);
+    if (!ELIGIBLE_STATUSES.has(agent.status)) {
+      return null;
+    }
+
+    // Recheck provider compatibility (VAL-SUB-014).
+    if (agent.provider !== ctx.parentProvider) {
+      return null;
+    }
+
+    // Recheck permissions (VAL-SUB-015).
+    const perms = new Set(agent.permissions ?? []);
+    if (!perms.has('content.create')) {
+      return null;
+    }
+
+    // Recompute active task count under the lock (VAL-SUB-086, VAL-SUB-010).
+    // Count nonterminal mission_runs where executing_agent_id = this agent.
+    const [countRow] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.executingAgentId, agentId),
+          isNull(schema.missionRuns.terminalAt),
+        ),
+      );
+
+    const activeTaskCount = countRow?.count ?? 0;
+
+    // Check capacity for ALL agents: active tasks must be below
+    // maxConcurrentTasks. An idle agent with 0 active tasks is eligible;
+    // after one routing commits, the count increments and a concurrent
+    // router sees no capacity (VAL-SUB-086).
+    if (activeTaskCount >= agent.maxConcurrentTasks) {
+      return null;
+    }
+
+    // Recheck exact tools (VAL-SUB-013).
+    const agentTools = new Set(agent.toolsEnabled ?? []);
+    const reqTools = ctx.routingRequirements.requiredTools;
+    if (!reqTools.every((t) => agentTools.has(t))) {
+      return null;
+    }
+
+    // Recheck exact domains (VAL-SUB-013).
+    const agentDomains = new Set(agent.allowedDomains ?? []);
+    const reqDomains = ctx.routingRequirements.requiredDomains;
+    if (!reqDomains.every((d) => agentDomains.has(d))) {
+      return null;
+    }
+
+    // Recheck capabilities (VAL-SUB-012).
+    const agentCaps = new Set(agent.capabilities ?? []);
+    const reqCaps = ctx.routingRequirements.capabilities;
+    if (!reqCaps.every((c) => agentCaps.has(c))) {
+      return null;
+    }
+
+    // Recheck timeout (VAL-SUB-016).
+    if (agent.executionTimeoutSeconds < ctx.stepTimeoutSeconds) {
+      return null;
+    }
+
+    // Recheck budget (VAL-SUB-016).
+    if (agent.budgetMonthlyCents > 0) {
+      // Sum residual active allocations for this agent.
+      const [allocRow] = await tx
+        .select({
+          residual: sql<number>`coalesce(sum(${schema.budgetAllocations.allocatedCents} - ${schema.budgetAllocations.settledCents} - ${schema.budgetAllocations.releasedCents})::int, 0)`,
+        })
+        .from(schema.budgetAllocations)
+        .where(
+          and(
+            eq(schema.budgetAllocations.billingAgentId, agentId),
+            sql`${schema.budgetAllocations.status} IN ('held', 'partially_settled')`,
+          ),
+        );
+
+      const residualAllocations = allocRow?.residual ?? 0;
+      const remaining = agent.budgetMonthlyCents - agent.spentMonthlyCents - residualAllocations;
+      if (remaining < ctx.stepBudgetCents) {
+        return null;
+      }
+    }
+
+    // Agent is still eligible with capacity — return its current settings.
+    return {
+      id: agent.id,
+      provider: agent.provider,
+      model: agent.model,
+      toolsEnabled: agent.toolsEnabled ?? [],
+      allowedDomains: agent.allowedDomains ?? [],
+      permissions: agent.permissions ?? [],
+      executionTimeoutSeconds: agent.executionTimeoutSeconds,
+      budgetMonthlyCents: agent.budgetMonthlyCents,
+      spentMonthlyCents: agent.spentMonthlyCents,
+      status: agent.status,
+    };
+  }
+
+  /**
+   * Sort eligible candidates by the deterministic score tuple
+   * (VAL-SUB-088). This is the same ordering as `selectWinner` but returns
+   * the full sorted list so the router can try each in order inside the
+   * transaction.
+   */
+  private sortEligible(eligible: CandidateScore[]): CandidateScore[] {
+    return [...eligible].sort((a, b) => {
+      if (b.capabilityMatchCount !== a.capabilityMatchCount) {
+        return b.capabilityMatchCount - a.capabilityMatchCount;
+      }
+      const aIdle = a.isIdle ? 1 : 0;
+      const bIdle = b.isIdle ? 1 : 0;
+      if (bIdle !== aIdle) {
+        return bIdle - aIdle;
+      }
+      if (b.freeReservedSlots !== a.freeReservedSlots) {
+        return b.freeReservedSlots - a.freeReservedSlots;
+      }
+      if (b.remainingBudgetRatio !== a.remainingBudgetRatio) {
+        return b.remainingBudgetRatio - a.remainingBudgetRatio;
+      }
+      return a.agentId.toLowerCase().localeCompare(b.agentId.toLowerCase());
+    });
   }
 
   // -- candidate loading ---------------------------------------------------
@@ -667,22 +948,31 @@ export class AgentRouter {
     return sorted[0];
   }
 
-  // -- routing record (atomic) ---------------------------------------------
-
   /**
-   * Atomically record the routing decision in a transaction.
+   * Atomically record the routing decision with child policy derivation
+   * and budget allocation in a transaction (VAL-SUB-086, VAL-SUB-087,
+   * VAL-SUB-108).
    *
+   * - Derives one immutable child execution-policy snapshot from
+   *   parent policy ∩ approved node ∩ selected agent current policy.
+   * - Persists the snapshot as a new run_policy_snapshots row.
+   * - Updates the child run's policy_snapshot_id to the new snapshot.
+   * - Creates a child budget allocation from the root reservation.
+   * - Sets `executing_agent_id`, `routing_kind='company_agent'`,
+   *   `admission_slot_held=true`, `child_policy_snapshot_id`, and
+   *   `child_policy_content_hash` on the step assignment.
    * - Sets `executing_agent_id` and `routing_kind='company_agent'` on the
-   *   child run, and clears `available_at` (child is no longer claimable
-   *   until m4-f03 transitions it to execution).
-   * - Sets `assignment_status='routed'`, `executing_agent_id`, and
-   *   `routing_kind='company_agent'` on the step assignment.
+   *   child run, and clears `available_at`.
    * - Emits `child.routed` on the root run journal.
    *
    * Idempotent: if the assignment is already routed to the same agent, no
-   * duplicate event is emitted.
+   * duplicate event or snapshot is emitted.
    */
-  private async recordRouting(tx: Tx, ctx: RoutingContext, winnerAgentId: string): Promise<void> {
+  private async recordRoutingWithPolicy(
+    tx: Tx,
+    ctx: RoutingContext,
+    agentSettings: AgentPolicySettings,
+  ): Promise<void> {
     const schema = this.db.schema;
     const now = this.now();
 
@@ -705,18 +995,137 @@ export class AgentRouter {
     if (
       existing &&
       existing.assignmentStatus === 'routed' &&
-      existing.executingAgentId === winnerAgentId
+      existing.executingAgentId === agentSettings.id
     ) {
-      // Already routed to the same agent — idempotent no-op.
       return;
     }
 
-    // Update the child run: set executing agent and clear available_at.
+    // Load the parent policy snapshot for child policy derivation.
+    const [parentRun] = await tx
+      .select({
+        policySnapshotId: schema.missionRuns.policySnapshotId,
+        resolvedMode: schema.missionRuns.resolvedMode,
+        modeProfileId: schema.missionRuns.modeProfileId,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, ctx.companyId),
+          eq(schema.missionRuns.id, ctx.parentRunId),
+        ),
+      )
+      .limit(1);
+
+    if (!parentRun || !parentRun.policySnapshotId) {
+      throw new Error(`AgentRouter: parent run policy snapshot not found: ${ctx.parentRunId}`);
+    }
+
+    const [parentSnapshot] = await tx
+      .select()
+      .from(schema.runPolicySnapshots)
+      .where(
+        and(
+          eq(schema.runPolicySnapshots.companyId, ctx.companyId),
+          eq(schema.runPolicySnapshots.id, parentRun.policySnapshotId),
+        ),
+      )
+      .limit(1);
+
+    if (!parentSnapshot) {
+      throw new Error(
+        `AgentRouter: parent policy snapshot not found: ${parentRun.policySnapshotId}`,
+      );
+    }
+
+    // Reconstruct the parent ResolvedPolicy from the snapshot row.
+    // Note: resolvedMode and modeProfileId are on mission_runs, not on the
+    // policy snapshot table.
+    const parentPolicy: ResolvedPolicy = {
+      schemaVersion: parentSnapshot.schemaVersion,
+      sourceProfile: parentSnapshot.sourceProfile ?? '',
+      sourceProfileName: parentSnapshot.sourceProfileName,
+      sourceProfileDescription: parentSnapshot.sourceProfileDescription,
+      sourceProfileVersion: parentSnapshot.sourceProfileVersion ?? null,
+      modeProfileId: parentRun.modeProfileId ?? null,
+      provider: parentSnapshot.provider,
+      adapterId: parentSnapshot.adapterId,
+      model: parentSnapshot.model,
+      reasoningDepth: parentSnapshot.reasoningDepth,
+      systemPromptHash: parentSnapshot.systemPromptHash,
+      instructionHash: parentSnapshot.instructionHash,
+      toolAllowlist: (parentSnapshot.toolAllowlist as string[]) ?? [],
+      domainAllowlist: (parentSnapshot.domainAllowlist as string[]) ?? [],
+      researchPolicy: (parentSnapshot.researchPolicy as Record<string, unknown>) ?? {},
+      planningPolicy: (parentSnapshot.planningPolicy as Record<string, unknown>) ?? {},
+      approvalPolicy: (parentSnapshot.approvalPolicy as Record<string, unknown>) ?? {},
+      fallbackPolicy: (parentSnapshot.fallbackPolicy as Record<string, unknown>) ?? {},
+      partialResultPolicy:
+        (parentSnapshot.partialResultPolicy as 'require_all' | 'best_effort') ?? 'require_all',
+      limits: (parentSnapshot.limits as unknown as ModeLimits) ?? ({} as ModeLimits),
+      resolvedMode: parentRun.resolvedMode as ResolvedPolicy['resolvedMode'],
+    };
+
+    // Derive the immutable child policy (VAL-SUB-087, VAL-SUB-108).
+    const childPolicy = deriveChildPolicy({
+      parentPolicy,
+      routingRequirements: ctx.routingRequirements,
+      agent: agentSettings,
+      stepBudgetCents: ctx.stepBudgetCents,
+    });
+    const childHash = childPolicyContentHash(childPolicy);
+    const childSnapshotId = randomUUID();
+
+    // Persist the child policy snapshot as a new immutable row.
+    await tx.insert(schema.runPolicySnapshots).values({
+      id: childSnapshotId,
+      companyId: ctx.companyId,
+      schemaVersion: childPolicy.schemaVersion,
+      sourceProfile: childPolicy.sourceProfile,
+      sourceProfileName: childPolicy.sourceProfileName,
+      sourceProfileDescription: childPolicy.sourceProfileDescription,
+      sourceProfileVersion: childPolicy.sourceProfileVersion,
+      provider: childPolicy.provider,
+      adapterId: childPolicy.adapterId,
+      model: childPolicy.model,
+      reasoningDepth: childPolicy.reasoningDepth,
+      systemPromptHash: childPolicy.systemPromptHash,
+      instructionHash: childPolicy.instructionHash,
+      toolAllowlist: childPolicy.toolAllowlist,
+      domainAllowlist: childPolicy.domainAllowlist,
+      researchPolicy: childPolicy.researchPolicy,
+      planningPolicy: childPolicy.planningPolicy,
+      approvalPolicy: childPolicy.approvalPolicy,
+      fallbackPolicy: childPolicy.fallbackPolicy,
+      partialResultPolicy: childPolicy.partialResultPolicy,
+      limits: childPolicy.limits as unknown as Record<string, number>,
+      contentHash: childHash,
+      createdAt: now,
+    });
+
+    // Create a child budget allocation from the root reservation
+    // (VAL-SUB-086).
+    const budgetService = new BudgetService(this.db, { clock: () => now });
+    const rootReservationId = await this.findRootReservationId(tx, ctx);
+    let allocationId: string | null = null;
+    if (rootReservationId) {
+      const result = await budgetService.allocateChild(tx, {
+        companyId: ctx.companyId,
+        rootReservationId,
+        runId: ctx.childRunId,
+        billingAgentId: ctx.billingAgentId,
+        allocatedCents: ctx.stepBudgetCents,
+      });
+      allocationId = result.allocationId;
+    }
+
+    // Update the child run: set executing agent, routing kind, policy
+    // snapshot, and clear available_at.
     await tx
       .update(schema.missionRuns)
       .set({
-        executingAgentId: winnerAgentId,
+        executingAgentId: agentSettings.id,
         routingKind: 'company_agent',
+        policySnapshotId: childSnapshotId,
         availableAt: null,
         updatedAt: now,
       })
@@ -727,13 +1136,17 @@ export class AgentRouter {
         ),
       );
 
-    // Update the step assignment.
+    // Update the step assignment with routing, policy, and allocation.
     await tx
       .update(schema.runStepAssignments)
       .set({
         assignmentStatus: 'routed',
         routingKind: 'company_agent',
-        executingAgentId: winnerAgentId,
+        executingAgentId: agentSettings.id,
+        childPolicySnapshotId: childSnapshotId,
+        childPolicyContentHash: childHash,
+        admissionSlotHeld: true,
+        budgetAllocationId: allocationId,
         updatedAt: now,
       })
       .where(
@@ -745,7 +1158,6 @@ export class AgentRouter {
       );
 
     // Emit child.routed on the root run journal.
-    // Lock the root run to get the current sequence.
     const [rootRun] = await tx
       .select({
         lastEventSequence: schema.missionRuns.lastEventSequence,
@@ -778,8 +1190,10 @@ export class AgentRouter {
       payload: {
         childRunId: ctx.childRunId,
         stepKey: ctx.stepKey,
-        executingAgentId: winnerAgentId,
+        executingAgentId: agentSettings.id,
         routingKind: 'company_agent',
+        policySnapshotId: childSnapshotId,
+        policyContentHash: childHash,
       },
       actorType: 'system',
       actorId: null,
@@ -799,6 +1213,380 @@ export class AgentRouter {
         and(
           eq(schema.missionRuns.companyId, ctx.companyId),
           eq(schema.missionRuns.id, ctx.rootRunId),
+        ),
+      );
+  }
+
+  /**
+   * Find the root reservation ID for a root run (inside a transaction).
+   */
+  private async findRootReservationId(tx: Tx, ctx: RoutingContext): Promise<string | null> {
+    const schema = this.db.schema;
+    const [reservation] = await tx
+      .select({ id: schema.budgetReservations.id })
+      .from(schema.budgetReservations)
+      .where(
+        and(
+          eq(schema.budgetReservations.companyId, ctx.companyId),
+          eq(schema.budgetReservations.runId, ctx.rootRunId),
+        ),
+      )
+      .limit(1);
+    return reservation?.id ?? null;
+  }
+
+  // -- revocation and slot release (VAL-SUB-087) ---------------------------
+
+  /**
+   * Check whether a routed agent is still eligible and fail the child if
+   * revoked (VAL-SUB-087).
+   *
+   * After `child.routed`, Phase 1 never reroutes. If the selected agent
+   * became ineligible (status changed to paused/error/offline, tools/domains
+   * removed, provider changed, budget exhausted, permission revoked), this
+   * method fails the child with `AGENT_BECAME_INELIGIBLE` before the next
+   * effect. Later broadening never expands the hash.
+   *
+   * Must be called inside a locked transaction. Returns true if the child
+   * was failed (agent became ineligible), false if still eligible.
+   */
+  async checkAndFailRevokedAgent(
+    tx: Tx,
+    ctx: {
+      companyId: string;
+      projectId: string;
+      rootRunId: string;
+      childRunId: string;
+      stepKey: string;
+    },
+  ): Promise<boolean> {
+    const schema = this.db.schema;
+    const now = this.now();
+
+    // Load the assignment to get the executing agent and child policy snapshot.
+    const [assignment] = await tx
+      .select({
+        executingAgentId: schema.runStepAssignments.executingAgentId,
+        childPolicySnapshotId: schema.runStepAssignments.childPolicySnapshotId,
+        assignmentStatus: schema.runStepAssignments.assignmentStatus,
+      })
+      .from(schema.runStepAssignments)
+      .where(
+        and(
+          eq(schema.runStepAssignments.companyId, ctx.companyId),
+          eq(schema.runStepAssignments.rootRunId, ctx.rootRunId),
+          eq(schema.runStepAssignments.stepKey, ctx.stepKey),
+        ),
+      )
+      .limit(1);
+
+    if (!assignment || !assignment.executingAgentId || !assignment.childPolicySnapshotId) {
+      return false;
+    }
+
+    // Skip if already terminal.
+    if (['completed', 'failed', 'cancelled'].includes(assignment.assignmentStatus)) {
+      return false;
+    }
+
+    // Load the agent's current settings.
+    const [agent] = await tx
+      .select({
+        id: schema.agents.id,
+        status: schema.agents.status,
+        provider: schema.agents.provider,
+        model: schema.agents.model,
+        toolsEnabled: schema.agents.toolsEnabled,
+        allowedDomains: schema.agents.allowedDomains,
+        permissions: schema.agents.permissions,
+        executionTimeoutSeconds: schema.agents.executionTimeoutSeconds,
+        budgetMonthlyCents: schema.agents.budgetMonthlyCents,
+        spentMonthlyCents: schema.agents.spentMonthlyCents,
+      })
+      .from(schema.agents)
+      .where(
+        and(
+          eq(schema.agents.id, assignment.executingAgentId),
+          eq(schema.agents.companyId, ctx.companyId),
+        ),
+      )
+      .limit(1);
+
+    if (!agent) {
+      // Agent was deleted — fail the child.
+      await this.failChildForRevocation(tx, ctx);
+      return true;
+    }
+
+    // Load the committed child policy snapshot.
+    const [childSnapshot] = await tx
+      .select()
+      .from(schema.runPolicySnapshots)
+      .where(
+        and(
+          eq(schema.runPolicySnapshots.companyId, ctx.companyId),
+          eq(schema.runPolicySnapshots.id, assignment.childPolicySnapshotId),
+        ),
+      )
+      .limit(1);
+
+    if (!childSnapshot) {
+      return false;
+    }
+
+    // Load the child run for resolvedMode and modeProfileId.
+    const [childRun] = await tx
+      .select({
+        resolvedMode: schema.missionRuns.resolvedMode,
+        modeProfileId: schema.missionRuns.modeProfileId,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, ctx.companyId),
+          eq(schema.missionRuns.id, ctx.childRunId),
+        ),
+      )
+      .limit(1);
+
+    if (!childRun) {
+      return false;
+    }
+
+    // Reconstruct the child ResolvedPolicy.
+    const childPolicy: ResolvedPolicy = {
+      schemaVersion: childSnapshot.schemaVersion,
+      sourceProfile: childSnapshot.sourceProfile ?? '',
+      sourceProfileName: childSnapshot.sourceProfileName,
+      sourceProfileDescription: childSnapshot.sourceProfileDescription,
+      sourceProfileVersion: childSnapshot.sourceProfileVersion ?? null,
+      modeProfileId: childRun.modeProfileId ?? null,
+      provider: childSnapshot.provider,
+      adapterId: childSnapshot.adapterId,
+      model: childSnapshot.model,
+      reasoningDepth: childSnapshot.reasoningDepth,
+      systemPromptHash: childSnapshot.systemPromptHash,
+      instructionHash: childSnapshot.instructionHash,
+      toolAllowlist: (childSnapshot.toolAllowlist as string[]) ?? [],
+      domainAllowlist: (childSnapshot.domainAllowlist as string[]) ?? [],
+      researchPolicy: (childSnapshot.researchPolicy as Record<string, unknown>) ?? {},
+      planningPolicy: (childSnapshot.planningPolicy as Record<string, unknown>) ?? {},
+      approvalPolicy: (childSnapshot.approvalPolicy as Record<string, unknown>) ?? {},
+      fallbackPolicy: (childSnapshot.fallbackPolicy as Record<string, unknown>) ?? {},
+      partialResultPolicy:
+        (childSnapshot.partialResultPolicy as 'require_all' | 'best_effort') ?? 'require_all',
+      limits: (childSnapshot.limits as unknown as ModeLimits) ?? ({} as ModeLimits),
+      resolvedMode: childRun.resolvedMode as ResolvedPolicy['resolvedMode'],
+    };
+
+    // Check eligibility against the committed child policy.
+    const agentSettings: AgentPolicySettings = {
+      id: agent.id,
+      provider: agent.provider,
+      model: agent.model,
+      toolsEnabled: agent.toolsEnabled ?? [],
+      allowedDomains: agent.allowedDomains ?? [],
+      permissions: agent.permissions ?? [],
+      executionTimeoutSeconds: agent.executionTimeoutSeconds,
+      budgetMonthlyCents: agent.budgetMonthlyCents,
+      spentMonthlyCents: agent.spentMonthlyCents,
+      status: agent.status,
+    };
+
+    const reason = checkRoutedAgentEligibility(childPolicy, agentSettings);
+    if (reason === null) {
+      return false; // Still eligible.
+    }
+
+    // Agent became ineligible — fail the child (never reroute).
+    await this.failChildForRevocation(tx, ctx);
+    return true;
+  }
+
+  /**
+   * Fail a child run with AGENT_BECAME_INELIGIBLE (VAL-SUB-087).
+   */
+  private async failChildForRevocation(
+    tx: Tx,
+    ctx: {
+      companyId: string;
+      projectId: string;
+      rootRunId: string;
+      childRunId: string;
+      stepKey: string;
+    },
+  ): Promise<void> {
+    const schema = this.db.schema;
+    const now = this.now();
+
+    // Update the child run to failed.
+    const [childRun] = await tx
+      .select({
+        stateVersion: schema.missionRuns.stateVersion,
+        lastEventSequence: schema.missionRuns.lastEventSequence,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, ctx.companyId),
+          eq(schema.missionRuns.id, ctx.childRunId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+
+    if (!childRun) {
+      return;
+    }
+
+    const childSeq = Number(childRun.lastEventSequence) + 1;
+    const childNewVersion = childRun.stateVersion + 1;
+
+    await tx
+      .update(schema.missionRuns)
+      .set({
+        status: 'failed',
+        failureCategory: 'agent',
+        failureCode: 'AGENT_BECAME_INELIGIBLE',
+        safeErrorMessage: 'The selected agent became ineligible after routing.',
+        terminalAt: now,
+        stateVersion: childNewVersion,
+        lastEventSequence: childSeq,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, ctx.companyId),
+          eq(schema.missionRuns.id, ctx.childRunId),
+        ),
+      );
+
+    // Emit run.failed on the child journal.
+    await tx.insert(schema.runEvents).values({
+      companyId: ctx.companyId,
+      projectId: ctx.projectId,
+      runId: ctx.childRunId,
+      sequence: childSeq,
+      type: 'run.failed',
+      schemaVersion: 1,
+      payload: {
+        category: 'agent',
+        code: 'AGENT_BECAME_INELIGIBLE',
+      },
+      actorType: 'system',
+      actorId: null,
+      traceId: null,
+      occurredAt: now,
+    });
+
+    // Update the assignment to failed and release admission slot.
+    await tx
+      .update(schema.runStepAssignments)
+      .set({
+        assignmentStatus: 'failed',
+        resultStatus: 'failed',
+        failureCategory: 'agent',
+        failureCode: 'AGENT_BECAME_INELIGIBLE',
+        safeErrorMessage: 'The selected agent became ineligible after routing.',
+        admissionSlotHeld: false,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.runStepAssignments.companyId, ctx.companyId),
+          eq(schema.runStepAssignments.rootRunId, ctx.rootRunId),
+          eq(schema.runStepAssignments.stepKey, ctx.stepKey),
+        ),
+      );
+
+    // Emit child.failed on the root journal.
+    const [rootRun] = await tx
+      .select({
+        lastEventSequence: schema.missionRuns.lastEventSequence,
+        stateVersion: schema.missionRuns.stateVersion,
+      })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, ctx.companyId),
+          eq(schema.missionRuns.id, ctx.rootRunId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+
+    if (!rootRun) {
+      return;
+    }
+
+    const rootSeq = Number(rootRun.lastEventSequence) + 1;
+    const rootNewVersion = rootRun.stateVersion + 1;
+
+    await tx.insert(schema.runEvents).values({
+      companyId: ctx.companyId,
+      projectId: ctx.projectId,
+      runId: ctx.rootRunId,
+      sequence: rootSeq,
+      type: 'child.failed',
+      schemaVersion: 1,
+      payload: {
+        childRunId: ctx.childRunId,
+        stepKey: ctx.stepKey,
+        category: 'agent',
+        code: 'AGENT_BECAME_INELIGIBLE',
+      },
+      actorType: 'system',
+      actorId: null,
+      traceId: null,
+      occurredAt: now,
+    });
+
+    await tx
+      .update(schema.missionRuns)
+      .set({
+        lastEventSequence: rootSeq,
+        stateVersion: rootNewVersion,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.missionRuns.companyId, ctx.companyId),
+          eq(schema.missionRuns.id, ctx.rootRunId),
+        ),
+      );
+  }
+
+  /**
+   * Release the admission slot for a child run (VAL-SUB-086).
+   *
+   * Called on terminalization or pre-start failure. Sets
+   * `admission_slot_held=false` on the step assignment. Idempotent: if the
+   * slot is already released, this is a no-op.
+   *
+   * Must be called inside a transaction.
+   */
+  async releaseAdmissionSlot(
+    tx: Tx,
+    ctx: {
+      companyId: string;
+      rootRunId: string;
+      stepKey: string;
+    },
+  ): Promise<void> {
+    const schema = this.db.schema;
+    const now = this.now();
+
+    await tx
+      .update(schema.runStepAssignments)
+      .set({
+        admissionSlotHeld: false,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.runStepAssignments.companyId, ctx.companyId),
+          eq(schema.runStepAssignments.rootRunId, ctx.rootRunId),
+          eq(schema.runStepAssignments.stepKey, ctx.stepKey),
         ),
       );
   }

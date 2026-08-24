@@ -92,6 +92,7 @@ import {
   runPlanRevisions,
   runPlanApprovalBindings,
   runStepAssignments,
+  runSchedulingPermits,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -181,6 +182,7 @@ const SCHEMA_BUNDLE = {
   runPlanRevisions,
   runPlanApprovalBindings,
   runStepAssignments,
+  runSchedulingPermits,
 } as const;
 
 export interface BootstrapOptions {
