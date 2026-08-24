@@ -412,6 +412,17 @@ export class BudgetService {
   /**
    * Release all unconsumed budget on terminalization. Updates reservation
    * and allocation released amounts + status, and sets terminal timestamps.
+   *
+   * For a ROOT run terminalization (`runId === reservation.runId`), the
+   * entire unconsumed root residual is released and the reservation is
+   * marked `released` with `terminal_at` set.
+   *
+   * For a CHILD run terminalization (`runId !== reservation.runId`), only
+   * the child's unconsumed allocation is released. The root reservation's
+   * `released_cents` increases by the child's released amount, but the
+   * reservation status and `terminal_at` are NOT changed — the root hold
+   * remains active for other children (VAL-SUB-071, VAL-SUB-038).
+   *
    * Must be called inside a transaction.
    */
   async release(tx: Tx, input: ReleaseInput): Promise<void> {
@@ -460,24 +471,44 @@ export class BudgetService {
         .where(eq(schema.budgetAllocations.id, allocation.id));
     }
 
-    // Release unconsumed reservation amount.
-    const reservationReleased =
-      reservation.reservedCents - reservation.settledCents - reservation.releasedCents;
-    if (reservationReleased > 0) {
-      await tx
-        .update(schema.budgetReservations)
-        .set({
-          releasedCents: sql`${schema.budgetReservations.releasedCents} + ${reservationReleased}`,
-          status: 'released',
-          terminalAt: now,
-          updatedAt: now,
-        })
-        .where(eq(schema.budgetReservations.id, reservation.id));
+    // Determine whether this is a root or child terminalization.
+    const isRootRelease = input.runId === reservation.runId;
+
+    if (isRootRelease) {
+      // Root terminalization: release the entire unconsumed root residual
+      // and mark the reservation as released with terminal_at.
+      const reservationReleased =
+        reservation.reservedCents - reservation.settledCents - reservation.releasedCents;
+      if (reservationReleased > 0) {
+        await tx
+          .update(schema.budgetReservations)
+          .set({
+            releasedCents: sql`${schema.budgetReservations.releasedCents} + ${reservationReleased}`,
+            status: 'released',
+            terminalAt: now,
+            updatedAt: now,
+          })
+          .where(eq(schema.budgetReservations.id, reservation.id));
+      } else {
+        await tx
+          .update(schema.budgetReservations)
+          .set({ status: 'released', terminalAt: now, updatedAt: now })
+          .where(eq(schema.budgetReservations.id, reservation.id));
+      }
     } else {
-      await tx
-        .update(schema.budgetReservations)
-        .set({ status: 'released', terminalAt: now, updatedAt: now })
-        .where(eq(schema.budgetReservations.id, reservation.id));
+      // Child terminalization: release only the child's unconsumed
+      // allocation from the root reservation. The root hold remains
+      // active for other children — do NOT change reservation status or
+      // set terminal_at (VAL-SUB-071, VAL-SUB-038).
+      if (allocationReleased > 0) {
+        await tx
+          .update(schema.budgetReservations)
+          .set({
+            releasedCents: sql`${schema.budgetReservations.releasedCents} + ${allocationReleased}`,
+            updatedAt: now,
+          })
+          .where(eq(schema.budgetReservations.id, reservation.id));
+      }
     }
   }
 
@@ -684,7 +715,7 @@ export class BudgetService {
 
   /**
    * Allocate from an existing root reservation for a child run
-   * (VAL-SUB-086, VAL-SUB-109).
+   * (VAL-SUB-038, VAL-SUB-071, VAL-SUB-086, VAL-SUB-109).
    *
    * Child allocations do NOT double-reserve company funds — they draw from
    * the root hold's unallocated residual. This method:
@@ -694,6 +725,8 @@ export class BudgetService {
    *  3. If the requested allocation exceeds the residual, throws 409
    *     BUDGET_UNAVAILABLE.
    *  4. Inserts a new budget_allocation for the child run.
+   *  5. Emits a `budget.allocated` event on the root run journal.
+   *  6. If the residual after allocation is 0, emits `budget.exhausted`.
    *
    * Must be called inside a locked transaction (the routing transaction).
    *
@@ -707,6 +740,17 @@ export class BudgetService {
       runId: string;
       billingAgentId: string | null;
       allocatedCents: number;
+      /**
+       * Project ID for root journal event emission. When provided,
+       * `budget.allocated` and `budget.exhausted` events are emitted on the
+       * root run journal (VAL-SUB-038, VAL-SUB-071).
+       */
+      projectId?: string;
+      /** Step key for the allocation event payload. */
+      stepKey?: string;
+      actorType?: 'user' | 'agent' | 'system';
+      actorId?: string | null;
+      traceId?: string | null;
     },
   ): Promise<{ allocationId: string; allocatedCents: number }> {
     const schema = this.db.schema;
@@ -806,6 +850,94 @@ export class BudgetService {
         updatedAt: now,
       })
       .returning({ id: schema.budgetAllocations.id });
+
+    // Emit budget.allocated event on the root run journal when event
+    // context is provided (VAL-SUB-038, VAL-SUB-071).
+    if (input.projectId) {
+      const [rootRun] = await tx
+        .select({
+          lastEventSequence: schema.missionRuns.lastEventSequence,
+          stateVersion: schema.missionRuns.stateVersion,
+        })
+        .from(schema.missionRuns)
+        .where(
+          and(
+            eq(schema.missionRuns.companyId, input.companyId),
+            eq(schema.missionRuns.id, reservation.runId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      if (rootRun) {
+        const seq = Number(rootRun.lastEventSequence) + 1;
+        const newVersion = rootRun.stateVersion + 1;
+
+        await tx.insert(schema.runEvents).values({
+          companyId: input.companyId,
+          projectId: input.projectId,
+          runId: reservation.runId,
+          sequence: seq,
+          type: 'budget.allocated',
+          schemaVersion: 1,
+          payload: {
+            childRunId: input.runId,
+            allocatedCents: input.allocatedCents,
+            stepKey: input.stepKey ?? null,
+            rootReservationId: input.rootReservationId,
+          },
+          actorType: input.actorType ?? 'system',
+          actorId: input.actorId ?? null,
+          traceId: input.traceId ?? null,
+          occurredAt: now,
+        });
+
+        // Compute post-allocation residual for the exhausted check.
+        const postAllocationResidual = residualCents - input.allocatedCents;
+
+        // Emit budget.exhausted if the root residual is fully allocated
+        // (VAL-SUB-038).
+        if (postAllocationResidual <= 0) {
+          const exhaustedSeq = seq + 1;
+          const exhaustedVersion = newVersion + 1;
+
+          await tx.insert(schema.runEvents).values({
+            companyId: input.companyId,
+            projectId: input.projectId,
+            runId: reservation.runId,
+            sequence: exhaustedSeq,
+            type: 'budget.exhausted',
+            schemaVersion: 1,
+            payload: {
+              reservedCents: reservation.reservedCents,
+              totalAllocatedCents: totalChildAllocatedActive + input.allocatedCents,
+            },
+            actorType: input.actorType ?? 'system',
+            actorId: input.actorId ?? null,
+            traceId: input.traceId ?? null,
+            occurredAt: now,
+          });
+
+          await tx
+            .update(schema.missionRuns)
+            .set({
+              lastEventSequence: exhaustedSeq,
+              stateVersion: exhaustedVersion,
+              updatedAt: now,
+            })
+            .where(eq(schema.missionRuns.id, reservation.runId));
+        } else {
+          await tx
+            .update(schema.missionRuns)
+            .set({
+              lastEventSequence: seq,
+              stateVersion: newVersion,
+              updatedAt: now,
+            })
+            .where(eq(schema.missionRuns.id, reservation.runId));
+        }
+      }
+    }
 
     return { allocationId: allocation.id, allocatedCents: input.allocatedCents };
   }

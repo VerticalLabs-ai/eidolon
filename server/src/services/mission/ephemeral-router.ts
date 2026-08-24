@@ -515,6 +515,8 @@ export class EphemeralFallbackRouter {
         runId: ctx.childRunId,
         billingAgentId: ctx.billingAgentId,
         allocatedCents: ctx.stepBudgetCents,
+        projectId: ctx.projectId,
+        stepKey: ctx.stepKey,
       });
       allocationId = result.allocationId;
     }

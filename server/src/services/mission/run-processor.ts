@@ -4,6 +4,7 @@ import type { ChatMessage, CompletionResult, ProviderConfig } from '../../provid
 import { resolveProviderApiKey } from '../provider-key.js';
 import { getProvider } from '../../providers/index.js';
 import type { DbInstance } from '../../types.js';
+import { AppError } from '../../middleware/error-handler.js';
 import type { Claim } from './coordinator.js';
 import { MissionRecoveryService } from './recovery.js';
 import { MissionCompletionService } from './completion.js';
@@ -617,6 +618,13 @@ export class RunProcessor {
     } catch (err) {
       clearTimeout(timeoutTimer);
       if (signal.aborted) {
+        return;
+      }
+      // VAL-SUB-072: If the provider call succeeded (known charge settled)
+      // but cancellation won the run lock before completion, the charge
+      // remains visible while the result is discarded. The cancellation
+      // service owns terminalization — do not retry as a provider error.
+      if (err instanceof AppError && err.code === 'INVALID_RUN_STATE') {
         return;
       }
       const isTimeout = timeoutController.signal.aborted && !signal.aborted;
