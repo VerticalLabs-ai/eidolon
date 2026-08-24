@@ -288,6 +288,39 @@ function requireMissionApprove(req: { organizationMembership?: { role?: string }
 }
 
 /**
+ * Require that the request was authenticated by a human user, not an agent
+ * API key. Agent API keys set `req.user.id` to `agent:<keyId>` (see
+ * `createAgentKeyMiddleware`). Plan governance decisions — approve, reject,
+ * and revision_request — are human-only actions; agent keys, executing
+ * agents, children, system actors, and model/tool/research content cannot
+ * decide or advance governance (VAL-PLAN-105, VAL-PLAN-123).
+ */
+function requireHumanActor(req: { user?: { id?: string } | null }): void {
+  const userId = req.user?.id;
+  if (userId && userId.startsWith('agent:')) {
+    throw new AppError(
+      403,
+      'INSUFFICIENT_PERMISSION',
+      'Plan governance decisions require a human actor; agent API keys are not permitted',
+    );
+  }
+}
+
+/**
+ * Detect whether the request was authenticated via an agent API key.
+ * Returns `'agent'` when `req.user.id` starts with `agent:`, otherwise
+ * `'user'`. This ensures audit records and event payloads correctly
+ * reflect the actor type (VAL-PLAN-059).
+ */
+function resolveActorType(req: { user?: { id?: string } | null }): 'user' | 'agent' {
+  const userId = req.user?.id;
+  if (userId && userId.startsWith('agent:')) {
+    return 'agent';
+  }
+  return 'user';
+}
+
+/**
  * Parse a strong quoted ETag from an If-None-Match header. Returns the
  * unquoted state-version string, or null when the header is absent or does
  * not match the `"<version>"` strong-ETag shape used by Mission snapshots.
@@ -423,7 +456,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       projectId,
       idempotencyKey: 'preview', // not used for state mutation
       body,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -446,7 +479,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       projectId,
       idempotencyKey,
       body,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -602,6 +635,16 @@ export function missionRunsRouter(db: DbInstance): Router {
     if (body.type === 'plan.approve' || body.type === 'plan.reject') {
       requireMissionApprove(req);
     }
+    // All plan governance decisions (approve, reject, revision_request)
+    // require a human actor. Agent API keys cannot decide or advance
+    // governance (VAL-PLAN-105, VAL-PLAN-123).
+    if (
+      body.type === 'plan.approve' ||
+      body.type === 'plan.reject' ||
+      body.type === 'plan.revision_request'
+    ) {
+      requireHumanActor(req);
+    }
     const idempotencyKey = requireIdempotencyKey(req);
     const ifMatch = parseIfMatch(req);
 
@@ -649,7 +692,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       body: logicalBody,
       idempotencyKey,
       ifMatch,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -678,7 +721,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       body: normalizeCommandBody({ reason: redactCanaries(body.reason).redacted }),
       idempotencyKey,
       ifMatch,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -705,7 +748,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       body: normalizeCommandBody(body),
       idempotencyKey,
       ifMatch,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -740,7 +783,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       body: normalizeCommandBody({ body }),
       idempotencyKey,
       ifMatch,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -760,6 +803,7 @@ export function missionRunsRouter(db: DbInstance): Router {
     await validateProjectOwnership(db, companyId, projectId);
     requireMissionEnabled(companyId);
     requireMissionApprove(req);
+    requireHumanActor(req);
     const idempotencyKey = requireIdempotencyKey(req);
     const ifMatch = parseIfMatch(req);
 
@@ -775,7 +819,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       }),
       idempotencyKey,
       ifMatch,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -795,6 +839,7 @@ export function missionRunsRouter(db: DbInstance): Router {
     await validateProjectOwnership(db, companyId, projectId);
     requireMissionEnabled(companyId);
     requireMissionApprove(req);
+    requireHumanActor(req);
     const idempotencyKey = requireIdempotencyKey(req);
     const ifMatch = parseIfMatch(req);
 
@@ -813,7 +858,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       }),
       idempotencyKey,
       ifMatch,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
@@ -832,6 +877,7 @@ export function missionRunsRouter(db: DbInstance): Router {
 
     await validateProjectOwnership(db, companyId, projectId);
     requireMissionEnabled(companyId);
+    requireHumanActor(req);
     const idempotencyKey = requireIdempotencyKey(req);
     const ifMatch = parseIfMatch(req);
 
@@ -848,7 +894,7 @@ export function missionRunsRouter(db: DbInstance): Router {
       }),
       idempotencyKey,
       ifMatch,
-      actorType: 'user',
+      actorType: resolveActorType(req),
       actorId: req.user?.id ?? null,
       traceId: req.traceId ?? null,
     });
