@@ -367,7 +367,7 @@ const PLANNER_SYSTEM_PROMPT = [
   '    "stepKey": string (1–128 printable ASCII),',
   '    "parentStepKey": string | null,',
   '    "childOrdinal": nonnegative integer,',
-  '    "nodeKind": one of "root"|"branch"|"leaf",',
+  '    "nodeKind": one of "root"|"child",',
   '    "title": string, "description": string,',
   '    "dependencies": array of step keys (ordered),',
   '    "inputBindings": array of { "name": string, "source": { ... } },',
