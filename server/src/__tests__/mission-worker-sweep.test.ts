@@ -6,7 +6,6 @@ import { createTestDb, createTestServer, closeTestServers, closeTestDb } from '.
 import { RunCoordinator } from '../services/mission/coordinator.js';
 import { OrchestrationWorker } from '../services/mission/worker.js';
 import { MissionKillSwitchService } from '../services/mission/kill-switch.js';
-import { MissionCancellationService } from '../services/mission/cancellation.js';
 
 type AnyDb = Awaited<ReturnType<typeof createTestDb>>;
 
@@ -241,6 +240,206 @@ describe('Worker sweep integration', () => {
     const row = await getRunRow(ctx.db, ctx.runId);
     expect(row?.status).toBe('cancelled');
     expect(row?.terminal_at).not.toBeNull();
+
+    await closeTestDb();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded cancellation-deadline sweep wired into the worker tick
+// (VAL-CROSS-058, VAL-RUN-109, VAL-SUB-096)
+// ---------------------------------------------------------------------------
+
+async function seedFixtureScope(db: AnyDb, label: string) {
+  const companyId = randomUUID();
+  const now = new Date();
+  await db.drizzle.execute(sql`
+    INSERT INTO "companies" ("id", "name", "status", "budget_monthly_cents", "spent_monthly_cents", "settings", "created_at", "updated_at")
+    VALUES (${companyId}, ${label}, 'active', 100000, 0, '{"testFixture": true}'::jsonb, ${now}, ${now})
+  `);
+  const projectId = randomUUID();
+  await db.drizzle.execute(sql`
+    INSERT INTO "projects" ("id", "company_id", "name", "status", "created_at", "updated_at")
+    VALUES (${projectId}, ${companyId}, 'P', 'active', ${now}, ${now})
+  `);
+  const threadId = randomUUID();
+  await db.drizzle.execute(sql`
+    INSERT INTO "project_threads" ("id", "company_id", "project_id", "title", "type", "status", "created_at", "updated_at")
+    VALUES (${threadId}, ${companyId}, ${projectId}, 'T', 'conversation', 'active', ${now}, ${now})
+  `);
+  return { companyId, projectId, threadId };
+}
+
+async function insertPolicySnapshot(db: AnyDb, companyId: string): Promise<string> {
+  const id = randomUUID();
+  const now = new Date();
+  await db.drizzle.execute(sql`
+    INSERT INTO "run_policy_snapshots" ("id", "company_id", "schema_version", "provider", "model", "tool_allowlist", "domain_allowlist", "research_policy", "planning_policy", "approval_policy", "fallback_policy", "partial_result_policy", "limits", "content_hash", "created_at")
+    VALUES (${id}, ${companyId}, 1, 'anthropic', 'claude-sonnet-4-6', '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'require_all', '{"costCents": 5000, "durationSeconds": 3600, "providerCalls": 64, "totalTokens": 500000, "outputBytes": 10485760, "steps": 12, "depth": 2, "fanOut": 4, "descendants": 16}'::jsonb, ${randomUUID()}, ${now})
+  `);
+  return id;
+}
+
+async function insertBudget(db: AnyDb, companyId: string, runId: string, cents: number) {
+  const reservationId = randomUUID();
+  const allocationId = randomUUID();
+  const now = new Date();
+  const periodKey = now.toISOString().slice(0, 7);
+  await db.drizzle.execute(sql`
+    INSERT INTO "budget_reservations" ("id", "company_id", "run_id", "billing_agent_id", "requested_cents", "reserved_cents", "settled_cents", "released_cents", "period_key", "status", "created_at", "updated_at")
+    VALUES (${reservationId}, ${companyId}, ${runId}, null, ${cents}, ${cents}, 0, 0, ${periodKey}, 'held', ${now}, ${now})
+  `);
+  await db.drizzle.execute(sql`
+    INSERT INTO "budget_allocations" ("id", "company_id", "root_reservation_id", "run_id", "billing_agent_id", "allocated_cents", "settled_cents", "released_cents", "status", "created_at", "updated_at")
+    VALUES (${allocationId}, ${companyId}, ${reservationId}, ${runId}, null, ${cents}, 0, 0, 'held', ${now}, ${now})
+  `);
+}
+
+async function getEvents(db: AnyDb, runId: string) {
+  const rows = (await db.drizzle.execute(sql`
+    SELECT "sequence", "type"
+    FROM "run_events" WHERE "run_id" = ${runId}
+    ORDER BY "sequence" ASC
+  `)) as unknown as Array<{ sequence: string | number; type: string }>;
+  return rows.map((r) => ({ sequence: Number(r.sequence), type: r.type }));
+}
+
+async function getBudgetStatus(db: AnyDb, runId: string) {
+  const rows = (await db.drizzle.execute(sql`
+    SELECT "status", "released_cents" AS "released", "reserved_cents" AS "reserved"
+    FROM "budget_reservations" WHERE "run_id" = ${runId}
+  `)) as unknown as Array<Record<string, unknown>>;
+  return rows[0] ?? null;
+}
+
+describe('Worker bounded cancellation-deadline sweep', () => {
+  it('throttles the deadline sweep to the configured interval', async () => {
+    const db = await createTestDb();
+    const coordinator = new RunCoordinator(db);
+
+    let deadlineCallCount = 0;
+    const deadlineSweep = vi.fn(async () => {
+      deadlineCallCount++;
+    });
+    // Per-poll sweep should NOT call the deadline sweep — they are separate.
+    const sweep = vi.fn(async () => {});
+
+    const worker = new OrchestrationWorker({
+      coordinator,
+      workerId: 'throttle-test-worker',
+      pollIntervalMs: 20,
+      renewalIntervalMs: 1000,
+      deadlineSweepIntervalMs: 100,
+      advance: vi.fn(async () => {}),
+      sweep,
+      deadlineSweep,
+    });
+
+    await worker.start();
+    // ~250ms = ~12 poll cycles, but at 100ms throttle the deadline sweep
+    // should fire at most ~3 times (initial + ~2 intervals), far fewer
+    // than the poll count.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await worker.stop();
+
+    expect(deadlineCallCount).toBeGreaterThanOrEqual(2);
+    expect(deadlineCallCount).toBeLessThanOrEqual(4);
+
+    await closeTestDb();
+  });
+
+  it('converges a cancel-requested run with past-deadline queued children to terminal within the sweep interval', async () => {
+    enableMissionFlag();
+    const db = await createTestDb();
+    const { companyId, projectId, threadId } = await seedFixtureScope(
+      db,
+      '__mtest__ deadline-converge',
+    );
+    const policy = await insertPolicySnapshot(db, companyId);
+
+    // Root run: running, cancel-requested, past cancellation deadline, with
+    // a STALE (expired) lease — simulating a worker that became unavailable
+    // after the cancel request so the cancellation cascade never observed
+    // it. The root cannot terminalize until its queued child settles
+    // (subtree-terminal barrier, VAL-SUB-048/110).
+    const rootRunId = randomUUID();
+    const childRunId = randomUUID();
+    const now = new Date();
+    const past = new Date(now.getTime() - 120_000);
+
+    await db.drizzle.execute(sql`
+      INSERT INTO "mission_runs" ("id", "company_id", "project_id", "project_thread_id", "root_run_id", "parent_run_id", "depth", "routing_kind", "request_envelope", "request_content_hash", "resolved_mode", "policy_snapshot_id", "status", "state_version", "last_event_sequence", "partial_result_policy", "terminal_at", "cancel_requested_at", "cancel_requested_by", "cancellation_deadline_at", "lease_owner", "lease_token", "lease_expires_at", "started_at", "available_at", "created_at", "updated_at")
+      VALUES (${rootRunId}, ${companyId}, ${projectId}, ${threadId}, ${rootRunId}, null, 0, 'company_agent', 'encrypted', ${randomUUID()}, 'deep_work', ${policy}, 'running', 1, 0, 'require_all', null, ${past}, null, ${past}, 'stale-worker', 'stale-token', ${past}, ${now}, ${now}, ${now}, ${now})
+    `);
+    // Queued child: cancel-requested, past deadline, no lease. This is the
+    // convergence gap — the cascade marked it cancel-requested and released
+    // its lease/allocation but left it `queued`, and only the periodic
+    // deadline sweep terminalizes it.
+    await db.drizzle.execute(sql`
+      INSERT INTO "mission_runs" ("id", "company_id", "project_id", "project_thread_id", "root_run_id", "parent_run_id", "depth", "child_ordinal", "routing_kind", "request_envelope", "request_content_hash", "resolved_mode", "policy_snapshot_id", "status", "state_version", "last_event_sequence", "partial_result_policy", "terminal_at", "cancel_requested_at", "cancel_requested_by", "cancellation_deadline_at", "lease_owner", "lease_token", "lease_expires_at", "available_at", "created_at", "updated_at")
+      VALUES (${childRunId}, ${companyId}, ${projectId}, ${threadId}, ${rootRunId}, ${rootRunId}, 1, 0, 'company_agent', '{}'::jsonb, ${randomUUID()}, 'deep_work', ${policy}, 'queued', 1, 0, 'require_all', null, ${past}, null, ${past}, null, null, null, null, ${now}, ${now})
+    `);
+    await insertBudget(db, companyId, rootRunId, 5000);
+    await insertBudget(db, companyId, childRunId, 500);
+
+    const coordinator = new RunCoordinator(db);
+    const killSwitch = new MissionKillSwitchService(db);
+
+    // The advance function must never be called: cancel-requested runs are
+    // not claimable (claimNext filters cancel_requested_at IS NULL), so the
+    // worker only sweeps this convergence scenario.
+    const advance = vi.fn(async () => {});
+
+    const worker = new OrchestrationWorker({
+      coordinator,
+      workerId: 'converge-test-worker',
+      pollIntervalMs: 20,
+      renewalIntervalMs: 1000,
+      deadlineSweepIntervalMs: 50,
+      advance,
+      deadlineSweep: async () => {
+        await killSwitch.enforceDeadlines();
+      },
+    });
+
+    await worker.start();
+
+    // Wait well beyond two sweep intervals (50ms) so the child terminalizes
+    // on the first sweep and the root terminalizes on the next once the
+    // subtree barrier clears.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await worker.stop();
+
+    expect(advance).not.toHaveBeenCalled();
+
+    // Queued child terminalized to cancelled by the sweep.
+    const childRow = await getRunRow(db, childRunId);
+    expect(childRow?.status).toBe('cancelled');
+    expect(childRow?.terminal_at).not.toBeNull();
+
+    // Root transitions to cancelled after all descendants settle.
+    const rootRow = await getRunRow(db, rootRunId);
+    expect(rootRow?.status).toBe('cancelled');
+    expect(rootRow?.terminal_at).not.toBeNull();
+    expect(rootRow?.lease_owner).toBeNull();
+
+    // Ordered journal events for both runs.
+    const childEvents = await getEvents(db, childRunId);
+    const childTypes = childEvents.map((e) => e.type);
+    expect(childTypes).toContain('run.cancelled');
+    expect(childTypes).toContain('budget.released');
+    expect(childTypes.indexOf('run.cancelled')).toBeLessThan(childTypes.indexOf('budget.released'));
+
+    const rootEvents = await getEvents(db, rootRunId);
+    const rootTypes = rootEvents.map((e) => e.type);
+    expect(rootTypes).toContain('run.cancelled');
+    expect(rootTypes).toContain('budget.released');
+
+    // Residual budget released for both runs.
+    const rootBudget = await getBudgetStatus(db, rootRunId);
+    expect(rootBudget?.status).toBe('released');
+    const childBudget = await getBudgetStatus(db, childRunId);
+    expect(childBudget?.status).toBe('released');
 
     await closeTestDb();
   });

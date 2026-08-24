@@ -21,8 +21,11 @@ import logger from './utils/logger.js';
 //
 // The kill-switch sweep is wired into the worker poll loop: every poll
 // cycle calls `sweepAllDisabled()` (cancels runs in companies where the
-// missionAgentIntelligence flag is disabled) and `enforceDeadlines()`
-// (terminalizes runs past their cancellation or root deadline).
+// missionAgentIntelligence flag is disabled). The cancellation-deadline
+// sweep (`enforceDeadlines()`, which terminalizes runs past their
+// cancellation or root deadline) is wired into the same loop but throttled
+// to a bounded 10–15s interval so its full-table scans do not run every
+// poll.
 //
 // Graceful shutdown:
 //  - SIGTERM/SIGINT → OrchestrationWorker.stop() sets a shutdown flag,
@@ -34,6 +37,14 @@ import logger from './utils/logger.js';
 const POLL_INTERVAL_MS = Number.parseInt(process.env.MISSION_WORKER_POLL_MS ?? '', 10) || 2000;
 const RENEWAL_INTERVAL_MS =
   Number.parseInt(process.env.MISSION_WORKER_RENEWAL_MS ?? '', 10) || 10000;
+// Bounded cancellation-deadline sweep interval. The deadline sweep
+// terminalizes cancel-requested nonterminal runs and queued children whose
+// `cancellationDeadlineAt` has passed (VAL-CROSS-058, VAL-RUN-109,
+// VAL-SUB-096). It runs at most once per this interval (default 10s, within
+// the 10–15s convergence bound), separate from the per-poll kill-switch
+// sweep, because `enforceDeadlines` performs several full-table scans.
+const DEADLINE_SWEEP_INTERVAL_MS =
+  Number.parseInt(process.env.MISSION_WORKER_DEADLINE_SWEEP_MS ?? '', 10) || 10000;
 
 async function main(): Promise<void> {
   const { db, client } = await getDb({ runMigrations: false, maxConnections: 5 });
@@ -54,10 +65,19 @@ async function main(): Promise<void> {
   const workerId = `worker-${randomUUID().slice(0, 8)}`;
 
   // Wire the kill-switch sweep into the worker poll loop. This runs on
-  // every poll cycle (before claiming) so disabled companies and abandoned
-  // runs are handled without a separate cron process.
+  // every poll cycle (before claiming) so disabled companies are cancelled
+  // responsively without a separate cron process.
   const sweep = async (): Promise<void> => {
     await killSwitch.sweepAllDisabled();
+  };
+
+  // Bounded cancellation-deadline sweep: terminalize cancel-requested
+  // nonterminal runs and queued children whose `cancellationDeadlineAt` has
+  // passed, and abandon runs past their root deadline. Throttled to
+  // DEADLINE_SWEEP_INTERVAL_MS by the worker so the expensive full-table
+  // scans run at a bounded 10–15s interval rather than every poll
+  // (VAL-CROSS-058, VAL-RUN-109, VAL-SUB-096).
+  const deadlineSweep = async (): Promise<void> => {
     await killSwitch.enforceDeadlines();
   };
 
@@ -74,6 +94,8 @@ async function main(): Promise<void> {
     renewalIntervalMs: RENEWAL_INTERVAL_MS,
     advance: (claim, signal) => processor.advance(claim, signal),
     sweep,
+    deadlineSweep,
+    deadlineSweepIntervalMs: DEADLINE_SWEEP_INTERVAL_MS,
     heartbeat,
   });
 

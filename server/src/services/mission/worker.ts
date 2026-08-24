@@ -52,13 +52,35 @@ export interface WorkerDeps {
   advance: (claim: Claim, signal: AbortSignal) => Promise<void>;
   /**
    * Optional periodic sweep called at the beginning of each poll cycle,
-   * before attempting to claim a run. Used to wire the kill-switch sweep
-   * (sweepAllDisabled + enforceDeadlines) into the worker poll loop so
-   * disabled companies and abandoned runs are handled without a separate
-   * cron process. Errors are caught and logged — the worker continues
-   * polling after a sweep failure.
+   * before attempting to claim a run. Used to wire the kill-switch
+   * `sweepAllDisabled` sweep into the worker poll loop so disabled
+   * companies are handled without a separate cron process. Errors are
+   * caught and logged — the worker continues polling after a sweep
+   * failure.
    */
   sweep?: () => Promise<void>;
+  /**
+   * Optional bounded periodic cancellation-deadline sweep called at the
+   * beginning of each poll cycle, throttled to {@link deadlineSweepIntervalMs}.
+   * Used to wire the kill-switch `enforceDeadlines` /
+   * `terminalizeForDeadlineExpiry` logic into the worker tick so
+   * cancel-requested nonterminal runs and queued children whose
+   * `cancellationDeadlineAt` has passed converge to terminal without a
+   * separate cron process (VAL-CROSS-058, VAL-RUN-109, VAL-SUB-096).
+   *
+   * Unlike {@link sweep} (which runs every poll for responsive kill-switch
+   * cancellation), this is throttled to a bounded interval because
+   * `enforceDeadlines` performs several full-table scans and running it
+   * every poll would add avoidable load. Errors are caught and logged —
+   * the worker continues polling after a deadline-sweep failure.
+   */
+  deadlineSweep?: () => Promise<void>;
+  /**
+   * Bounded interval for the {@link deadlineSweep} in milliseconds. The
+   * deadline sweep runs at most once per interval. Default: 10000 (10s,
+   * within the 10–15s convergence bound).
+   */
+  deadlineSweepIntervalMs?: number;
   /**
    * Optional periodic heartbeat called at the beginning of each poll cycle
    * (after the sweep, before claiming) so the snapshot service can derive
@@ -77,6 +99,8 @@ export class OrchestrationWorker {
   private readonly shutdownCommitWindowMs: number;
   private readonly advanceFn: (claim: Claim, signal: AbortSignal) => Promise<void>;
   private readonly sweepFn: (() => Promise<void>) | null;
+  private readonly deadlineSweepFn: (() => Promise<void>) | null;
+  private readonly deadlineSweepIntervalMs: number;
   private readonly heartbeatFn: (() => Promise<void>) | null;
 
   private shuttingDown = false;
@@ -85,6 +109,12 @@ export class OrchestrationWorker {
   private currentAbort: AbortController | null = null;
   private currentClaim: Claim | null = null;
   private processing = false;
+  /**
+   * Wall-clock milliseconds of the last {@link deadlineSweepFn} invocation.
+   * `null` means the sweep has not run yet, so the first poll runs it
+   * immediately (prompt convergence for already-expired deadlines).
+   */
+  private lastDeadlineSweepAt: number | null = null;
 
   constructor(deps: WorkerDeps) {
     this.coordinator = deps.coordinator;
@@ -94,6 +124,8 @@ export class OrchestrationWorker {
     this.shutdownCommitWindowMs = deps.shutdownCommitWindowMs ?? 5000;
     this.advanceFn = deps.advance;
     this.sweepFn = deps.sweep ?? null;
+    this.deadlineSweepFn = deps.deadlineSweep ?? null;
+    this.deadlineSweepIntervalMs = deps.deadlineSweepIntervalMs ?? 10000;
     this.heartbeatFn = deps.heartbeat ?? null;
   }
 
@@ -213,6 +245,29 @@ export class OrchestrationWorker {
         await this.heartbeatFn();
       } catch {
         // Heartbeat failure is non-fatal — the next poll cycle will retry.
+      }
+    }
+
+    // Bounded cancellation-deadline sweep (VAL-CROSS-058, VAL-RUN-109,
+    // VAL-SUB-096). Throttled to `deadlineSweepIntervalMs` so the
+    // expensive `enforceDeadlines` full-table scans run at a bounded
+    // interval (every 10–15s in production) rather than every poll. The
+    // first poll runs it immediately so already-expired deadlines
+    // converge promptly. Errors are caught so the worker continues
+    // polling after a deadline-sweep failure.
+    if (this.deadlineSweepFn) {
+      const nowMs = Date.now();
+      if (
+        this.lastDeadlineSweepAt === null ||
+        nowMs - this.lastDeadlineSweepAt >= this.deadlineSweepIntervalMs
+      ) {
+        this.lastDeadlineSweepAt = nowMs;
+        try {
+          await this.deadlineSweepFn();
+        } catch {
+          // Deadline-sweep failure is non-fatal — the next interval will
+          // retry. Keep the timestamp so we don't retry-burst every poll.
+        }
       }
     }
 
