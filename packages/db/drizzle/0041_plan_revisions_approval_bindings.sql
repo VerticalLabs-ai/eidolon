@@ -1,6 +1,13 @@
 -- Create run_plan_revisions and run_plan_approval_bindings tables for
 -- atomic plan publication and the governance gate (VAL-PLAN-024, 025, 026,
--- 027, 103, 106, 114, 130).
+-- 027, 102, 103, 106, 114, 121, 130).
+--
+-- The run_plan_approval_bindings table includes is_current_authorization
+-- (boolean, NOT NULL, default false) and a partial unique index
+-- uq_run_plan_approval_bindings_run_current on (run_id) WHERE
+-- is_current_authorization = true, so at most one binding per run is the
+-- current execution authorization while any number of historical approved
+-- bindings coexist as immutable governance records.
 --
 -- Forward-only and additive; new tables with nullable FKs from
 -- mission_runs.current_plan_revision_id and approved_plan_revision_id to
@@ -53,6 +60,7 @@ CREATE TABLE "run_plan_approval_bindings" (
 	"approval_id" text NOT NULL,
 	"decision" text,
 	"deciding_user_id" text,
+	"is_current_authorization" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp (3) with time zone NOT NULL,
 	"decided_at" timestamp (3) with time zone
 );
@@ -61,7 +69,7 @@ CREATE UNIQUE INDEX "uq_run_plan_approval_bindings_company_id" ON "run_plan_appr
 --> statement-breakpoint
 CREATE UNIQUE INDEX "uq_run_plan_approval_bindings_approval_id" ON "run_plan_approval_bindings" USING btree ("approval_id");
 --> statement-breakpoint
-CREATE UNIQUE INDEX "uq_run_plan_approval_bindings_run_approved" ON "run_plan_approval_bindings" USING btree ("run_id") WHERE "decision" = 'approved';
+CREATE UNIQUE INDEX "uq_run_plan_approval_bindings_run_current" ON "run_plan_approval_bindings" USING btree ("run_id") WHERE "is_current_authorization" = true;
 --> statement-breakpoint
 CREATE INDEX "idx_run_plan_approval_bindings_run" ON "run_plan_approval_bindings" USING btree ("run_id");
 --> statement-breakpoint
