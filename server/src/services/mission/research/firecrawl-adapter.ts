@@ -1,0 +1,622 @@
+/**
+ * Firecrawl native-fetch research adapter.
+ *
+ * (architecture.md: Firecrawl Adapter, VAL-RES-006)
+ *
+ * Uses native `fetch`, server-side credentials, fixed origin
+ * `https://api.firecrawl.dev`, and explicit versioned search/scrape/extract
+ * paths. Firecrawl supports search, single-page scrape, and structured
+ * multi-source extraction.
+ *
+ * Official documentation consulted at implementation time:
+ * - Search: https://docs.firecrawl.dev/api-reference/endpoint/search
+ *   (accessed 2026-08-24)
+ * - Scrape: https://docs.firecrawl.dev/api-reference/endpoint/scrape
+ *   (accessed 2026-08-24)
+ * - Extract: https://docs.firecrawl.dev/api-reference/endpoint/extract
+ *   (accessed 2026-08-24)
+ *
+ * Key documented contract facts:
+ * - Auth: `Authorization: Bearer <token>` header.
+ * - Search body: `query` (required, max 500 chars), `limit` (1–100),
+ *   `scrapeOptions` with `formats: ["markdown"]`.
+ * - Search response: `success`, `data` {web[], images[], news[]},
+ *   `warning`, `id`, `creditsUsed`.
+ *   Each web result: title, description, url, markdown, metadata
+ *   (title, description, sourceURL, url, statusCode, language).
+ * - Scrape body: `url` (required), `formats` (["markdown"]),
+ *   `onlyMainContent`, `timeout` (1000–300000 ms).
+ * - Scrape response: `success`, `data` {markdown, html, rawHtml, metadata
+ *   (title, description, language, sourceURL, url, statusCode, ...), warning}.
+ * - Extract body: `urls` (required, glob format), `prompt`, `schema`
+ *   (JSON Schema), `showSources`.
+ * - Extract response: `success`, `id`, `invalidURLs`.
+ *   Note: Extract is ASYNC — returns a job `id` for polling. This adapter
+ *   validates the schema and dispatches; polling is handled by the research
+ *   service (later feature).
+ * - Errors: 400, 402 (payment), 408 (timeout), 429 (rate limit), 500.
+ *
+ * Adapters never write artifacts or invoke tools. Unknown response
+ * properties are discarded, not persisted. Raw HTML is not persisted by
+ * default.
+ */
+
+import { createHash, randomUUID } from 'node:crypto';
+import { FIRECRAWL_ORIGIN, PROVIDER_PATHS } from './origins.js';
+import {
+  type ResearchProvider,
+  type ResearchRequest,
+  type ResearchResult,
+  type ResearchCallContext,
+  type NormalizedResearchSource,
+  type ResearchOperation,
+  type FetchFn,
+  ResearchProviderError,
+} from './spi.js';
+import { isOperationSupported, getUnsupportedOperationError } from './operations.js';
+
+// ---------------------------------------------------------------------------
+// Adapter configuration
+// ---------------------------------------------------------------------------
+
+export interface FirecrawlAdapterConfig {
+  /** Firecrawl API key (resolved server-side, never logged). */
+  apiKey: string;
+  /**
+   * Injectable fetch function for deterministic tests. Production uses
+   * the global `fetch`. Tests may inject a mock but cannot override the
+   * fixed origin or disable policy.
+   */
+  fetch?: FetchFn;
+}
+
+// ---------------------------------------------------------------------------
+// Response type fragments (only the fields we normalize)
+// ---------------------------------------------------------------------------
+
+interface FirecrawlSearchWebResult {
+  title?: string;
+  description?: string;
+  url?: string;
+  markdown?: string;
+  metadata?: {
+    title?: string;
+    description?: string;
+    sourceURL?: string;
+    language?: string;
+    statusCode?: number;
+  };
+}
+
+interface FirecrawlSearchResponse {
+  success?: boolean;
+  data?: {
+    web?: FirecrawlSearchWebResult[];
+  };
+  warning?: string;
+  id?: string;
+  creditsUsed?: number;
+}
+
+interface FirecrawlScrapeResponse {
+  success?: boolean;
+  data?: {
+    markdown?: string;
+    metadata?: {
+      title?: string;
+      description?: string;
+      language?: string;
+      sourceURL?: string;
+      url?: string;
+      statusCode?: number;
+    };
+    warning?: string;
+  };
+}
+
+interface FirecrawlExtractResponse {
+  success?: boolean;
+  id?: string;
+  invalidURLs?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Normalization helpers
+// ---------------------------------------------------------------------------
+
+function normalizeText(text: string | undefined): string | undefined {
+  if (!text || typeof text !== 'string') {
+    return undefined;
+  }
+  return text.normalize('NFC').trim();
+}
+
+function hashContent(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+const MAX_SOURCE_BYTES = 1024 * 1024;
+
+function capText(text: string): string {
+  const buf = Buffer.from(text, 'utf8');
+  if (buf.length <= MAX_SOURCE_BYTES) {
+    return text;
+  }
+  return buf.subarray(0, MAX_SOURCE_BYTES).toString('utf8');
+}
+
+// ---------------------------------------------------------------------------
+// Adapter
+// ---------------------------------------------------------------------------
+
+export class FirecrawlAdapter implements ResearchProvider {
+  private readonly apiKey: string;
+  private readonly fetchFn: FetchFn;
+
+  constructor(config: FirecrawlAdapterConfig) {
+    this.apiKey = config.apiKey;
+    this.fetchFn = config.fetch ?? fetch;
+  }
+
+  supports(operation: ResearchOperation): boolean {
+    return isOperationSupported('firecrawl', operation);
+  }
+
+  async execute(request: ResearchRequest, context: ResearchCallContext): Promise<ResearchResult> {
+    // 1. Capability check — fail before any provider call (VAL-RES-006).
+    if (!this.supports(request.operation)) {
+      throw getUnsupportedOperationError('firecrawl', request.operation);
+    }
+
+    // 2. Credential check.
+    if (!this.apiKey) {
+      throw new ResearchProviderError(
+        'MISSING_CREDENTIAL',
+        'Firecrawl API key is not configured',
+        'firecrawl',
+        request.operation,
+      );
+    }
+
+    // 3. Dispatch to the operation handler.
+    switch (request.operation) {
+      case 'search':
+        return this.executeSearch(request, context);
+      case 'scrape':
+        return this.executeScrape(request, context);
+      case 'structured_extract':
+        return this.executeStructuredExtract(request, context);
+      default:
+        // Unreachable — capability check above already rejected this.
+        throw getUnsupportedOperationError('firecrawl', request.operation);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Search
+  // -------------------------------------------------------------------------
+
+  private async executeSearch(
+    request: ResearchRequest,
+    context: ResearchCallContext,
+  ): Promise<ResearchResult> {
+    const query = request.query;
+    if (!query || query.trim().length === 0) {
+      throw new ResearchProviderError(
+        'INVALID_REQUEST',
+        'Search operation requires a non-empty query',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    const limit = Math.min(Math.max(1, request.maxResults), 20);
+    const body = {
+      query,
+      limit,
+      scrapeOptions: {
+        formats: ['markdown'],
+        onlyMainContent: true,
+      },
+    };
+
+    const response = await this.doFetch(
+      PROVIDER_PATHS.firecrawl.search,
+      body,
+      request.timeoutMs,
+      context,
+    );
+    const data = await this.parseResponse<FirecrawlSearchResponse>(response);
+
+    if (data.success === false) {
+      throw new ResearchProviderError(
+        'PROVIDER_PERMANENT',
+        'Firecrawl search failed',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    const sources: NormalizedResearchSource[] = [];
+    const webResults = data.data?.web ?? [];
+    for (let i = 0; i < webResults.length && i < limit; i++) {
+      const result = webResults[i];
+      const text = normalizeText(result.markdown ?? result.description);
+      if (!result.url) {
+        continue;
+      }
+      sources.push({
+        canonicalUrl: result.url,
+        title: normalizeText(result.title ?? result.metadata?.title),
+        retrievedAt: new Date().toISOString(),
+        rank: i,
+        text: text ? capText(text) : undefined,
+        contentHash: text ? hashContent(capText(text)) : undefined,
+        byteCount: text ? Buffer.from(capText(text), 'utf8').length : undefined,
+        language: result.metadata?.language,
+        providerMetadata: {
+          firecrawlJobId: data.id,
+        },
+        injectionRiskLabels: [],
+      });
+    }
+
+    const warnings: string[] = [];
+    if (data.warning) {
+      warnings.push(data.warning);
+    }
+
+    return {
+      logicalCallId: context.logicalCallId ?? randomUUID(),
+      provider: 'firecrawl',
+      providerRequestId: data.id,
+      credits: data.creditsUsed,
+      sources,
+      warnings,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Scrape
+  // -------------------------------------------------------------------------
+
+  private async executeScrape(
+    request: ResearchRequest,
+    context: ResearchCallContext,
+  ): Promise<ResearchResult> {
+    const urls = request.urls;
+    if (!urls || urls.length === 0) {
+      throw new ResearchProviderError(
+        'INVALID_REQUEST',
+        'Scrape operation requires at least one URL',
+        'firecrawl',
+        'scrape',
+      );
+    }
+    // Firecrawl scrape is single-page.
+    if (urls.length > 1) {
+      throw new ResearchProviderError(
+        'INVALID_REQUEST',
+        'Scrape operation supports exactly one URL',
+        'firecrawl',
+        'scrape',
+      );
+    }
+
+    const body = {
+      url: urls[0],
+      formats: ['markdown'],
+      onlyMainContent: true,
+      timeout: Math.min(request.timeoutMs, 30_000),
+    };
+
+    const response = await this.doFetch(
+      PROVIDER_PATHS.firecrawl.scrape,
+      body,
+      request.timeoutMs,
+      context,
+    );
+    const data = await this.parseResponse<FirecrawlScrapeResponse>(response);
+
+    if (data.success === false) {
+      throw new ResearchProviderError(
+        'PROVIDER_PERMANENT',
+        'Firecrawl scrape failed',
+        'firecrawl',
+        'scrape',
+      );
+    }
+
+    const sources: NormalizedResearchSource[] = [];
+    const markdown = normalizeText(data.data?.markdown);
+    const sourceUrl = request.urls?.[0] ?? '';
+
+    sources.push({
+      canonicalUrl: sourceUrl,
+      title: normalizeText(data.data?.metadata?.title),
+      retrievedAt: new Date().toISOString(),
+      rank: 0,
+      text: markdown ? capText(markdown) : undefined,
+      contentHash: markdown ? hashContent(capText(markdown)) : undefined,
+      byteCount: markdown ? Buffer.from(capText(markdown), 'utf8').length : undefined,
+      language: data.data?.metadata?.language,
+      injectionRiskLabels: [],
+    });
+
+    const warnings: string[] = [];
+    if (data.data?.warning) {
+      warnings.push(data.data.warning);
+    }
+
+    return {
+      logicalCallId: context.logicalCallId ?? randomUUID(),
+      provider: 'firecrawl',
+      sources,
+      warnings,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Structured Extract (async — returns job ID for polling)
+  // -------------------------------------------------------------------------
+
+  private async executeStructuredExtract(
+    request: ResearchRequest,
+    context: ResearchCallContext,
+  ): Promise<ResearchResult> {
+    const urls = request.urls;
+    if (!urls || urls.length === 0) {
+      throw new ResearchProviderError(
+        'INVALID_REQUEST',
+        'Structured extract operation requires at least one URL',
+        'firecrawl',
+        'structured_extract',
+      );
+    }
+    if (urls.length > 20) {
+      throw new ResearchProviderError(
+        'INVALID_REQUEST',
+        'Structured extract operation supports at most 20 URLs',
+        'firecrawl',
+        'structured_extract',
+      );
+    }
+
+    const schema = request.schema;
+    if (!schema || typeof schema !== 'object') {
+      throw new ResearchProviderError(
+        'INVALID_REQUEST',
+        'Structured extract operation requires a schema',
+        'firecrawl',
+        'structured_extract',
+      );
+    }
+
+    const body = {
+      urls,
+      schema,
+      showSources: true,
+    };
+
+    const response = await this.doFetch(
+      PROVIDER_PATHS.firecrawl.structured_extract,
+      body,
+      request.timeoutMs,
+      context,
+    );
+    const data = await this.parseResponse<FirecrawlExtractResponse>(response);
+
+    if (data.success === false) {
+      throw new ResearchProviderError(
+        'PROVIDER_PERMANENT',
+        'Firecrawl structured extract failed',
+        'firecrawl',
+        'structured_extract',
+      );
+    }
+
+    // Firecrawl extract is async — returns a job ID. The research service
+    // (later feature) handles polling and result retrieval. This adapter
+    // returns the job ID as a providerRequestId with no sources yet.
+    const warnings: string[] = [];
+    if (data.invalidURLs && data.invalidURLs.length > 0) {
+      warnings.push(`${data.invalidURLs.length} invalid URL(s) excluded`);
+    }
+
+    return {
+      logicalCallId: context.logicalCallId ?? randomUUID(),
+      provider: 'firecrawl',
+      providerRequestId: data.id,
+      sources: [],
+      warnings,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // HTTP execution (bounded, abortable)
+  // -------------------------------------------------------------------------
+
+  private async doFetch(
+    path: string,
+    body: Record<string, unknown>,
+    timeoutMs: number,
+    context: ResearchCallContext,
+  ): Promise<Response> {
+    const url = `${FIRECRAWL_ORIGIN}${path}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, 30_000));
+
+    if (context.signal) {
+      if (context.signal.aborted) {
+        clearTimeout(timeout);
+        throw new ResearchProviderError(
+          'CANCELLED',
+          'Research call cancelled before dispatch',
+          'firecrawl',
+          'search',
+        );
+      }
+      context.signal.addEventListener('abort', () => controller.abort());
+    }
+
+    try {
+      const response = await this.fetchFn(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (response.status === 401) {
+        throw new ResearchProviderError(
+          'MISSING_CREDENTIAL',
+          'Firecrawl authentication failed',
+          'firecrawl',
+          'search',
+          401,
+        );
+      }
+      if (response.status === 402) {
+        throw new ResearchProviderError(
+          'PROVIDER_QUOTA_EXCEEDED',
+          'Firecrawl payment required',
+          'firecrawl',
+          'search',
+          402,
+        );
+      }
+      if (response.status === 408) {
+        throw new ResearchProviderError(
+          'PROVIDER_TIMEOUT',
+          'Firecrawl request timed out',
+          'firecrawl',
+          'search',
+          408,
+        );
+      }
+      if (response.status === 429) {
+        throw new ResearchProviderError(
+          'PROVIDER_RATE_LIMITED',
+          'Firecrawl rate limit exceeded',
+          'firecrawl',
+          'search',
+          429,
+        );
+      }
+      if (response.status >= 500) {
+        throw new ResearchProviderError(
+          'PROVIDER_TRANSIENT',
+          'Firecrawl server error',
+          'firecrawl',
+          'search',
+          response.status,
+        );
+      }
+      if (response.status >= 400) {
+        throw new ResearchProviderError(
+          'PROVIDER_PERMANENT',
+          'Firecrawl request rejected',
+          'firecrawl',
+          'search',
+          response.status,
+        );
+      }
+
+      return response;
+    } catch (err) {
+      if (err instanceof ResearchProviderError) {
+        throw err;
+      }
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new ResearchProviderError(
+          'PROVIDER_TIMEOUT',
+          'Firecrawl request timed out or was aborted',
+          'firecrawl',
+          'search',
+        );
+      }
+      throw new ResearchProviderError(
+        'PROVIDER_TRANSIENT',
+        'Firecrawl network error',
+        'firecrawl',
+        'search',
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Response parsing (bounded, schema-validated)
+  // -------------------------------------------------------------------------
+
+  private async parseResponse<T>(response: Response): Promise<T> {
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      throw new ResearchProviderError(
+        'MALFORMED_RESPONSE',
+        'Firecrawl returned non-JSON content type',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && parseInt(contentLength, 10) > MAX_RESPONSE_BYTES) {
+      throw new ResearchProviderError(
+        'MALFORMED_RESPONSE',
+        'Firecrawl response exceeds maximum size',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    let text: string;
+    try {
+      text = await response.text();
+    } catch {
+      throw new ResearchProviderError(
+        'MALFORMED_RESPONSE',
+        'Failed to read Firecrawl response body',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    if (Buffer.from(text, 'utf8').length > MAX_RESPONSE_BYTES) {
+      throw new ResearchProviderError(
+        'MALFORMED_RESPONSE',
+        'Firecrawl response exceeds maximum size',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new ResearchProviderError(
+        'MALFORMED_RESPONSE',
+        'Firecrawl returned malformed JSON',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      throw new ResearchProviderError(
+        'MALFORMED_RESPONSE',
+        'Firecrawl response is not a JSON object',
+        'firecrawl',
+        'search',
+      );
+    }
+
+    return data as T;
+  }
+}
