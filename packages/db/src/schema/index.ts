@@ -81,3 +81,9 @@ export { runDescendantMirrors } from './run_descendant_mirrors.js';
 export { runSynthesisManifests } from './run_synthesis_manifests.js';
 export { researchProviderHealth } from './research_provider_health.js';
 export { researchPricingSnapshots } from './research_pricing_snapshots.js';
+export {
+  researchSources,
+  researchSourceRevisions,
+  runResearchSources,
+} from './research_sources.js';
+export { citations, artifactProvenance } from './research_citations.js';

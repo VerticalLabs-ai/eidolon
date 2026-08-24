@@ -351,6 +351,13 @@
       "when": 1788553200000,
       "tag": "0049_research_provider_health_pricing",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1788639600000,
+      "tag": "0050_research_sources_citations_provenance",
+      "breakpoints": true
     }
   ]
 }
