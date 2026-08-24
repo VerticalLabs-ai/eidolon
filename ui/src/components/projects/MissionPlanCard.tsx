@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useMissionCurrentPlanRevision } from '@/lib/hooks';
 import { formatCents } from '@/lib/format';
 import type { MissionPlanRevision, MissionPlanRouting, MissionPlanStep } from '@/lib/api';
+import { MissionPlanDecisionControls, type DecisionRole } from './MissionPlanDecisionControls';
 
 /**
  * Mission plan authority card.
@@ -50,6 +51,11 @@ export function MissionPlanCard({
   runId,
   currentPlanRevisionId,
   resolvedMode,
+  runStatus,
+  stateVersion,
+  role,
+  principalId,
+  onRefreshSnapshot,
 }: {
   companyId: string;
   projectId: string;
@@ -58,6 +64,22 @@ export function MissionPlanCard({
   /** Run resolved mode, used only for the Analyst evidence-plan invariant
    *  label (VAL-PLAN-008). The plan content itself is authoritative. */
   resolvedMode: string;
+  /** Authoritative run lifecycle status. Decision controls render only
+   *  while the run is `awaiting_approval` (VAL-PLAN-042, VAL-PLAN-108). */
+  runStatus?: string;
+  /** Authoritative run `stateVersion`, forwarded as the strong `If-Match`
+   *  ETag so decision commands are protected against stale-version
+   *  overwrites (VAL-PLAN-043, VAL-PLAN-055). */
+  stateVersion?: number;
+  /** Authenticated user's company role, gating approve/reject/revise
+   *  controls (VAL-PLAN-055, VAL-PLAN-104). */
+  role?: DecisionRole;
+  /** Authenticated principal ID for browser-local decision draft scoping
+   *  (VAL-PLAN-092, VAL-CROSS-084). */
+  principalId?: string;
+  /** Refresh the authoritative run snapshot so a stale-revision refresh
+   *  loads the current proposal pointer (VAL-PLAN-045). */
+  onRefreshSnapshot?: () => void;
 }) {
   const planQuery = useMissionCurrentPlanRevision(
     companyId,
@@ -147,6 +169,31 @@ export function MissionPlanCard({
           </>
         )}
       </div>
+      {/* Decision controls: render only while the run is awaiting approval
+       *  and the rendered revision is a proposed proposal. The controls
+       *  component decides whether to show actionable controls or a
+       *  stale-revision refresh notice based on `isCurrentRevision`
+       *  (VAL-PLAN-045). The controls bind to the exact revision ID +
+       *  content hash and submit through the canonical plan commands
+       *  (VAL-PLAN-104). The browser never advances decision state
+       *  optimistically (VAL-PLAN-042). A cancelled/approved/advanced run
+       *  exposes no actionable controls (VAL-PLAN-108, VAL-PLAN-051). */}
+      {runStatus === 'awaiting_approval' && revision.status === 'proposed' && role && (
+        <MissionPlanDecisionControls
+          companyId={companyId}
+          projectId={projectId}
+          runId={runId}
+          revision={revision}
+          stateVersion={stateVersion}
+          role={role}
+          principalId={principalId}
+          isCurrentRevision={revision.id === currentPlanRevisionId}
+          onRefresh={() => {
+            planQuery.refetch();
+            onRefreshSnapshot?.();
+          }}
+        />
+      )}
     </section>
   );
 }

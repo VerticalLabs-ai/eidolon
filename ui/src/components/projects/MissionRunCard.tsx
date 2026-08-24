@@ -215,6 +215,15 @@ export function MissionRunCard({
   const snapshot = snapshotQuery.data as MissionRunSnapshot | undefined;
   const events = (eventsQuery.data?.events ?? []) as MissionReplayEvent[];
 
+  // Authenticated user's role, used to gate plan decision controls
+  // (VAL-PLAN-055, VAL-PLAN-104). The session role is the UI-facing gate;
+  // the server remains the authority on `mission.approve` and re-validates
+  // on every command (VAL-PLAN-056). Using the already-fetched session role
+  // avoids an extra per-card company-role fetch. When the role cannot be
+  // resolved, decision controls are not rendered (fail closed).
+  const sessionRole = session.data?.user?.role ?? null;
+  const role = (sessionRole ?? 'unknown') as 'owner' | 'admin' | 'member' | 'viewer' | 'unknown';
+
   // Status badge and all derived flags (isTerminal, canCancel, canRetry)
   // derive from the authoritative snapshot, falling back to the list row
   // only while the snapshot is still loading. The list row's `status` is a
@@ -352,6 +361,11 @@ export function MissionRunCard({
           runId={run.id}
           currentPlanRevisionId={snapshot.currentPlanRevisionId}
           resolvedMode={run.resolvedMode}
+          runStatus={authoritativeStatus}
+          stateVersion={snapshot.stateVersion}
+          role={sessionRole ? role : undefined}
+          principalId={principalId}
+          onRefreshSnapshot={() => snapshotQuery.refetch()}
         />
       )}
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />

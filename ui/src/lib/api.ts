@@ -4133,6 +4133,148 @@ export function answerMissionRun(
   );
 }
 
+// ── Mission Plan Decisions (canonical commands) ───────────────────────────
+// Project Work and Approvals are the Phase 1 actionable decision surfaces
+// (VAL-PLAN-104). Both submit identical Mission command fields through the
+// canonical `POST /:runId/commands` discriminated endpoint so they share one
+// idempotency namespace, RBAC, confirmation, stale-state, validation, and
+// attribution behavior. The browser never advances decision state
+// optimistically; the authoritative snapshot/event refetch reveals the
+// applied decision (VAL-PLAN-042).
+
+/** Convenience decision response. Each plan decision maps to a canonical
+ *  command and returns the applied/accepted command result plus the current
+ *  run snapshot. */
+export interface MissionPlanDecisionResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/** Canonical `plan.approve` command body (VAL-PLAN-104, mutation matrix).
+ *  Approval binds to the exact current revision ID and content hash; the
+ *  server validates both under the run lock with the strong `If-Match` ETag. */
+export interface MissionPlanApproveCommand {
+  type: 'plan.approve';
+  planRevisionId: string;
+  contentHash: string;
+}
+
+/** Canonical `plan.reject` command body. Default disposition cancels the
+ *  Mission; an explicit `disposition: 'revise'` with feedback returns the
+ *  run to planning and records a rejection decision (VAL-PLAN-040,
+ *  VAL-PLAN-041). The reason is required and NFC-normalized server-side. */
+export interface MissionPlanRejectCommand {
+  type: 'plan.reject';
+  planRevisionId: string;
+  contentHash: string;
+  reason: string;
+  /** `'revise'` returns to planning with a rejection record; absent/`'cancel'`
+   *  cancels the Mission (default). */
+  disposition?: 'revise' | 'cancel';
+}
+
+/** Canonical `plan.revision_request` command body. A human
+ *  member/owner/admin content action that supersedes the old gate without a
+ *  rejection decision and returns the run to planning for a new proposal
+ *  (VAL-PLAN-037, VAL-PLAN-123). Feedback is required. */
+export interface MissionPlanRevisionRequestCommand {
+  type: 'plan.revision_request';
+  planRevisionId: string;
+  contentHash: string;
+  feedback: string;
+}
+
+/**
+ * Submit an idempotent plan approval through the canonical command endpoint
+ * (`POST /:runId/commands`, type `plan.approve`). Requires owner/admin
+ * `mission.approve` permission (server-enforced; the UI also hides the
+ * control for unauthorized users but never relies on that alone). The
+ * strong quoted `If-Match` ETag protects against stale-version overwrites
+ * (VAL-PLAN-043, VAL-PLAN-055). The browser never shows an approved status
+ * before the server applies the command (VAL-PLAN-042).
+ */
+export function approveMissionPlan(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  command: MissionPlanApproveCommand,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionPlanDecisionResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/commands`,
+    {
+      method: 'POST',
+      body: JSON.stringify(command),
+      headers,
+    },
+  );
+}
+
+/**
+ * Submit an idempotent plan rejection through the canonical command endpoint
+ * (`POST /:runId/commands`, type `plan.reject`). Default disposition cancels
+ * the Mission (VAL-PLAN-040); `disposition: 'revise'` returns to planning
+ * with a rejection record (VAL-PLAN-041). Requires owner/admin
+ * `mission.approve` permission. The strong `If-Match` ETag protects against
+ * stale-version overwrites.
+ */
+export function rejectMissionPlan(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  command: MissionPlanRejectCommand,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionPlanDecisionResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/commands`,
+    {
+      method: 'POST',
+      body: JSON.stringify(command),
+      headers,
+    },
+  );
+}
+
+/**
+ * Submit an idempotent plan revision request through the canonical command
+ * endpoint (`POST /:runId/commands`, type `plan.revision_request`). A human
+ * content action that supersedes the current proposal without a rejection
+ * decision and returns the run to planning for a new linked proposal
+ * (VAL-PLAN-037). Feedback is required (VAL-PLAN-038). The strong `If-Match`
+ * ETag protects against stale-version overwrites.
+ */
+export function reviseMissionPlan(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  command: MissionPlanRevisionRequestCommand,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionPlanDecisionResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/commands`,
+    {
+      method: 'POST',
+      body: JSON.stringify(command),
+      headers,
+    },
+  );
+}
+
 // ── Mission Question-Set History ───────────────────────────────────────────
 
 /** A question definition in a historical question-set entry. */

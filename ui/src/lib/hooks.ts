@@ -3032,6 +3032,150 @@ export function useAnswerMissionRun(companyId: string, projectId: string, runId:
   });
 }
 
+// ── Mission Plan Decisions ────────────────────────────────────────────────
+
+/**
+ * Shared cache invalidation for any applied plan decision. On success the
+ * run snapshot, events, run list, current plan revision, and approvals
+ * caches are invalidated so every authoritative surface converges to the
+ * server-applied decision (VAL-PLAN-062, VAL-PLAN-104). The browser never
+ * advances decision state optimistically; invalidation drives the refetch.
+ */
+function invalidatePlanDecisionCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  companyId: string,
+  projectId: string,
+  runId: string,
+) {
+  qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+  qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+  qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+  // The current plan revision query is keyed by the revision pointer, which
+  // changes when a decision advances the run; invalidate the whole family so
+  // both the old and new revision reads converge (VAL-PLAN-037, VAL-PLAN-064).
+  qc.invalidateQueries({
+    queryKey: ['mission-plan-revision', companyId, projectId, runId],
+    exact: false,
+  });
+  qc.invalidateQueries({ queryKey: ['approvals', companyId] });
+}
+
+/**
+ * Idempotent Mission plan approval mutation (canonical `plan.approve`
+ * command). The caller supplies the exact revision ID + content hash, a
+ * stable idempotency key (reused across recoverable retries), and the
+ * authoritative `ifMatch` state version. The browser never advances state
+ * optimistically; the authoritative snapshot refetch reveals the approved
+ * decision (VAL-PLAN-042). Recoverable errors (stale version or network
+ * failure) are surfaced through the returned `error` so the caller can
+ * preserve intent (VAL-PLAN-092).
+ */
+export function useApproveMissionPlan(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      planRevisionId: string;
+      contentHash: string;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      return api.approveMissionPlan(
+        companyId,
+        projectId,
+        runId,
+        {
+          type: 'plan.approve',
+          planRevisionId: args.planRevisionId,
+          contentHash: args.contentHash,
+        },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+    },
+    onSuccess: () => invalidatePlanDecisionCaches(qc, companyId, projectId, runId),
+    retry: false,
+  });
+}
+
+/**
+ * Idempotent Mission plan rejection mutation (canonical `plan.reject`
+ * command). Default disposition cancels the Mission (VAL-PLAN-040);
+ * `disposition: 'revise'` returns to planning with a rejection record
+ * (VAL-PLAN-041). The caller supplies the exact revision ID + content hash,
+ * the required reason, a stable idempotency key, and the authoritative
+ * `ifMatch` state version. Recoverable errors preserve the typed reason
+ * (VAL-PLAN-092).
+ */
+export function useRejectMissionPlan(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      planRevisionId: string;
+      contentHash: string;
+      reason: string;
+      disposition?: 'revise' | 'cancel';
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      return api.rejectMissionPlan(
+        companyId,
+        projectId,
+        runId,
+        {
+          type: 'plan.reject',
+          planRevisionId: args.planRevisionId,
+          contentHash: args.contentHash,
+          reason: args.reason,
+          disposition: args.disposition,
+        },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+    },
+    onSuccess: () => invalidatePlanDecisionCaches(qc, companyId, projectId, runId),
+    retry: false,
+  });
+}
+
+/**
+ * Idempotent Mission plan revision request mutation (canonical
+ * `plan.revision_request` command). A human content action that supersedes
+ * the current proposal without a rejection decision and returns the run to
+ * planning for a new linked proposal (VAL-PLAN-037). Feedback is required
+ * (VAL-PLAN-038). The caller supplies the exact revision ID + content hash,
+ * the required feedback, a stable idempotency key, and the authoritative
+ * `ifMatch` state version. Recoverable errors preserve the typed feedback
+ * (VAL-PLAN-092).
+ */
+export function useReviseMissionPlan(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      planRevisionId: string;
+      contentHash: string;
+      feedback: string;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      return api.reviseMissionPlan(
+        companyId,
+        projectId,
+        runId,
+        {
+          type: 'plan.revision_request',
+          planRevisionId: args.planRevisionId,
+          contentHash: args.contentHash,
+          feedback: args.feedback,
+        },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+    },
+    onSuccess: () => invalidatePlanDecisionCaches(qc, companyId, projectId, runId),
+    retry: false,
+  });
+}
+
 // ── Mission Question-Set History ───────────────────────────────────────────
 
 /**
