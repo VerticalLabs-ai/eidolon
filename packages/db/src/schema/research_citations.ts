@@ -7,6 +7,7 @@ import {
   index,
   jsonb,
   check,
+  pgEnum,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
@@ -167,5 +168,80 @@ export const artifactProvenance = pgTable(
     uniqueIndex('uq_artifact_provenance_revision').on(table.artifactRevisionId),
     index('idx_artifact_provenance_run').on(table.runId),
     index('idx_artifact_provenance_company_project').on(table.companyId, table.projectId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// citation_carry_forward_outcomes — verified carry-forward tracking
+// (m5-f07-provenance-revision-restoration)
+//
+// VAL-RES-034: Revision-aware carried citation. A later artifact edit either
+//   preserves a citation at a verified-unchanged locator (writing a new
+//   revision-bound citation row) or marks it not-carried-forward.
+// VAL-RES-099: Restoring a cited revision creates verified citation rows.
+// VAL-CROSS-042: Edited artifacts do not float citations — citations never
+//   silently move to a newer artifact revision.
+//
+// Each outcome row records what happened to a previous revision's citation
+// when a new artifact revision was created (edit or restoration):
+//   - outcome 'carried_forward': the locator verified against the new
+//     content, a new citation row was written bound to the new revision,
+//     and `new_citation_id` points at it.
+//   - outcome 'not_carried_forward': the locator did not verify (the cited
+//     passage changed, the citation mark was removed, or the source locator
+//     no longer verifies). The original citation remains historical, bound
+//     to its original revision. `reason` explains why it was not carried.
+//
+// Forward-only and additive: one new table + one new enum. No changes to
+// existing tables, enums, or constraints.
+// ---------------------------------------------------------------------------
+
+export const carryForwardOutcomeEnum = pgEnum('carry_forward_outcome', [
+  'carried_forward',
+  'not_carried_forward',
+]);
+
+export const citationCarryForwardOutcomes = pgTable(
+  'citation_carry_forward_outcomes',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => randomUUID()),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'cascade' }),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    runId: text('run_id')
+      .notNull()
+      .references(() => missionRuns.id, { onDelete: 'cascade' }),
+    /** The citation from the previous revision being evaluated. */
+    previousCitationId: text('previous_citation_id')
+      .notNull()
+      .references(() => citations.id, { onDelete: 'cascade' }),
+    /** The new artifact revision the citation was evaluated against. */
+    newArtifactRevisionId: text('new_artifact_revision_id')
+      .notNull()
+      .references(() => artifactRevisions.id, { onDelete: 'cascade' }),
+    /** The new citation row when carried forward; null when not carried. */
+    newCitationId: text('new_citation_id').references(() => citations.id, { onDelete: 'set null' }),
+    outcome: carryForwardOutcomeEnum('outcome').notNull(),
+    /** Reason when not carried forward (nullable when carried). */
+    reason: text('reason'),
+    createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    uniqueIndex('uq_carry_forward_prev_new').on(
+      table.previousCitationId,
+      table.newArtifactRevisionId,
+    ),
+    index('idx_carry_forward_new_revision').on(table.newArtifactRevisionId),
+    index('idx_carry_forward_run').on(table.runId),
+    index('idx_carry_forward_company_project').on(table.companyId, table.projectId),
+    check(
+      'chk_carry_forward_outcome_new_citation',
+      sql`(${table.outcome} = 'carried_forward' AND ${table.newCitationId} IS NOT NULL) OR (${table.outcome} = 'not_carried_forward')`,
+    ),
   ],
 );

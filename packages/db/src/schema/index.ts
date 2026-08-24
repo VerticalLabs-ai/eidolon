@@ -86,4 +86,9 @@ export {
   researchSourceRevisions,
   runResearchSources,
 } from './research_sources.js';
-export { citations, artifactProvenance } from './research_citations.js';
+export {
+  citations,
+  artifactProvenance,
+  citationCarryForwardOutcomes,
+  carryForwardOutcomeEnum,
+} from './research_citations.js';
