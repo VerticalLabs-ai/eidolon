@@ -29,6 +29,15 @@ export const budgetReservations = pgTable(
     reservedCents: integer('reserved_cents').notNull(),
     settledCents: integer('settled_cents').notNull().default(0),
     releasedCents: integer('released_cents').notNull().default(0),
+    /**
+     * Execution envelope earmarked at approval time (VAL-PLAN-094,
+     * VAL-PLAN-126). Nullable because existing rows and pre-approval runs
+     * have no earmark. Set atomically in the approval transaction to
+     * `sum(stepBudgetCents) + synthesisBudgetCents`, proving the residual
+     * root hold covers the approved execution without double-reserving
+     * company funds.
+     */
+    executionEarmarkCents: integer('execution_earmark_cents'),
     // Billing period key (e.g. "YYYY-MM") for monthly headroom accounting.
     periodKey: text('period_key').notNull(),
     status: text('status', {

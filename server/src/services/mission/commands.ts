@@ -12,6 +12,7 @@ import {
   type PlanApproveBody,
   type PlanRejectBody,
   type PlanRevisionRequestBody,
+  type PlanDecisionFailpoint,
   PlanDecisionError,
 } from './plan-decision.js';
 import { commandRequestHash, validateIdempotencyKey } from './idempotency.js';
@@ -251,6 +252,13 @@ interface RetryPolicyResult {
 
 export interface MissionCommandDeps {
   clock?: () => Date;
+  /**
+   * Test-only failpoint hook for plan decisions (VAL-PLAN-107). When set,
+   * it is passed to `PlanDecisionService` and called at each named
+   * checkpoint. Throwing aborts the transaction. Production code never
+   * sets this field; only the nonproduction test harness does.
+   */
+  planDecisionFailpointHook?: (point: PlanDecisionFailpoint) => void;
 }
 
 type MissionRunRow = DbInstance['schema']['missionRuns']['$inferSelect'];
@@ -899,7 +907,10 @@ export class MissionCommandService {
     actorId: string | null,
     traceId: string | null,
   ): Promise<ApplyOutcome> {
-    const service = new PlanDecisionService(this.db, { clock: () => this.now() });
+    const service = new PlanDecisionService(this.db, {
+      clock: () => this.now(),
+      failpointHook: this.deps.planDecisionFailpointHook,
+    });
 
     let result;
     let commandType: RunCommandType;

@@ -8,6 +8,7 @@ import {
   validateReason,
 } from './reason-security.js';
 import type { PlanContent } from './plan-schema.js';
+import { BudgetService } from './budget.js';
 
 /**
  * Canonical hash/revision-bound plan decision commands and idempotency.
@@ -92,7 +93,38 @@ export interface PlanDecisionResult {
 
 export interface PlanDecisionDeps {
   clock?: () => Date;
+  /**
+   * Test-only failpoint hook (VAL-PLAN-107). When set, the decision methods
+   * call this function at each named checkpoint. Throwing aborts the
+   * transaction, simulating a fault between internal writes. Production
+   * code never sets this field; only the nonproduction test harness does.
+   */
+  failpointHook?: (point: PlanDecisionFailpoint) => void;
 }
+
+/**
+ * Failpoint checkpoints for plan decision methods (VAL-PLAN-107).
+ * Throwing at any checkpoint aborts the caller's transaction, proving
+ * that failures after each internal write leave no partial state.
+ */
+export type PlanDecisionFailpoint =
+  | 'approve_after_earmark'
+  | 'approve_after_approval_resolved'
+  | 'approve_after_binding_set'
+  | 'approve_after_revision_status'
+  | 'approve_after_run_queued'
+  | 'approve_after_event'
+  | 'reject_after_approval_resolved'
+  | 'reject_after_binding_set'
+  | 'reject_after_revision_status'
+  | 'reject_after_rejected_event'
+  | 'reject_cancel_after_run_cancelled'
+  | 'reject_cancel_after_cancelled_event'
+  | 'reject_revise_after_revision_requested_event'
+  | 'revision_after_supersede'
+  | 'revision_after_approval_resolved'
+  | 'revision_after_run_planning'
+  | 'revision_after_event';
 
 /**
  * Sentinel thrown inside the transaction when a domain-specific plan error
@@ -196,8 +228,25 @@ export class PlanDecisionService {
       );
     }
 
-    // Step 7: live policy revalidation (deny-only).
-    await this.revalidatePolicyForApproval(tx, run, revision.content as unknown as PlanContent);
+    const plan = revision.content as unknown as PlanContent;
+
+    // Step 7a: live policy revalidation (deny-only) — tool allowlist check.
+    await this.revalidatePolicyToolsForApproval(tx, run, plan);
+
+    // Step 7b: atomic budget earmark from the existing root hold
+    // (VAL-PLAN-094, VAL-PLAN-126). This never reacquires company funds;
+    // it verifies the execution envelope fits the residual root hold and
+    // earmarks it atomically. On failure, throws 409 BUDGET_UNAVAILABLE
+    // and the gate remains open for a lower-budget revision.
+    const budgetService = new BudgetService(this.db, { clock: () => now });
+    const stepBudgetSum = plan.steps.reduce((acc, s) => acc + s.budgetCents, 0);
+    const executionEnvelopeCents = stepBudgetSum + plan.synthesis.budgetCents;
+    await budgetService.earmarkApproval(tx, run.id, executionEnvelopeCents);
+
+    // Failpoint: simulate a fault after the earmark (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('approve_after_earmark');
+    }
 
     // Apply the approval.
     // Find the binding for the current revision.
@@ -233,6 +282,11 @@ export class PlanDecisionService {
       })
       .where(eq(schema.approvals.id, binding.approvalId));
 
+    // Failpoint: after approval resolution (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('approve_after_approval_resolved');
+    }
+
     // Set the binding decision.
     await tx
       .update(schema.runPlanApprovalBindings)
@@ -242,6 +296,11 @@ export class PlanDecisionService {
         decidedAt: now,
       })
       .where(eq(schema.runPlanApprovalBindings.id, binding.id));
+
+    // Failpoint: after binding set (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('approve_after_binding_set');
+    }
 
     // Set the revision status to approved.
     await tx
@@ -253,6 +312,11 @@ export class PlanDecisionService {
         updatedAt: now,
       })
       .where(eq(schema.runPlanRevisions.id, body.revisionId));
+
+    // Failpoint: after revision status (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('approve_after_revision_status');
+    }
 
     // Transition the run to queued (claimable by a worker).
     const newVersion = run.stateVersion + 1;
@@ -270,6 +334,11 @@ export class PlanDecisionService {
       })
       .where(eq(schema.missionRuns.id, run.id));
 
+    // Failpoint: after run queued (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('approve_after_run_queued');
+    }
+
     // Append the plan.approved event.
     await tx.insert(schema.runEvents).values({
       companyId: run.companyId,
@@ -284,12 +353,18 @@ export class PlanDecisionService {
         contentHash: revision.contentHash,
         approvalId: binding.approvalId,
         decidingUserId: actorId,
+        executionEarmarkCents: executionEnvelopeCents,
       },
       actorType,
       actorId,
       traceId,
       occurredAt: now,
     });
+
+    // Failpoint: after event append (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('approve_after_event');
+    }
 
     return {
       statusCode: 200,
@@ -427,6 +502,11 @@ export class PlanDecisionService {
       })
       .where(eq(schema.approvals.id, binding.approvalId));
 
+    // Failpoint: after approval resolution (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('reject_after_approval_resolved');
+    }
+
     // Set the binding decision to rejected.
     await tx
       .update(schema.runPlanApprovalBindings)
@@ -436,6 +516,11 @@ export class PlanDecisionService {
         decidedAt: now,
       })
       .where(eq(schema.runPlanApprovalBindings.id, binding.id));
+
+    // Failpoint: after binding set (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('reject_after_binding_set');
+    }
 
     // Set the revision status to rejected.
     await tx
@@ -448,6 +533,11 @@ export class PlanDecisionService {
         updatedAt: now,
       })
       .where(eq(schema.runPlanRevisions.id, body.revisionId));
+
+    // Failpoint: after revision status (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('reject_after_revision_status');
+    }
 
     const newVersion = run.stateVersion + 1;
     let seq = Number(run.lastEventSequence);
@@ -474,6 +564,11 @@ export class PlanDecisionService {
       traceId,
       occurredAt: now,
     });
+
+    // Failpoint: after rejected event (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('reject_after_rejected_event');
+    }
 
     if (body.disposition === 'revise') {
       // Reject-with-revise: return to planning for a new proposal.
@@ -519,6 +614,11 @@ export class PlanDecisionService {
         occurredAt: now,
       });
 
+      // Failpoint: after revision_requested event (VAL-PLAN-107).
+      if (this.deps.failpointHook) {
+        this.deps.failpointHook('reject_revise_after_revision_requested_event');
+      }
+
       return {
         statusCode: 200,
         stateVersion: newVersion + 1,
@@ -541,6 +641,11 @@ export class PlanDecisionService {
       })
       .where(eq(schema.missionRuns.id, run.id));
 
+    // Failpoint: after run cancelled (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('reject_cancel_after_run_cancelled');
+    }
+
     // Append run.cancelled event.
     await tx.insert(schema.runEvents).values({
       companyId: run.companyId,
@@ -558,6 +663,11 @@ export class PlanDecisionService {
       traceId,
       occurredAt: now,
     });
+
+    // Failpoint: after cancelled event (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('reject_cancel_after_cancelled_event');
+    }
 
     return {
       statusCode: 200,
@@ -656,6 +766,11 @@ export class PlanDecisionService {
       })
       .where(eq(schema.runPlanRevisions.id, body.revisionId));
 
+    // Failpoint: after supersede (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('revision_after_supersede');
+    }
+
     // Find and resolve the binding's approval as cancelled
     // (superseded_without_decision per VAL-PLAN-121).
     const [binding] = await tx
@@ -681,6 +796,11 @@ export class PlanDecisionService {
         .where(eq(schema.approvals.id, binding.approvalId));
     }
 
+    // Failpoint: after approval resolution (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('revision_after_approval_resolved');
+    }
+
     // Transition the run to planning.
     const newVersion = run.stateVersion + 1;
     const seq = Number(run.lastEventSequence) + 1;
@@ -696,6 +816,11 @@ export class PlanDecisionService {
         updatedAt: now,
       })
       .where(eq(schema.missionRuns.id, run.id));
+
+    // Failpoint: after run transitioned to planning (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('revision_after_run_planning');
+    }
 
     // Append the plan.revision_requested event.
     await tx.insert(schema.runEvents).values({
@@ -718,6 +843,11 @@ export class PlanDecisionService {
       occurredAt: now,
     });
 
+    // Failpoint: after event append (VAL-PLAN-107).
+    if (this.deps.failpointHook) {
+      this.deps.failpointHook('revision_after_event');
+    }
+
     return {
       statusCode: 202,
       stateVersion: newVersion,
@@ -729,22 +859,16 @@ export class PlanDecisionService {
   // -- policy revalidation (deny-only) --------------------------------------
 
   /**
-   * Revalidate the plan against the current live policy at approval time
-   * (deny-only). This can only reject the approval, never broaden it
+   * Revalidate the plan's tools against the current live policy at approval
+   * time (deny-only). This can only reject the approval, never broaden it
    * (VAL-PLAN-095, VAL-PLAN-118).
    *
-   * Checks:
-   * - Every tool in every step's toolAllowlist must still be in the
-   *   effective tool allowlist (platform ∩ company ∩ agent ∩ snapshot).
-   *   If a tool was revoked since the plan was proposed, the approval
-   *   fails with 409 POLICY_UNSATISFIABLE.
-   * - The plan's total execution envelope must still fit the residual
-   *   budget. If the budget was reduced since the plan was proposed,
-   *   the approval fails.
+   * The budget validation is handled separately by `BudgetService.earmarkApproval`
+   * which returns 409 BUDGET_UNAVAILABLE on failure (VAL-PLAN-094).
    *
    * The plan content hash is never changed by revalidation (VAL-PLAN-095).
    */
-  private async revalidatePolicyForApproval(
+  private async revalidatePolicyToolsForApproval(
     tx: Tx,
     run: MissionRunRow,
     plan: PlanContent,
@@ -802,30 +926,8 @@ export class PlanDecisionService {
       }
     }
 
-    // Check the plan's total execution envelope fits the residual budget.
-    // Read the root reservation.
-    const [reservation] = await tx
-      .select()
-      .from(schema.budgetReservations)
-      .where(eq(schema.budgetReservations.runId, run.id))
-      .limit(1);
-    if (reservation) {
-      const rootReserved = reservation.reservedCents;
-      const settled = reservation.settledCents;
-      const released = reservation.releasedCents;
-      const residual = rootReserved - settled - released;
-      const stepBudgetSum = plan.steps.reduce((acc, s) => acc + s.budgetCents, 0);
-      const executionEnvelope = stepBudgetSum + plan.synthesis.budgetCents;
-      if (executionEnvelope > residual) {
-        throw new PlanDecisionError(
-          new AppError(
-            409,
-            'POLICY_UNSATISFIABLE',
-            `Plan execution envelope (${executionEnvelope}c) exceeds residual budget (${residual}c). Replan with a lower budget or cancel.`,
-          ),
-        );
-      }
-    }
+    // Budget validation is handled by `BudgetService.earmarkApproval`
+    // which returns 409 BUDGET_UNAVAILABLE on failure (VAL-PLAN-094).
   }
 }
 
