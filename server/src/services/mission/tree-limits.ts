@@ -239,7 +239,8 @@ export class TreeLimitsService {
       })
       .where(eq(schema.missionRuns.id, ctx.rootRunId));
 
-    // Emit approaching event if at 80%.
+    // Emit approaching event if at 80%. Use the returned advanced
+    // sequence/version for consistency with the threaded pattern.
     await this.maybeEmitApproaching(tx, {
       rootRunId: ctx.rootRunId,
       companyId: ctx.companyId,
@@ -375,8 +376,10 @@ export class TreeLimitsService {
         .where(eq(schema.missionRuns.id, ctx.runId));
     }
 
-    // Emit approaching events.
-    await this.maybeEmitApproaching(tx, {
+    // Emit approaching events. Thread the advanced sequence/version from the
+    // first emit into the second so both events get distinct run_events
+    // sequences instead of colliding on the same stale rootLastSeq.
+    const afterCalls = await this.maybeEmitApproaching(tx, {
       rootRunId: ctx.rootRunId,
       companyId: ctx.companyId,
       projectId: ctx.projectId,
@@ -397,8 +400,8 @@ export class TreeLimitsService {
       category: 'tokens',
       current: newInputTokens + newOutputTokens,
       limit: effectiveTokens,
-      rootLastSeq: rootSeq,
-      rootStateVersion: newVersion,
+      rootLastSeq: afterCalls.lastEventSequence,
+      rootStateVersion: afterCalls.stateVersion,
       actorType: ctx.actorType,
       actorId: ctx.actorId,
       traceId: ctx.traceId,
@@ -596,7 +599,9 @@ export class TreeLimitsService {
       // No adjustment needed for root.
     }
 
-    // Emit approaching event for output bytes.
+    // Emit approaching event for output bytes. Use the returned advanced
+    // sequence/version for consistency with reserveProviderCall's threaded
+    // pattern (single emit today, but safe if future emits are added).
     await this.maybeEmitApproaching(tx, {
       rootRunId: ctx.rootRunId,
       companyId: ctx.companyId,
@@ -877,6 +882,12 @@ export class TreeLimitsService {
    *
    * Emits at most one approaching event per category per root run
    * (VAL-SUB-099).
+   *
+   * Returns the updated `{ lastEventSequence, stateVersion }` so callers that
+   * emit multiple approaching events in one transaction can thread the
+   * advanced sequence/version between calls. If no event was emitted (below
+   * threshold, or already emitted for this category), the input values are
+   * returned unchanged.
    */
   private async maybeEmitApproaching(
     tx: Tx,
@@ -893,13 +904,13 @@ export class TreeLimitsService {
       actorId?: string | null;
       traceId?: string | null;
     },
-  ): Promise<void> {
+  ): Promise<{ lastEventSequence: number; stateVersion: number }> {
     if (params.limit <= 0) {
-      return;
+      return { lastEventSequence: params.rootLastSeq, stateVersion: params.rootStateVersion };
     }
     const threshold = Math.ceil(params.limit * 0.8);
     if (params.current < threshold) {
-      return;
+      return { lastEventSequence: params.rootLastSeq, stateVersion: params.rootStateVersion };
     }
 
     // Check if an approaching event already exists for this category.
@@ -917,7 +928,7 @@ export class TreeLimitsService {
       .limit(1);
 
     if (existing) {
-      return;
+      return { lastEventSequence: params.rootLastSeq, stateVersion: params.rootStateVersion };
     }
 
     const now = this.now();
@@ -951,6 +962,8 @@ export class TreeLimitsService {
         updatedAt: now,
       })
       .where(eq(schema.missionRuns.id, params.rootRunId));
+
+    return { lastEventSequence: seq, stateVersion: newVersion };
   }
 
   // -- helper: convert ModeLimits to TreePolicyLimits ----------------------

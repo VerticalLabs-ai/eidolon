@@ -1508,6 +1508,149 @@ describe('Tree limits and counters (VAL-SUB-029,031,032,034,035,036,037,039,099,
       expect(result!.perChildCap).toBe(PLATFORM_HARD_CAPS.perSourceBytes);
     });
   });
+
+  // -- Regression: dual approaching-event sequence collision ----------------
+
+  describe('regression: concurrent provider_calls + tokens approaching do not collide', () => {
+    it('a single reservation crossing 80% on both provider_calls and tokens emits two distinct-sequence approaching events without unique-constraint collision', async () => {
+      const { companyId, projectId, threadId } = await seedScope(db, '__mtest__ dual-approaching');
+      // providerCalls limit 10 -> 80% threshold = 8.
+      // totalTokens limit 1000 -> 80% threshold = 800.
+      const policyId = await insertPolicySnapshot(db, companyId, {
+        providerCalls: 10,
+        totalTokens: 1000,
+      });
+      // Start at 7 provider calls (below 80%) and 0 tokens.
+      const rootRunId = await insertRootRun(db, companyId, projectId, threadId, policyId, {
+        providerCallCount: 7,
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+
+      const limits = TreeLimitsService.toTreePolicyLimits({
+        steps: 12,
+        durationSeconds: 2700,
+        providerCalls: 10,
+        totalTokens: 1000,
+        outputBytes: 8388608,
+        costCents: 5000,
+        depth: 2,
+        fanOut: 4,
+        descendants: 16,
+      });
+
+      // One reservation: +1 call (7->8, crosses 80%) and +800 tokens
+      // (0->800, crosses 80%). Both categories cross in the same
+      // transaction. Before the fix, both maybeEmitApproaching calls used
+      // the same stale rootLastSeq and collided on run_events(run_id,
+      // sequence). After the fix, the sequence is threaded between emits.
+      await db.drizzle.transaction(async (tx) => {
+        await treeLimits.reserveProviderCall(tx, {
+          rootRunId,
+          runId: rootRunId,
+          companyId,
+          projectId,
+          estimatedInputTokens: 400,
+          estimatedOutputTokens: 400,
+          policyLimits: limits,
+        });
+      });
+
+      const counters = await getRootCounters(db, rootRunId);
+      expect(counters.provider_call_count).toBe(8);
+      expect(counters.input_tokens).toBe(400);
+      expect(counters.output_tokens).toBe(400);
+
+      const events = await getRunEvents(db, rootRunId);
+      const approaching = events.filter((e) => e.type === 'limit.approaching');
+      // Exactly two approaching events, one per category.
+      expect(approaching.length).toBe(2);
+      const categories = approaching.map((e) => e.payload.category).sort();
+      expect(categories).toEqual(['provider_calls', 'tokens']);
+      // Sequences are distinct and strictly increasing.
+      const seqs = approaching.map((e) => e.sequence);
+      expect(seqs[0]).not.toBe(seqs[1]);
+      expect(seqs[1]).toBe(seqs[0] + 1);
+      // No duplicate sequences across all events.
+      const allSeqs = events.map((e) => e.sequence);
+      expect(new Set(allSeqs).size).toBe(allSeqs.length);
+      // Root lastEventSequence advanced to the last emitted sequence.
+      expect(counters.last_event_sequence).toBe(Math.max(...allSeqs));
+    });
+
+    it('concurrent dual-cross reservations do not collide on run_events sequence', async () => {
+      const { companyId, projectId, threadId } = await seedScope(
+        db,
+        '__mtest__ dual-approaching-race',
+      );
+      // providerCalls limit 10 -> 80% threshold = 8.
+      // totalTokens limit 1000 -> 80% threshold = 800.
+      const policyId = await insertPolicySnapshot(db, companyId, {
+        providerCalls: 10,
+        totalTokens: 1000,
+      });
+      // Start at 7 calls (below 80%) and 0 tokens.
+      const rootRunId = await insertRootRun(db, companyId, projectId, threadId, policyId, {
+        providerCallCount: 7,
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+
+      const limits = TreeLimitsService.toTreePolicyLimits({
+        steps: 12,
+        durationSeconds: 2700,
+        providerCalls: 10,
+        totalTokens: 1000,
+        outputBytes: 8388608,
+        costCents: 5000,
+        depth: 2,
+        fanOut: 4,
+        descendants: 16,
+      });
+
+      // Two concurrent reservations, each +1 call and +800 tokens.
+      // Winner: 7->8 calls (crosses 80%), 0->800 tokens (crosses 80%).
+      //   Emits two approaching events with distinct sequences.
+      // Loser: 8->9 calls (OK), but 800+800=1600 > 1000 token limit -> denied.
+      // No unique-constraint collision in either case.
+      const promises = [0, 1].map(() =>
+        db.drizzle
+          .transaction(async (tx) => {
+            await treeLimits.reserveProviderCall(tx, {
+              rootRunId,
+              runId: rootRunId,
+              companyId,
+              projectId,
+              estimatedInputTokens: 400,
+              estimatedOutputTokens: 400,
+              policyLimits: limits,
+            });
+            return 'ok';
+          })
+          .catch((e: Error) => e.message),
+      );
+
+      const results = await Promise.allSettled(promises);
+      const oks = results.filter((r) => r.status === 'fulfilled' && r.value === 'ok');
+      // Exactly one succeeds (the other is denied by token limit).
+      expect(oks.length).toBe(1);
+
+      const counters = await getRootCounters(db, rootRunId);
+      expect(counters.provider_call_count).toBe(8);
+      expect(counters.input_tokens).toBe(400);
+      expect(counters.output_tokens).toBe(400);
+
+      // The winner emitted two approaching events with distinct sequences,
+      // no unique-constraint collision.
+      const events = await getRunEvents(db, rootRunId);
+      const approaching = events.filter((e) => e.type === 'limit.approaching');
+      expect(approaching.length).toBe(2);
+      const seqs = approaching.map((e) => e.sequence);
+      expect(seqs[0]).not.toBe(seqs[1]);
+      const allSeqs = events.map((e) => e.sequence);
+      expect(new Set(allSeqs).size).toBe(allSeqs.length);
+    });
+  });
 });
 
 type OutputCheckResult = {
