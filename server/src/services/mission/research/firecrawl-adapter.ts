@@ -61,6 +61,7 @@ import {
   validateProviderOriginUrl,
 } from './ssrf-boundary.js';
 import { validateTargetUrl } from './url-policy.js';
+import { validateProviderMediatedFetch } from './provider-mediated-fetch.js';
 import { detectInjectionRisk, redactSecrets } from './content-isolation.js';
 import { validateResearchRequest } from './request-validation.js';
 import { readBoundedResponseBody } from './bounded-body-reader.js';
@@ -363,6 +364,13 @@ export class FirecrawlAdapter implements ResearchProvider {
     // VAL-RES-048/049/050/096: Validate the target URL before sending.
     const urlResult = this.validateSingleTargetUrl(urls[0], 'scrape');
 
+    // VAL-RES-108: Provider-mediated fetch capability enforcement.
+    // Fail closed if the provider cannot verify the complete redirect
+    // chain and per-hop SSRF enforcement for target URLs. In Phase 1,
+    // Firecrawl scrape lacks this capability, so the operation is denied
+    // before dispatch rather than sending target URLs to the provider.
+    this.assertMediatedFetch('scrape', urls);
+
     const body = {
       url: urls[0],
       formats: ['markdown'],
@@ -467,6 +475,13 @@ export class FirecrawlAdapter implements ResearchProvider {
       }
     }
 
+    // VAL-RES-108: Provider-mediated fetch capability enforcement.
+    // Fail closed if the provider cannot verify the complete redirect
+    // chain and per-hop SSRF enforcement for target URLs. In Phase 1,
+    // Firecrawl structured_extract lacks this capability, so the operation
+    // is denied before dispatch rather than sending target URLs to the provider.
+    this.assertMediatedFetch('structured_extract', urls);
+
     const schema = request.schema;
     if (!schema || typeof schema !== 'object') {
       throw new ResearchProviderError(
@@ -520,6 +535,27 @@ export class FirecrawlAdapter implements ResearchProvider {
       sources: [],
       warnings,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Provider-mediated fetch enforcement (VAL-RES-108)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Assert that the provider operation has a compliant mediated-fetch
+   * capability before dispatching target URLs. Fails closed with
+   * PROVIDER_MEDIATED_FETCH_UNVERIFIED if the capability is unverified.
+   */
+  private assertMediatedFetch(operation: ResearchOperation, urls: string[]): void {
+    const result = validateProviderMediatedFetch('firecrawl', operation, urls);
+    if (!result.valid) {
+      throw new ResearchProviderError(
+        result.errorCode ?? 'PROVIDER_MEDIATED_FETCH_UNVERIFIED',
+        result.message ?? 'Provider-mediated fetch not verified',
+        'firecrawl',
+        operation,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------

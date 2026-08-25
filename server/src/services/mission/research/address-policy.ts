@@ -139,6 +139,29 @@ function classifyIPv4(addr: string): BlockedAddressCategory | null {
 /** AWS IPv6 metadata endpoint. */
 const AWS_METADATA_IPV6 = 'fd00:ec2::254';
 
+/**
+ * Extract the embedded IPv4 address from the last two 16-bit groups of a
+ * normalized IPv6 address and classify it. Returns null if the embedded
+ * IPv4 is public.
+ */
+function classifyEmbeddedIPv4(parts: string[]): BlockedAddressCategory | null {
+  const ipv4High = parseInt(parts[6], 16);
+  const ipv4Low = parseInt(parts[7], 16);
+  const ipv4 = `${(ipv4High >> 8) & 0xff}.${ipv4High & 0xff}.${(ipv4Low >> 8) & 0xff}.${ipv4Low & 0xff}`;
+  return classifyIPv4(ipv4);
+}
+
+/** Check if the first 80 bits (parts[0..4]) of a normalized IPv6 are all zero. */
+function isFirst80BitsZero(parts: string[]): boolean {
+  return (
+    parts[0] === '0000' &&
+    parts[1] === '0000' &&
+    parts[2] === '0000' &&
+    parts[3] === '0000' &&
+    parts[4] === '0000'
+  );
+}
+
 function classifyIPv6(addr: string): BlockedAddressCategory | null {
   // Normalize the address to expanded form for comparison.
   let normalized: string;
@@ -161,26 +184,12 @@ function classifyIPv6(addr: string): BlockedAddressCategory | null {
     return 'loopback';
   }
 
-  // IPv4-mapped IPv6: ::ffff:x.x.x.x — check the embedded IPv4 address
-  // The last two 16-bit groups encode the IPv4 address.
-  if (
-    parts[5] === 'ffff' &&
-    parts[0] === '0000' &&
-    parts[1] === '0000' &&
-    parts[2] === '0000' &&
-    parts[3] === '0000' &&
-    parts[4] === '0000'
-  ) {
-    // Extract IPv4 from last 4 bytes (parts[6] and parts[7])
-    const ipv4High = parseInt(parts[6], 16);
-    const ipv4Low = parseInt(parts[7], 16);
-    const ipv4 = `${(ipv4High >> 8) & 0xff}.${ipv4High & 0xff}.${(ipv4Low >> 8) & 0xff}.${ipv4Low & 0xff}`;
-    const v4Class = classifyIPv4(ipv4);
-    if (v4Class !== null) {
-      // Return the embedded IPv4's category (e.g., loopback, private, etc.)
-      return v4Class;
-    }
-    return null;
+  // IPv4-mapped IPv6: ::ffff:x.x.x.x — check the embedded IPv4 address.
+  // Also covers IPv4-compatible IPv6: ::x.x.x.x (without ffff prefix).
+  // Both have first 80 bits zero; parts[5] distinguishes mapped (ffff)
+  // from compatible (0000). :: and ::1 are already handled above.
+  if (isFirst80BitsZero(parts) && (parts[5] === 'ffff' || parts[5] === '0000')) {
+    return classifyEmbeddedIPv4(parts);
   }
 
   // Link-local fe80::/10 (fe80–febf)

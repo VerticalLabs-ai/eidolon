@@ -23,7 +23,7 @@
  */
 
 import type { ResearchProviderName } from './origins.js';
-import type { ResearchOperation } from './spi.js';
+import type { ResearchOperation, ResearchProviderErrorCode } from './spi.js';
 
 // ---------------------------------------------------------------------------
 // Capability contract
@@ -131,7 +131,7 @@ export function hasProviderMediatedFetchCapability(
 
 export interface ProviderMediatedFetchValidationResult {
   valid: boolean;
-  errorCode?: string;
+  errorCode?: ResearchProviderErrorCode;
   /** Safe message that never includes target URLs. */
   message?: string;
 }

@@ -134,6 +134,9 @@ describe('Tavily adapter: content isolation (VAL-RES-044/045/046)', () => {
   });
 
   it('redacts secrets from extract result text', async () => {
+    // VAL-RES-108: extract fails closed — provider-mediated fetch not verified in Phase 1.
+    // Content isolation for extract is tested via search results above; extract
+    // is denied before dispatch so no provider content reaches normalization.
     const fetch = createMockFetch(() =>
       jsonResponse({
         results: [
@@ -147,21 +150,21 @@ describe('Tavily adapter: content isolation (VAL-RES-044/045/046)', () => {
     );
     const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch });
 
-    const result = await adapter.execute(
-      {
-        operation: 'extract',
-        urls: ['https://example.com/article'],
-        maxResults: 5,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources[0]!.text).not.toContain('CANARY_FAKE_KEY_VALUE');
-    expect(result.sources[0]!.text).toContain('[REDACTED]');
+    await expect(
+      adapter.execute(
+        {
+          operation: 'extract',
+          urls: ['https://example.com/article'],
+          maxResults: 5,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('labels injection content in extract results', async () => {
+    // VAL-RES-108: extract fails closed — provider-mediated fetch not verified in Phase 1.
     const fetch = createMockFetch(() =>
       jsonResponse({
         results: [
@@ -175,17 +178,17 @@ describe('Tavily adapter: content isolation (VAL-RES-044/045/046)', () => {
     );
     const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch });
 
-    const result = await adapter.execute(
-      {
-        operation: 'extract',
-        urls: ['https://example.com/article'],
-        maxResults: 5,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources[0]!.injectionRiskLabels).toContain('instruction_override');
+    await expect(
+      adapter.execute(
+        {
+          operation: 'extract',
+          urls: ['https://example.com/article'],
+          maxResults: 5,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('returns empty labels for benign search content', async () => {
@@ -246,6 +249,9 @@ describe('Firecrawl adapter: content isolation (VAL-RES-044/045/046)', () => {
   });
 
   it('labels tool-invocation content in scrape results', async () => {
+    // VAL-RES-108: scrape fails closed — provider-mediated fetch not verified in Phase 1.
+    // Content isolation for scrape is tested via search results above; scrape
+    // is denied before dispatch so no provider content reaches normalization.
     const fetch = createMockFetch(() =>
       jsonResponse({
         success: true,
@@ -257,20 +263,21 @@ describe('Firecrawl adapter: content isolation (VAL-RES-044/045/046)', () => {
     );
     const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch });
 
-    const result = await adapter.execute(
-      {
-        operation: 'scrape',
-        urls: ['https://example.com/page'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources[0]!.injectionRiskLabels).toContain('tool_invocation');
+    await expect(
+      adapter.execute(
+        {
+          operation: 'scrape',
+          urls: ['https://example.com/page'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('redacts secret canaries from scrape result text', async () => {
+    // VAL-RES-108: scrape fails closed — provider-mediated fetch not verified in Phase 1.
     const fetch = createMockFetch(() =>
       jsonResponse({
         success: true,
@@ -282,18 +289,17 @@ describe('Firecrawl adapter: content isolation (VAL-RES-044/045/046)', () => {
     );
     const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch });
 
-    const result = await adapter.execute(
-      {
-        operation: 'scrape',
-        urls: ['https://example.com/page'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources[0]!.text).not.toContain('the-real-secret-value');
-    expect(result.sources[0]!.text).not.toContain('__CANARY_SECRET__');
+    await expect(
+      adapter.execute(
+        {
+          operation: 'scrape',
+          urls: ['https://example.com/page'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('labels secret-exfiltration content in search results', async () => {
@@ -324,6 +330,7 @@ describe('Firecrawl adapter: content isolation (VAL-RES-044/045/046)', () => {
   });
 
   it('returns empty labels for benign scrape content', async () => {
+    // VAL-RES-108: scrape fails closed — provider-mediated fetch not verified in Phase 1.
     const fetch = createMockFetch(() =>
       jsonResponse({
         success: true,
@@ -335,17 +342,17 @@ describe('Firecrawl adapter: content isolation (VAL-RES-044/045/046)', () => {
     );
     const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch });
 
-    const result = await adapter.execute(
-      {
-        operation: 'scrape',
-        urls: ['https://example.com/weather'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources[0]!.injectionRiskLabels).toEqual([]);
+    await expect(
+      adapter.execute(
+        {
+          operation: 'scrape',
+          urls: ['https://example.com/weather'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('redacts Bearer tokens from search result text', async () => {

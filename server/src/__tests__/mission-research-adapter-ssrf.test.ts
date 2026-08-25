@@ -395,6 +395,161 @@ describe('VAL-RES-054: adapter filters unsafe search results', () => {
 });
 
 // ---------------------------------------------------------------------------
+// VAL-RES-108: Adapter enforces provider-mediated fetch (fail-closed)
+// ---------------------------------------------------------------------------
+
+describe('VAL-RES-108: adapter enforces provider-mediated fetch', () => {
+  it('Tavily extract fails closed with PROVIDER_MEDIATED_FETCH_UNVERIFIED before dispatch', async () => {
+    const { fn, calls } = createMockFetch(() => jsonResponse({ results: [], request_id: 'r1' }));
+    const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch: fn });
+
+    try {
+      await adapter.execute(
+        {
+          operation: 'extract',
+          urls: ['https://example.com/page'],
+          maxResults: 5,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      const e = err as ResearchProviderError;
+      expect(e.code).toBe('PROVIDER_MEDIATED_FETCH_UNVERIFIED');
+      // Provider must not be called
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('Firecrawl scrape fails closed with PROVIDER_MEDIATED_FETCH_UNVERIFIED before dispatch', async () => {
+    const { fn, calls } = createMockFetch(() =>
+      jsonResponse({ success: true, data: { markdown: 'text' } }),
+    );
+    const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
+
+    try {
+      await adapter.execute(
+        {
+          operation: 'scrape',
+          urls: ['https://example.com/page'],
+          maxResults: 5,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      const e = err as ResearchProviderError;
+      expect(e.code).toBe('PROVIDER_MEDIATED_FETCH_UNVERIFIED');
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('Firecrawl structured_extract fails closed with PROVIDER_MEDIATED_FETCH_UNVERIFIED before dispatch', async () => {
+    const { fn, calls } = createMockFetch(() =>
+      jsonResponse({ success: true, id: 'job-1', invalidURLs: [] }),
+    );
+    const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
+
+    try {
+      await adapter.execute(
+        {
+          operation: 'structured_extract',
+          urls: ['https://example.com/page'],
+          schema: { type: 'object', properties: { name: { type: 'string' } } },
+          maxResults: 5,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      const e = err as ResearchProviderError;
+      expect(e.code).toBe('PROVIDER_MEDIATED_FETCH_UNVERIFIED');
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('Tavily search still succeeds (search is not a mediated fetch)', async () => {
+    const { fn, calls } = createMockFetch(() =>
+      jsonResponse({ results: [], request_id: 'r1', usage: { credits: 0 } }),
+    );
+    const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch: fn });
+
+    const result = await adapter.execute(
+      { operation: 'search', query: 'test', maxResults: 5, timeoutMs: 5000 },
+      baseContext,
+    );
+
+    expect(result.provider).toBe('tavily');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('Firecrawl search still succeeds (search is not a mediated fetch)', async () => {
+    const { fn, calls } = createMockFetch(() =>
+      jsonResponse({ success: true, data: { web: [] }, id: 'job-1', creditsUsed: 0 }),
+    );
+    const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
+
+    const result = await adapter.execute(
+      { operation: 'search', query: 'test', maxResults: 5, timeoutMs: 5000 },
+      baseContext,
+    );
+
+    expect(result.provider).toBe('firecrawl');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('Tavily extract validates target URL before mediated fetch check', async () => {
+    const { fn, calls } = createMockFetch(() => jsonResponse({ results: [], request_id: 'r1' }));
+    const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch: fn });
+
+    // Unsafe URL is rejected by validateTargetUrl before mediated fetch check
+    try {
+      await adapter.execute(
+        {
+          operation: 'extract',
+          urls: ['http://localhost/page'],
+          maxResults: 5,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      const e = err as ResearchProviderError;
+      expect(e.code).toBe('POLICY_DENIED');
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('Firecrawl scrape validates target URL before mediated fetch check', async () => {
+    const { fn, calls } = createMockFetch(() =>
+      jsonResponse({ success: true, data: { markdown: 'text' } }),
+    );
+    const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
+
+    try {
+      await adapter.execute(
+        {
+          operation: 'scrape',
+          urls: ['http://localhost/page'],
+          maxResults: 5,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      const e = err as ResearchProviderError;
+      expect(e.code).toBe('POLICY_DENIED');
+      expect(calls).toHaveLength(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // VAL-RES-096: Sensitive query values denied (adapter-level)
 // ---------------------------------------------------------------------------
 

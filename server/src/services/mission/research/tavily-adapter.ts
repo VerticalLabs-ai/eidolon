@@ -51,6 +51,7 @@ import {
   validateProviderOriginUrl,
 } from './ssrf-boundary.js';
 import { validateTargetUrl } from './url-policy.js';
+import { validateProviderMediatedFetch } from './provider-mediated-fetch.js';
 import { detectInjectionRisk, redactSecrets } from './content-isolation.js';
 import { validateResearchRequest } from './request-validation.js';
 import { readBoundedResponseBody } from './bounded-body-reader.js';
@@ -334,6 +335,13 @@ export class TavilyAdapter implements ResearchProvider {
       }
     }
 
+    // VAL-RES-108: Provider-mediated fetch capability enforcement.
+    // Fail closed if the provider cannot verify the complete redirect
+    // chain and per-hop SSRF enforcement for target URLs. In Phase 1,
+    // Tavily extract lacks this capability, so the operation is denied
+    // before dispatch rather than sending target URLs to the provider.
+    this.assertMediatedFetch('extract', urls);
+
     const body = {
       urls,
       format: 'markdown',
@@ -397,6 +405,27 @@ export class TavilyAdapter implements ResearchProvider {
       sources,
       warnings,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Provider-mediated fetch enforcement (VAL-RES-108)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Assert that the provider operation has a compliant mediated-fetch
+   * capability before dispatching target URLs. Fails closed with
+   * PROVIDER_MEDIATED_FETCH_UNVERIFIED if the capability is unverified.
+   */
+  private assertMediatedFetch(operation: ResearchOperation, urls: string[]): void {
+    const result = validateProviderMediatedFetch('tavily', operation, urls);
+    if (!result.valid) {
+      throw new ResearchProviderError(
+        result.errorCode ?? 'PROVIDER_MEDIATED_FETCH_UNVERIFIED',
+        result.message ?? 'Provider-mediated fetch not verified',
+        'tavily',
+        operation,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------

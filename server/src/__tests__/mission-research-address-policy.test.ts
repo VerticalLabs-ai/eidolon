@@ -191,6 +191,42 @@ describe('VAL-RES-050: Blocked IP address classification', () => {
     });
   });
 
+  describe('IPv4-compatible IPv6 (::x.x.x.x without ffff prefix)', () => {
+    it('rejects ::127.0.0.1 (IPv4-compatible loopback)', () => {
+      expect(isBlockedAddress('::127.0.0.1')).toBe(true);
+      expect(classifyAddress('::127.0.0.1')).toBe('loopback');
+    });
+
+    it('rejects ::10.0.0.1 (IPv4-compatible private)', () => {
+      expect(isBlockedAddress('::10.0.0.1')).toBe(true);
+      expect(classifyAddress('::10.0.0.1')).toBe('private');
+    });
+
+    it('rejects ::169.254.169.254 (IPv4-compatible metadata)', () => {
+      expect(isBlockedAddress('::169.254.169.254')).toBe(true);
+      expect(classifyAddress('::169.254.169.254')).toBe('link_local');
+    });
+
+    it('rejects ::192.168.1.1 (IPv4-compatible private)', () => {
+      expect(isBlockedAddress('::192.168.1.1')).toBe(true);
+      expect(classifyAddress('::192.168.1.1')).toBe('private');
+    });
+
+    it('rejects ::100.64.0.1 (IPv4-compatible CGNAT)', () => {
+      expect(isBlockedAddress('::100.64.0.1')).toBe(true);
+      expect(classifyAddress('::100.64.0.1')).toBe('cgnat');
+    });
+
+    it('rejects ::0.0.0.0 (IPv4-compatible unspecified)', () => {
+      // ::0.0.0.0 is the same as :: which is already caught as unspecified
+      expect(isBlockedAddress('::0.0.0.0')).toBe(true);
+    });
+
+    it('does NOT reject ::8.8.8.8 (IPv4-compatible public)', () => {
+      expect(isBlockedAddress('::8.8.8.8')).toBe(false);
+    });
+  });
+
   describe('valid public addresses are NOT blocked', () => {
     it('accepts 8.8.8.8 (Google DNS)', () => {
       expect(isBlockedAddress('8.8.8.8')).toBe(false);

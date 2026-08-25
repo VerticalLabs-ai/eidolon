@@ -100,23 +100,24 @@ describe('Tavily adapter: request payload shape', () => {
   });
 
   it('sends POST to /extract with urls array for extract operation', async () => {
+    // VAL-RES-108: extract fails closed — provider-mediated fetch not verified in Phase 1
     const { fn, calls } = createMockFetch(() => jsonResponse({ results: [], request_id: 'req-2' }));
     const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch: fn });
 
-    await adapter.execute(
-      {
-        operation: 'extract',
-        urls: ['https://example.com'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
+    await expect(
+      adapter.execute(
+        {
+          operation: 'extract',
+          urls: ['https://example.com'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
 
-    expect(calls[0]!.url).toBe(`${TAVILY_ORIGIN}${PROVIDER_PATHS.tavily.extract}`);
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.urls).toEqual(['https://example.com']);
-    expect(body.format).toBe('markdown');
+    // Provider must not be called when mediated fetch is unverified
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -199,6 +200,7 @@ describe('Tavily adapter: response normalization', () => {
   });
 
   it('normalizes extract results with url and raw_content', async () => {
+    // VAL-RES-108: extract fails closed — provider-mediated fetch not verified in Phase 1
     const { fn } = createMockFetch(() =>
       jsonResponse({
         results: [
@@ -213,23 +215,21 @@ describe('Tavily adapter: response normalization', () => {
     );
     const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch: fn });
 
-    const result = await adapter.execute(
-      {
-        operation: 'extract',
-        urls: ['https://example.com'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources).toHaveLength(1);
-    expect(result.sources[0].canonicalUrl).toBe('https://example.com/');
-    expect(result.sources[0].text).toBe('Extracted content');
-    expect(result.sources[0].contentHash).toBeDefined();
+    await expect(
+      adapter.execute(
+        {
+          operation: 'extract',
+          urls: ['https://example.com'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('reports warnings for failed extraction URLs', async () => {
+    // VAL-RES-108: extract fails closed — provider-mediated fetch not verified in Phase 1
     const { fn } = createMockFetch(() =>
       jsonResponse({
         results: [{ url: 'https://good.com', raw_content: 'content' }],
@@ -239,18 +239,17 @@ describe('Tavily adapter: response normalization', () => {
     );
     const adapter = new TavilyAdapter({ apiKey: 'test-key', fetch: fn });
 
-    const result = await adapter.execute(
-      {
-        operation: 'extract',
-        urls: ['https://good.com', 'https://bad.com'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources).toHaveLength(1);
-    expect(result.warnings).toEqual(['1 URL(s) failed extraction']);
+    await expect(
+      adapter.execute(
+        {
+          operation: 'extract',
+          urls: ['https://good.com', 'https://bad.com'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 });
 

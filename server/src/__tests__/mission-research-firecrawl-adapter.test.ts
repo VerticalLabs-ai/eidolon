@@ -75,29 +75,30 @@ describe('Firecrawl adapter: request payload shape', () => {
   });
 
   it('sends POST to /v2/scrape with url and markdown format', async () => {
+    // VAL-RES-108: scrape fails closed — provider-mediated fetch not verified in Phase 1
     const { fn, calls } = createMockFetch(() =>
       jsonResponse({ success: true, data: { markdown: '# Hello' } }),
     );
     const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
 
-    await adapter.execute(
-      {
-        operation: 'scrape',
-        urls: ['https://example.com'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
+    await expect(
+      adapter.execute(
+        {
+          operation: 'scrape',
+          urls: ['https://example.com'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
 
-    expect(calls[0]!.url).toBe(`${FIRECRAWL_ORIGIN}${PROVIDER_PATHS.firecrawl.scrape}`);
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.url).toBe('https://example.com');
-    expect(body.formats).toEqual(['markdown']);
-    expect(body.onlyMainContent).toBe(true);
+    // Provider must not be called when mediated fetch is unverified
+    expect(calls).toHaveLength(0);
   });
 
   it('sends POST to /v2/extract with urls and schema', async () => {
+    // VAL-RES-108: structured_extract fails closed — provider-mediated fetch not verified in Phase 1
     const { fn, calls } = createMockFetch(() =>
       jsonResponse({ success: true, id: 'extract-job-1' }),
     );
@@ -108,22 +109,20 @@ describe('Firecrawl adapter: request payload shape', () => {
       properties: { name: { type: 'string' } },
       additionalProperties: false,
     };
-    await adapter.execute(
-      {
-        operation: 'structured_extract',
-        urls: ['https://example.com'],
-        schema,
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
+    await expect(
+      adapter.execute(
+        {
+          operation: 'structured_extract',
+          urls: ['https://example.com'],
+          schema,
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
 
-    expect(calls[0]!.url).toBe(`${FIRECRAWL_ORIGIN}${PROVIDER_PATHS.firecrawl.structured_extract}`);
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.urls).toEqual(['https://example.com']);
-    expect(body.schema).toEqual(schema);
-    expect(body.showSources).toBe(true);
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -176,6 +175,7 @@ describe('Firecrawl adapter: response normalization', () => {
   });
 
   it('normalizes scrape result with markdown and metadata', async () => {
+    // VAL-RES-108: scrape fails closed — provider-mediated fetch not verified in Phase 1
     const { fn } = createMockFetch(() =>
       jsonResponse({
         success: true,
@@ -191,21 +191,17 @@ describe('Firecrawl adapter: response normalization', () => {
     );
     const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
 
-    const result = await adapter.execute(
-      {
-        operation: 'scrape',
-        urls: ['https://example.com'],
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.sources).toHaveLength(1);
-    expect(result.sources[0].canonicalUrl).toBe('https://example.com/');
-    expect(result.sources[0].title).toBe('Page Title');
-    expect(result.sources[0].text).toBe('# Page Title\n\nPage content.');
-    expect(result.sources[0].language).toBe('en');
+    await expect(
+      adapter.execute(
+        {
+          operation: 'scrape',
+          urls: ['https://example.com'],
+          maxResults: 1,
+          timeoutMs: 5000,
+        },
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('discards unknown provider response properties', async () => {
@@ -238,29 +234,30 @@ describe('Firecrawl adapter: response normalization', () => {
   });
 
   it('structured extract returns job ID with no sources (async)', async () => {
+    // VAL-RES-108: structured_extract fails closed — provider-mediated fetch not verified in Phase 1
     const { fn } = createMockFetch(() => jsonResponse({ success: true, id: 'extract-job-123' }));
     const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
 
-    const result = await adapter.execute(
-      {
-        operation: 'structured_extract',
-        urls: ['https://example.com'],
-        schema: {
-          type: 'object',
-          properties: { a: { type: 'string' } },
-          additionalProperties: false,
+    await expect(
+      adapter.execute(
+        {
+          operation: 'structured_extract',
+          urls: ['https://example.com'],
+          schema: {
+            type: 'object',
+            properties: { a: { type: 'string' } },
+            additionalProperties: false,
+          },
+          maxResults: 1,
+          timeoutMs: 5000,
         },
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.providerRequestId).toBe('extract-job-123');
-    expect(result.sources).toHaveLength(0);
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('reports warnings for invalid URLs in structured extract', async () => {
+    // VAL-RES-108: structured_extract fails closed — provider-mediated fetch not verified in Phase 1
     const { fn } = createMockFetch(() =>
       jsonResponse({
         success: true,
@@ -270,22 +267,22 @@ describe('Firecrawl adapter: response normalization', () => {
     );
     const adapter = new FirecrawlAdapter({ apiKey: 'test-key', fetch: fn });
 
-    const result = await adapter.execute(
-      {
-        operation: 'structured_extract',
-        urls: ['https://good.com', 'https://bad-url.com'],
-        schema: {
-          type: 'object',
-          properties: { a: { type: 'string' } },
-          additionalProperties: false,
+    await expect(
+      adapter.execute(
+        {
+          operation: 'structured_extract',
+          urls: ['https://good.com', 'https://bad-url.com'],
+          schema: {
+            type: 'object',
+            properties: { a: { type: 'string' } },
+            additionalProperties: false,
+          },
+          maxResults: 1,
+          timeoutMs: 5000,
         },
-        maxResults: 1,
-        timeoutMs: 5000,
-      },
-      baseContext,
-    );
-
-    expect(result.warnings).toEqual(['1 invalid URL(s) excluded']);
+        baseContext,
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_MEDIATED_FETCH_UNVERIFIED' });
   });
 
   it('passes through provider warnings from search', async () => {
