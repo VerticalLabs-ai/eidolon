@@ -103,6 +103,11 @@ const DEFAULT_PRICING_TABLE: Record<string, PricingTableEntry> = {
  * to `execute()` resolves the child's billing agent, constructs adapters
  * with the resolved API key, and invokes the ResearchExecutionService.
  */
+export interface ProductionResearchExecutorDeps {
+  /** Override the internally-constructed execution service (test seam). */
+  executionService?: ResearchExecutionService;
+}
+
 export class ProductionResearchExecutor implements ResearchExecutor {
   private readonly executionService: ResearchExecutionService;
   private readonly credentialStore: EnvCredentialStore;
@@ -111,7 +116,10 @@ export class ProductionResearchExecutor implements ResearchExecutor {
   private readonly sourceRevisions: SourceRevisionService;
   private readonly accounting: ResearchAttemptAccountingService;
 
-  constructor(private db: DbInstance) {
+  constructor(
+    private db: DbInstance,
+    deps: ProductionResearchExecutorDeps = {},
+  ) {
     this.credentialStore = new EnvCredentialStore();
     this.pricingService = new ResearchPricingService(db, {});
     this.circuitBreaker = new ResearchCircuitBreaker(db);
@@ -120,14 +128,16 @@ export class ProductionResearchExecutor implements ResearchExecutor {
       schema: db.schema,
     });
     this.accounting = new ResearchAttemptAccountingService(db);
-    this.executionService = new ResearchExecutionService(db, {
-      credentialStore: this.credentialStore,
-      pricingService: this.pricingService,
-      circuitBreaker: this.circuitBreaker,
-      sourceRevisions: this.sourceRevisions,
-      accounting: this.accounting,
-      pricingTable: DEFAULT_PRICING_TABLE,
-    });
+    this.executionService =
+      deps.executionService ??
+      new ResearchExecutionService(db, {
+        credentialStore: this.credentialStore,
+        pricingService: this.pricingService,
+        circuitBreaker: this.circuitBreaker,
+        sourceRevisions: this.sourceRevisions,
+        accounting: this.accounting,
+        pricingTable: DEFAULT_PRICING_TABLE,
+      });
   }
 
   async execute(
@@ -206,6 +216,7 @@ export class ProductionResearchExecutor implements ResearchExecutor {
     // research operation (search is the most common). Multiple operations
     // in a single step are executed sequentially.
     let totalSourceCount = 0;
+    let succeededCount = 0;
     const durationSeconds = policy.limits?.durationSeconds ?? 300;
     const timeoutMs = Math.min(durationSeconds * 1000, 30_000);
 
@@ -235,6 +246,7 @@ export class ProductionResearchExecutor implements ResearchExecutor {
           providers,
         });
         totalSourceCount += result.sources.length;
+        succeededCount += 1;
       } catch (err) {
         logger.warn(
           { runId: claim.runId, operation, err: err instanceof Error ? err.message : String(err) },
@@ -242,6 +254,14 @@ export class ProductionResearchExecutor implements ResearchExecutor {
         );
         // Continue to next operation or complete with partial results.
       }
+    }
+
+    // When every research operation failed (or none ran due to abort),
+    // report executed=false so the run falls through to the LLM provider
+    // call path or fails with a proper research error category instead of
+    // completing as if research succeeded (fix-ut-m5-research-attempt-transaction).
+    if (succeededCount === 0) {
+      return { executed: false, sourceCount: 0 };
     }
 
     return { executed: true, sourceCount: totalSourceCount };

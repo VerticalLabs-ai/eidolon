@@ -1209,3 +1209,93 @@ describe('Availability refresh does not create records automatically', () => {
     expect(rows[0]!.n).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// fix-ut-m5-research-attempt-transaction: SAVEPOINT before INSERT so a
+// failed INSERT (FK/check constraint) does not abort the transaction and
+// cause the catch-block SELECT to throw RESEARCH_ATTEMPT_CONFLICT when no
+// prior attempt exists.
+// ---------------------------------------------------------------------------
+
+describe('fix-ut-m5-research-attempt-transaction: reserveInFlight SAVEPOINT', () => {
+  it('does not throw RESEARCH_ATTEMPT_CONFLICT when INSERT fails for a non-duplicate reason and no prior attempt exists', async () => {
+    const scope = await seedScope(db, '__mtest__ reserve-fk-fail');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const accounting = new ResearchAttemptAccountingService(db);
+
+    // Use a non-existent company_id to trigger a foreign-key violation on
+    // INSERT. The allocation lookup succeeds (queries by run_id), but the
+    // INSERT fails on the company_id FK constraint. Without the SAVEPOINT
+    // fix, the catch-block SELECT runs in an aborted transaction, finds
+    // nothing, and incorrectly throws RESEARCH_ATTEMPT_CONFLICT.
+    const bogusCompanyId = randomUUID();
+    await expect(
+      db.drizzle.transaction(async (tx) =>
+        accounting.reserveInFlight(tx, {
+          companyId: bogusCompanyId,
+          projectId: scope.projectId,
+          runId: run.runId,
+          rootRunId: run.runId,
+          logicalCallId: randomUUID(),
+          attemptOrdinal: 1,
+          provider: 'tavily',
+          operation: 'search',
+          reservedCents: 100,
+        }),
+      ),
+    ).rejects.not.toMatchObject({ code: 'RESEARCH_ATTEMPT_CONFLICT' });
+
+    // No research attempt was created.
+    const attempts = (await db.drizzle.execute(sql`
+      SELECT COUNT(*)::int AS "n" FROM "research_attempts" WHERE "run_id" = ${run.runId}
+    `)) as unknown as { n: number }[];
+    expect(attempts[0]!.n).toBe(0);
+  });
+
+  it('still returns the existing attempt id on a unique-constraint duplicate (idempotent reserve)', async () => {
+    const scope = await seedScope(db, '__mtest__ reserve-dup-ok');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const accounting = new ResearchAttemptAccountingService(db);
+    const logicalCallId = randomUUID();
+
+    // First reserve succeeds.
+    const first = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId,
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 200,
+      }),
+    );
+
+    // Second reserve with the same logical_call_id + ordinal hits the
+    // unique constraint and returns the existing attempt (idempotent).
+    const second = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId,
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 200,
+      }),
+    );
+    expect(second.attemptId).toBe(first.attemptId);
+
+    // Only one attempt row exists.
+    const attempts = (await db.drizzle.execute(sql`
+      SELECT COUNT(*)::int AS "n" FROM "research_attempts" WHERE "logical_call_id" = ${logicalCallId}
+    `)) as unknown as { n: number }[];
+    expect(attempts[0]!.n).toBe(1);
+  });
+});

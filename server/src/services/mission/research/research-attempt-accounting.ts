@@ -246,38 +246,47 @@ export class ResearchAttemptAccountingService {
     const id = randomUUID();
     const now = this.now();
 
-    try {
-      await tx.execute(sql`
-        INSERT INTO "research_attempts"
-          ("id","company_id","project_id","run_id","root_run_id","allocation_id",
-           "logical_call_id","attempt_ordinal","provider","operation","state",
-           "reserved_cents","settled_cents","created_at")
-        VALUES
-          (${id}, ${input.companyId}, ${input.projectId ?? null}, ${input.runId},
-           ${input.rootRunId}, ${state.allocationId},
-           ${input.logicalCallId}, ${input.attemptOrdinal},
-           ${input.provider}, ${input.operation}, 'prepared',
-           ${input.reservedCents}, 0, ${now})
-      `);
-    } catch {
-      // Unique violation → duplicate logical_call_id + ordinal. Return the
-      // existing attempt id so the caller can reconcile (idempotent reserve).
-      const [existing] = (await tx.execute(sql`
-        SELECT "id" FROM "research_attempts"
-        WHERE "logical_call_id" = ${input.logicalCallId}
-          AND "attempt_ordinal" = ${input.attemptOrdinal}
-        LIMIT 1
-      `)) as unknown as { id: string }[];
-      if (existing) {
-        const postState = await this.getAllocationState(tx, input.runId, false);
-        return {
-          attemptId: existing.id,
-          allocationId: state.allocationId,
-          remainingCents: postState.remainingCents,
-        };
-      }
-      throw new AppError(409, 'RESEARCH_ATTEMPT_CONFLICT', 'Research attempt already exists');
+    // SELECT-then-INSERT: check for an existing attempt first so the
+    // idempotent case (same logical_call_id + ordinal from a replay or
+    // recovery) is handled without catching an INSERT failure. This avoids
+    // the PostgreSQL aborted-transaction problem where a failed INSERT
+    // prevents the catch-block SELECT from executing, causing a misleading
+    // RESEARCH_ATTEMPT_CONFLICT even when no prior attempt exists
+    // (fix-ut-m5-research-attempt-transaction).
+    const [existing] = (await tx.execute(sql`
+      SELECT "id" FROM "research_attempts"
+      WHERE "logical_call_id" = ${input.logicalCallId}
+        AND "attempt_ordinal" = ${input.attemptOrdinal}
+      LIMIT 1
+    `)) as unknown as { id: string }[];
+    if (existing) {
+      const postState = await this.getAllocationState(tx, input.runId, false);
+      return {
+        attemptId: existing.id,
+        allocationId: state.allocationId,
+        remainingCents: postState.remainingCents,
+      };
     }
+
+    // INSERT the new attempt. If this fails (unique-constraint violation
+    // from a concurrent insert, or a foreign-key/check constraint
+    // violation), the original error propagates so the caller sees the real
+    // failure instead of a misleading RESEARCH_ATTEMPT_CONFLICT. The
+    // caller's transaction will be rolled back by drizzle; on retry the
+    // SELECT above will find the existing row (for the unique race) or the
+    // same error will surface (for FK) (fix-ut-m5-research-attempt-transaction).
+    await tx.execute(sql`
+      INSERT INTO "research_attempts"
+        ("id","company_id","project_id","run_id","root_run_id","allocation_id",
+         "logical_call_id","attempt_ordinal","provider","operation","state",
+         "reserved_cents","settled_cents","created_at")
+      VALUES
+        (${id}, ${input.companyId}, ${input.projectId ?? null}, ${input.runId},
+         ${input.rootRunId}, ${state.allocationId},
+         ${input.logicalCallId}, ${input.attemptOrdinal},
+         ${input.provider}, ${input.operation}, 'prepared',
+         ${input.reservedCents}, 0, ${now})
+    `);
 
     const postState = await this.getAllocationState(tx, input.runId, false);
     return {
