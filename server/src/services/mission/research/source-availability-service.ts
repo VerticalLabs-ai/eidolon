@@ -144,7 +144,9 @@ export class SourceAvailabilityService {
     }
 
     const id = randomUUID();
-    const now = this.clock();
+    // Use ISO 8601 string for raw SQL templates so PostgreSQL always
+    // receives a parseable timestamp (fix-ut-m5-date-serialization-sweep).
+    const now = this.clock().toISOString();
     await this.db.drizzle.execute(sql`
       INSERT INTO "research_source_availability_checks"
         ("id","company_id","project_id","run_id","root_run_id","source_revision_id",
@@ -164,7 +166,7 @@ export class SourceAvailabilityService {
       status: input.status,
       httpStatus: input.httpStatus,
       warning: input.warning,
-      createdAt: now.toISOString(),
+      createdAt: now,
       replayed: false,
     };
   }

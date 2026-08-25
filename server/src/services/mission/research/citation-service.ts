@@ -136,7 +136,9 @@ export class CitationService {
     });
 
     const id = randomUUID();
-    const now = new Date();
+    // Use ISO 8601 string for raw SQL templates so PostgreSQL always
+    // receives a parseable timestamp (fix-ut-m5-date-serialization-sweep).
+    const now = new Date().toISOString();
     const frozen = freezeDisplayMetadata({
       title: identity.frozenTitle,
       author: identity.frozenAuthor,
@@ -144,7 +146,7 @@ export class CitationService {
       retrievedAt: identity.frozenRetrievedAt,
       provider: identity.frozenProvider,
       contentHash: identity.frozenContentHash,
-      now: () => now,
+      now: () => new Date(now),
     });
 
     await this.deps.drizzle.execute(sql`

@@ -131,7 +131,13 @@ export class SourceRevisionService {
    */
   async persistSourceRevision(input: PersistSourceRevisionInput): Promise<PersistedSourceRevision> {
     const rec = normalizeSourceForPersistence(input.source);
-    const now = new Date();
+    // Use ISO 8601 string for raw SQL templates so PostgreSQL always
+    // receives a parseable timestamp. Passing a Date object to the pg
+    // driver through drizzle's raw sql`` template can serialize as
+    // Date.toString() (e.g. 'Tue Aug 25 2026 18:31:24 GMT-0500') which
+    // PostgreSQL rejects with "time zone 'gmt-0500' not recognized"
+    // (fix-ut-m5-date-serialization-sweep).
+    const now = new Date().toISOString();
 
     // 1. Upsert the company-scoped source identity (VAL-RES-019, VAL-RES-022).
     const sourceRow = (await this.deps.drizzle.execute(sql`
@@ -217,7 +223,7 @@ export class SourceRevisionService {
     input: PersistSourceRevisionInput,
     rec: ReturnType<typeof normalizeSourceForPersistence>,
     sourceId: string,
-    now: Date,
+    now: string,
   ): Promise<string> {
     const id = randomUUID();
     const rows = (await this.deps.drizzle.execute(sql`

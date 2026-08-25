@@ -238,7 +238,11 @@ export class CitationCarryForwardService {
     newVersion: number,
     sourceRevisionId?: string,
   ): Promise<CarryForwardResult> {
-    const now = new Date();
+    // Use ISO 8601 string for raw SQL templates so PostgreSQL always
+    // receives a parseable timestamp. Drizzle's typed .set() expects a
+    // Date for timestamp columns, so keep both (fix-ut-m5-date-serialization-sweep).
+    const nowDate = new Date();
+    const now = nowDate.toISOString();
     const artifactRevisionId = randomUUID();
     const provenanceId = randomUUID();
     const encryptedContent = encryptContent(content);
@@ -249,7 +253,7 @@ export class CitationCarryForwardService {
       .set({
         content: encryptedContent,
         version: newVersion,
-        updatedAt: now,
+        updatedAt: nowDate,
         lastEditedByUserId: input.editedByUserId ?? null,
         lastEditedByAgentId: input.editedByAgentId ?? null,
       })
@@ -391,7 +395,7 @@ export class CitationCarryForwardService {
          ${input.provenance.policyHash ?? null},
          ${input.provenance.producingStepKey ?? null},
          ${input.provenance.producingChildRunId ?? null},
-         ${input.provenance.generationTime},
+         ${input.provenance.generationTime.toISOString()},
          ${JSON.stringify(citedIds)}::jsonb,
          ${now})
     `);
@@ -519,7 +523,7 @@ export class CitationCarryForwardService {
     newArtifactRevisionId: string,
     newVersion: number,
     ordinal: number,
-    now: Date,
+    now: string,
   ): Promise<string> {
     // Build the new citation identity using the verified quote/locator
     // and the frozen metadata from the previous citation.
@@ -566,7 +570,7 @@ export class CitationCarryForwardService {
       retrievedAt: identity.frozenRetrievedAt,
       provider: identity.frozenProvider,
       contentHash: identity.frozenContentHash,
-      now: () => now,
+      now: () => new Date(now),
     });
 
     const id = randomUUID();

@@ -126,7 +126,11 @@ export class ArtifactCommitService {
     this.validateInput(input);
 
     return this.deps.drizzle.transaction(async (tx) => {
-      const now = new Date();
+      // Use ISO 8601 string for raw SQL templates so PostgreSQL always
+      // receives a parseable timestamp. Drizzle's typed .set() expects a
+      // Date for timestamp columns, so keep both (fix-ut-m5-date-serialization-sweep).
+      const nowDate = new Date();
+      const now = nowDate.toISOString();
       const newVersion = input.expectedVersion + 1;
       const artifactRevisionId = randomUUID();
       const provenanceId = randomUUID();
@@ -150,7 +154,7 @@ export class ArtifactCommitService {
         .set({
           content: encryptedContent,
           version: newVersion,
-          updatedAt: now,
+          updatedAt: nowDate,
           lastEditedByUserId: input.editedByUserId ?? null,
           lastEditedByAgentId: input.editedByAgentId ?? null,
         })
@@ -238,7 +242,7 @@ export class ArtifactCommitService {
            ${input.provenance.policyHash ?? null},
            ${input.provenance.producingStepKey ?? null},
            ${input.provenance.producingChildRunId ?? null},
-           ${input.provenance.generationTime},
+           ${input.provenance.generationTime.toISOString()},
            ${JSON.stringify(input.provenance.citedSourceRevisionIds)}::jsonb,
            ${now})
       `);
@@ -339,7 +343,7 @@ export class ArtifactCommitService {
     c: CitationCommitInput,
     artifactRevisionId: string,
     newVersion: number,
-    now: Date,
+    now: string,
   ): Promise<string> {
     // Scope-check the source revision (VAL-RES-022). A foreign-company or
     // absent revision is rejected inside the transaction so the whole
@@ -393,7 +397,7 @@ export class ArtifactCommitService {
       retrievedAt: identity.frozenRetrievedAt,
       provider: identity.frozenProvider,
       contentHash: identity.frozenContentHash,
-      now: () => now,
+      now: () => new Date(now),
     });
 
     const id = randomUUID();
