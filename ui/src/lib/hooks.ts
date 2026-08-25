@@ -3238,3 +3238,84 @@ export function useMissionQuestionSets(
     ) => prev,
   });
 }
+
+// ── Mission Run Artifacts, Citations, and Provenance ──────────────────────
+// (feature m5-f14-citation-navigation-ui; VAL-RES-027, VAL-RES-028,
+//  VAL-RES-029, VAL-RES-030, VAL-RES-031, VAL-RES-037, VAL-RES-038,
+//  VAL-CROSS-040, VAL-CROSS-041, VAL-CROSS-047)
+
+/**
+ * Fetch produced artifacts and provenance links for a Mission run
+ * (`GET /:runId/artifacts`). Returns artifact summaries with revision and
+ * citation indicators (VAL-CROSS-047). The browser never invents artifact
+ * state; every field is server-authoritative.
+ */
+export function useMissionRunArtifacts(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-run-artifacts', companyId, projectId, runId],
+    queryFn: async () =>
+      unwrap<{ artifacts: api.MissionArtifactSummary[]; runId: string }>(
+        await api.getMissionRunArtifacts(companyId!, projectId!, runId!),
+      ),
+    enabled: !!companyId && !!projectId && !!runId,
+    placeholderData: (
+      prev: { artifacts: api.MissionArtifactSummary[]; runId: string } | undefined,
+    ) => prev,
+  });
+}
+
+/**
+ * Fetch citations for an exact artifact revision as JSON
+ * (`GET /artifacts/:artifactId/revisions/:version/citations`). Returns
+ * citations with frozen display metadata, ordered by ordinal (VAL-RES-027).
+ * Citations bind to the EXACT immutable artifact revision and never float
+ * to newer content (VAL-CROSS-041).
+ */
+export function useArtifactRevisionCitations(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+) {
+  return useQuery({
+    queryKey: ['artifact-revision-citations', companyId, projectId, artifactId, version],
+    queryFn: async () =>
+      unwrap<{ citations: api.MissionCitationDetail[]; artifactId: string; version: number }>(
+        await api.getArtifactRevisionCitations(companyId!, projectId!, artifactId!, version!),
+      ),
+    enabled: !!companyId && !!projectId && !!artifactId && version != null,
+    placeholderData: (
+      prev:
+        { citations: api.MissionCitationDetail[]; artifactId: string; version: number } | undefined,
+    ) => prev,
+  });
+}
+
+/**
+ * Fetch provenance for an exact artifact revision
+ * (`GET /artifacts/:artifactId/revisions/:version/provenance`). Returns
+ * the producing run, plan revision/hash, policy hash, step/child, and cited
+ * source revisions (VAL-RES-030, VAL-RES-033). The drawer defaults to the
+ * viewed revision and shows a newer-revision notice rather than substituting
+ * current provenance (VAL-RES-031, VAL-CROSS-041).
+ */
+export function useArtifactRevisionProvenance(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+) {
+  return useQuery({
+    queryKey: ['artifact-revision-provenance', companyId, projectId, artifactId, version],
+    queryFn: async () =>
+      unwrap<api.MissionProvenanceDetail>(
+        await api.getArtifactRevisionProvenance(companyId!, projectId!, artifactId!, version!),
+      ),
+    enabled: !!companyId && !!projectId && !!artifactId && version != null,
+    placeholderData: (prev: api.MissionProvenanceDetail | undefined) => prev,
+  });
+}

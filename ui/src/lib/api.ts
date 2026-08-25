@@ -4419,3 +4419,109 @@ export function getMissionQuestionSets(
     `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/question-sets${qs ? `?${qs}` : ''}`,
   );
 }
+
+// ── Mission Run Artifacts, Citations, and Provenance ──────────────────────
+// (feature m5-f14-citation-navigation-ui; VAL-RES-027, VAL-RES-028,
+//  VAL-RES-029, VAL-RES-030, VAL-RES-031, VAL-RES-037, VAL-RES-038,
+//  VAL-CROSS-040, VAL-CROSS-041, VAL-CROSS-047)
+//
+// The server is authoritative; this client contract is kept in sync.
+// Citations bind to the EXACT immutable source and artifact revisions and
+// never float to newer content. Frozen display metadata is captured at
+// citation creation time (VAL-RES-113) so historical views are stable.
+// All quote/title/author text is untrusted data and rendered inert.
+
+/** A produced artifact summary for a Mission run. */
+export interface MissionArtifactSummary {
+  artifactId: string;
+  title: string;
+  type: string;
+  version: number;
+  artifactRevisionId: string;
+  citationCount: number;
+  producingRunId: string;
+  producingStepKey: string | null;
+  producingChildRunId: string | null;
+}
+
+export interface MissionRunArtifactsResult {
+  data: { artifacts: MissionArtifactSummary[]; runId: string };
+}
+
+/** A citation detail with frozen display metadata for the provenance drawer. */
+export interface MissionCitationDetail {
+  citationId: string;
+  ordinal: number;
+  /** Exact quote (decrypted, untrusted data — rendered inert). */
+  quote: string;
+  frozenTitle?: string;
+  frozenAuthor?: string;
+  canonicalUrl: string;
+  frozenRetrievedAt: string;
+  frozenProvider: string;
+  frozenOperation?: string;
+  sourceRevisionId: string;
+  artifactRevisionId: string;
+  artifactVersion: number;
+  section?: string;
+  charStart?: number;
+  charEnd?: number;
+}
+
+export interface ArtifactCitationsResult {
+  data: { citations: MissionCitationDetail[]; artifactId: string; version: number };
+}
+
+/** Provenance detail for an artifact revision. */
+export interface MissionProvenanceDetail {
+  provenanceId: string;
+  runId: string;
+  rootRunId: string;
+  artifactId: string;
+  artifactRevisionId: string;
+  artifactVersion: number;
+  approvedPlanRevisionId?: string;
+  approvedPlanHash?: string;
+  policyHash?: string;
+  producingStepKey?: string;
+  producingChildRunId?: string | null;
+  generationTime: string;
+  citedSourceRevisionIds: string[];
+  /** Whether a newer artifact revision exists (VAL-RES-031, VAL-CROSS-041). */
+  newerArtifactVersionExists: boolean;
+}
+
+export interface ArtifactProvenanceResult {
+  data: MissionProvenanceDetail;
+}
+
+/** Fetch produced artifacts and provenance links for a run. */
+export function getMissionRunArtifacts(companyId: string, projectId: string, runId: string) {
+  return request<MissionRunArtifactsResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/artifacts`,
+  );
+}
+
+/** Fetch citations for an exact artifact revision as JSON (not export). */
+export function getArtifactRevisionCitations(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) {
+  return request<ArtifactCitationsResult>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/citations`,
+  );
+}
+
+/** Fetch provenance for an exact artifact revision. */
+export function getArtifactRevisionProvenance(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) {
+  return request<ArtifactProvenanceResult>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/provenance`,
+  );
+}

@@ -246,6 +246,183 @@ export function artifactsRouter(db: DbInstance): Router {
     },
   );
   // -------------------------------------------------------------------------
+  // Exact-revision citations as JSON (m5-f14-citation-navigation-ui).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/citations
+  // Returns citations with frozen display metadata for the exact artifact
+  // revision, ordered by ordinal (VAL-RES-027). Citations bind to the EXACT
+  // immutable artifact revision and never float to newer content
+  // (VAL-CROSS-041). Project-scoped; cross-scope returns non-enumerating 404.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/citations',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      const exportSvc = new ExportRevisionService({ drizzle: db.drizzle, schema: db.schema });
+      const data = await exportSvc.loadExportData(companyId, projectId, artifactId, versionNum);
+      if (!data) {
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      // Return citations with frozen display metadata as JSON. The
+      // citationId is included for inline mark mapping; all other fields
+      // are safe public metadata (VAL-RES-030).
+      const citations = data.citations.map((c) => ({
+        citationId: c.citationId,
+        ordinal: c.ordinal,
+        quote: c.quote,
+        frozenTitle: c.frozenTitle,
+        frozenAuthor: c.frozenAuthor,
+        canonicalUrl: c.canonicalUrl,
+        frozenRetrievedAt: c.frozenRetrievedAt,
+        frozenProvider: c.frozenProvider,
+        section: c.section,
+        sourceRevisionId: '', // Populated below from the citation row
+        artifactRevisionId: '',
+        artifactVersion: data.version,
+      }));
+
+      // Fetch source revision IDs and artifact revision ID for each citation
+      // from the citations table (scoped by company/project).
+      const { sql } = await import('drizzle-orm');
+      const citationRows = (await db.drizzle.execute(sql`
+        SELECT "id", "source_revision_id", "artifact_revision_id"
+        FROM "citations"
+        WHERE "artifact_id" = ${artifactId}
+          AND "company_id" = ${companyId}
+          AND "project_id" = ${projectId}
+      `)) as unknown as { id: string; source_revision_id: string; artifact_revision_id: string }[];
+      const citeMap = new Map(citationRows.map((r) => [r.id, r]));
+      for (const c of citations) {
+        const row = citeMap.get(c.citationId);
+        if (row) {
+          c.sourceRevisionId = row.source_revision_id;
+          c.artifactRevisionId = row.artifact_revision_id;
+        }
+      }
+
+      res.json({
+        data: { citations, artifactId, version: data.version },
+      });
+    },
+  );
+  // -------------------------------------------------------------------------
+  // Exact-revision provenance as JSON (m5-f14-citation-navigation-ui).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/provenance
+  // Returns the producing run, plan revision/hash, policy hash, producing
+  // step/child, generation time, and cited source revisions (VAL-RES-030,
+  // VAL-RES-033). Also reports whether a newer artifact revision exists
+  // (VAL-RES-031, VAL-CROSS-041). Project-scoped; cross-scope returns
+  // non-enumerating 404.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/provenance',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      const { sql, eq, and } = await import('drizzle-orm');
+
+      // Load the artifact revision row to get the revision ID.
+      const [revision] = await db.drizzle
+        .select({
+          id: db.schema.artifactRevisions.id,
+        })
+        .from(db.schema.artifactRevisions)
+        .where(
+          and(
+            eq(db.schema.artifactRevisions.artifactId, artifactId),
+            eq(db.schema.artifactRevisions.version, versionNum),
+          ),
+        )
+        .limit(1);
+
+      if (!revision) {
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      // Load the provenance row for this exact revision, scoped by company.
+      const provRows = (await db.drizzle.execute(sql`
+        SELECT "id", "run_id", "root_run_id", "artifact_id", "artifact_revision_id",
+               "approved_plan_revision_id", "approved_plan_hash", "policy_hash",
+               "producing_step_key", "producing_child_run_id", "generation_time",
+               "cited_source_revision_ids"
+        FROM "artifact_provenance"
+        WHERE "artifact_revision_id" = ${revision.id}
+          AND "company_id" = ${companyId}
+          AND "project_id" = ${projectId}
+        LIMIT 1
+      `)) as unknown as {
+        id: string;
+        run_id: string;
+        root_run_id: string;
+        artifact_id: string;
+        artifact_revision_id: string;
+        approved_plan_revision_id: string | null;
+        approved_plan_hash: string | null;
+        policy_hash: string | null;
+        producing_step_key: string | null;
+        producing_child_run_id: string | null;
+        generation_time: Date | string;
+        cited_source_revision_ids: string[];
+      }[];
+
+      if (provRows.length === 0) {
+        throw new AppError(404, 'PROVENANCE_NOT_FOUND', 'Provenance not found for this revision');
+      }
+
+      const p = provRows[0];
+      const generationTime =
+        p.generation_time instanceof Date
+          ? p.generation_time.toISOString()
+          : new Date(p.generation_time).toISOString();
+
+      // Check whether a newer artifact revision exists (VAL-RES-031,
+      // VAL-CROSS-041).
+      const [artifact] = await db.drizzle
+        .select({
+          version: db.schema.artifacts.version,
+        })
+        .from(db.schema.artifacts)
+        .where(
+          and(eq(db.schema.artifacts.id, artifactId), eq(db.schema.artifacts.companyId, companyId)),
+        )
+        .limit(1);
+
+      const newerArtifactVersionExists = artifact ? artifact.version > versionNum : false;
+
+      res.json({
+        data: {
+          provenanceId: p.id,
+          runId: p.run_id,
+          rootRunId: p.root_run_id,
+          artifactId: p.artifact_id,
+          artifactRevisionId: p.artifact_revision_id,
+          artifactVersion: versionNum,
+          approvedPlanRevisionId: p.approved_plan_revision_id ?? undefined,
+          approvedPlanHash: p.approved_plan_hash ?? undefined,
+          policyHash: p.policy_hash ?? undefined,
+          producingStepKey: p.producing_step_key ?? undefined,
+          producingChildRunId: p.producing_child_run_id ?? null,
+          generationTime,
+          citedSourceRevisionIds: p.cited_source_revision_ids ?? [],
+          newerArtifactVersionExists,
+        },
+      });
+    },
+  );
+  // -------------------------------------------------------------------------
   // Revision diff (M2): structured diff between two revisions.
   // GET /artifacts/:id/revisions/:v1/diff/:v2
   // Returns { diff: DiffResult, fromRevision, toRevision, artifactType }.

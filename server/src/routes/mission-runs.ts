@@ -1151,6 +1151,72 @@ export function missionRunsRouter(db: DbInstance): Router {
     res.json({ data: { sources, runId } });
   });
 
+  // GET /:runId/artifacts
+  // Produced artifacts and provenance links for a run (m5-f14-citation-
+  // navigation-ui, VAL-CROSS-047). Returns artifact summaries with revision
+  // and citation indicators. Read-only; available to authorized readers
+  // including viewers; does not require the mission flag. Cross-scope run
+  // ids return 404 RUN_NOT_FOUND without revealing existence.
+  router.get('/:runId/artifacts', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    await validateProjectOwnership(db, companyId, projectId);
+
+    // Verify the run exists and is same-company/project (VAL-RUN-069).
+    const [run] = (await db.drizzle.execute(
+      sql`SELECT 1 FROM "mission_runs"
+          WHERE "id" = ${runId}
+            AND "company_id" = ${companyId}
+            AND "project_id" = ${projectId}
+          LIMIT 1`,
+    )) as unknown as { 1: number }[];
+    if (!run) {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    }
+
+    // Load artifact provenance rows for this run, joined with artifacts and
+    // artifact_revisions to get the artifact title, type, current version,
+    // and citation count.
+    const rows = (await db.drizzle.execute(sql`
+      SELECT ap."artifact_id", ap."producing_step_key", ap."producing_child_run_id",
+             a."title", a."type", a."version",
+             ar."id" AS "artifact_revision_id",
+             (SELECT COUNT(*)::int FROM "citations" c
+              WHERE c."artifact_revision_id" = ap."artifact_revision_id"
+                AND c."company_id" = ${companyId}
+                AND c."project_id" = ${projectId}) AS "citation_count"
+      FROM "artifact_provenance" ap
+      JOIN "artifacts" a ON a."id" = ap."artifact_id"
+      LEFT JOIN "artifact_revisions" ar ON ar."id" = ap."artifact_revision_id"
+      WHERE ap."run_id" = ${runId}
+        AND ap."company_id" = ${companyId}
+        AND ap."project_id" = ${projectId}
+      ORDER BY ap."created_at" ASC
+    `)) as unknown as {
+      artifact_id: string;
+      producing_step_key: string | null;
+      producing_child_run_id: string | null;
+      title: string;
+      type: string;
+      version: number;
+      artifact_revision_id: string;
+      citation_count: number;
+    }[];
+
+    const artifacts = rows.map((r) => ({
+      artifactId: r.artifact_id,
+      title: r.title,
+      type: r.type,
+      version: r.version,
+      artifactRevisionId: r.artifact_revision_id,
+      citationCount: r.citation_count,
+      producingRunId: runId,
+      producingStepKey: r.producing_step_key,
+      producingChildRunId: r.producing_child_run_id,
+    }));
+
+    res.json({ data: { artifacts, runId } });
+  });
+
   // POST /:runId/source-revisions/:sourceRevisionId/availability-checks
   // Explicit, nonmutating source availability refresh (VAL-RES-119). An
   // authorized, idempotent, separately budgeted and cancellable logical call
