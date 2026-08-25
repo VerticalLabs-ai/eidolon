@@ -94,19 +94,29 @@ export function MissionCitationMark({
   citationId,
   onSelect,
   isTarget,
+  ariaExpanded,
+  ariaControls,
+  buttonRef,
 }: {
   ordinal: number;
   citationId: string;
   onSelect: (citationId: string) => void;
   isTarget?: boolean;
+  /** aria-expanded state for the provenance drawer relationship (VAL-RES-081). */
+  ariaExpanded?: boolean;
+  /** aria-controls referencing the provenance drawer id (VAL-RES-081). */
+  ariaControls?: string;
+  /** Optional ref forwarded from the parent for focus restoration (VAL-RES-104). */
+  buttonRef?: React.RefObject<HTMLButtonElement | null>;
 }) {
-  const ref = useRef<HTMLButtonElement>(null);
+  const internalRef = useRef<HTMLButtonElement>(null);
+  const ref = buttonRef ?? internalRef;
 
   useEffect(() => {
     if (isTarget && ref.current) {
       ref.current.focus();
       if (typeof ref.current.scrollIntoView === 'function') {
-        ref.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        ref.current.scrollIntoView({ block: 'nearest' });
       }
     }
   }, [isTarget]);
@@ -123,6 +133,8 @@ export function MissionCitationMark({
         }
       }}
       aria-label={`Citation ${ordinal}`}
+      aria-expanded={ariaExpanded}
+      aria-controls={ariaControls}
       data-citation-target={isTarget ? 'true' : undefined}
       data-testid={`citation-mark-${citationId}`}
       className="inline-flex items-center align-baseline rounded px-0.5 text-xs font-medium text-accent bg-accent/10 hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none motion-reduce:transition-none transition-colors"
@@ -176,6 +188,7 @@ export function MissionProvenanceDrawer({
   projectId,
   runId,
   onClose,
+  drawerId,
 }: {
   open: boolean;
   citation: MissionCitationDetail | null;
@@ -184,11 +197,13 @@ export function MissionProvenanceDrawer({
   projectId: string;
   runId: string;
   onClose: () => void;
+  /** Unique id for the drawer element, used by aria-controls on the citation mark (VAL-RES-081). */
+  drawerId?: string;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Focus management: move focus to the drawer on open, restore on close.
+  // Focus management: move focus to the drawer on open (VAL-RES-104).
   useEffect(() => {
     if (open && closeBtnRef.current) {
       closeBtnRef.current.focus();
@@ -220,6 +235,7 @@ export function MissionProvenanceDrawer({
   return (
     <div
       ref={dialogRef}
+      id={drawerId}
       role="dialog"
       aria-modal="true"
       aria-labelledby="provenance-drawer-title"
@@ -467,6 +483,8 @@ function renderSpans(
   citationMap: Map<string, MissionCitationDetail>,
   onSelectCitation: (id: string) => void,
   targetCitationId?: string,
+  selectedCitationId?: string | null,
+  drawerId?: string,
 ): React.ReactNode[] {
   return spans.map((span, i) => {
     if (span.type === 'text') {
@@ -488,6 +506,8 @@ function renderSpans(
         citationId={cite.citationId}
         onSelect={onSelectCitation}
         isTarget={targetCitationId === cite.citationId}
+        ariaExpanded={selectedCitationId === cite.citationId}
+        ariaControls={drawerId}
       />
     );
   });
@@ -499,12 +519,21 @@ function renderBlock(
   citationMap: Map<string, MissionCitationDetail>,
   onSelectCitation: (id: string) => void,
   targetCitationId?: string,
+  selectedCitationId?: string | null,
+  drawerId?: string,
 ): React.ReactNode {
   switch (block.type) {
     case 'heading': {
       const level = Math.min(Math.max(block.level, 1), 6);
       const className = 'text-sm font-semibold text-text-primary mb-2 mt-3 break-words';
-      const spans = renderSpans(block.spans, citationMap, onSelectCitation, targetCitationId);
+      const spans = renderSpans(
+        block.spans,
+        citationMap,
+        onSelectCitation,
+        targetCitationId,
+        selectedCitationId,
+        drawerId,
+      );
       if (level === 1) {
         return (
           <h1 key={block.type} className={className}>
@@ -549,7 +578,14 @@ function renderBlock(
     case 'paragraph':
       return (
         <p key={block.type} className="text-sm text-text-primary mb-2 break-words leading-relaxed">
-          {renderSpans(block.spans, citationMap, onSelectCitation, targetCitationId)}
+          {renderSpans(
+            block.spans,
+            citationMap,
+            onSelectCitation,
+            targetCitationId,
+            selectedCitationId,
+            drawerId,
+          )}
         </p>
       );
     case 'quote':
@@ -558,7 +594,14 @@ function renderBlock(
           key={block.type}
           className="border-l-2 border-white/[0.12] pl-3 text-sm text-text-secondary mb-2 italic break-words"
         >
-          {renderSpans(block.spans, citationMap, onSelectCitation, targetCitationId)}
+          {renderSpans(
+            block.spans,
+            citationMap,
+            onSelectCitation,
+            targetCitationId,
+            selectedCitationId,
+            drawerId,
+          )}
         </blockquote>
       );
     case 'list':
@@ -566,7 +609,14 @@ function renderBlock(
         <ol key={block.type} className="list-decimal pl-4 mb-2 space-y-0.5">
           {block.items.map((item, i) => (
             <li key={i} className="text-sm text-text-primary break-words">
-              {renderSpans(item, citationMap, onSelectCitation, targetCitationId)}
+              {renderSpans(
+                item,
+                citationMap,
+                onSelectCitation,
+                targetCitationId,
+                selectedCitationId,
+                drawerId,
+              )}
             </li>
           ))}
         </ol>
@@ -574,7 +624,14 @@ function renderBlock(
         <ul key={block.type} className="list-disc pl-4 mb-2 space-y-0.5">
           {block.items.map((item, i) => (
             <li key={i} className="text-sm text-text-primary break-words">
-              {renderSpans(item, citationMap, onSelectCitation, targetCitationId)}
+              {renderSpans(
+                item,
+                citationMap,
+                onSelectCitation,
+                targetCitationId,
+                selectedCitationId,
+                drawerId,
+              )}
             </li>
           ))}
         </ul>
@@ -588,7 +645,14 @@ function renderBlock(
                 <tr key={i} className="border-b border-white/[0.06]">
                   {row.map((cell, j) => (
                     <td key={j} className="px-2 py-1 break-words">
-                      {renderSpans([cell], citationMap, onSelectCitation, targetCitationId)}
+                      {renderSpans(
+                        [cell],
+                        citationMap,
+                        onSelectCitation,
+                        targetCitationId,
+                        selectedCitationId,
+                        drawerId,
+                      )}
                     </td>
                   ))}
                 </tr>
@@ -609,6 +673,19 @@ function renderBlock(
       );
     default:
       return null;
+  }
+}
+
+/** Restore focus to the citation mark that opened the drawer (VAL-RES-104). */
+function restoreFocusToCitationMark(citationId: string | null): void {
+  if (!citationId) {
+    return;
+  }
+  const mark = document.querySelector(
+    `[data-testid="citation-mark-${citationId}"]`,
+  ) as HTMLButtonElement | null;
+  if (mark) {
+    mark.focus();
   }
 }
 
@@ -666,6 +743,10 @@ export function MissionArtifactCitations({
 
   const [selectedCitationId, setSelectedCitationId] = useState<string | null>(null);
 
+  // Stable id for the provenance drawer, used by aria-controls on citation
+  // marks (VAL-RES-081).
+  const drawerId = `provenance-drawer-${artifactId}-v${artifactVersion}`;
+
   const citations = (citationsQuery.data?.citations ?? []) as MissionCitationDetail[];
   const provenance = (provenanceQuery.data ?? null) as MissionProvenanceDetail | null;
 
@@ -687,7 +768,9 @@ export function MissionArtifactCitations({
   };
 
   const handleCloseDrawer = () => {
+    const closingCitationId = selectedCitationId;
     setSelectedCitationId(null);
+    restoreFocusToCitationMark(closingCitationId);
   };
 
   // Carry-forward outcomes: citations not carried forward to this revision
@@ -822,8 +905,15 @@ export function MissionArtifactCitations({
 
       {/* Render evidence document blocks with inline citation marks */}
       <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 w-full max-w-full break-words">
-        {blocks.map((block, i) =>
-          renderBlock(block, citationMap, handleSelectCitation, targetCitationId),
+        {blocks.map((block) =>
+          renderBlock(
+            block,
+            citationMap,
+            handleSelectCitation,
+            targetCitationId,
+            selectedCitationId,
+            drawerId,
+          ),
         )}
         {blocks.length === 0 && (
           <p className="text-xs text-text-muted">No content for this revision.</p>
@@ -851,6 +941,7 @@ export function MissionArtifactCitations({
         projectId={projectId}
         runId={runId}
         onClose={handleCloseDrawer}
+        drawerId={drawerId}
       />
     </section>
   );
