@@ -56,6 +56,24 @@ export interface CleanupResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Phase 1a — direct tables with `company_id` that reference `artifact_revisions`
+ * via CASCADE FKs. These must be deleted BEFORE the indirect `artifact_revisions`
+ * deletion in phase 1b, otherwise the CASCADE would silently remove them and
+ * the per-table counts would be zero.
+ *
+ * `citations` references `artifact_revisions` via `artifact_revision_id`
+ * (ON DELETE CASCADE) and `research_source_revisions` via `source_revision_id`
+ * (ON DELETE CASCADE). Deleting by `company_id` first gives accurate counts.
+ *
+ * `artifact_provenance` references `artifact_revisions` via
+ * `artifact_revision_id` (ON DELETE CASCADE). Same reasoning.
+ *
+ * (VAL-CROSS-100: cleanup removes all marked Mission data including research
+ *  citations and provenance.)
+ */
+const DIRECT_TABLES_PHASE1A: ReadonlyArray<string> = ['citations', 'artifact_provenance'];
+
+/**
  * Indirect children — tables without a direct `company_id` column that must
  * be deleted via a subquery against their parent table. These are deleted
  * first so that the parent rows can be safely removed afterwards.
@@ -165,6 +183,15 @@ const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
   'run_question_sets',
   'run_projection_links',
   'run_tool_invocations',
+  // Research tables — must be deleted before mission_runs (they reference
+  // mission_runs via run_id with ON DELETE CASCADE) and before
+  // research_sources (research_source_revisions references it via source_id
+  // CASCADE). Order: run_research_sources → research_source_revisions →
+  // research_sources. (VAL-CROSS-100: cleanup removes all marked Mission
+  // research data.)
+  'run_research_sources',
+  'research_source_revisions',
+  'research_sources',
   // run_plan_revisions: mission_runs.current_plan_revision_id and
   // approved_plan_revision_id reference this table with ON DELETE NO ACTION.
   // executeDeletion nulls those columns BEFORE this delete runs (see the
@@ -312,6 +339,16 @@ async function countDryRun(runner: SqlRunner, staleHours?: number): Promise<Tabl
   const sub = fixtureSubquery(staleHours);
   const counts: TableCount[] = [];
 
+  // Phase 1a — direct tables with company_id that reference artifact_revisions
+  // via CASCADE. Must be counted/deleted BEFORE the indirect artifact_revisions
+  // deletion, otherwise the CASCADE would silently remove them.
+  for (const table of DIRECT_TABLES_PHASE1A) {
+    const rows = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM ${table} WHERE company_id IN (${sub})`,
+    );
+    counts.push({ table, count: parseInt(rows[0]?.count ?? '0', 10) });
+  }
+
   for (const { table, childCol, parentTable, parentCol } of INDIRECT_TABLES) {
     const rows = await runner.query<{ count: string }>(
       `SELECT count(*) as count FROM ${table} WHERE ${childCol} IN (SELECT ${parentCol} FROM ${parentTable} WHERE company_id IN (${sub}))`,
@@ -352,7 +389,19 @@ async function executeDeletion(runner: SqlRunner, staleHours?: number): Promise<
   const counts: TableCount[] = [];
 
   await runner.begin(async (tx) => {
-    // Phase 1 — indirect children via subquery
+    // Phase 1a — direct tables with company_id that reference
+    // artifact_revisions via CASCADE. Must be deleted BEFORE the indirect
+    // artifact_revisions deletion, otherwise the CASCADE would silently
+    // remove them and per-table counts would be zero.
+    // (VAL-CROSS-100: cleanup removes citations and artifact_provenance.)
+    for (const table of DIRECT_TABLES_PHASE1A) {
+      const rows = await tx.query<{ id: string }>(
+        `DELETE FROM ${table} WHERE company_id IN (${sub}) RETURNING id`,
+      );
+      counts.push({ table, count: rows.length });
+    }
+
+    // Phase 1b — indirect children via subquery
     for (const { table, childCol, parentTable, parentCol } of INDIRECT_TABLES) {
       const rows = await tx.query<{ id: string }>(
         `DELETE FROM ${table} WHERE ${childCol} IN (SELECT ${parentCol} FROM ${parentTable} WHERE company_id IN (${sub})) RETURNING id`,
@@ -395,6 +444,51 @@ async function executeDeletion(runner: SqlRunner, staleHours?: number): Promise<
   });
 
   return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Provider circuit health reset (global, not company-scoped)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reset all `research_provider_health` rows to a healthy closed state.
+ *
+ * `research_provider_health` is a platform-level table with no `company_id`
+ * column (VAL-RES-015). It holds ONLY bounded provider/operation/status/
+ * latency data — never tenant queries, URLs, source text, or credentials.
+ *
+ * Validation runs may leave circuits in an open or half-open state after
+ * testing retry, fallback, and disruption scenarios. This reset restores
+ * all circuits to `closed` with zero consecutive failures so subsequent
+ * runs start from a clean health state.
+ *
+ * (VAL-CROSS-100: cleanup restores changed provider/circuit state.)
+ *
+ * @param runner - The SQL runner to use.
+ * @param execute - If false, count rows that would be reset (dry-run).
+ * @returns The number of rows reset (or that would be reset in dry-run).
+ */
+export async function resetProviderCircuitHealth(
+  runner: SqlRunner,
+  execute: boolean,
+): Promise<number> {
+  if (execute) {
+    const rows = await runner.query<{ id: string }>(
+      `UPDATE research_provider_health
+       SET state = 'closed',
+           consecutive_failures = 0,
+           open_until_ms = 0,
+           half_open_probe_owner = NULL,
+           half_open_probe_lease_expires_ms = 0,
+           updated_at = NOW()
+       RETURNING id`,
+    );
+    return rows.length;
+  }
+  const rows = await runner.query<{ count: string }>(
+    `SELECT count(*) as count FROM research_provider_health WHERE state != 'closed' OR consecutive_failures > 0`,
+  );
+  return parseInt(rows[0]?.count ?? '0', 10);
 }
 
 // ---------------------------------------------------------------------------
