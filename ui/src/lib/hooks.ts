@@ -2815,6 +2815,32 @@ export function useMissionRunEvents(
   });
 }
 
+/**
+ * Bounded provider-neutral research source summaries for a run
+ * (VAL-RES-001, VAL-RES-018, VAL-RES-041, VAL-RES-047, VAL-RES-076,
+ * VAL-RES-105, VAL-RES-117, VAL-CROSS-030). The server is authoritative;
+ * the browser never invents source state. Preserves previous data on
+ * refetch error so source cards remain visible as stale rather than
+ * disappearing (VAL-RUN-131).
+ */
+export function useMissionRunSources(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-run-sources', companyId, projectId, runId],
+    queryFn: async () =>
+      unwrap<{ sources: api.MissionSourceSummary[]; runId: string }>(
+        await api.getMissionRunSources(companyId, projectId, runId!),
+      ),
+    enabled: !!companyId && !!projectId && !!runId,
+    staleTime: 5_000,
+    placeholderData: (prev: { sources: api.MissionSourceSummary[]; runId: string } | undefined) =>
+      prev,
+  });
+}
+
 /** Read the request text stored from a start mutation, if available. */
 export function useMissionRequestText(runId: string | undefined): string | undefined {
   const qc = useQueryClient();

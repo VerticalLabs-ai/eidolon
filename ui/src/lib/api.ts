@@ -3984,6 +3984,61 @@ export function getMissionRunEvents(
   );
 }
 
+// ── Mission Run Research Sources ─────────────────────────────────────────
+// Provider-neutral, bounded source summaries exposed by
+// `GET /:runId/sources` (architecture.md API contract; VAL-CROSS-034,
+// VAL-RES-001, VAL-RES-018, VAL-RES-041, VAL-RES-047, VAL-RES-076,
+// VAL-RES-105, VAL-RES-117, VAL-CROSS-030). The server is authoritative;
+// this client contract is kept in sync. Source content and display
+// metadata remain server-side/encrypted; only safe summary fields,
+// plaintext risk labels, warnings, and exclusion metadata reach the
+// browser. Provider names appear only as bounded provenance metadata.
+
+/** A provider-neutral research source summary for one run. */
+export interface MissionSourceSummary {
+  sourceRevisionId: string;
+  sourceId: string;
+  runId: string;
+  /** Canonical HTTPS URL (plaintext for deep links; rendered inert). */
+  canonicalUrl: string;
+  /** SHA-256 of normalized text (lowercase hex). Undefined when no text. */
+  contentHash?: string;
+  byteCount: number;
+  retrievedAt: string;
+  rank?: number;
+  relevanceScore?: number;
+  /** Revision status: 'available' | 'excluded'. */
+  status: string;
+  /** Provenance provider: 'tavily' | 'firecrawl'. Metadata only. */
+  provider: string;
+  /** Provider operation: 'search' | 'extract' | 'scrape' | 'structured_extract'. */
+  operation: string;
+  /** Plaintext injection/exfiltration risk labels (metadata, not content). */
+  injectionRiskLabels: string[];
+  /** Bounded safe warnings (plaintext, no credentials/body). */
+  warnings: string[];
+  /** Whether the run excluded this source revision. */
+  excluded: boolean;
+  /** Safe exclusion reason (plaintext). */
+  exclusionReason: string | null;
+  /** Whether the run selected this source revision for synthesis. */
+  selected: boolean;
+  /** Latest availability-check status, if any (VAL-RES-119). */
+  latestAvailabilityStatus?: 'available' | 'unavailable' | 'unknown' | null;
+  latestAvailabilityCheckedAt?: string | null;
+}
+
+export interface MissionRunSourcesResult {
+  data: { sources: MissionSourceSummary[]; runId: string };
+}
+
+/** Fetch bounded provider-neutral source summaries for a run. */
+export function getMissionRunSources(companyId: string, projectId: string, runId: string) {
+  return request<MissionRunSourcesResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/sources`,
+  );
+}
+
 // ── Mission Run Cancellation ──────────────────────────────────────────────
 
 /** Convenience cancel response. The convenience `/cancel` route maps to the

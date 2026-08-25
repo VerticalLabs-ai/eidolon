@@ -36,6 +36,7 @@ import { MissionQuestionHistory } from './MissionQuestionHistory';
 import { MissionPlanCard } from './MissionPlanCard';
 import { MissionStepProgress } from './MissionStepProgress';
 import { MissionChildTree } from './MissionChildTree';
+import { MissionResearchProgress, MissionSourceList } from './MissionResearchSources';
 import { clearRunDrafts } from '@/lib/mission-drafts';
 
 /** Terminal run statuses. */
@@ -420,6 +421,23 @@ export function MissionRunCard({
           principalId={principalId}
         />
       )}
+      {/* Provider-neutral research progress, source states, warnings,
+       * errors, and inert rendering (feature m5-f09-research-progress-
+       * source-ui; VAL-RES-001, 016, 017, 018, 041, 047, 076, 105, 117,
+       * VAL-CROSS-030). Progress derives from the ordered research.*
+       * journal events; source cards derive from the authoritative
+       * `GET /:runId/sources` summary. The browser never invents source
+       * state, citations, or completion; provider names appear only as
+       * bounded provenance metadata; all source text renders inert. */}
+      <MissionResearchProgress events={events} runId={run.id} />
+      <MissionSourceList
+        companyId={companyId}
+        projectId={projectId}
+        runId={run.id}
+        events={events}
+        partialResultPolicy={snapshot?.partialResultPolicy ?? 'require_all'}
+        runStatus={authoritativeStatus}
+      />
       <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
       <RunCardDecisionHistory events={events} />
       <RunCardResultCompleteness snapshot={snapshot} status={authoritativeStatus} />

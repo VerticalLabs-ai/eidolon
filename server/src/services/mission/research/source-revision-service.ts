@@ -98,6 +98,23 @@ export interface SourceSummary {
   status: string;
   provider: string;
   operation: string;
+  /**
+   * Plaintext injection/exfiltration risk labels (metadata, not content)
+   * (VAL-RES-047). Exposed so the provider-neutral source UI can surface an
+   * explicit accessible warning without rendering untrusted content.
+   */
+  injectionRiskLabels: string[];
+  /** Bounded safe plaintext warnings (no credentials/body) (VAL-RES-047). */
+  warnings: string[];
+  /** Whether the run excluded this source revision (VAL-RES-018). */
+  excluded: boolean;
+  /** Safe plaintext exclusion reason (VAL-RES-018, VAL-RES-047). */
+  exclusionReason: string | null;
+  /** Whether the run selected this source revision for synthesis. */
+  selected: boolean;
+  /** Latest availability-check status, if any (VAL-RES-119, VAL-RES-041). */
+  latestAvailabilityStatus?: 'available' | 'unavailable' | 'unknown' | null;
+  latestAvailabilityCheckedAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +307,12 @@ export class SourceRevisionService {
   /**
    * List bounded source summaries for a run, scoped by company and project
    * (VAL-CROSS-034, VAL-RES-022). Returns only safe summary fields; never
-   * full content or display metadata.
+   * full content or display metadata. Includes plaintext risk labels,
+   * warnings, exclusion metadata, and the latest availability-check status
+   * so the provider-neutral source UI can render distinct states, explicit
+   * high-risk warnings, and unavailable/failed indicators without rendering
+   * untrusted content (VAL-RES-018, VAL-RES-041, VAL-RES-047, VAL-RES-076,
+   * VAL-RES-105, VAL-RES-117, VAL-CROSS-030).
    */
   async listRunSourceSummaries(
     companyId: string,
@@ -310,10 +332,25 @@ export class SourceRevisionService {
         rrs."relevance_score" AS "relevance_score",
         rsr."status" AS "status",
         rsr."provider" AS "provider",
-        rsr."operation" AS "operation"
+        rsr."operation" AS "operation",
+        rsr."injection_risk_labels" AS "injection_risk_labels",
+        rsr."warnings" AS "warnings",
+        rrs."excluded" AS "excluded",
+        rrs."exclusion_reason" AS "exclusion_reason",
+        rrs."selected" AS "selected",
+        latest_avail."status" AS "latest_availability_status",
+        latest_avail."created_at" AS "latest_availability_checked_at"
       FROM "run_research_sources" rrs
       JOIN "research_source_revisions" rsr ON rsr."id" = rrs."source_revision_id"
       JOIN "research_sources" rs ON rs."id" = rsr."source_id"
+      LEFT JOIN LATERAL (
+        SELECT "status", "created_at"
+        FROM "research_source_availability_checks"
+        WHERE "source_revision_id" = rsr."id"
+          AND "company_id" = ${companyId}
+        ORDER BY "created_at" DESC
+        LIMIT 1
+      ) latest_avail ON TRUE
       WHERE rrs."run_id" = ${runId}
         AND rrs."company_id" = ${companyId}
         ${projectId ? sql`AND rrs."project_id" = ${projectId}` : sql`AND rrs."project_id" IS NULL`}
@@ -331,6 +368,13 @@ export class SourceRevisionService {
       status: string;
       provider: string;
       operation: string;
+      injection_risk_labels: string[] | null;
+      warnings: string[] | null;
+      excluded: boolean | null;
+      exclusion_reason: string | null;
+      selected: boolean | null;
+      latest_availability_status: string | null;
+      latest_availability_checked_at: Date | null;
     }[];
     return rows.map((r) => ({
       sourceRevisionId: r.source_revision_id,
@@ -345,6 +389,16 @@ export class SourceRevisionService {
       status: r.status,
       provider: r.provider,
       operation: r.operation,
+      injectionRiskLabels: r.injection_risk_labels ?? [],
+      warnings: r.warnings ?? [],
+      excluded: r.excluded ?? false,
+      exclusionReason: r.exclusion_reason,
+      selected: r.selected ?? true,
+      latestAvailabilityStatus:
+        (r.latest_availability_status as 'available' | 'unavailable' | 'unknown' | null) ?? null,
+      latestAvailabilityCheckedAt: r.latest_availability_checked_at
+        ? toISOString(r.latest_availability_checked_at)
+        : null,
     }));
   }
 }

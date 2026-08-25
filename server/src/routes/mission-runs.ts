@@ -32,6 +32,7 @@ import {
 import { MissionProjectionRepairService } from '../services/mission/projection-repair.js';
 import { MissionPlanGovernanceProjectionService } from '../services/mission/plan-governance-projection.js';
 import { SourceAvailabilityService } from '../services/mission/research/source-availability-service.js';
+import { SourceRevisionService } from '../services/mission/research/source-revision-service.js';
 import { validateIdempotencyKey, normalizeCommandBody } from '../services/mission/idempotency.js';
 import { redactCanaries } from '../services/mission/reason-security.js';
 import {
@@ -1116,6 +1117,38 @@ export function missionRunsRouter(db: DbInstance): Router {
       throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
     }
     res.json({ data: status });
+  });
+
+  // GET /:runId/sources — scoped, read-only provider-neutral source summaries
+  // (architecture.md API contract; VAL-CROSS-034, VAL-RES-001, VAL-RES-018,
+  // VAL-RES-041, VAL-RES-047, VAL-RES-076, VAL-RES-105, VAL-RES-117,
+  // VAL-CROSS-030). Exposes only bounded safe summary fields, plaintext risk
+  // labels/warnings, exclusion metadata, and the latest availability-check
+  // status — never full content, display metadata, credentials, or raw
+  // provider payloads. Read-only; available to authorized readers including
+  // viewers; does not require the mission flag so existing runs remain
+  // visible during a kill switch (VAL-RUN-102). Cross-scope run ids return
+  // 404 RUN_NOT_FOUND without revealing existence.
+  router.get('/:runId/sources', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+    await validateProjectOwnership(db, companyId, projectId);
+
+    // Verify the run exists and is same-company/project so a cross-scope id
+    // returns a non-enumerating 404 (VAL-RES-022, VAL-RUN-069).
+    const [run] = (await db.drizzle.execute(
+      sql`SELECT 1 FROM "mission_runs"
+          WHERE "id" = ${runId}
+            AND "company_id" = ${companyId}
+            AND "project_id" = ${projectId}
+          LIMIT 1`,
+    )) as unknown as { 1: number }[];
+    if (!run) {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    }
+
+    const service = new SourceRevisionService({ drizzle: db.drizzle, schema: db.schema });
+    const sources = await service.listRunSourceSummaries(companyId, projectId, runId);
+    res.json({ data: { sources, runId } });
   });
 
   // POST /:runId/source-revisions/:sourceRevisionId/availability-checks

@@ -136,6 +136,16 @@ export function useMissionRunStream(
         queryKey: ['mission-runs', companyId, projectId],
       });
 
+      // Invalidate the provider-neutral research sources query so source
+      // cards refresh from the authoritative `GET /:runId/sources` summary
+      // on every SSE event (VAL-RES-016, VAL-RES-017, VAL-RES-018,
+      // Normative Boundary 1). Research lifecycle events (research.*)
+      // change source states and progress; without this invalidation the
+      // source list stays stale until the next polling/refetch window.
+      qc.invalidateQueries({
+        queryKey: ['mission-run-sources', companyId, projectId, runId],
+      });
+
       // Close the stream on terminal events.
       if (TERMINAL_EVENT_TYPES.has(eventType)) {
         closedRef.current = true;
@@ -265,6 +275,18 @@ export function useMissionRunStream(
       'questions.requested',
       'questions.answered',
       'questions.invalidated',
+      // Research lifecycle events (VAL-RES-016, VAL-RES-017, VAL-RES-018,
+      // VAL-CROSS-030). Without these named listeners, SSE frames for
+      // research progress/source events are silently dropped and only
+      // recovered via gap-detection refetch, which can cause duplicate
+      // source cards or lost progress during reconnect.
+      'research.started',
+      'research.provider_attempted',
+      'research.source_discovered',
+      'research.source_retrieved',
+      'research.provider_fallback',
+      'research.completed',
+      'research.failed',
     ];
     for (const type of namedTypes) {
       eventSource.addEventListener(type, messageHandler);
