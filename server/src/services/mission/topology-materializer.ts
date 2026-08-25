@@ -333,6 +333,215 @@ export class TopologyMaterializer {
     return false;
   }
 
+  // -- dependency-success resolution (fix-ut-m5-dependency-resolution) ----
+
+  /**
+   * Resolve satisfied dependencies: transition step assignments from
+   * `pending_dependencies` to `pending_routing` when all their required
+   * dependencies are satisfied, and make the corresponding child runs
+   * claimable by setting `available_at = now`.
+   *
+   * A required dependency is satisfied when:
+   *  - The predecessor step is a root orchestration step (nodeKind='root')
+   *    that has been materialized — the root's job was to decompose, so once
+   *    children exist, the root step's dependency is satisfied.
+   *  - The predecessor step's assignment is `completed` — the predecessor
+   *    child run has finished successfully.
+   *
+   * Optional dependencies never block readiness and are always considered
+   * satisfied.
+   *
+   * Must be called inside a locked transaction. Idempotent: assignments
+   * already in `pending_routing` or later are not affected.
+   *
+   * Returns the step keys that were resolved in this call.
+   */
+  async resolveDependencies(
+    tx: Tx,
+    rootRunId: string,
+    companyId: string,
+    projectId: string,
+    options: {
+      actorType?: 'user' | 'agent' | 'system';
+      actorId?: string | null;
+      traceId?: string | null;
+    } = {},
+  ): Promise<{ resolvedStepKeys: string[] }> {
+    const schema = this.db.schema;
+    const now = this.now();
+    const actorType = options.actorType ?? 'system';
+    const actorId = options.actorId ?? null;
+    const traceId = options.traceId ?? null;
+
+    // Load all assignments for this root run.
+    const assignments = await tx
+      .select()
+      .from(schema.runStepAssignments)
+      .where(eq(schema.runStepAssignments.rootRunId, rootRunId));
+
+    if (assignments.length === 0) {
+      return { resolvedStepKeys: [] };
+    }
+
+    // Early return: if no assignments are in pending_dependencies status,
+    // there is nothing to resolve. This avoids loading the root run/plan
+    // revision and writing to the root run's lastEventSequence/stateVersion
+    // inside a child's completion transaction, which could cause a conflict
+    // (fix-ut-m5-dependency-resolution).
+    const hasPendingDeps = assignments.some((a) => a.assignmentStatus === 'pending_dependencies');
+    if (!hasPendingDeps) {
+      return { resolvedStepKeys: [] };
+    }
+
+    // Load the approved plan revision to inspect step dependencies and
+    // node kinds.
+    const [rootRun] = await tx
+      .select({ approvedPlanRevisionId: schema.missionRuns.approvedPlanRevisionId })
+      .from(schema.missionRuns)
+      .where(and(eq(schema.missionRuns.companyId, companyId), eq(schema.missionRuns.id, rootRunId)))
+      .limit(1);
+
+    if (!rootRun || !rootRun.approvedPlanRevisionId) {
+      return { resolvedStepKeys: [] };
+    }
+
+    const [revision] = await tx
+      .select({ content: schema.runPlanRevisions.content })
+      .from(schema.runPlanRevisions)
+      .where(eq(schema.runPlanRevisions.id, rootRun.approvedPlanRevisionId))
+      .limit(1);
+
+    if (!revision) {
+      return { resolvedStepKeys: [] };
+    }
+
+    const plan = revision.content as unknown as PlanContent;
+    const planStepByKey = new Map(plan.steps.map((s) => [s.stepKey, s]));
+    const assignmentByStepKey = new Map(assignments.map((a) => [a.stepKey, a]));
+
+    const resolvedStepKeys: string[] = [];
+
+    for (const assignment of assignments) {
+      // Only resolve assignments currently in pending_dependencies.
+      if (assignment.assignmentStatus !== 'pending_dependencies') {
+        continue;
+      }
+
+      const step = planStepByKey.get(assignment.stepKey);
+      if (!step) {
+        continue;
+      }
+
+      // Check whether all required dependencies are satisfied.
+      if (this.areRequiredDependenciesSatisfied(step, planStepByKey, assignmentByStepKey)) {
+        // Transition the assignment to pending_routing.
+        await tx
+          .update(schema.runStepAssignments)
+          .set({
+            assignmentStatus: 'pending_routing',
+            updatedAt: now,
+          })
+          .where(eq(schema.runStepAssignments.id, assignment.id));
+
+        // Make the child run claimable by setting available_at = now.
+        await tx
+          .update(schema.missionRuns)
+          .set({
+            availableAt: now,
+            updatedAt: now,
+          })
+          .where(eq(schema.missionRuns.id, assignment.runId));
+
+        // Emit a child.dependencies_resolved event on the root journal.
+        const rootSeq = await this.getNextSequence(tx, companyId, rootRunId);
+        await tx.insert(schema.runEvents).values({
+          companyId,
+          projectId,
+          runId: rootRunId,
+          sequence: rootSeq.seq,
+          type: 'child.dependencies_resolved',
+          schemaVersion: 1,
+          payload: {
+            childRunId: assignment.runId,
+            stepKey: assignment.stepKey,
+            resolvedDependencies: step.dependencies,
+          },
+          actorType,
+          actorId,
+          traceId,
+          occurredAt: now,
+        });
+
+        // Update root run sequence and state version.
+        await tx
+          .update(schema.missionRuns)
+          .set({
+            lastEventSequence: rootSeq.seq,
+            stateVersion: rootSeq.newVersion,
+            updatedAt: now,
+          })
+          .where(eq(schema.missionRuns.id, rootRunId));
+
+        resolvedStepKeys.push(assignment.stepKey);
+      }
+    }
+
+    return { resolvedStepKeys };
+  }
+
+  /**
+   * Check whether all required dependencies of a step are satisfied.
+   *
+   * A required dependency is satisfied when:
+   *  - The predecessor step has nodeKind='root' (the root orchestration
+   *    step whose job was to decompose — once children are materialized,
+   *    the root's dependency is satisfied).
+   *  - The predecessor step's assignment is 'completed' (the predecessor
+   *    child run has finished successfully).
+   *
+   * Optional dependencies are always considered satisfied.
+   */
+  private areRequiredDependenciesSatisfied(
+    step: PlanStep,
+    planStepByKey: Map<string, PlanStep>,
+    assignmentByStepKey: Map<string, { assignmentStatus: string }>,
+  ): boolean {
+    if (step.dependencies.length === 0) {
+      return true;
+    }
+
+    const kinds = step.dependencyKinds ?? {};
+    for (const dep of step.dependencies) {
+      const kind = kinds[dep] ?? 'required';
+      if (kind === 'optional') {
+        continue; // optional deps never block
+      }
+
+      // Required dependency — check if satisfied.
+      const predecessorStep = planStepByKey.get(dep);
+      if (!predecessorStep) {
+        // Unknown dependency — cannot resolve.
+        return false;
+      }
+
+      // A root orchestration step (nodeKind='root') is satisfied once
+      // children are materialized. The root's job was to decompose; once
+      // assignments exist, the root step's dependency is satisfied.
+      if (predecessorStep.nodeKind === 'root') {
+        continue; // satisfied — root was materialized
+      }
+
+      // A non-root predecessor is satisfied when its assignment is
+      // 'completed'.
+      const predecessorAssignment = assignmentByStepKey.get(dep);
+      if (!predecessorAssignment || predecessorAssignment.assignmentStatus !== 'completed') {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   /**
    * Compute the depth of a step (distance from root via parent chain).
    */

@@ -232,6 +232,27 @@ export class SubtreeCancellationService {
     //    'failed' or 'cancelled' only; 'completed' updates the step
     //    assignment (step 1 above) without touching siblings.
     if (parentPolicy !== 'require_all' || input.terminalStatus === 'completed') {
+      // When a child completes successfully, resolve any dependent children
+      // that were waiting on it (fix-ut-m5-dependency-resolution). A
+      // completed predecessor satisfies a required dependency, so dependent
+      // children transition from pending_dependencies to pending_routing
+      // and become claimable.
+      if (input.terminalStatus === 'completed') {
+        const { TopologyMaterializer } = await import('./topology-materializer.js');
+        const materializer = new TopologyMaterializer(this.db, { clock: () => this.now() });
+        await materializer.resolveDependencies(
+          tx,
+          input.rootRunId,
+          input.companyId,
+          input.projectId,
+          {
+            actorType: input.actorType,
+            actorId: input.actorId,
+            traceId: input.traceId,
+          },
+        );
+      }
+
       return {
         cascadedToSiblings: false,
         cascadedSiblingIds: [],

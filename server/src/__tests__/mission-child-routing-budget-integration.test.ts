@@ -28,6 +28,15 @@ import { encryptEnvelope } from '../services/mission/ingress.js';
  * Fix: Remove the status guard — the assignment status (pending_routing vs
  * routed) is the authoritative signal. handleChildRouting() already guards
  * on this.
+ *
+ * Dependency resolution (fix-ut-m5-dependency-resolution):
+ * Children in deep_work decomposition are created with assignmentStatus
+ * 'pending_dependencies' because they depend on the root orchestration step.
+ * No code transitions pending_dependencies → pending_routing, creating a
+ * deadlock (children wait for root, root waits for children). The fix adds
+ * a dependency-success resolver that transitions assignments from
+ * pending_dependencies to pending_routing when their dependencies are
+ * satisfied (root step materialized, or predecessor child completed).
  */
 
 type AnyDb = Awaited<ReturnType<typeof createTestDb>>;
@@ -146,6 +155,135 @@ function singleChildPlanContent(): PlanContent {
       declaredOutput: 'final-report',
       evidenceRequirements: { citationsRequired: false },
       completionCriteria: 'Report complete',
+      budgetCents: 100,
+    },
+    planningBudgetCents: 100,
+    partialResultPolicy: 'require_all',
+    limits: {
+      steps: 12,
+      durationSeconds: 2700,
+      providerCalls: 48,
+      totalTokens: 300000,
+      outputBytes: 8388608,
+      costCents: 5000,
+      depth: 2,
+      fanOut: 4,
+      descendants: 16,
+    },
+  });
+}
+
+/**
+ * A plan with dependency chain: root → child-a (depends on root) → child-b
+ * (depends on child-a). This reproduces the production deep_work decomposition
+ * scenario where children depend on the root orchestration step.
+ *
+ * After materialization, child-a should be resolved from pending_dependencies
+ * to pending_routing (root step is materialized). After child-a completes,
+ * child-b should be resolved from pending_dependencies to pending_routing.
+ */
+function rootDependencyPlanContent(): PlanContent {
+  return validatePlan({
+    schemaVersion: PLAN_CONTENT_SCHEMA_VERSION,
+    objective: 'Research and draft with dependencies on root',
+    steps: [
+      {
+        stepKey: 'root',
+        parentStepKey: null,
+        childOrdinal: 0,
+        nodeKind: 'root',
+        title: 'Coordinate research and drafting',
+        description: 'Oversee research and drafting subtasks',
+        dependencies: [],
+        inputBindings: [],
+        routing: {
+          kind: 'requirements',
+          routingRequirements: {
+            capabilities: ['coordination'],
+            requiredTools: [],
+            requiredDomains: [],
+            ephemeralAllowed: true,
+          },
+        },
+        toolAllowlist: [],
+        replayClass: 'read_only',
+        sideEffecting: false,
+        expectedOutputs: ['root-coordination'],
+        evidenceRequirements: { citationsRequired: false },
+        completionCriteria: 'Brief produced',
+        budgetCents: 100,
+        limits: {},
+      },
+      {
+        stepKey: 'child-a',
+        parentStepKey: 'root',
+        childOrdinal: 0,
+        nodeKind: 'child',
+        title: 'Research the topic',
+        description: 'Gather cited sources',
+        // child-a depends on the root orchestration step (required).
+        dependencies: ['root'],
+        dependencyKinds: { root: 'required' },
+        inputBindings: [],
+        routing: {
+          kind: 'requirements',
+          routingRequirements: {
+            capabilities: ['research'],
+            requiredTools: ['research.search'],
+            requiredDomains: [],
+            ephemeralAllowed: true,
+          },
+        },
+        toolAllowlist: ['research.search'],
+        replayClass: 'read_only',
+        sideEffecting: false,
+        expectedOutputs: ['sources'],
+        evidenceRequirements: { citationsRequired: true },
+        completionCriteria: 'At least one source',
+        budgetCents: 200,
+        limits: {},
+      },
+      {
+        stepKey: 'child-b',
+        parentStepKey: 'root',
+        childOrdinal: 1,
+        nodeKind: 'child',
+        title: 'Draft the brief',
+        description: 'Synthesize sources into a brief',
+        // child-b depends on child-a (required).
+        dependencies: ['child-a'],
+        dependencyKinds: { 'child-a': 'required' },
+        inputBindings: [
+          {
+            name: 'sources',
+            source: { kind: 'stepOutput', stepKey: 'child-a', output: 'sources' },
+          },
+        ],
+        routing: {
+          kind: 'requirements',
+          routingRequirements: {
+            capabilities: ['writing'],
+            requiredTools: ['artifact.create'],
+            requiredDomains: [],
+            ephemeralAllowed: true,
+          },
+        },
+        toolAllowlist: ['artifact.create'],
+        replayClass: 'idempotent_write',
+        sideEffecting: true,
+        expectedOutputs: ['brief'],
+        evidenceRequirements: { citationsRequired: true },
+        completionCriteria: 'Brief references every source',
+        budgetCents: 300,
+        limits: {},
+      },
+    ],
+    synthesis: {
+      instructions: 'Synthesize child outputs into the final brief',
+      declaredInputs: [{ kind: 'stepOutput', stepKey: 'child-b', output: 'brief' }],
+      declaredOutput: 'final-brief',
+      evidenceRequirements: { citationsRequired: false },
+      completionCriteria: 'Final brief complete',
       budgetCents: 100,
     },
     planningBudgetCents: 100,
@@ -520,5 +658,220 @@ describe('Child routing budget allocation integration (fix-ut-m5-budget-allocati
     const alloc = await getChildAllocation(db, childRunId);
     expect(alloc).not.toBeNull();
     expect(alloc!.allocated).toBeGreaterThan(0);
+  });
+
+  /**
+   * Production scenario (fix-ut-m5-dependency-resolution):
+   * Children with dependencies on the root step → materialization →
+   * dependency resolution → routing → budget allocation → execute → settle.
+   *
+   * child-a depends on the root orchestration step (required). After
+   * materialization, the root's decomposition job is done, so child-a's
+   * dependency is resolved and it transitions to pending_routing.
+   * child-b depends on child-a (required). After child-a completes,
+   * child-b's dependency is resolved and it transitions to pending_routing.
+   *
+   * Without the dependency-success resolver, both children stay
+   * pending_dependencies forever (deadlock: children wait for root, root
+   * waits for children).
+   */
+  it('resolves root-step dependencies after materialization and child-completion dependencies after child completes', async () => {
+    const plan = rootDependencyPlanContent();
+    const hash = planContentHash(plan);
+    const now = new Date();
+
+    // Set up an eligible agent for both research and writing capabilities.
+    const agentId = await seedAgent(db, scope.companyId, {
+      capabilities: ['research', 'writing', 'coordination'],
+      toolsEnabled: ['research.search', 'artifact.create'],
+      provider: 'anthropic',
+      status: 'idle',
+    });
+
+    // Set up the root run with an approved plan.
+    const rootRunId = randomUUID();
+    const revisionId = randomUUID();
+    const policySnapshotId = randomUUID();
+    const reservationId = randomUUID();
+    const rootAllocationId = randomUUID();
+
+    // Insert policy snapshot.
+    await db.drizzle.execute(sql`
+      INSERT INTO "run_policy_snapshots" ("id", "company_id", "schema_version", "source_profile", "source_profile_version", "provider", "adapter_id", "model", "reasoning_depth", "tool_allowlist", "domain_allowlist", "research_policy", "planning_policy", "approval_policy", "fallback_policy", "partial_result_policy", "limits", "content_hash", "created_at")
+      VALUES (${policySnapshotId}, ${scope.companyId}, 1, 'deep_work', 1, 'anthropic', null, 'claude-sonnet-4-6', 'standard', '["research.search","artifact.create"]'::jsonb, '[]'::jsonb, '{"allowed": true}'::jsonb, '{"requiresPlan": true, "requiresApproval": true}'::jsonb, '{"requiresApproval": true}'::jsonb, '{"allowed": false}'::jsonb, 'require_all', '{"steps": 12, "durationSeconds": 2700, "providerCalls": 48, "totalTokens": 300000, "outputBytes": 8388608, "costCents": 5000, "depth": 2, "fanOut": 4, "descendants": 16}'::jsonb, ${randomUUID()}, ${now})
+    `);
+
+    // Insert root run (queued).
+    const encryptedRootEnvelope = encryptEnvelope({ text: 'Research and draft with dependencies' });
+    await db.drizzle.execute(sql`
+      INSERT INTO "mission_runs" ("id", "company_id", "project_id", "project_thread_id", "root_run_id", "parent_run_id", "depth", "routing_kind", "request_envelope", "request_content_hash", "request_safe_summary", "resolved_mode", "policy_snapshot_id", "status", "state_version", "last_event_sequence", "partial_result_policy", "available_at", "approved_plan_revision_id", "billing_agent_id", "initiating_agent_id", "created_at", "updated_at")
+      VALUES (${rootRunId}, ${scope.companyId}, ${scope.projectId}, ${scope.threadId}, ${rootRunId}, NULL, 0, 'company_agent', ${encryptedRootEnvelope}, ${hash}, 'Root', 'deep_work', ${policySnapshotId}, 'queued', 1, 0, 'require_all', ${now}, NULL, ${agentId}, ${agentId}, ${now}, ${now})
+    `);
+
+    // Insert approved plan revision.
+    await db.drizzle.execute(sql`
+      INSERT INTO "run_plan_revisions" ("id", "company_id", "project_id", "run_id", "revision", "status", "content", "content_hash", "generated_by", "estimates", "created_at", "updated_at")
+      VALUES (${revisionId}, ${scope.companyId}, ${scope.projectId}, ${rootRunId}, 1, 'approved', ${JSON.stringify(plan)}::jsonb, ${hash}, '{}'::jsonb, '{}'::jsonb, ${now}, ${now})
+    `);
+
+    // Set approved_plan_revision_id.
+    await db.drizzle.execute(sql`
+      UPDATE "mission_runs" SET "approved_plan_revision_id" = ${revisionId} WHERE "id" = ${rootRunId}
+    `);
+
+    // Insert approval binding.
+    const approvalId = randomUUID();
+    const bindingId = randomUUID();
+    await db.drizzle.execute(sql`
+      INSERT INTO "approvals" ("id", "company_id", "project_id", "kind", "status", "title", "created_at", "updated_at")
+      VALUES (${approvalId}, ${scope.companyId}, ${scope.projectId}, 'plan_gate', 'approved', 'Plan approval', ${now}, ${now})
+    `);
+    await db.drizzle.execute(sql`
+      INSERT INTO "run_plan_approval_bindings" ("id", "company_id", "project_id", "run_id", "plan_revision_id", "content_hash", "approval_id", "decision", "is_current_authorization", "created_at")
+      VALUES (${bindingId}, ${scope.companyId}, ${scope.projectId}, ${rootRunId}, ${revisionId}, ${hash}, ${approvalId}, 'approved', true, ${now})
+    `);
+
+    // Insert budget reservation + root allocation.
+    await db.drizzle.execute(sql`
+      INSERT INTO "budget_reservations" ("id", "company_id", "run_id", "billing_agent_id", "requested_cents", "reserved_cents", "settled_cents", "released_cents", "execution_earmark_cents", "period_key", "status", "created_at", "updated_at")
+      VALUES (${reservationId}, ${scope.companyId}, ${rootRunId}, ${agentId}, 5000, 5000, 0, 0, 0, '2026-08', 'held', ${now}, ${now})
+    `);
+    await db.drizzle.execute(sql`
+      INSERT INTO "budget_allocations" ("id", "company_id", "root_reservation_id", "run_id", "billing_agent_id", "allocated_cents", "settled_cents", "released_cents", "status", "created_at", "updated_at")
+      VALUES (${rootAllocationId}, ${scope.companyId}, ${reservationId}, ${rootRunId}, ${agentId}, 5000, 0, 0, 'held', ${now}, ${now})
+    `);
+
+    // Step 1: Claim the root run and advance to materialize topology.
+    const coordinator = new RunCoordinator(db, {
+      clock: () => new Date(),
+      leaseDurationMs: 30_000,
+    });
+    const materializer = new TopologyMaterializer(db, { clock: () => new Date() });
+
+    const rootClaim = await coordinator.claimNext('test-worker');
+    expect(rootClaim).not.toBeNull();
+    expect(rootClaim!.runId).toBe(rootRunId);
+
+    const processor = new RunProcessor(db, {
+      clock: () => new Date(),
+      providerCall: async () => ({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        content: 'done',
+        inputTokens: 10,
+        outputTokens: 10,
+        costCents: 1,
+        finishReason: 'stop' as const,
+        latencyMs: 42,
+      }),
+      materializer,
+    });
+    const rootController = new AbortController();
+    await processor.advance(rootClaim!, rootController.signal);
+
+    // After materialization, child-a (depends on root) should be resolved
+    // from pending_dependencies to pending_routing because the root step's
+    // decomposition job is done (root has been materialized).
+    const childAAssignment = await getAssignmentStatus(db, rootRunId, 'child-a');
+    expect(childAAssignment).toBe('pending_routing');
+
+    // child-b (depends on child-a) should still be pending_dependencies
+    // because child-a has not completed yet.
+    const childBAssignment = await getAssignmentStatus(db, rootRunId, 'child-b');
+    expect(childBAssignment).toBe('pending_dependencies');
+
+    // child-a's run should be claimable (available_at is set).
+    const [childARow] = (await db.drizzle.execute(sql`
+      SELECT "id", "status", "available_at" FROM "mission_runs"
+      WHERE "root_run_id" = ${rootRunId} AND "id" != ${rootRunId}
+      ORDER BY "child_ordinal" ASC
+      LIMIT 1
+    `)) as unknown as Array<{ id: string; status: string; available_at: string | null }>;
+    expect(childARow.status).toBe('queued');
+    expect(childARow.available_at).not.toBeNull();
+    const childARunId = childARow.id;
+
+    // child-b's run should NOT be claimable (available_at is null).
+    const [childBRow] = (await db.drizzle.execute(sql`
+      SELECT "id", "status", "available_at" FROM "mission_runs"
+      WHERE "root_run_id" = ${rootRunId} AND "id" != ${rootRunId} AND "id" != ${childARunId}
+    `)) as unknown as Array<{ id: string; status: string; available_at: string | null }>;
+    expect(childBRow.status).toBe('queued');
+    expect(childBRow.available_at).toBeNull();
+    const childBRunId = childBRow.id;
+
+    // Step 2: Claim child-a and route it.
+    const childAClaim = await coordinator.claimNext('test-worker');
+    expect(childAClaim).not.toBeNull();
+    expect(childAClaim!.runId).toBe(childARunId);
+
+    const childAController = new AbortController();
+    await processor.advance(childAClaim!, childAController.signal);
+
+    // Verify child-a was routed.
+    const childAAfter = await getAssignmentStatus(db, rootRunId, 'child-a');
+    expect(childAAfter).toBe('routed');
+
+    // child-b should still be pending_dependencies (child-a not completed yet).
+    const childBBeforeComplete = await getAssignmentStatus(db, rootRunId, 'child-b');
+    expect(childBBeforeComplete).toBe('pending_dependencies');
+
+    // Release child-a claim so it can be re-claimed for execution.
+    await coordinator.release(childAClaim!);
+
+    // Step 3: Claim child-a again and execute it to completion.
+    const childAClaim2 = await coordinator.claimNext('test-worker');
+    expect(childAClaim2).not.toBeNull();
+    expect(childAClaim2!.runId).toBe(childARunId);
+
+    const childAController2 = new AbortController();
+    await processor.advance(childAClaim2!, childAController2.signal);
+
+    // Verify child-a completed.
+    const childAStatus = await getRunStatus(db, childARunId);
+    expect(childAStatus).toBe('completed');
+
+    // Step 4: After child-a completes, child-b should be resolved from
+    // pending_dependencies to pending_routing (its dependency on child-a
+    // is now satisfied).
+    const childBAfterAComplete = await getAssignmentStatus(db, rootRunId, 'child-b');
+    expect(childBAfterAComplete).toBe('pending_routing');
+
+    // child-b's run should now be claimable (available_at is set).
+    const [childBRowAfter] = (await db.drizzle.execute(sql`
+      SELECT "available_at" FROM "mission_runs" WHERE "id" = ${childBRunId}
+    `)) as unknown as Array<{ available_at: string | null }>;
+    expect(childBRowAfter.available_at).not.toBeNull();
+
+    // Step 5: Claim child-b, route it, and execute to completion.
+    const childBClaim = await coordinator.claimNext('test-worker');
+    expect(childBClaim).not.toBeNull();
+    expect(childBClaim!.runId).toBe(childBRunId);
+
+    const childBController = new AbortController();
+    await processor.advance(childBClaim!, childBController.signal);
+
+    // Verify child-b was routed.
+    const childBAfterRoute = await getAssignmentStatus(db, rootRunId, 'child-b');
+    expect(childBAfterRoute).toBe('routed');
+
+    // Release and re-claim child-b to execute.
+    await coordinator.release(childBClaim!);
+    const childBClaim2 = await coordinator.claimNext('test-worker');
+    expect(childBClaim2).not.toBeNull();
+    expect(childBClaim2!.runId).toBe(childBRunId);
+
+    const childBController2 = new AbortController();
+    await processor.advance(childBClaim2!, childBController2.signal);
+
+    // Verify child-b completed.
+    const childBStatus = await getRunStatus(db, childBRunId);
+    expect(childBStatus).toBe('completed');
+
+    // Verify budget was settled for both children.
+    const childASettlements = await countSettlements(db, childARunId);
+    expect(childASettlements).toBeGreaterThanOrEqual(1);
+    const childBSettlements = await countSettlements(db, childBRunId);
+    expect(childBSettlements).toBeGreaterThanOrEqual(1);
   });
 });

@@ -436,6 +436,17 @@ export class RunProcessor {
         null,
         policyLimits,
       );
+
+      // After materialization, resolve dependencies on the root orchestration
+      // step (nodeKind='root'). The root's job was to decompose — once
+      // children are materialized, the root step's dependency is satisfied.
+      // This transitions children that depend on the root from
+      // pending_dependencies to pending_routing, making them claimable
+      // (fix-ut-m5-dependency-resolution).
+      await materializer.resolveDependencies(tx, claim.runId, claim.companyId, claim.projectId, {
+        actorType: 'system',
+        actorId: claim.leaseOwner,
+      });
     });
 
     // The root oversees children; do not execute a single LLM call.
@@ -496,6 +507,7 @@ export class RunProcessor {
         billingAgentId: schema.runStepAssignments.billingAgentId,
         rootRunId: schema.runStepAssignments.rootRunId,
         parentRunId: schema.runStepAssignments.parentRunId,
+        approvedPlanRevisionId: schema.runStepAssignments.approvedPlanRevisionId,
       })
       .from(schema.runStepAssignments)
       .where(
@@ -520,8 +532,17 @@ export class RunProcessor {
       return true;
     }
 
-    // Derive step budget and timeout from the policy limits.
-    const stepBudgetCents = policy?.limits?.costCents ?? 100;
+    // Derive step budget from the approved plan step's budgetCents, not the
+    // policy's total costCents ceiling. Using the total ceiling would
+    // allocate the entire root reservation to each child, causing a
+    // CHECK constraint violation (settled + released > reserved) when
+    // multiple children settle (fix-ut-m5-dependency-resolution).
+    const stepBudgetCents = await this.resolveStepBudgetCents(
+      assignment.approvedPlanRevisionId,
+      assignment.stepKey,
+      policy,
+    );
+
     const stepTimeoutSeconds = policy?.limits?.durationSeconds ?? 300;
     const parentProvider = policy?.provider ?? 'anthropic';
 
@@ -569,6 +590,39 @@ export class RunProcessor {
 
     // Either way, the child was handled (routed, ephemeral, or failed).
     return true;
+  }
+
+  /**
+   * Resolve the per-step budget for a child allocation. Reads the step's
+   * `budgetCents` from the approved plan revision, falling back to the
+   * policy's total costCents ceiling only when the step budget is absent.
+   *
+   * Using the total ceiling as the per-step budget would allocate the
+   * entire root reservation to each child, causing a CHECK constraint
+   * violation (settled + released > reserved) when multiple children
+   * settle (fix-ut-m5-dependency-resolution).
+   */
+  private async resolveStepBudgetCents(
+    approvedPlanRevisionId: string | null,
+    stepKey: string,
+    policy: PolicyInfo | null,
+  ): Promise<number> {
+    if (approvedPlanRevisionId) {
+      const schema = this.db.schema;
+      const [revision] = await this.db.drizzle
+        .select({ content: schema.runPlanRevisions.content })
+        .from(schema.runPlanRevisions)
+        .where(eq(schema.runPlanRevisions.id, approvedPlanRevisionId))
+        .limit(1);
+      if (revision?.content) {
+        const plan = revision.content as unknown as PlanContent;
+        const step = plan.steps?.find((s) => s.stepKey === stepKey);
+        if (step?.budgetCents) {
+          return step.budgetCents;
+        }
+      }
+    }
+    return policy?.limits?.costCents ?? 100;
   }
 
   // -- internal: decrypt request envelope ----------------------------------
