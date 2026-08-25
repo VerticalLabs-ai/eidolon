@@ -13,10 +13,10 @@
  * currently legal actions.
  */
 
-import { render, screen, renderHook as tlRenderHook } from '@testing-library/react';
+import { render, screen, renderHook as tlRenderHook, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MissionRunCard } from '../src/components/projects/MissionRunCard';
 import { MissionPlanGateApproval } from '../src/components/projects/MissionPlanGateApproval';
 import { useMissionRunStream as useMissionRunStreamReal } from '../src/lib/mission-stream';
@@ -312,17 +312,88 @@ beforeEach(() => {
   mocks.useRejectMissionPlan.mockReturnValue(mutationResult());
 });
 
+// ── Mock EventSource for SSE hook tests ───────────────────────────────────
+
+/** A mock EventSource class that captures listeners for test simulation. */
+class MockEventSourceClass {
+  url: string;
+  readyState = 0;
+  onopen: ((ev: Event) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  listeners = new Map<string, Set<(ev: MessageEvent) => void>>();
+  closeFn = vi.fn();
+
+  static lastInstance: MockEventSourceClass | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSourceClass.lastInstance = this;
+  }
+
+  addEventListener(type: string, listener: (ev: MessageEvent) => void): void {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, new Set());
+    }
+    this.listeners.get(type)!.add(listener);
+  }
+
+  removeEventListener(type: string, listener: (ev: MessageEvent) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  close(): void {
+    this.readyState = 2;
+    this.closeFn();
+  }
+
+  /** Test helper: simulate an SSE event frame. */
+  simulateEvent(type: string, data: string, id: string): void {
+    const msg = new MessageEvent(type, { data });
+    Object.defineProperty(msg, 'lastEventId', { value: id });
+    for (const fn of this.listeners.get(type) ?? []) {
+      fn(msg);
+    }
+    // Also fire onmessage for generic events
+    if (this.onmessage && !this.listeners.has(type)) {
+      this.onmessage(msg);
+    }
+  }
+
+  /** Test helper: simulate connection open. */
+  simulateOpen(): void {
+    this.readyState = 1;
+    if (this.onopen) {
+      this.onopen(new Event('open'));
+    }
+  }
+}
+
 // ── VAL-CROSS-048: Cross-surface terminal consistency ────────────────────
 
 describe('VAL-CROSS-048: Cross-surface terminal consistency', () => {
   describe('SSE terminal event invalidates cross-surface queries', () => {
-    it('invalidates inbox, approvals, and plans queries on terminal event', () => {
+    let originalEventSource: typeof EventSource;
+
+    beforeEach(() => {
+      originalEventSource = global.EventSource;
+      MockEventSourceClass.lastInstance = null;
+    });
+
+    afterEach(() => {
+      global.EventSource = originalEventSource;
+    });
+
+    it('invalidates inbox, approvals, and plans queries on terminal event', async () => {
+      global.EventSource = MockEventSourceClass as unknown as typeof EventSource;
+
       const qc = makeQueryClient();
-      const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
-      // Seed some data so queries exist
+      // Seed query data so the caches exist and invalidation is observable.
       qc.setQueryData(['inbox', 'company-1'], { data: [], meta: {} });
       qc.setQueryData(['approvals', 'company-1', 'all'], { data: [] });
       qc.setQueryData(['project-plans', 'company-1', 'project-1', {}], { data: [] });
+
+      const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
 
       const { result } = tlRenderHook(
         () => useMissionRunStreamReal('company-1', 'project-1', 'run-1', { enabled: true }),
@@ -335,23 +406,131 @@ describe('VAL-CROSS-048: Cross-surface terminal consistency', () => {
         },
       );
 
-      // Simulate a terminal event (run.cancelled) by calling the
-      // EventSource message handler. We need to find the EventSource
-      // mock and dispatch a message.
-      // The hook creates an EventSource; we intercept it.
-      // Instead, we verify the invalidation happens by checking the
-      // spy after the hook processes a terminal event.
-      //
-      // Since EventSource is a browser API, we mock it to capture the
-      // handler and invoke it with a terminal event.
+      // The hook should have created a mock EventSource and be connecting.
+      expect(result.current.status).toBe('connecting');
+      expect(MockEventSourceClass.lastInstance).not.toBeNull();
 
-      // The hook should have created an EventSource. We need to
-      // simulate receiving a terminal event.
-      // We'll use the mock EventSource pattern.
-      expect(result.current.status).toBeDefined();
-      // The invalidation spy should have been called at least for
-      // the initial connection. We verify cross-surface keys are
-      // invalidated on terminal events below in the integration test.
+      // Simulate the connection opening.
+      await act(async () => {
+        MockEventSourceClass.lastInstance?.simulateOpen();
+      });
+      expect(result.current.status).toBe('connected');
+
+      // Clear the spy so we only observe invalidations from the terminal event.
+      invalidateSpy.mockClear();
+
+      const es = MockEventSourceClass.lastInstance!;
+
+      // Simulate a terminal SSE event: run.cancelled at sequence 5.
+      // The server sends typed events with `event: <type>` and `id: <sequence>`.
+      // The hook registers a named listener for 'run.cancelled' and parses
+      // the JSON data to extract the type and sequence.
+      await act(async () => {
+        es.simulateEvent(
+          'run.cancelled',
+          JSON.stringify({ sequence: 5, type: 'run.cancelled' }),
+          '5',
+        );
+      });
+
+      // The stream should be closed after a terminal event.
+      expect(result.current.status).toBe('closed');
+
+      // Assert that the Inbox query cache was invalidated so mission
+      // question items converge to the terminal outcome.
+      const inboxInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] }).queryKey;
+        return Array.isArray(key) && key[0] === 'inbox' && key[1] === 'company-1';
+      });
+      expect(inboxInvalidated).toBe(true);
+
+      // Assert that the Approvals query cache was invalidated so plan
+      // gate approval items converge to the terminal outcome.
+      const approvalsInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] }).queryKey;
+        return Array.isArray(key) && key[0] === 'approvals' && key[1] === 'company-1';
+      });
+      expect(approvalsInvalidated).toBe(true);
+
+      // Assert that the project-plans query cache was invalidated so
+      // projected plan steps converge to the terminal outcome.
+      const plansInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] }).queryKey;
+        return (
+          Array.isArray(key) &&
+          key[0] === 'project-plans' &&
+          key[1] === 'company-1' &&
+          key[2] === 'project-1'
+        );
+      });
+      expect(plansInvalidated).toBe(true);
+
+      invalidateSpy.mockRestore();
+    });
+
+    it('invalidates approvals and plans queries on plan lifecycle event', async () => {
+      // This test verifies Fix 1: plan.* event types are registered in
+      // the namedTypes array so the SSE hook processes them. Without
+      // the registration, the named listener for 'plan.proposed' is
+      // never added and handleEvent is never called for plan events,
+      // making the plan invalidation code dead code.
+      global.EventSource = MockEventSourceClass as unknown as typeof EventSource;
+
+      const qc = makeQueryClient();
+      qc.setQueryData(['approvals', 'company-1', 'all'], { data: [] });
+      qc.setQueryData(['project-plans', 'company-1', 'project-1', {}], { data: [] });
+
+      const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+
+      tlRenderHook(
+        () => useMissionRunStreamReal('company-1', 'project-1', 'run-1', { enabled: true }),
+        {
+          wrapper: ({ children }: { children: React.ReactNode }) => (
+            <QueryClientProvider client={qc}>
+              <MemoryRouter>{children}</MemoryRouter>
+            </QueryClientProvider>
+          ),
+        },
+      );
+
+      await act(async () => {
+        MockEventSourceClass.lastInstance?.simulateOpen();
+      });
+
+      invalidateSpy.mockClear();
+
+      const es = MockEventSourceClass.lastInstance!;
+
+      // Simulate a plan.proposed SSE event at sequence 3.
+      await act(async () => {
+        es.simulateEvent(
+          'plan.proposed',
+          JSON.stringify({ sequence: 3, type: 'plan.proposed' }),
+          '3',
+        );
+      });
+
+      // The Approvals query cache must be invalidated so the new plan
+      // gate approval appears in the Approvals surface.
+      const approvalsInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] }).queryKey;
+        return Array.isArray(key) && key[0] === 'approvals' && key[1] === 'company-1';
+      });
+      expect(approvalsInvalidated).toBe(true);
+
+      // The project-plans query cache must be invalidated so the
+      // projected plan steps refresh.
+      const plansInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] }).queryKey;
+        return (
+          Array.isArray(key) &&
+          key[0] === 'project-plans' &&
+          key[1] === 'company-1' &&
+          key[2] === 'project-1'
+        );
+      });
+      expect(plansInvalidated).toBe(true);
+
       invalidateSpy.mockRestore();
     });
   });

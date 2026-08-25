@@ -325,6 +325,18 @@ export function useMissionRunStream(
       'research.provider_fallback',
       'research.completed',
       'research.failed',
+      // Plan lifecycle events (VAL-CROSS-048). Without these named
+      // listeners, SSE frames for plan lifecycle events are silently
+      // dropped because EventSource dispatches typed events to named
+      // listeners, not the generic `message` catch-all. The handleEvent
+      // callback checks these types to invalidate Approvals and Plans
+      // query caches, but without registered named listeners the
+      // callback never fires, making that invalidation dead code.
+      'plan.proposed',
+      'plan.approved',
+      'plan.rejected',
+      'plan.revision_requested',
+      'plan.projected',
     ];
     for (const type of namedTypes) {
       eventSource.addEventListener(type, messageHandler);
