@@ -27,6 +27,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { eq, sql } from 'drizzle-orm';
 import type { DbInstance } from '../../../types.js';
 import {
   type CredentialStore,
@@ -52,7 +53,12 @@ import {
 } from './spi.js';
 import type { ResearchProviderName } from './origins.js';
 import { validateResearchRequest } from './request-validation.js';
-import { executeWithFallback, type FallbackEntry, type FallbackConfig } from './fallback.js';
+import {
+  executeWithFallback,
+  type FallbackEntry,
+  type FallbackConfig,
+  type FallbackHooks,
+} from './fallback.js';
 import { DEFAULT_FALLBACK_POLICY } from './classification.js';
 import { DEFAULT_RETRY_CONFIG } from './retry.js';
 
@@ -282,15 +288,48 @@ export class ResearchExecutionService {
       await this.accounting.markStarted(tx, attemptId);
     });
 
-    // 7. Execute with fallback/retry.
+    // 7. Emit research.started event (VAL-CROSS-033).
+    await this.emitResearchEvent(input, 'research.started', {
+      logicalCallId,
+      provider: providerName,
+      operation: input.operation,
+    });
+
+    // 8. Execute with fallback/retry, wiring audit hooks (VAL-CROSS-033).
     const context: ResearchCallContext = {
       signal: input.signal,
       logicalCallId,
     };
 
+    const hooks: FallbackHooks = {
+      onProviderAttempt: async (info) => {
+        await this.emitResearchEvent(input, 'research.provider_attempted', {
+          logicalCallId,
+          provider: info.provider,
+          attempt: info.attempt,
+          isFallback: info.isFallback,
+        });
+      },
+      onProviderFallback: async (info) => {
+        await this.emitResearchEvent(input, 'research.provider_fallback', {
+          logicalCallId,
+          fromProvider: info.fromProvider,
+          toProvider: info.toProvider,
+          reason: info.reason,
+        });
+      },
+      onProviderSuccess: async () => {
+        // Success is recorded by research.completed below.
+      },
+      onProviderFailure: async () => {
+        // Failure is recorded by research.failed below.
+      },
+    };
+
     const fallbackConfig: FallbackConfig = {
       fallbackPolicy: DEFAULT_FALLBACK_POLICY,
       retryConfig: DEFAULT_RETRY_CONFIG,
+      hooks,
     };
 
     let providerResult: ResearchResult;
@@ -298,11 +337,17 @@ export class ResearchExecutionService {
       providerResult = await executeWithFallback(request, fallbackEntries, fallbackConfig, context);
     } catch (err) {
       // Mark the attempt as failed and release the in-flight hold.
+      const errorCode = err instanceof ResearchProviderError ? err.code : 'PROVIDER_PERMANENT';
+      const safeMessage =
+        err instanceof ResearchProviderError ? err.message : 'Research provider execution failed';
       await this.db.drizzle.transaction(async (tx) => {
-        const errorCode = err instanceof ResearchProviderError ? err.code : 'PROVIDER_PERMANENT';
-        const safeMessage =
-          err instanceof ResearchProviderError ? err.message : 'Research provider execution failed';
         await this.accounting.markFailed(tx, attemptId!, errorCode, safeMessage);
+      });
+      // Emit research.failed event (VAL-CROSS-033).
+      await this.emitResearchEvent(input, 'research.failed', {
+        logicalCallId,
+        provider: err instanceof ResearchProviderError ? err.provider : providerName,
+        errorCode,
       });
       throw err;
     }
@@ -378,10 +423,18 @@ export class ResearchExecutionService {
       });
     });
 
-    // 11. Return citation-ready evidence without leaking secrets.
+    // 11. Emit research.completed event (VAL-CROSS-033).
+    await this.emitResearchEvent(input, 'research.completed', {
+      logicalCallId,
+      provider: providerResult.provider,
+      sourceCount: providerResult.sources.length,
+      costCents,
+    });
+
+    // 12. Return citation-ready evidence without leaking secrets.
     return {
       logicalCallId,
-      provider: providerName,
+      provider: providerResult.provider,
       attemptId: attemptId!,
       providerRequestIdHash,
       credits: providerResult.credits,
@@ -395,6 +448,69 @@ export class ResearchExecutionService {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Append a research event to the run journal (VAL-CROSS-033).
+   *
+   * Locks the run row, reads the current last_event_sequence, increments
+   * it, inserts the event, and updates the run counter in one transaction.
+   * Events are ordered by sequence and never contain secrets, credentials,
+   * raw provider bodies, or retrieved content.
+   */
+  private async emitResearchEvent(
+    input: ResearchExecutionInput,
+    type: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const schema = this.db.schema;
+    const now = this.clock();
+    await this.db.drizzle.transaction(async (tx) => {
+      // Lock and read the run row.
+      const rows = (await tx.execute(sql`
+        SELECT "state_version", "last_event_sequence", "project_id"
+        FROM "mission_runs"
+        WHERE "id" = ${input.runId} AND "company_id" = ${input.companyId}
+        FOR UPDATE
+      `)) as unknown as Array<{
+        state_version: string;
+        last_event_sequence: string;
+        project_id: string;
+      }>;
+      if (!rows[0]) {
+        return; // Run not found — skip event emission.
+      }
+
+      const currentSeq = Number(rows[0]!.last_event_sequence);
+      const newSeq = currentSeq + 1;
+      const newVersion = Number(rows[0]!.state_version) + 1;
+      const runProjectId = rows[0]!.project_id;
+
+      // Insert the event.
+      await tx.insert(schema.runEvents).values({
+        companyId: input.companyId,
+        projectId: runProjectId,
+        runId: input.runId,
+        sequence: newSeq,
+        type,
+        schemaVersion: 1,
+        payload,
+        actorType: 'system',
+        actorId: null,
+        traceId: null,
+        occurredAt: now,
+      });
+
+      // Update the run's last_event_sequence and state_version.
+      await tx
+        .update(schema.missionRuns)
+        .set({
+          lastEventSequence: newSeq,
+          stateVersion: newVersion,
+          updatedAt: now,
+        })
+        .where(eq(schema.missionRuns.id, input.runId));
+    });
+  }
 
   /** Get the deployment-default credential from environment. */
   private getEnvCredential(provider: ResearchProviderName): string | undefined {

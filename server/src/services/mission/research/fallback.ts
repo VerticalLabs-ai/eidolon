@@ -54,6 +54,46 @@ export interface FallbackConfig {
   fallbackPolicy: FallbackPolicy;
   /** Retry configuration per provider. */
   retryConfig?: RetryConfig;
+  /**
+   * Optional hooks for audit/event emission (VAL-CROSS-033).
+   * The coordinator calls these at provider-attempt, fallback,
+   * success, and failure points. Hooks must not throw or block;
+   * errors from hooks are swallowed to avoid disrupting execution.
+   */
+  hooks?: FallbackHooks;
+}
+
+/**
+ * Audit hooks for the fallback coordinator (VAL-CROSS-033).
+ *
+ * These hooks let the caller emit ordered run-journal events for
+ * provider attempts, fallbacks, successes, and failures without
+ * coupling the coordinator to the database. The coordinator calls
+ * them at well-defined points in the execution sequence. Hooks are
+ * async so the caller can persist events durably before execution
+ * continues. Hook errors are swallowed to avoid disrupting execution.
+ */
+export interface FallbackHooks {
+  /** Called before each physical provider attempt (including retries). */
+  onProviderAttempt?: (info: {
+    provider: ResearchProviderName;
+    attempt: number;
+    isFallback: boolean;
+  }) => Promise<void>;
+  /** Called when falling back from one provider to the next. */
+  onProviderFallback?: (info: {
+    fromProvider: ResearchProviderName;
+    toProvider: ResearchProviderName;
+    reason: string;
+  }) => Promise<void>;
+  /** Called when a provider attempt succeeds. */
+  onProviderSuccess?: (info: { provider: ResearchProviderName }) => Promise<void>;
+  /** Called when a provider fails permanently (no more fallback). */
+  onProviderFailure?: (info: {
+    provider: ResearchProviderName;
+    code: string;
+    message: string;
+  }) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +145,70 @@ function checkEmptyResult(
  * @returns The result from the first successful provider.
  * @throws ResearchProviderError on failure.
  */
+/** Safely call an async hook, swallowing errors (VAL-CROSS-033). */
+async function safeHook(fn: (() => Promise<void>) | undefined): Promise<void> {
+  if (!fn) {
+    return;
+  }
+  try {
+    await fn();
+  } catch {
+    // Hooks must never disrupt execution.
+  }
+}
+
+/** Emit a provider attempt hook (VAL-CROSS-033). */
+async function emitAttemptHook(
+  hooks: FallbackHooks | undefined,
+  provider: ResearchProviderName,
+  attempt: number,
+  isFallback: boolean,
+): Promise<void> {
+  await safeHook(
+    hooks?.onProviderAttempt
+      ? () => hooks.onProviderAttempt!({ provider, attempt, isFallback })
+      : undefined,
+  );
+}
+
+/** Emit a provider fallback hook (VAL-CROSS-033). */
+async function emitFallbackHook(
+  hooks: FallbackHooks | undefined,
+  fromProvider: ResearchProviderName,
+  toProvider: ResearchProviderName,
+  reason: string,
+): Promise<void> {
+  await safeHook(
+    hooks?.onProviderFallback
+      ? () => hooks.onProviderFallback!({ fromProvider, toProvider, reason })
+      : undefined,
+  );
+}
+
+/** Emit a provider failure hook (VAL-CROSS-033). */
+async function emitFailureHook(
+  hooks: FallbackHooks | undefined,
+  provider: ResearchProviderName,
+  code: string,
+  message: string,
+): Promise<void> {
+  await safeHook(
+    hooks?.onProviderFailure
+      ? () => hooks.onProviderFailure!({ provider, code, message })
+      : undefined,
+  );
+}
+
+/** Emit a provider success hook (VAL-CROSS-033). */
+async function emitSuccessHook(
+  hooks: FallbackHooks | undefined,
+  provider: ResearchProviderName,
+): Promise<void> {
+  await safeHook(
+    hooks?.onProviderSuccess ? () => hooks.onProviderSuccess!({ provider }) : undefined,
+  );
+}
+
 export async function executeWithFallback(
   request: ResearchRequest,
   providers: FallbackEntry[],
@@ -112,6 +216,7 @@ export async function executeWithFallback(
   context: ResearchCallContext,
 ): Promise<ResearchResult> {
   const retryConfig = config.retryConfig ?? DEFAULT_RETRY_CONFIG;
+  const hooks = config.hooks;
   const logicalCallId = context.logicalCallId ?? randomUUID();
 
   let lastError: ResearchProviderError | null = null;
@@ -119,6 +224,7 @@ export async function executeWithFallback(
   for (let i = 0; i < providers.length; i++) {
     const entry = providers[i]!;
     const isLast = i === providers.length - 1;
+    const isFallback = i > 0;
 
     // Cancellation fence (VAL-RES-061, VAL-RES-094): check the caller's
     // AbortSignal before each provider attempt. If cancellation arrived
@@ -140,9 +246,16 @@ export async function executeWithFallback(
       logicalCallId,
     };
 
+    // Track attempt count for this provider for audit hooks.
+    let providerAttemptCount = 0;
+
     try {
       const result = await executeWithRetry(
-        () => entry.provider.execute(request, providerContext),
+        async () => {
+          providerAttemptCount++;
+          await emitAttemptHook(hooks, entry.name, providerAttemptCount, isFallback);
+          return entry.provider.execute(request, providerContext);
+        },
         retryConfig,
         providerContext,
       );
@@ -153,18 +266,21 @@ export async function executeWithFallback(
         lastError = emptyError;
         // Only fall back if the empty category is allowed by policy.
         if (!isFallbackEligible('RESEARCH_NO_USABLE_SOURCES', config.fallbackPolicy)) {
-          // Policy doesn't allow fallback for empty — throw immediately.
+          await emitFailureHook(hooks, entry.name, emptyError.code, emptyError.message);
           throw emptyError;
         }
         if (isLast) {
-          // No more providers to try — throw the empty error.
+          await emitFailureHook(hooks, entry.name, emptyError.code, emptyError.message);
           throw emptyError;
         }
-        // Fall back to the next provider.
+        // Emit fallback hook and fall back to the next provider.
+        const nextEntry = providers[i + 1]!;
+        await emitFallbackHook(hooks, entry.name, nextEntry.name, emptyError.code);
         continue;
       }
 
-      // Success — return the result.
+      // Success — emit hook and return the result.
+      await emitSuccessHook(hooks, entry.name);
       return result;
     } catch (err) {
       if (err instanceof ResearchProviderError) {
@@ -172,21 +288,24 @@ export async function executeWithFallback(
 
         // Permanent denial — never fall back (VAL-RES-012).
         if (isFallbackDenied(err.code)) {
+          await emitFailureHook(hooks, entry.name, err.code, err.message);
           throw err;
         }
 
         // Check if this error is fallback-eligible per policy.
         if (!isFallbackEligible(err.code, config.fallbackPolicy)) {
-          // Not eligible for fallback — throw immediately.
+          await emitFailureHook(hooks, entry.name, err.code, err.message);
           throw err;
         }
 
         if (isLast) {
-          // No more providers — throw the last error.
+          await emitFailureHook(hooks, entry.name, err.code, err.message);
           throw err;
         }
 
-        // Fall back to the next provider.
+        // Emit fallback hook and fall back to the next provider.
+        const nextEntry = providers[i + 1]!;
+        await emitFallbackHook(hooks, entry.name, nextEntry.name, err.code);
         continue;
       }
 
