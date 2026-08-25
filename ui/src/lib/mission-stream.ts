@@ -146,8 +146,46 @@ export function useMissionRunStream(
         queryKey: ['mission-run-sources', companyId, projectId, runId],
       });
 
+      // Cross-surface consistency for non-terminal state changes
+      // (VAL-CROSS-048): invalidate the Inbox when question lifecycle
+      // events occur so mission_question items converge (new question
+      // appears, answered question is removed/marked). Invalidate
+      // Approvals and Plans when plan lifecycle events occur so
+      // plan_gate approvals and projected plan steps converge.
+      if (
+        eventType === 'questions.requested' ||
+        eventType === 'questions.answered' ||
+        eventType === 'questions.invalidated'
+      ) {
+        qc.invalidateQueries({ queryKey: ['inbox', companyId] });
+      }
+      if (
+        eventType === 'plan.proposed' ||
+        eventType === 'plan.approved' ||
+        eventType === 'plan.rejected' ||
+        eventType === 'plan.revision_requested' ||
+        eventType === 'plan.projected'
+      ) {
+        qc.invalidateQueries({ queryKey: ['approvals', companyId] });
+        qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
+      }
+
       // Close the stream on terminal events.
       if (TERMINAL_EVENT_TYPES.has(eventType)) {
+        // Cross-surface terminal consistency (VAL-CROSS-048): invalidate
+        // the Inbox, Approvals, and Plans query caches so every product
+        // surface converges on the same terminal outcome. Without this,
+        // a Mission question or plan approval item in the Inbox/Approvals
+        // surface can remain visibly actionable after the run has already
+        // reached a terminal state, because those surfaces are not
+        // invalidated by the per-run snapshot/events/list invalidations
+        // above. The server projection will mark items as non-actionable
+        // for terminal runs; this invalidation ensures the browser
+        // refetches and reflects that promptly.
+        qc.invalidateQueries({ queryKey: ['inbox', companyId] });
+        qc.invalidateQueries({ queryKey: ['approvals', companyId] });
+        qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
+
         closedRef.current = true;
         setStatus('closed');
         if (esRef.current) {

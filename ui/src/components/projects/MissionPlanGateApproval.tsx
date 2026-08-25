@@ -167,6 +167,7 @@ export function MissionPlanGateApproval({
         principalId={principalId}
         onRefresh={onRefresh}
         snapshotLoading={snapshotQuery.isLoading}
+        runStatus={snapshot?.status}
       />
     </section>
   );
@@ -245,6 +246,7 @@ function MissionDecisionSurface({
   principalId,
   onRefresh,
   snapshotLoading,
+  runStatus,
 }: {
   companyId: string;
   projectId: string;
@@ -257,6 +259,7 @@ function MissionDecisionSurface({
   principalId?: string;
   onRefresh: () => void;
   snapshotLoading: boolean;
+  runStatus?: string;
 }) {
   // Resolved approval: render as history with no actionable controls.
   if (!isPending) {
@@ -273,6 +276,26 @@ function MissionDecisionSurface({
       <p className="text-xs text-text-muted" role="status">
         Loading Mission state…
       </p>
+    );
+  }
+
+  // Terminal run: the run has reached a terminal state (completed, failed,
+  // or cancelled) but the approval projection may still be pending. No
+  // surface should advertise an actionable approval for a terminal run
+  // (VAL-CROSS-048). The Mission is authoritative; the approval projection
+  // will converge after the server resolves the approval row.
+  const isRunTerminal =
+    runStatus === 'completed' || runStatus === 'failed' || runStatus === 'cancelled';
+  if (isRunTerminal) {
+    return (
+      <div
+        className="rounded-lg border border-warning/20 bg-warning/[0.04] p-3 text-xs text-warning break-words"
+        role="status"
+        data-testid="plan-gate-terminal-notice"
+      >
+        This Mission has reached a terminal state ({runStatus}). The plan approval is no longer
+        actionable. Open Project Work to review the final state.
+      </div>
     );
   }
 

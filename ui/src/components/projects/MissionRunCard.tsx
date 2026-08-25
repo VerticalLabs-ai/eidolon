@@ -367,7 +367,7 @@ export function MissionRunCard({
         />
       )}
       <RunCardCancelledDetail snapshot={snapshot} status={authoritativeStatus} />
-      {snapshot?.currentQuestionSet && principalId && (
+      {snapshot?.currentQuestionSet && principalId && !isTerminal && (
         <MissionQuestionCard
           companyId={companyId}
           projectId={projectId}
