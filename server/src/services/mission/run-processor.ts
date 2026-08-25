@@ -456,7 +456,7 @@ export class RunProcessor {
     signal: AbortSignal,
     data: RunAndPolicy,
   ): Promise<boolean> {
-    if (data.run.parentRunId === null || data.run.status !== 'queued' || signal.aborted) {
+    if (data.run.parentRunId === null || signal.aborted) {
       return false;
     }
     const handled = await this.handleChildRouting(claim, data.run, data.policy);
