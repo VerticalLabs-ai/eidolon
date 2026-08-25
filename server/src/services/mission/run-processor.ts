@@ -19,7 +19,40 @@ import { EphemeralFallbackRouter, type EphemeralRoutingContext } from './ephemer
 import type { RoutingRequirements, PlanContent } from './plan-schema.js';
 import { PLATFORM_HARD_CAPS } from './modes.js';
 import type { TreePolicyLimits } from './tree-limits.js';
+import type { ResearchOperation } from './research/spi.js';
 import logger from '../../utils/logger.js';
+
+// ---------------------------------------------------------------------------
+// Research operation detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Mapping from plan step tool-allowlist entries to research operations.
+ *
+ * A child run whose approved plan step includes any of these tools has
+ * research operations. The RunProcessor invokes the ResearchExecutionService
+ * for those operations instead of making a single LLM provider call.
+ *
+ * (architecture.md: ResearchProvider SPI, fix-ut-m5-research-execution-wiring)
+ */
+const RESEARCH_TOOL_TO_OPERATION: Record<string, ResearchOperation> = {
+  'research.search': 'search',
+  'research.extract': 'extract',
+  'research.scrape': 'scrape',
+  'research.structured_extract': 'structured_extract',
+};
+
+/** Extract research operations from a step's tool allowlist. */
+function extractResearchOperations(toolAllowlist: string[]): ResearchOperation[] {
+  const ops: ResearchOperation[] = [];
+  for (const tool of toolAllowlist) {
+    const op = RESEARCH_TOOL_TO_OPERATION[tool];
+    if (op) {
+      ops.push(op);
+    }
+  }
+  return ops;
+}
 
 /**
  * RunProcessor — the real `advance` function for the OrchestrationWorker.
@@ -108,6 +141,17 @@ export interface RunProcessorDeps {
    * provided, a default ephemeral router is constructed from the db instance.
    */
   ephemeralRouter?: EphemeralFallbackRouter;
+  /**
+   * Research executor for child runs with research operations. When a
+   * claimed child run's approved plan step includes research tools
+   * (research.search, research.extract, research.scrape,
+   * research.structured_extract), the processor delegates to this executor
+   * to invoke the ResearchExecutionService with real Tavily/Firecrawl
+   * adapters, persist source revisions, and settle budget before completing
+   * the run. If not provided, research-operation children fall through to
+   * the existing LLM provider call path (fix-ut-m5-research-execution-wiring).
+   */
+  researchExecutor?: ResearchExecutor;
 }
 
 interface RunRow {
@@ -132,6 +176,53 @@ interface PolicyInfo {
   provider: string;
   model: string;
   limits: Record<string, number>;
+  /** Tool allowlist from the immutable policy snapshot. */
+  toolAllowlist: string[];
+  /** Domain allowlist from the immutable policy snapshot. */
+  domainAllowlist: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Research executor interface
+// ---------------------------------------------------------------------------
+
+/**
+ * Context for research execution within RunProcessor.executeAndComplete().
+ */
+export interface ResearchExecutionContext {
+  claim: Claim;
+  run: RunRow;
+  policy: PolicyInfo;
+  /** Decrypted request text (used as the search query). */
+  requestText: string;
+  /** Research operations to execute (derived from the step's toolAllowlist). */
+  operations: ResearchOperation[];
+  /** Abort signal for cooperative cancellation. */
+  signal: AbortSignal;
+}
+
+/**
+ * Result of a research execution attempt.
+ */
+export interface ResearchExecutionOutcome {
+  /** Whether research was executed (true) or no research ops found (false). */
+  executed: boolean;
+  /** Number of sources persisted (0 if not executed). */
+  sourceCount: number;
+}
+
+/**
+ * Research executor: invoked by RunProcessor when a child run's approved
+ * plan step includes research operations. The executor constructs
+ * Tavily/Firecrawl adapters with the resolved credentials, invokes the
+ * ResearchExecutionService, and persists source revisions. Budget
+ * settlement is handled by the ResearchExecutionService's accounting
+ * service. The RunProcessor completes the run after research finishes.
+ *
+ * (fix-ut-m5-research-execution-wiring)
+ */
+export interface ResearchExecutor {
+  execute(ctx: ResearchExecutionContext): Promise<ResearchExecutionOutcome>;
 }
 
 interface RunAndPolicy {
@@ -625,6 +716,63 @@ export class RunProcessor {
     return policy?.limits?.costCents ?? 100;
   }
 
+  /**
+   * Resolve research operations for a child run by looking up its step
+   * assignment's stepKey and the approved plan step's toolAllowlist.
+   *
+   * Returns the list of research operations (search/extract/scrape/
+   * structured_extract) found in the step's toolAllowlist. Returns an
+   * empty array if the run is not a child, has no step assignment, or the
+   * step has no research tools.
+   *
+   * (fix-ut-m5-research-execution-wiring)
+   */
+  private async resolveResearchOperations(claim: Claim, run: RunRow): Promise<ResearchOperation[]> {
+    if (run.parentRunId === null) {
+      return [];
+    }
+
+    const schema = this.db.schema;
+
+    // Look up the step assignment to get the stepKey and approved plan revision.
+    const [assignment] = await this.db.drizzle
+      .select({
+        stepKey: schema.runStepAssignments.stepKey,
+        approvedPlanRevisionId: schema.runStepAssignments.approvedPlanRevisionId,
+      })
+      .from(schema.runStepAssignments)
+      .where(
+        and(
+          eq(schema.runStepAssignments.companyId, claim.companyId),
+          eq(schema.runStepAssignments.runId, claim.runId),
+        ),
+      )
+      .limit(1);
+
+    if (!assignment || !assignment.approvedPlanRevisionId) {
+      return [];
+    }
+
+    // Load the approved plan revision to get the step's toolAllowlist.
+    const [revision] = await this.db.drizzle
+      .select({ content: schema.runPlanRevisions.content })
+      .from(schema.runPlanRevisions)
+      .where(eq(schema.runPlanRevisions.id, assignment.approvedPlanRevisionId))
+      .limit(1);
+
+    if (!revision?.content) {
+      return [];
+    }
+
+    const plan = revision.content as unknown as PlanContent;
+    const step = plan.steps?.find((s) => s.stepKey === assignment.stepKey);
+    if (!step) {
+      return [];
+    }
+
+    return extractResearchOperations(step.toolAllowlist);
+  }
+
   // -- internal: decrypt request envelope ----------------------------------
 
   private decryptRequest(run: RunRow): string | null {
@@ -716,6 +864,70 @@ export class RunProcessor {
   // -- internal: execute provider call and complete the run ----------------
 
   private async executeAndComplete(
+    claim: Claim,
+    signal: AbortSignal,
+    data: RunAndPolicy,
+    requestText: string,
+  ): Promise<void> {
+    // Research execution path (fix-ut-m5-research-execution-wiring):
+    // When a child run's approved plan step includes research operations,
+    // invoke the ResearchExecutionService instead of the LLM provider.
+    if (await this.maybeExecuteResearch(claim, signal, data, requestText)) {
+      return;
+    }
+
+    await this.executeProviderCall(claim, signal, data, requestText);
+  }
+
+  /**
+   * Research execution path (fix-ut-m5-research-execution-wiring).
+   *
+   * When a child run's approved plan step includes research operations
+   * (research.search, research.extract, research.scrape,
+   * research.structured_extract), invoke the ResearchExecutionService to
+   * make real Tavily/Firecrawl calls, persist source revisions, and settle
+   * budget before completing the run. Returns true if research was executed
+   * and the run was completed, false if no research operations were found
+   * (fall through to the LLM provider call path).
+   */
+  private async maybeExecuteResearch(
+    claim: Claim,
+    signal: AbortSignal,
+    data: RunAndPolicy,
+    requestText: string,
+  ): Promise<boolean> {
+    if (!this.deps.researchExecutor || !data.policy || data.run.parentRunId === null) {
+      return false;
+    }
+
+    const operations = await this.resolveResearchOperations(claim, data.run);
+    if (operations.length === 0 || signal.aborted) {
+      return false;
+    }
+
+    const outcome = await this.deps.researchExecutor.execute({
+      claim,
+      run: data.run,
+      policy: data.policy,
+      requestText,
+      operations,
+      signal,
+    });
+
+    if (!outcome.executed || signal.aborted) {
+      return false;
+    }
+
+    await this.completeRun(claim);
+    await this.projectRunEvents(claim);
+    return true;
+  }
+
+  /**
+   * Existing LLM provider call path: make a bounded single LLM provider
+   * call, settle budget, and complete the run.
+   */
+  private async executeProviderCall(
     claim: Claim,
     signal: AbortSignal,
     data: RunAndPolicy,
@@ -855,6 +1067,8 @@ export class RunProcessor {
         provider: schema.runPolicySnapshots.provider,
         model: schema.runPolicySnapshots.model,
         limits: schema.runPolicySnapshots.limits,
+        toolAllowlist: schema.runPolicySnapshots.toolAllowlist,
+        domainAllowlist: schema.runPolicySnapshots.domainAllowlist,
       })
       .from(schema.runPolicySnapshots)
       .where(eq(schema.runPolicySnapshots.id, policySnapshotId))
@@ -866,6 +1080,8 @@ export class RunProcessor {
       provider: policyRow.provider,
       model: policyRow.model,
       limits: policyRow.limits as Record<string, number>,
+      toolAllowlist: (policyRow.toolAllowlist as string[]) ?? [],
+      domainAllowlist: (policyRow.domainAllowlist as string[]) ?? [],
     };
   }
 

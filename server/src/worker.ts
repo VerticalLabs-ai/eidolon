@@ -10,6 +10,7 @@ import { PlannerService } from './services/mission/planner.js';
 import { ProductionPlanGenerator } from './services/mission/planner-harness.js';
 import { MissionKillSwitchService } from './services/mission/kill-switch.js';
 import { MissionWorkerHealthService } from './services/mission/worker-health.js';
+import { ProductionResearchExecutor } from './services/mission/research-executor.js';
 import logger from './utils/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -59,7 +60,13 @@ async function main(): Promise<void> {
   // `PlannerTestHarness` is gated by `MISSION_PLANNER_HARNESS` and is never
   // constructed here — the env gate stays closed in production.
   const planner = new PlannerService(db, { generator: new ProductionPlanGenerator() });
-  const processor = new RunProcessor(db, { planner });
+  // Wire the production research executor into the run processor. When a
+  // child run with research steps is claimed and routed, the processor
+  // delegates to this executor to invoke the ResearchExecutionService with
+  // real Tavily/Firecrawl adapters, persist source revisions, and settle
+  // budget before completing the run (fix-ut-m5-research-execution-wiring).
+  const researchExecutor = new ProductionResearchExecutor(db);
+  const processor = new RunProcessor(db, { planner, researchExecutor });
   const killSwitch = new MissionKillSwitchService(db);
   const workerHealth = new MissionWorkerHealthService(db);
   const workerId = `worker-${randomUUID().slice(0, 8)}`;
