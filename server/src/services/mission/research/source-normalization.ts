@@ -33,6 +33,7 @@
 
 import { createHash } from 'node:crypto';
 import type { NormalizedResearchSource } from './spi.js';
+import { canonicalizeUrl } from './url-policy.js';
 
 // ---------------------------------------------------------------------------
 // Normalization version (VAL-RES-112)
@@ -46,8 +47,15 @@ import type { NormalizedResearchSource } from './spi.js';
  * Version 2 adds: HTML entity decoding, horizontal whitespace to ASCII space,
  * newline collapse (>2 to 2), tracking-key stripping for URL dedup, and
  * Unicode scalar value offset conversion.
+ *
+ * Version 3 aligns TRACKING_QUERY_KEYS to the 7 documented keys in
+ * VAL-RES-019 (utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+ * gclid, fbclid) and re-canonicalizes the URL after stripping tracking keys
+ * via canonicalizeUrl so that non-tracking query parameters retain
+ * encodeURIComponent encoding (spaces as %20, not +), preserving URL dedup
+ * for URLs with spaces in non-tracking query parameters.
  */
-export const SOURCE_NORMALIZATION_VERSION = 2;
+export const SOURCE_NORMALIZATION_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // Bounded maximums (VAL-RES-098)
@@ -200,41 +208,18 @@ export function computeContentHash(normalizedOrRawText: string): string {
 
 /**
  * Case-insensitive set of tracking/analytics query parameter keys that are
- * stripped before computing the canonical URL hash for deduplication.
- * These parameters do not change the page content and would cause the same
- * page to be treated as different sources if included in the hash.
+ * stripped before computing the canonical URL hash for deduplication
+ * (VAL-RES-019). Only the 7 documented tracking keys are stripped; other
+ * query parameters are preserved because they may identify content.
  */
 export const TRACKING_QUERY_KEYS: readonly string[] = [
   'utm_source',
   'utm_medium',
   'utm_campaign',
-  'utm_content',
   'utm_term',
-  'utm_id',
-  'utm_referrer',
-  'fbclid',
+  'utm_content',
   'gclid',
-  'gbraid',
-  'wbraid',
-  'msclkid',
-  'yclid',
-  'dclid',
-  'mc_eid',
-  'mc_cid',
-  'mkt_tok',
-  'oly_enc_id',
-  'oly_anon_id',
-  'vero_id',
-  '_hsenc',
-  '_hsmi',
-  'hsCtaTracking',
-  'icid',
-  'ito',
-  'cmpid',
-  'campaign_id',
-  'ref',
-  'ref_src',
-  'ref_url',
+  'fbclid',
 ];
 
 function isTrackingQueryKey(key: string): boolean {
@@ -243,12 +228,19 @@ function isTrackingQueryKey(key: string): boolean {
 
 /**
  * Strip tracking/analytics query parameters from a canonical URL before
- * computing the dedup hash (VAL-RES-019). Tracking keys like utm_source,
- * fbclid, gclid, etc. do not change page content and must not cause the same
- * page to be treated as a different source.
+ * computing the dedup hash (VAL-RES-019). Only the 7 documented tracking
+ * keys (utm_source, utm_medium, utm_campaign, utm_term, utm_content, gclid,
+ * fbclid) are stripped; other query parameters are preserved because they
+ * may identify content.
+ *
+ * After stripping, the result is re-canonicalized via `canonicalizeUrl` so
+ * that non-tracking query parameters retain encodeURIComponent encoding
+ * (spaces as %20, not +). This ensures the canonical URL hash matches the
+ * hash of the same URL that went through the URL policy's canonicalization,
+ * preserving URL dedup for URLs with spaces in non-tracking query parameters.
  *
  * Returns the URL with tracking parameters removed. Non-tracking parameters
- * are preserved in their original order.
+ * are preserved.
  */
 export function stripTrackingKeys(canonicalUrl: string): string {
   try {
@@ -268,7 +260,11 @@ export function stripTrackingKeys(canonicalUrl: string): string {
     for (const key of trackingKeys) {
       parsed.searchParams.delete(key);
     }
-    return parsed.toString();
+    // Re-canonicalize the result to preserve encodeURIComponent encoding
+    // (spaces as %20, not +) and stable parameter ordering, matching the
+    // output of the URL policy's canonicalizeUrl (VAL-RES-019).
+    const reCanonicalized = canonicalizeUrl(parsed.toString());
+    return reCanonicalized.canonical ?? canonicalUrl;
   } catch {
     // If URL parsing fails, return as-is (the caller should pass a valid URL).
     return canonicalUrl;

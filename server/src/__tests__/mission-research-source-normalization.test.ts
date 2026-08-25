@@ -9,6 +9,7 @@ import {
   boundMetadata,
   normalizeSourceForPersistence,
   stripTrackingKeys,
+  TRACKING_QUERY_KEYS,
   utf16ToScalarOffset,
   scalarToUtf16Offset,
 } from '../services/mission/research/source-normalization.js';
@@ -315,9 +316,9 @@ describe('stripTrackingKeys (VAL-RES-019 regression)', () => {
     expect(result).toBe('https://example.com/path?q=test');
   });
 
-  it('strips msclkid', () => {
+  it('preserves msclkid (not in the 7 documented tracking keys, VAL-RES-019)', () => {
     const result = stripTrackingKeys('https://example.com/path?msclkid=abc&q=test');
-    expect(result).toBe('https://example.com/path?q=test');
+    expect(result).toBe('https://example.com/path?msclkid=abc&q=test');
   });
 
   it('preserves non-tracking parameters', () => {
@@ -359,6 +360,110 @@ describe('computeCanonicalUrlHash strips tracking keys (VAL-RES-019 regression)'
   it('produces different hashes for URLs with different non-tracking params', () => {
     const url1 = 'https://example.com/article?q=test';
     const url2 = 'https://example.com/article?q=other';
+    expect(computeCanonicalUrlHash(url1)).not.toBe(computeCanonicalUrlHash(url2));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: stripTrackingKeys preserves encodeURIComponent encoding (VAL-RES-019)
+// ---------------------------------------------------------------------------
+
+describe('stripTrackingKeys: encodeURIComponent encoding (VAL-RES-019 regression)', () => {
+  it('preserves spaces as %20 in non-tracking query parameters after stripping', () => {
+    const result = stripTrackingKeys('https://example.com/path?q=hello%20world&utm_source=google');
+    expect(result).toBe('https://example.com/path?q=hello%20world');
+  });
+
+  it('does not encode spaces as + in non-tracking query parameters', () => {
+    const result = stripTrackingKeys('https://example.com/path?q=hello%20world&utm_source=google');
+    expect(result).not.toContain('+');
+  });
+
+  it('preserves spaces in multiple non-tracking parameters', () => {
+    const result = stripTrackingKeys(
+      'https://example.com/path?q=hello%20world&name=foo%20bar&utm_medium=cpc',
+    );
+    // canonicalizeUrl sorts params alphabetically: name < q
+    expect(result).toBe('https://example.com/path?name=foo%20bar&q=hello%20world');
+  });
+
+  it('produces identical canonical hashes for URLs with spaces differing only in tracking keys', () => {
+    const url1 = 'https://example.com/article?q=hello%20world';
+    const url2 = 'https://example.com/article?q=hello%20world&utm_source=google';
+    const url3 = 'https://example.com/article?q=hello%20world&fbclid=abc123';
+    expect(computeCanonicalUrlHash(url1)).toBe(computeCanonicalUrlHash(url2));
+    expect(computeCanonicalUrlHash(url1)).toBe(computeCanonicalUrlHash(url3));
+  });
+
+  it('matches the hash of the canonical URL without tracking keys (no re-encoding drift)', () => {
+    // The canonical URL with spaces already encoded as %20 and no tracking keys
+    // should produce the same hash as one with tracking keys stripped.
+    const canonical = 'https://example.com/path?q=hello%20world';
+    const withTracking = 'https://example.com/path?q=hello%20world&utm_source=google';
+    expect(computeCanonicalUrlHash(canonical)).toBe(computeCanonicalUrlHash(withTracking));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: TRACKING_QUERY_KEYS alignment to VAL-RES-019 (7 keys only)
+// ---------------------------------------------------------------------------
+
+describe('TRACKING_QUERY_KEYS alignment to VAL-RES-019 (7 documented keys)', () => {
+  it('contains exactly the 7 documented tracking keys', () => {
+    expect(TRACKING_QUERY_KEYS).toHaveLength(7);
+    expect([...TRACKING_QUERY_KEYS].sort()).toEqual([
+      'fbclid',
+      'gclid',
+      'utm_campaign',
+      'utm_content',
+      'utm_medium',
+      'utm_source',
+      'utm_term',
+    ]);
+  });
+
+  it('strips all 7 documented tracking keys', () => {
+    const keys = [
+      'utm_source',
+      'utm_medium',
+      'utm_campaign',
+      'utm_term',
+      'utm_content',
+      'gclid',
+      'fbclid',
+    ];
+    for (const key of keys) {
+      const result = stripTrackingKeys(`https://example.com/p?${key}=val&q=test`);
+      expect(result, `expected ${key} to be stripped`).toBe('https://example.com/p?q=test');
+    }
+  });
+
+  it('preserves utm_id (not in the 7 documented keys)', () => {
+    const result = stripTrackingKeys('https://example.com/path?utm_id=123&q=test');
+    // No tracking keys to strip → URL returned as-is (already canonical input order)
+    expect(result).toBe('https://example.com/path?utm_id=123&q=test');
+  });
+
+  it('preserves utm_referrer (not in the 7 documented keys)', () => {
+    const result = stripTrackingKeys('https://example.com/path?utm_referrer=x&q=test');
+    expect(result).toBe('https://example.com/path?utm_referrer=x&q=test');
+  });
+
+  it('preserves msclkid, gbraid, wbraid, yclid, dclid (not documented)', () => {
+    const nonDocumented = ['msclkid', 'gbraid', 'wbraid', 'yclid', 'dclid'];
+    for (const key of nonDocumented) {
+      const result = stripTrackingKeys(`https://example.com/p?${key}=val&q=test`);
+      expect(result, `expected ${key} to be preserved`).toBe(
+        `https://example.com/p?${key}=val&q=test`,
+      );
+    }
+  });
+
+  it('produces different hashes for URLs differing only in non-documented tracking keys', () => {
+    // utm_id is NOT stripped per VAL-RES-019, so URLs differing in utm_id
+    // must remain distinct (no false dedup).
+    const url1 = 'https://example.com/article?q=test&utm_id=111';
+    const url2 = 'https://example.com/article?q=test&utm_id=222';
     expect(computeCanonicalUrlHash(url1)).not.toBe(computeCanonicalUrlHash(url2));
   });
 });
