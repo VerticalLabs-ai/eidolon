@@ -97,6 +97,15 @@ import {
   runSynthesisManifests,
   researchProviderHealth,
   researchPricingSnapshots,
+  researchSources,
+  researchSourceRevisions,
+  runResearchSources,
+  citations,
+  artifactProvenance,
+  citationCarryForwardOutcomes,
+  carryForwardOutcomeEnum,
+  researchAttempts,
+  researchSourceAvailabilityChecks,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -191,6 +200,15 @@ const SCHEMA_BUNDLE = {
   runSynthesisManifests,
   researchProviderHealth,
   researchPricingSnapshots,
+  researchSources,
+  researchSourceRevisions,
+  runResearchSources,
+  citations,
+  artifactProvenance,
+  citationCarryForwardOutcomes,
+  carryForwardOutcomeEnum,
+  researchAttempts,
+  researchSourceAvailabilityChecks,
 } as const;
 
 export interface BootstrapOptions {
