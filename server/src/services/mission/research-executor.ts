@@ -162,61 +162,34 @@ export class ProductionResearchExecutor implements ResearchExecutor {
 
     const billingAgentId = assignment?.billingAgentId ?? null;
 
-    // Determine the primary provider: Tavily for search/extract, Firecrawl
-    // for scrape/structured_extract. When both providers support the
-    // operation, Tavily is preferred (architecture.md: Provider Fallback).
-    const primaryProvider = this.resolvePrimaryProvider(operations);
-    const fallbackProvider = primaryProvider === 'tavily' ? 'firecrawl' : 'tavily';
+    // Resolve credentials for both providers up front so we can select
+    // the correct adapter per operation based on capability.
+    const tavilyKey = await this.credentialStore.getSecret(claim.companyId, 'tavily');
+    const firecrawlKey = await this.credentialStore.getSecret(claim.companyId, 'firecrawl');
 
-    // Resolve the API key for the primary provider.
-    const apiKey = await this.credentialStore.getSecret(claim.companyId, primaryProvider);
-    const fallbackApiKey = await this.credentialStore.getSecret(claim.companyId, fallbackProvider);
+    const tavilyAdapter = tavilyKey ? new TavilyAdapter({ apiKey: tavilyKey }) : null;
+    const firecrawlAdapter = firecrawlKey ? new FirecrawlAdapter({ apiKey: firecrawlKey }) : null;
 
-    // Construct adapters with the resolved API keys.
-    const providers: ResearchProviderConfig[] = [];
-
-    if (apiKey) {
-      if (primaryProvider === 'tavily') {
-        providers.push({
-          provider: new TavilyAdapter({ apiKey }),
-          name: 'tavily',
-        });
-      } else {
-        providers.push({
-          provider: new FirecrawlAdapter({ apiKey }),
-          name: 'firecrawl',
-        });
-      }
-    }
-
-    // Add fallback provider if available and it supports the operation.
-    if (fallbackApiKey && providers.length > 0) {
-      if (fallbackProvider === 'tavily') {
-        providers.push({
-          provider: new TavilyAdapter({ apiKey: fallbackApiKey }),
-          name: 'tavily',
-        });
-      } else {
-        providers.push({
-          provider: new FirecrawlAdapter({ apiKey: fallbackApiKey }),
-          name: 'firecrawl',
-        });
-      }
-    }
-
-    if (providers.length === 0) {
+    if (!tavilyAdapter && !firecrawlAdapter) {
       logger.warn(
-        { runId: claim.runId, provider: primaryProvider },
-        'ProductionResearchExecutor: no credential available for research provider',
+        { runId: claim.runId },
+        'ProductionResearchExecutor: no credential available for any research provider',
       );
       return { executed: false, sourceCount: 0 };
     }
 
-    // Execute each research operation. For Phase 1, we execute the first
-    // research operation (search is the most common). Multiple operations
-    // in a single step are executed sequentially.
+    // Execute each research operation, selecting the provider that
+    // supports it. Search is preferred with Tavily; extract is Tavily-only;
+    // scrape/structured_extract are Firecrawl-only
+    // (architecture.md: Provider Fallback, fix-ut-m5-research-execution-gaps).
+    //
+    // URL-requiring operations (extract, scrape, structured_extract) are
+    // only attempted when URLs are available from prior search results in
+    // the same execution context. Operations without required inputs are
+    // skipped gracefully (fix-ut-m5-research-execution-gaps).
     let totalSourceCount = 0;
     let succeededCount = 0;
+    const collectedUrls: string[] = [];
     const durationSeconds = policy.limits?.durationSeconds ?? 300;
     const timeoutMs = Math.min(durationSeconds * 1000, 30_000);
 
@@ -225,34 +198,24 @@ export class ProductionResearchExecutor implements ResearchExecutor {
         break;
       }
 
-      // Build the research execution input.
-      const input = {
+      const opResult = await this.tryExecuteOperation({
+        runId: claim.runId,
         companyId: claim.companyId,
         projectId: claim.projectId,
-        runId: claim.runId,
         rootRunId: run.rootRunId,
         billingAgentId,
-        provider: primaryProvider,
         operation,
-        query: operation === 'search' ? requestText : undefined,
-        urls: operation !== 'search' ? undefined : undefined,
-        maxResults: 10,
+        requestText,
         timeoutMs,
         signal,
-      };
+        tavilyAdapter,
+        firecrawlAdapter,
+        collectedUrls,
+      });
 
-      try {
-        const result = await this.executionService.executeResearch(input, {
-          providers,
-        });
-        totalSourceCount += result.sources.length;
+      if (opResult.executed) {
+        totalSourceCount += opResult.sourceCount;
         succeededCount += 1;
-      } catch (err) {
-        logger.warn(
-          { runId: claim.runId, operation, err: err instanceof Error ? err.message : String(err) },
-          'ProductionResearchExecutor: research operation failed',
-        );
-        // Continue to next operation or complete with partial results.
       }
     }
 
@@ -268,16 +231,152 @@ export class ProductionResearchExecutor implements ResearchExecutor {
   }
 
   /**
-   * Resolve the primary provider for a set of research operations.
-   * Tavily is preferred for search/extract; Firecrawl for scrape/
-   * structured_extract (architecture.md: Provider Fallback).
+   * Attempt a single research operation with provider capability filtering
+   * and URL-availability gating (fix-ut-m5-research-execution-gaps).
+   *
+   * Returns `{ executed: true, sourceCount }` on success, or
+   * `{ executed: false, sourceCount: 0 }` when the operation is skipped
+   * (no provider supports it, no URLs available) or fails.
    */
-  private resolvePrimaryProvider(operations: ResearchOperation[]): ResearchProviderName {
-    for (const op of operations) {
-      if (op === 'scrape' || op === 'structured_extract') {
-        return 'firecrawl';
+  private async tryExecuteOperation(params: {
+    runId: string;
+    companyId: string;
+    projectId: string;
+    rootRunId: string;
+    billingAgentId: string | null;
+    operation: ResearchOperation;
+    requestText: string;
+    timeoutMs: number;
+    signal: AbortSignal;
+    tavilyAdapter: TavilyAdapter | null;
+    firecrawlAdapter: FirecrawlAdapter | null;
+    collectedUrls: string[];
+  }): Promise<{ executed: boolean; sourceCount: number }> {
+    const {
+      runId,
+      companyId,
+      projectId,
+      rootRunId,
+      billingAgentId,
+      operation,
+      requestText,
+      timeoutMs,
+      signal,
+      tavilyAdapter,
+      firecrawlAdapter,
+      collectedUrls,
+    } = params;
+
+    // Select the provider for this operation based on capability.
+    const selection = this.selectProviderForOperation(operation, tavilyAdapter, firecrawlAdapter);
+
+    if (!selection) {
+      logger.info(
+        { runId, operation },
+        'ProductionResearchExecutor: skipping operation, no available provider supports it',
+      );
+      return { executed: false, sourceCount: 0 };
+    }
+
+    // URL-requiring operations need at least one URL from prior search
+    // results. Skip gracefully when none are available.
+    if (operation !== 'search' && collectedUrls.length === 0) {
+      logger.info(
+        { runId, operation },
+        'ProductionResearchExecutor: skipping operation, no URLs available from prior search results',
+      );
+      return { executed: false, sourceCount: 0 };
+    }
+
+    const input = {
+      companyId,
+      projectId,
+      runId,
+      rootRunId,
+      billingAgentId,
+      provider: selection.primaryName,
+      operation,
+      query: operation === 'search' ? requestText : undefined,
+      urls: operation !== 'search' ? collectedUrls : undefined,
+      maxResults: 10,
+      timeoutMs,
+      signal,
+    };
+
+    try {
+      const result = await this.executionService.executeResearch(input, {
+        providers: selection.providers,
+      });
+
+      // Collect URLs from search results for subsequent URL-requiring
+      // operations (extract, scrape, structured_extract).
+      if (operation === 'search') {
+        for (const source of result.sources) {
+          if (source.canonicalUrl) {
+            collectedUrls.push(source.canonicalUrl);
+          }
+        }
+      }
+
+      return { executed: true, sourceCount: result.sources.length };
+    } catch (err) {
+      logger.warn(
+        { runId, operation, err: err instanceof Error ? err.message : String(err) },
+        'ProductionResearchExecutor: research operation failed',
+      );
+      return { executed: false, sourceCount: 0 };
+    }
+  }
+
+  /**
+   * Select the primary provider and fallback providers for a given
+   * operation based on the provider capability matrix
+   * (architecture.md: Provider Fallback, fix-ut-m5-research-execution-gaps).
+   *
+   * - search: Tavily preferred, Firecrawl fallback
+   * - extract: Tavily only (Firecrawl does not support extract)
+   * - scrape: Firecrawl only (Tavily does not support scrape)
+   * - structured_extract: Firecrawl only (Tavily does not support structured_extract)
+   *
+   * Returns null when no available adapter supports the operation.
+   */
+  private selectProviderForOperation(
+    operation: ResearchOperation,
+    tavilyAdapter: TavilyAdapter | null,
+    firecrawlAdapter: FirecrawlAdapter | null,
+  ): {
+    primaryName: ResearchProviderName;
+    providers: ResearchProviderConfig[];
+  } | null {
+    const providers: ResearchProviderConfig[] = [];
+
+    if (operation === 'search') {
+      // Prefer Tavily for search, fallback to Firecrawl.
+      if (tavilyAdapter) {
+        providers.push({ provider: tavilyAdapter, name: 'tavily' });
+      }
+      if (firecrawlAdapter) {
+        providers.push({ provider: firecrawlAdapter, name: 'firecrawl' });
+      }
+    } else if (operation === 'extract') {
+      // Extract is Tavily-only.
+      if (tavilyAdapter) {
+        providers.push({ provider: tavilyAdapter, name: 'tavily' });
+      }
+    } else if (operation === 'scrape' || operation === 'structured_extract') {
+      // Scrape/structured_extract are Firecrawl-only.
+      if (firecrawlAdapter) {
+        providers.push({ provider: firecrawlAdapter, name: 'firecrawl' });
       }
     }
-    return 'tavily';
+
+    if (providers.length === 0) {
+      return null;
+    }
+
+    return {
+      primaryName: providers[0]!.name,
+      providers,
+    };
   }
 }

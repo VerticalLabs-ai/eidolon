@@ -212,14 +212,15 @@ describe('fix-ut-m5-research-attempt-transaction: ProductionResearchExecutor.exe
     const scope = await seedScope(db, '__mtest__ executor-partial');
     const { runId } = await seedRun(db, scope, null);
 
-    // First operation fails, second succeeds with 2 sources.
+    // First operation fails, second succeeds with 2 sources. Both are
+    // search operations so no URL-availability gate applies.
     const executor = new ProductionResearchExecutor(db, {
       executionService: partialFailureExecutionService(1, 2),
     });
 
     const controller = new AbortController();
     const result = await executor.execute(
-      makeContext(scope, runId, ['search', 'extract'], controller.signal),
+      makeContext(scope, runId, ['search', 'search'], controller.signal),
     );
 
     expect(result.executed).toBe(true);
@@ -260,5 +261,209 @@ describe('fix-ut-m5-research-attempt-transaction: ProductionResearchExecutor.exe
 
     expect(result.executed).toBe(false);
     expect(result.sourceCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fix-ut-m5-research-execution-gaps: Provider-operation capability filtering
+// and URL availability for scrape/structured_extract.
+// ---------------------------------------------------------------------------
+
+/**
+ * A mock ResearchExecutionService that records every call's provider and
+ * operation, and returns a configurable result.
+ */
+function trackingExecutionService(
+  sourceCount: number,
+  sourceUrls?: string[],
+): ResearchExecutionService & {
+  calls: Array<{ provider: string; operation: string; urls?: string[]; query?: string }>;
+} {
+  const calls: Array<{ provider: string; operation: string; urls?: string[]; query?: string }> = [];
+  const urls = sourceUrls ?? ['https://example.com/result-1', 'https://example.com/result-2'];
+  return {
+    calls,
+    executeResearch: vi.fn(
+      async (input: { provider: string; operation: string; urls?: string[]; query?: string }) => {
+        calls.push({
+          provider: input.provider,
+          operation: input.operation,
+          urls: input.urls,
+          query: input.query,
+        });
+        return {
+          sources: Array.from({ length: sourceCount }, (_, i) => ({
+            canonicalUrl: urls[i % urls.length] ?? `https://example.com/${i}`,
+            title: `Source ${i}`,
+            retrievedAt: new Date().toISOString(),
+            injectionRiskLabels: [],
+            contentHash: randomUUID(),
+            byteCount: 100,
+          })),
+          logicalCallId: randomUUID(),
+          providerRequestIdHash: null,
+          reportedCredits: 1,
+          costCents: 10,
+        };
+      },
+    ),
+  } as unknown as ResearchExecutionService & {
+    calls: Array<{ provider: string; operation: string; urls?: string[]; query?: string }>;
+  };
+}
+
+describe('fix-ut-m5-research-execution-gaps: provider-operation capability filtering', () => {
+  it('only attempts extract with Tavily, not Firecrawl', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-extract-tavily');
+    const { runId } = await seedRun(db, scope, null);
+
+    const mock = trackingExecutionService(2);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    await executor.execute(makeContext(scope, runId, ['search', 'extract'], controller.signal));
+
+    // The extract operation must only be attempted with Tavily.
+    const extractCalls = mock.calls.filter((c) => c.operation === 'extract');
+    expect(extractCalls.length).toBeGreaterThan(0);
+    for (const c of extractCalls) {
+      expect(c.provider).toBe('tavily');
+    }
+  });
+
+  it('only attempts scrape and structured_extract with Firecrawl, not Tavily', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-scrape-firecrawl');
+    const { runId } = await seedRun(db, scope, null);
+
+    const mock = trackingExecutionService(1);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    await executor.execute(
+      makeContext(scope, runId, ['search', 'scrape', 'structured_extract'], controller.signal),
+    );
+
+    // scrape and structured_extract must only be attempted with Firecrawl.
+    const scrapeCalls = mock.calls.filter((c) => c.operation === 'scrape');
+    for (const c of scrapeCalls) {
+      expect(c.provider).toBe('firecrawl');
+    }
+    const structuredCalls = mock.calls.filter((c) => c.operation === 'structured_extract');
+    for (const c of structuredCalls) {
+      expect(c.provider).toBe('firecrawl');
+    }
+  });
+
+  it('prefers Tavily for search operations', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-search-prefers-tavily');
+    const { runId } = await seedRun(db, scope, null);
+
+    const mock = trackingExecutionService(1);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    await executor.execute(makeContext(scope, runId, ['search'], controller.signal));
+
+    const searchCalls = mock.calls.filter((c) => c.operation === 'search');
+    expect(searchCalls.length).toBe(1);
+    expect(searchCalls[0]!.provider).toBe('tavily');
+  });
+
+  it('skips operations where no available provider supports them', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-skip-unsupported');
+    const { runId } = await seedRun(db, scope, null);
+
+    // Only Firecrawl credential available — extract (Tavily-only) should be skipped.
+    // Stub TAVILY_API_KEY to empty so no Tavily adapter is constructed.
+    vi.stubEnv('TAVILY_API_KEY', '');
+    vi.stubEnv('FIRECRAWL_API_KEY', 'test-firecrawl-key');
+
+    const mock = trackingExecutionService(1);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    const result = await executor.execute(
+      makeContext(scope, runId, ['search', 'extract'], controller.signal),
+    );
+
+    // search is supported by Firecrawl, extract is not (no Tavily credential).
+    const searchCalls = mock.calls.filter((c) => c.operation === 'search');
+    const extractCalls = mock.calls.filter((c) => c.operation === 'extract');
+    expect(searchCalls.length).toBe(1);
+    expect(extractCalls.length).toBe(0);
+    // search succeeded so executed=true.
+    expect(result.executed).toBe(true);
+  });
+});
+
+describe('fix-ut-m5-research-execution-gaps: URL availability for scrape/structured_extract', () => {
+  it('passes URLs from prior search results to scrape/structured_extract', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-urls-from-search');
+    const { runId } = await seedRun(db, scope, null);
+
+    const searchUrls = ['https://example.com/page-a', 'https://example.com/page-b'];
+    const mock = trackingExecutionService(2, searchUrls);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    await executor.execute(makeContext(scope, runId, ['search', 'scrape'], controller.signal));
+
+    // search should have no urls, scrape should have urls from search results.
+    const searchCall = mock.calls.find((c) => c.operation === 'search');
+    const scrapeCall = mock.calls.find((c) => c.operation === 'scrape');
+    expect(searchCall).toBeTruthy();
+    expect(scrapeCall).toBeTruthy();
+    expect(searchCall!.urls).toBeUndefined();
+    expect(scrapeCall!.urls).toEqual(expect.arrayContaining(searchUrls));
+  });
+
+  it('skips scrape/structured_extract when no URLs are available from prior search', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-no-urls-skip');
+    const { runId } = await seedRun(db, scope, null);
+
+    // Only scrape in operations, no search to produce URLs.
+    const mock = trackingExecutionService(1);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    const result = await executor.execute(makeContext(scope, runId, ['scrape'], controller.signal));
+
+    // scrape was not attempted because no URLs were available.
+    expect(mock.calls.length).toBe(0);
+    expect(result.executed).toBe(false);
+    expect(result.sourceCount).toBe(0);
+  });
+
+  it('skips structured_extract when no URLs are available and search is not in operations', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-no-urls-structured');
+    const { runId } = await seedRun(db, scope, null);
+
+    const mock = trackingExecutionService(1);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    const result = await executor.execute(
+      makeContext(scope, runId, ['extract', 'structured_extract'], controller.signal),
+    );
+
+    // Neither extract nor structured_extract attempted — no URLs available.
+    expect(mock.calls.length).toBe(0);
+    expect(result.executed).toBe(false);
+  });
+
+  it('attempts extract with URLs from prior search results', async () => {
+    const scope = await seedScope(db, '__mtest__ exec-extract-with-urls');
+    const { runId } = await seedRun(db, scope, null);
+
+    const searchUrls = ['https://example.com/extract-target'];
+    const mock = trackingExecutionService(1, searchUrls);
+    const executor = new ProductionResearchExecutor(db, { executionService: mock });
+
+    const controller = new AbortController();
+    await executor.execute(makeContext(scope, runId, ['search', 'extract'], controller.signal));
+
+    const extractCall = mock.calls.find((c) => c.operation === 'extract');
+    expect(extractCall).toBeTruthy();
+    expect(extractCall!.urls).toEqual(expect.arrayContaining(searchUrls));
   });
 });

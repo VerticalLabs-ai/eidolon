@@ -1299,3 +1299,205 @@ describe('fix-ut-m5-research-attempt-transaction: reserveInFlight SAVEPOINT', ()
     expect(attempts[0]!.n).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// fix-ut-m5-research-execution-gaps: Date serialization — raw sql`` templates
+// must pass ISO 8601 strings, not Date objects that pg may serialize as
+// Date.toString() (e.g. 'Tue Aug 25 2026 17:56:56 GMT-0500') which PostgreSQL
+// rejects with "time zone 'gmt-0500' not recognized".
+// ---------------------------------------------------------------------------
+
+describe('fix-ut-m5-research-execution-gaps: ISO 8601 timestamp serialization', () => {
+  it('reserveInFlight stores created_at as a valid ISO 8601 timestamp', async () => {
+    const scope = await seedScope(db, '__mtest__ iso-created-at');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const fixedTime = new Date('2026-08-25T17:56:56.000Z');
+    const accounting = new ResearchAttemptAccountingService(db, { clock: () => fixedTime });
+
+    const result = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId: randomUUID(),
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 100,
+      }),
+    );
+
+    // Read the stored created_at and verify it matches the injected clock.
+    const [row] = (await db.drizzle.execute(sql`
+      SELECT "created_at" FROM "research_attempts" WHERE "id" = ${result.attemptId}
+    `)) as unknown as { created_at: Date }[];
+    expect(row).toBeTruthy();
+    const stored = new Date(row.created_at);
+    expect(stored.toISOString()).toBe(fixedTime.toISOString());
+  });
+
+  it('markStarted stores started_at as a valid ISO 8601 timestamp', async () => {
+    const scope = await seedScope(db, '__mtest__ iso-started-at');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const fixedTime = new Date('2026-08-25T17:56:56.000Z');
+    const accounting = new ResearchAttemptAccountingService(db, { clock: () => fixedTime });
+
+    const a = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId: randomUUID(),
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 100,
+      }),
+    );
+    await db.drizzle.transaction(async (tx) => accounting.markStarted(tx, a.attemptId));
+
+    const [row] = (await db.drizzle.execute(sql`
+      SELECT "started_at" FROM "research_attempts" WHERE "id" = ${a.attemptId}
+    `)) as unknown as { started_at: Date }[];
+    expect(row.started_at).toBeTruthy();
+    expect(new Date(row.started_at).toISOString()).toBe(fixedTime.toISOString());
+  });
+
+  it('settleAttempt stores settled_at and terminal_at as valid ISO 8601 timestamps', async () => {
+    const scope = await seedScope(db, '__mtest__ iso-settled-at');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const fixedTime = new Date('2026-08-25T17:56:56.000Z');
+    const accounting = new ResearchAttemptAccountingService(db, { clock: () => fixedTime });
+
+    const callId = randomUUID();
+    const a = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId: callId,
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 100,
+      }),
+    );
+    await db.drizzle.transaction(async (tx) => {
+      await accounting.markStarted(tx, a.attemptId);
+      await accounting.settleAttempt(tx, a.attemptId, {
+        externalCallId: `ext-${callId}`,
+        reportedCredits: 1,
+        costCents: 10,
+      });
+    });
+
+    const [row] = (await db.drizzle.execute(sql`
+      SELECT "settled_at", "terminal_at" FROM "research_attempts" WHERE "id" = ${a.attemptId}
+    `)) as unknown as { settled_at: Date; terminal_at: Date }[];
+    expect(new Date(row.settled_at).toISOString()).toBe(fixedTime.toISOString());
+    expect(new Date(row.terminal_at).toISOString()).toBe(fixedTime.toISOString());
+  });
+
+  it('markFailed stores terminal_at as a valid ISO 8601 timestamp', async () => {
+    const scope = await seedScope(db, '__mtest__ iso-failed-at');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const fixedTime = new Date('2026-08-25T17:56:56.000Z');
+    const accounting = new ResearchAttemptAccountingService(db, { clock: () => fixedTime });
+
+    const a = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId: randomUUID(),
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 100,
+      }),
+    );
+    await db.drizzle.transaction(async (tx) =>
+      accounting.markFailed(tx, a.attemptId, 'PROVIDER_PERMANENT', 'failed'),
+    );
+
+    const [row] = (await db.drizzle.execute(sql`
+      SELECT "terminal_at" FROM "research_attempts" WHERE "id" = ${a.attemptId}
+    `)) as unknown as { terminal_at: Date }[];
+    expect(new Date(row.terminal_at).toISOString()).toBe(fixedTime.toISOString());
+  });
+
+  it('markUnknown stores settled_at and terminal_at as valid ISO 8601 timestamps', async () => {
+    const scope = await seedScope(db, '__mtest__ iso-unknown-at');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const fixedTime = new Date('2026-08-25T17:56:56.000Z');
+    const accounting = new ResearchAttemptAccountingService(db, { clock: () => fixedTime });
+
+    const callId = randomUUID();
+    const a = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId: callId,
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 100,
+      }),
+    );
+    await db.drizzle.transaction(async (tx) => {
+      await accounting.markStarted(tx, a.attemptId);
+      await accounting.markUnknown(tx, a.attemptId, {
+        externalCallId: `ext-${callId}-unknown`,
+        conservativeMaxCents: 50,
+      });
+    });
+
+    const [row] = (await db.drizzle.execute(sql`
+      SELECT "settled_at", "terminal_at" FROM "research_attempts" WHERE "id" = ${a.attemptId}
+    `)) as unknown as { settled_at: Date; terminal_at: Date }[];
+    expect(new Date(row.settled_at).toISOString()).toBe(fixedTime.toISOString());
+    expect(new Date(row.terminal_at).toISOString()).toBe(fixedTime.toISOString());
+  });
+
+  it('releaseRunResiduals stores terminal_at as a valid ISO 8601 timestamp', async () => {
+    const scope = await seedScope(db, '__mtest__ iso-release-at');
+    const run = await seedRootRun(db, scope, { reservedCents: 1000 });
+
+    const fixedTime = new Date('2026-08-25T17:56:56.000Z');
+    const accounting = new ResearchAttemptAccountingService(db, { clock: () => fixedTime });
+
+    const a = await db.drizzle.transaction(async (tx) =>
+      accounting.reserveInFlight(tx, {
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        runId: run.runId,
+        rootRunId: run.runId,
+        logicalCallId: randomUUID(),
+        attemptOrdinal: 1,
+        provider: 'tavily',
+        operation: 'search',
+        reservedCents: 100,
+      }),
+    );
+    await db.drizzle.transaction(async (tx) => accounting.markStarted(tx, a.attemptId));
+    await db.drizzle.transaction(async (tx) =>
+      accounting.releaseRunResiduals(tx, scope.companyId, run.runId),
+    );
+
+    const [row] = (await db.drizzle.execute(sql`
+      SELECT "terminal_at" FROM "research_attempts" WHERE "id" = ${a.attemptId}
+    `)) as unknown as { terminal_at: Date }[];
+    expect(new Date(row.terminal_at).toISOString()).toBe(fixedTime.toISOString());
+  });
+});

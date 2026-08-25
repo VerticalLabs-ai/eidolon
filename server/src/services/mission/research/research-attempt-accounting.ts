@@ -244,7 +244,13 @@ export class ResearchAttemptAccountingService {
     }
 
     const id = randomUUID();
-    const now = this.now();
+    // Use ISO 8601 string for raw SQL templates so PostgreSQL always
+    // receives a parseable timestamp. Passing a Date object to the pg
+    // driver through drizzle's raw sql`` template can serialize as
+    // Date.toString() (e.g. 'Tue Aug 25 2026 17:56:56 GMT-0500') which
+    // PostgreSQL rejects with "time zone 'gmt-0500' not recognized"
+    // (fix-ut-m5-research-execution-gaps).
+    const now = this.now().toISOString();
 
     // SELECT-then-INSERT: check for an existing attempt first so the
     // idempotent case (same logical_call_id + ordinal from a replay or
@@ -303,7 +309,7 @@ export class ResearchAttemptAccountingService {
    * Must be called inside a transaction.
    */
   async markStarted(tx: Tx, attemptId: string): Promise<void> {
-    const now = this.now();
+    const now = this.now().toISOString();
     const result = (await tx.execute(sql`
       UPDATE "research_attempts"
       SET "state" = 'started', "started_at" = ${now}
@@ -342,7 +348,7 @@ export class ResearchAttemptAccountingService {
     attemptId: string,
     input: SettleAttemptInput,
   ): Promise<SettleAttemptResult> {
-    const now = this.now();
+    const now = this.now().toISOString();
 
     // Lock the attempt row.
     const [attempt] = (await tx.execute(sql`
@@ -430,7 +436,7 @@ export class ResearchAttemptAccountingService {
     failureCode: string,
     safeErrorMessage?: string,
   ): Promise<void> {
-    const now = this.now();
+    const now = this.now().toISOString();
     const result = (await tx.execute(sql`
       UPDATE "research_attempts"
       SET "state" = 'failed',
@@ -463,7 +469,7 @@ export class ResearchAttemptAccountingService {
    * Must be called inside a transaction.
    */
   async markCancelled(tx: Tx, attemptId: string): Promise<void> {
-    const now = this.now();
+    const now = this.now().toISOString();
     const result = (await tx.execute(sql`
       UPDATE "research_attempts"
       SET "state" = 'cancelled',
@@ -499,7 +505,7 @@ export class ResearchAttemptAccountingService {
     attemptId: string,
     input: MarkUnknownInput,
   ): Promise<SettleAttemptResult> {
-    const now = this.now();
+    const now = this.now().toISOString();
 
     const [attempt] = (await tx.execute(sql`
       SELECT "id", "company_id", "run_id", "state"
@@ -589,7 +595,7 @@ export class ResearchAttemptAccountingService {
    * Must be called inside a transaction.
    */
   async releaseRunResiduals(tx: Tx, companyId: string, runId: string): Promise<void> {
-    const now = this.now();
+    const now = this.now().toISOString();
     // Terminalize all active in-flight attempts.
     await tx.execute(sql`
       UPDATE "research_attempts"
