@@ -451,6 +451,8 @@ describe('ResearchExecutionService wiring (fix-ut-m5-research-execution-wiring)'
       attemptCount: 0,
       claimedFromStatus: 'queued',
       status: 'running',
+      stateVersion: 1,
+      lastEventSequence: 0,
       isRecovery: false,
     };
 
@@ -521,6 +523,8 @@ describe('ResearchExecutionService wiring (fix-ut-m5-research-execution-wiring)'
       attemptCount: 0,
       claimedFromStatus: 'queued',
       status: 'running',
+      stateVersion: 1,
+      lastEventSequence: 0,
       isRecovery: false,
     };
 
@@ -573,6 +577,8 @@ describe('ResearchExecutionService wiring (fix-ut-m5-research-execution-wiring)'
       attemptCount: 0,
       claimedFromStatus: 'queued',
       status: 'running',
+      stateVersion: 1,
+      lastEventSequence: 0,
       isRecovery: false,
     };
 
@@ -580,6 +586,315 @@ describe('ResearchExecutionService wiring (fix-ut-m5-research-execution-wiring)'
     await processor.advance(claim, controller.signal);
 
     // Without a research executor, the LLM provider call should be made.
+    expect(providerCalled).toBe(true);
+
+    const status = await getRunStatus(db, childRunId);
+    expect(status).toBe('completed');
+  });
+
+  // -------------------------------------------------------------------------
+  // fix-ut-m5-tool-name-mapping: The LLM planner generates tool names like
+  // `web_search`, `web_fetch`, `web_browse` (and provider-prefixed names)
+  // in plan step `toolAllowlist` fields. These must map to research
+  // operations so children execute research instead of falling through to
+  // a plain LLM provider call.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build a plan whose child step uses the given toolAllowlist. The child
+   * step's `requiredTools` mirrors the allowlist so routing requirements
+   * stay consistent.
+   */
+  function planWithChildTools(childTools: string[]): PlanContent {
+    return validatePlan({
+      schemaVersion: PLAN_CONTENT_SCHEMA_VERSION,
+      objective: 'Research a topic',
+      steps: [
+        {
+          stepKey: 'root',
+          parentStepKey: null,
+          childOrdinal: 0,
+          nodeKind: 'root',
+          title: 'Coordinate research',
+          description: 'Oversee research subtask',
+          dependencies: [],
+          inputBindings: [],
+          routing: {
+            kind: 'requirements',
+            routingRequirements: {
+              capabilities: ['coordination'],
+              requiredTools: [],
+              requiredDomains: [],
+              ephemeralAllowed: true,
+            },
+          },
+          toolAllowlist: [],
+          replayClass: 'read_only',
+          sideEffecting: false,
+          expectedOutputs: ['coordination'],
+          evidenceRequirements: { citationsRequired: false },
+          completionCriteria: 'Done',
+          budgetCents: 100,
+          limits: {},
+        },
+        {
+          stepKey: 'child-a',
+          parentStepKey: 'root',
+          childOrdinal: 0,
+          nodeKind: 'child',
+          title: 'Research the topic',
+          description: 'Gather sources',
+          dependencies: ['root'],
+          dependencyKinds: { root: 'required' },
+          inputBindings: [],
+          routing: {
+            kind: 'requirements',
+            routingRequirements: {
+              capabilities: ['research'],
+              requiredTools: childTools,
+              requiredDomains: [],
+              ephemeralAllowed: true,
+            },
+          },
+          toolAllowlist: childTools,
+          replayClass: 'read_only',
+          sideEffecting: false,
+          expectedOutputs: ['sources'],
+          evidenceRequirements: { citationsRequired: true },
+          completionCriteria: 'At least one source',
+          budgetCents: 200,
+          limits: {},
+        },
+      ],
+      synthesis: {
+        instructions: 'Synthesize research output',
+        declaredInputs: [{ kind: 'stepOutput', stepKey: 'child-a', output: 'sources' }],
+        declaredOutput: 'final-report',
+        evidenceRequirements: { citationsRequired: false },
+        completionCriteria: 'Report complete',
+        budgetCents: 100,
+      },
+      planningBudgetCents: 100,
+      partialResultPolicy: 'require_all',
+      limits: {
+        steps: 12,
+        durationSeconds: 2700,
+        providerCalls: 48,
+        totalTokens: 300000,
+        outputBytes: 8388608,
+        costCents: 5000,
+        depth: 2,
+        fanOut: 4,
+        descendants: 16,
+      },
+    });
+  }
+
+  /**
+   * Shared helper: seed scope/agent, build a plan with the given child
+   * tools, materialize a routed child, run the processor with a recording
+   * research executor, and assert research was invoked with the expected
+   * operation and the run completed.
+   */
+  async function assertChildToolsTriggerResearch(
+    db: AnyDb,
+    label: string,
+    childTools: string[],
+    expectedOperations: string[],
+  ): Promise<void> {
+    const scope = await seedScope(db, label);
+    const agentId = await seedAgent(db, scope.companyId);
+    const plan = planWithChildTools(childTools);
+    const { childRunId } = await setupRoutedChild(db, scope, agentId, plan, label);
+
+    let executorCalled = false;
+    let receivedOperations: string[] = [];
+    const mockExecutor: ResearchExecutor = {
+      async execute(ctx) {
+        executorCalled = true;
+        receivedOperations = ctx.operations.map((op) => op);
+        await db.drizzle.execute(sql`
+          INSERT INTO "run_events" ("id", "company_id", "project_id", "run_id", "sequence", "type", "schema_version", "payload", "actor_type", "actor_id", "trace_id", "occurred_at")
+          VALUES (${randomUUID()}, ${scope.companyId}, ${scope.projectId}, ${childRunId}, 1, 'research.started', 1, '{"logicalCallId": "test-call", "provider": "tavily", "operation": "search"}'::jsonb, 'system', null, null, NOW())
+        `);
+        await db.drizzle.execute(sql`
+          INSERT INTO "run_events" ("id", "company_id", "project_id", "run_id", "sequence", "type", "schema_version", "payload", "actor_type", "actor_id", "trace_id", "occurred_at")
+          VALUES (${randomUUID()}, ${scope.companyId}, ${scope.projectId}, ${childRunId}, 2, 'research.completed', 1, '{"logicalCallId": "test-call", "provider": "tavily", "sourceCount": 1, "costCents": 10}'::jsonb, 'system', null, null, NOW())
+        `);
+        await db.drizzle.execute(sql`
+          UPDATE "mission_runs" SET "last_event_sequence" = 2, "state_version" = 3 WHERE "id" = ${childRunId}
+        `);
+        return { executed: true, sourceCount: 1 };
+      },
+    };
+
+    const processor = new RunProcessor(db, {
+      clock: () => new Date(),
+      researchExecutor: mockExecutor,
+      providerCall: async () => ({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        content: 'should not be called',
+        inputTokens: 10,
+        outputTokens: 10,
+        costCents: 1,
+        finishReason: 'stop' as const,
+        latencyMs: 42,
+      }),
+    });
+
+    const claim = {
+      runId: childRunId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      leaseOwner: 'test-worker',
+      leaseToken: 'test-token',
+      leaseExpiresAt: new Date(Date.now() + 30000),
+      heartbeatAt: new Date(),
+      attemptCount: 0,
+      claimedFromStatus: 'queued',
+      status: 'running',
+      stateVersion: 1,
+      lastEventSequence: 0,
+      isRecovery: false,
+    };
+
+    const controller = new AbortController();
+    await processor.advance(claim, controller.signal);
+
+    expect(executorCalled).toBe(true);
+    expect(receivedOperations).toEqual(expectedOperations);
+
+    const status = await getRunStatus(db, childRunId);
+    expect(status).toBe('completed');
+  }
+
+  it('web_search in toolAllowlist triggers research execution (search operation)', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-web-search',
+      ['web_search'],
+      ['search'],
+    );
+  });
+
+  it('web_fetch in toolAllowlist triggers research execution (extract operation)', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-web-fetch',
+      ['web_fetch'],
+      ['extract'],
+    );
+  });
+
+  it('web_browse in toolAllowlist triggers research execution (search operation)', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-web-browse',
+      ['web_browse'],
+      ['search'],
+    );
+  });
+
+  it('tavily.search in toolAllowlist triggers research execution (search operation)', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-tavily-search',
+      ['tavily.search'],
+      ['search'],
+    );
+  });
+
+  it('firecrawl.scrape in toolAllowlist triggers research execution (scrape operation)', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-firecrawl-scrape',
+      ['firecrawl.scrape'],
+      ['scrape'],
+    );
+  });
+
+  it('firecrawl.structured_extract in toolAllowlist triggers research execution (structured_extract operation)', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-firecrawl-structured-extract',
+      ['firecrawl.structured_extract'],
+      ['structured_extract'],
+    );
+  });
+
+  it('research.* tool names continue to trigger research execution', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-research-canonical',
+      ['research.search', 'research.extract'],
+      ['search', 'extract'],
+    );
+  });
+
+  it('a mix of canonical and aliased tool names triggers research execution for all', async () => {
+    await assertChildToolsTriggerResearch(
+      db,
+      '__mtest__ research-wiring-mixed-aliases',
+      ['web_search', 'research.extract', 'firecrawl.scrape'],
+      ['search', 'extract', 'scrape'],
+    );
+  });
+
+  it('non-research tool names still fall through to the LLM provider call', async () => {
+    const scope = await seedScope(db, '__mtest__ research-wiring-non-research-tools');
+    const agentId = await seedAgent(db, scope.companyId);
+    // A tool name that is NOT a research tool (e.g. a code-execution tool).
+    const plan = planWithChildTools(['code.execute']);
+    const { childRunId } = await setupRoutedChild(db, scope, agentId, plan, 'non-research-tools');
+
+    let executorCalled = false;
+    let providerCalled = false;
+    const mockExecutor: ResearchExecutor = {
+      async execute() {
+        executorCalled = true;
+        return { executed: false, sourceCount: 0 };
+      },
+    };
+
+    const processor = new RunProcessor(db, {
+      clock: () => new Date(),
+      researchExecutor: mockExecutor,
+      providerCall: async () => {
+        providerCalled = true;
+        return {
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          content: 'LLM response',
+          inputTokens: 10,
+          outputTokens: 10,
+          costCents: 1,
+          finishReason: 'stop' as const,
+          latencyMs: 42,
+        };
+      },
+    });
+
+    const claim = {
+      runId: childRunId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      leaseOwner: 'test-worker',
+      leaseToken: 'test-token',
+      leaseExpiresAt: new Date(Date.now() + 30000),
+      heartbeatAt: new Date(),
+      attemptCount: 0,
+      claimedFromStatus: 'queued',
+      status: 'running',
+      stateVersion: 1,
+      lastEventSequence: 0,
+      isRecovery: false,
+    };
+
+    const controller = new AbortController();
+    await processor.advance(claim, controller.signal);
+
+    expect(executorCalled).toBe(false);
     expect(providerCalled).toBe(true);
 
     const status = await getRunStatus(db, childRunId);

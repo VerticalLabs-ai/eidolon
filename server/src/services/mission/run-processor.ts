@@ -36,10 +36,24 @@ import logger from '../../utils/logger.js';
  * (architecture.md: ResearchProvider SPI, fix-ut-m5-research-execution-wiring)
  */
 const RESEARCH_TOOL_TO_OPERATION: Record<string, ResearchOperation> = {
+  // Canonical internal research.* tool names (architecture.md: ResearchProvider SPI).
   'research.search': 'search',
   'research.extract': 'extract',
   'research.scrape': 'scrape',
   'research.structured_extract': 'structured_extract',
+  // LLM-planner-generated aliases. The planner may emit generic web_* or
+  // provider-prefixed tool names in plan step `toolAllowlist` fields. Map
+  // them to the same research operations so children execute research
+  // instead of silently falling through to a plain LLM provider call
+  // (fix-ut-m5-tool-name-mapping).
+  web_search: 'search',
+  web_fetch: 'extract',
+  web_browse: 'search',
+  'tavily.search': 'search',
+  'firecrawl.search': 'search',
+  'firecrawl.scrape': 'scrape',
+  'firecrawl.extract': 'extract',
+  'firecrawl.structured_extract': 'structured_extract',
 };
 
 /** Extract research operations from a step's tool allowlist. */

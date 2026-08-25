@@ -373,7 +373,7 @@ const PLANNER_SYSTEM_PROMPT = [
   '    "inputBindings": array of { "name": string, "source": { ... } },',
   '    "routing": { "kind": "requirements", "routingRequirements": { "capabilities": [...], "requiredTools": [...], "requiredDomains": [...], "ephemeralAllowed": boolean } }',
   '             OR { "kind": "concreteAgent", "executingAgentId": string },',
-  '    "toolAllowlist": array of tool keys,',
+  '    "toolAllowlist": array of tool keys (use canonical "research.search", "research.extract", "research.scrape", or "research.structured_extract" for web research steps; do not use "web_search" or provider-prefixed names)',
   '    "replayClass": one of "read_only"|"idempotent_write"|"non_replayable",',
   '    "sideEffecting": boolean,',
   '    "expectedOutputs": array of output keys,',
@@ -394,6 +394,7 @@ const PLANNER_SYSTEM_PROMPT = [
   '- Set "sideEffecting" true only for steps that mutate external state; choose the matching "replayClass".',
   '- Do not authorize irreversible work or broaden capabilities beyond what the request requires.',
   '- For Analyst-mode requests, set "citationsRequired": true where external factual claims will be made.',
+  '- For web research steps, use canonical "research.*" tool names in "toolAllowlist" and "requiredTools" (research.search, research.extract, research.scrape, research.structured_extract). Do not use "web_search", "web_fetch", or provider-prefixed names.',
   '- Output ONLY the JSON object.',
 ].join('\n');
 
