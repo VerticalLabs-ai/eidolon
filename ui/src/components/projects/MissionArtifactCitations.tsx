@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useArtifactRevisionCitations, useArtifactRevisionProvenance } from '@/lib/hooks';
-import type { MissionCitationDetail, MissionProvenanceDetail } from '@/lib/api';
-import { ExternalLink, ArrowLeft, X, AlertTriangle } from 'lucide-react';
+import {
+  useArtifactRevisionCitations,
+  useArtifactRevisionProvenance,
+  useCarryForwardOutcomes,
+} from '@/lib/hooks';
+import type {
+  MissionCitationDetail,
+  MissionProvenanceDetail,
+  CarryForwardOutcome,
+} from '@/lib/api';
+import { ExternalLink, ArrowLeft, X, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 
 /**
  * MissionArtifactCitations — exact inline citation, source-link, deep-link,
@@ -46,10 +54,18 @@ import { ExternalLink, ArrowLeft, X, AlertTriangle } from 'lucide-react';
 export function validateExternalSourceUrl(url: string): boolean {
   try {
     const u = new URL(url);
-    if (u.protocol !== 'https:') {return false;}
-    if (u.username || u.password) {return false;}
-    if (u.hash) {return false;}
-    if (u.port && u.port !== '443') {return false;}
+    if (u.protocol !== 'https:') {
+      return false;
+    }
+    if (u.username || u.password) {
+      return false;
+    }
+    if (u.hash) {
+      return false;
+    }
+    if (u.port && u.port !== '443') {
+      return false;
+    }
     return true;
   } catch {
     return false;
@@ -181,7 +197,9 @@ export function MissionProvenanceDrawer({
 
   // Close on Escape (VAL-RES-028).
   useEffect(() => {
-    if (!open) {return;}
+    if (!open) {
+      return;
+    }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -234,6 +252,23 @@ export function MissionProvenanceDrawer({
           <p className="text-xs text-warning flex items-center gap-1.5">
             <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />A newer revision exists.
             This provenance is bound to version {citation.artifactVersion}.
+          </p>
+        </div>
+      )}
+
+      {/* Newer source revision notice (VAL-RES-036) — the citation
+          continues to resolve to its original source revision while
+          indicating that newer source evidence exists. */}
+      {provenance?.newerSourceRevisionExists && (
+        <div
+          className="mb-3 rounded-lg border border-warning/20 bg-warning/[0.06] px-3 py-2"
+          role="status"
+          aria-live="polite"
+          data-testid="newer-source-notice"
+        >
+          <p className="text-xs text-warning flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />A newer source revision
+            exists. This citation remains bound to the original source revision.
           </p>
         </div>
       )}
@@ -314,6 +349,44 @@ export function MissionProvenanceDrawer({
             {citation.sourceRevisionId}
           </dd>
         </div>
+
+        {/* Source availability status (VAL-RES-042) — the artifact remains
+            reviewable against its immutable source revision while the live
+            source is labelled unavailable when checked. */}
+        {citation.sourceAvailabilityStatus && (
+          <div data-testid="source-availability-status">
+            <dt className="font-medium text-text-secondary">Source availability</dt>
+            <dd className="text-text-primary flex items-center gap-1.5">
+              {citation.sourceAvailabilityStatus === 'unavailable' ? (
+                <>
+                  <AlertTriangle className="h-3.5 w-3.5 text-warning" aria-hidden="true" />
+                  <span className="text-warning">Unavailable</span>
+                </>
+              ) : citation.sourceAvailabilityStatus === 'available' ? (
+                <>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-success" aria-hidden="true" />
+                  <span className="text-success">Available</span>
+                </>
+              ) : (
+                <span className="text-text-muted">Unknown</span>
+              )}
+              {citation.sourceAvailabilityCheckedAt && (
+                <span className="text-text-muted">
+                  {' '}
+                  · checked{' '}
+                  <time dateTime={citation.sourceAvailabilityCheckedAt}>
+                    {new Date(citation.sourceAvailabilityCheckedAt).toLocaleString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </time>
+                </span>
+              )}
+            </dd>
+          </div>
+        )}
 
         {/* Artifact version */}
         <div>
@@ -432,36 +505,41 @@ function renderBlock(
       const level = Math.min(Math.max(block.level, 1), 6);
       const className = 'text-sm font-semibold text-text-primary mb-2 mt-3 break-words';
       const spans = renderSpans(block.spans, citationMap, onSelectCitation, targetCitationId);
-      if (level === 1)
-        {return (
+      if (level === 1) {
+        return (
           <h1 key={block.type} className={className}>
             {spans}
           </h1>
-        );}
-      if (level === 2)
-        {return (
+        );
+      }
+      if (level === 2) {
+        return (
           <h2 key={block.type} className={className}>
             {spans}
           </h2>
-        );}
-      if (level === 3)
-        {return (
+        );
+      }
+      if (level === 3) {
+        return (
           <h3 key={block.type} className={className}>
             {spans}
           </h3>
-        );}
-      if (level === 4)
-        {return (
+        );
+      }
+      if (level === 4) {
+        return (
           <h4 key={block.type} className={className}>
             {spans}
           </h4>
-        );}
-      if (level === 5)
-        {return (
+        );
+      }
+      if (level === 5) {
+        return (
           <h5 key={block.type} className={className}>
             {spans}
           </h5>
-        );}
+        );
+      }
       return (
         <h6 key={block.type} className={className}>
           {spans}
@@ -553,6 +631,7 @@ export function MissionArtifactCitations({
   artifactVersion,
   content,
   targetCitationId,
+  partialEvidence,
 }: {
   companyId: string;
   projectId: string;
@@ -563,6 +642,8 @@ export function MissionArtifactCitations({
   content: Record<string, unknown>;
   /** Optional citation ID to focus on mount (deep-link target, VAL-RES-037). */
   targetCitationId?: string;
+  /** Whether the run completed with partial evidence (VAL-RES-043). */
+  partialEvidence?: boolean;
 }) {
   const citationsQuery = useArtifactRevisionCitations(
     companyId,
@@ -571,6 +652,12 @@ export function MissionArtifactCitations({
     artifactVersion,
   );
   const provenanceQuery = useArtifactRevisionProvenance(
+    companyId,
+    projectId,
+    artifactId,
+    artifactVersion,
+  );
+  const carryForwardQuery = useCarryForwardOutcomes(
     companyId,
     projectId,
     artifactId,
@@ -602,6 +689,15 @@ export function MissionArtifactCitations({
   const handleCloseDrawer = () => {
     setSelectedCitationId(null);
   };
+
+  // Carry-forward outcomes: citations not carried forward to this revision
+  // (VAL-RES-035). The new revision marks them stale/not-carried-forward
+  // and must not silently move them; the prior revision remains resolvable.
+  const carryForwardOutcomes = (carryForwardQuery.data?.outcomes ?? []) as CarryForwardOutcome[];
+  const staleOutcomes = useMemo(
+    () => carryForwardOutcomes.filter((o) => o.outcome === 'not_carried_forward'),
+    [carryForwardOutcomes],
+  );
 
   // Parse the content as an EvidenceDocumentV1.
   const doc = content as unknown as EvidenceDocumentV1;
@@ -641,12 +737,86 @@ export function MissionArtifactCitations({
         </div>
       )}
 
-      {/* Citation loading error (VAL-RES-028 graceful degradation) */}
+      {/* Partial-evidence warning (VAL-RES-043) — under best_effort, if one
+          source succeeds and another is unavailable, synthesis may complete
+          only with an explicit partial-evidence warning and citations
+          exclusively to successful source revisions. */}
+      {partialEvidence && (
+        <div
+          className="mb-2 rounded-lg border border-warning/20 bg-warning/[0.04] px-3 py-2"
+          role="status"
+          aria-live="polite"
+          data-testid="partial-evidence-warning"
+        >
+          <p className="text-xs text-warning flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+            Partial evidence — some sources were unavailable or failed. This artifact cites only the
+            successful sources.
+          </p>
+        </div>
+      )}
+
+      {/* Stale / not-carried-forward citation notices (VAL-RES-035) —
+          citations from a prior revision whose locators no longer verify
+          are marked not carried forward and are not silently moved. The
+          prior revision remains fully resolvable. */}
+      {staleOutcomes.length > 0 && (
+        <div
+          className="mb-2 rounded-lg border border-warning/20 bg-warning/[0.04] px-3 py-2"
+          data-testid="stale-citation-notice"
+        >
+          <p className="text-xs text-warning flex items-center gap-1.5 mb-1">
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+            {staleOutcomes.length} citation{staleOutcomes.length === 1 ? '' : 's'} not carried
+            forward — the cited passage changed or was removed.
+          </p>
+          <ul className="space-y-0.5">
+            {staleOutcomes.map((o) => (
+              <li key={o.previousCitationId} className="text-xs text-text-muted break-words">
+                Citation {o.ordinal}: not carried forward
+                {o.reason && <span className="text-text-muted"> — {o.reason}</span>}
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-text-muted mt-1">
+            The prior revision remains fully resolvable with its original citations.
+          </p>
+        </div>
+      )}
+
+      {/* Citation loading error with Retry (VAL-RES-088) — artifact reading
+          remains available and Retry preserves exact artifact ID, revision,
+          citation ID, scroll position, and citation focus. */}
       {citationsQuery.isError && !citationsQuery.data && (
         <div role="alert" className="mb-2 rounded-lg border border-error/20 bg-error/10 px-3 py-2">
-          <p className="text-xs text-error">
+          <p className="text-xs text-error mb-1.5">
             Could not load citations for this revision. The artifact content is still visible.
           </p>
+          <button
+            type="button"
+            onClick={() => citationsQuery.refetch()}
+            aria-label="Retry loading citations"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 bg-error/10 px-3 py-1 text-xs font-medium text-error transition-colors hover:bg-error/20 focus-visible:ring-2 focus-visible:ring-error/40 focus-visible:outline-none motion-reduce:transition-none"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            Retry citations
+          </button>
+        </div>
+      )}
+
+      {/* Provenance loading error with Retry (VAL-RES-088) */}
+      {provenanceQuery.isError && !provenanceQuery.data && (
+        <div role="alert" className="mb-2 rounded-lg border border-error/20 bg-error/10 px-3 py-2">
+          <p className="text-xs text-error mb-1.5">Could not load provenance for this revision.</p>
+          <button
+            type="button"
+            onClick={() => provenanceQuery.refetch()}
+            aria-label="Retry loading provenance"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 bg-error/10 px-3 py-1 text-xs font-medium text-error transition-colors hover:bg-error/20 focus-visible:ring-2 focus-visible:ring-error/40 focus-visible:outline-none motion-reduce:transition-none"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            Retry provenance
+          </button>
         </div>
       )}
 

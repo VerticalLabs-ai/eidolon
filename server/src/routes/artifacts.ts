@@ -286,6 +286,8 @@ export function artifactsRouter(db: DbInstance): Router {
         sourceRevisionId: '', // Populated below from the citation row
         artifactRevisionId: '',
         artifactVersion: data.version,
+        sourceAvailabilityStatus: null as string | null,
+        sourceAvailabilityCheckedAt: null as string | null,
       }));
 
       // Fetch source revision IDs and artifact revision ID for each citation
@@ -304,6 +306,48 @@ export function artifactsRouter(db: DbInstance): Router {
         if (row) {
           c.sourceRevisionId = row.source_revision_id;
           c.artifactRevisionId = row.artifact_revision_id;
+        }
+      }
+
+      // Fetch latest source availability status for each citation's source
+      // revision (VAL-RES-042). The artifact remains reviewable against its
+      // immutable source revision while the live source is labelled
+      // unavailable when checked.
+      if (citations.length > 0) {
+        const sourceRevisionIds = citations.map((c) => c.sourceRevisionId).filter(Boolean);
+        if (sourceRevisionIds.length > 0) {
+          const availRows = (await db.drizzle.execute(sql`
+            SELECT DISTINCT ON (sr.source_revision_id)
+              sr.source_revision_id,
+              ac.status,
+              ac.created_at
+            FROM UNNEST(${sourceRevisionIds}::text[]) AS sr(source_revision_id)
+            LEFT JOIN LATERAL (
+              SELECT "status", "created_at"
+              FROM "research_source_availability_checks"
+              WHERE "source_revision_id" = sr.source_revision_id
+                AND "company_id" = ${companyId}
+              ORDER BY "created_at" DESC
+              LIMIT 1
+            ) ac ON true
+          `)) as unknown as {
+            source_revision_id: string;
+            status: string | null;
+            created_at: Date | null;
+          }[];
+          const availMap = new Map(availRows.map((r) => [r.source_revision_id, r]));
+          for (const c of citations) {
+            const avail = availMap.get(c.sourceRevisionId);
+            if (avail) {
+              c.sourceAvailabilityStatus =
+                (avail.status as 'available' | 'unavailable' | 'unknown') ?? null;
+              c.sourceAvailabilityCheckedAt = avail.created_at
+                ? avail.created_at instanceof Date
+                  ? avail.created_at.toISOString()
+                  : new Date(avail.created_at).toISOString()
+                : null;
+            }
+          }
         }
       }
 
@@ -402,6 +446,27 @@ export function artifactsRouter(db: DbInstance): Router {
 
       const newerArtifactVersionExists = artifact ? artifact.version > versionNum : false;
 
+      // Check whether any cited source has a newer revision (VAL-RES-036).
+      // The citation continues to resolve to its original source revision
+      // while clearly indicating that newer source evidence exists.
+      const citedSourceIds = (p.cited_source_revision_ids ?? []) as string[];
+      let newerSourceRevisionExists = false;
+      if (citedSourceIds.length > 0) {
+        // For each cited source revision, check if a newer revision exists
+        // for the same source (later retrieved timestamp).
+        const newerRows = (await db.drizzle.execute(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM "research_source_revisions" r2
+            JOIN UNNEST(${citedSourceIds}::text[]) AS cited(id) ON true
+            JOIN "research_source_revisions" r1 ON r1.id = cited.id
+            WHERE r2.source_id = r1.source_id
+              AND r2.company_id = ${companyId}
+              AND r2.retrieved_at > r1.retrieved_at
+          ) AS has_newer
+        `)) as unknown as { has_newer: boolean }[];
+        newerSourceRevisionExists = newerRows[0]?.has_newer ?? false;
+      }
+
       res.json({
         data: {
           provenanceId: p.id,
@@ -418,8 +483,73 @@ export function artifactsRouter(db: DbInstance): Router {
           generationTime,
           citedSourceRevisionIds: p.cited_source_revision_ids ?? [],
           newerArtifactVersionExists,
+          newerSourceRevisionExists,
         },
       });
+    },
+  );
+  // -------------------------------------------------------------------------
+  // Exact-revision carry-forward outcomes as JSON (m5-f15-stale-evidence-
+  // export-ui).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/carry-forward-outcomes
+  // Returns per-citation carry-forward outcomes so the UI can show stale /
+  // not-carried-forward notices (VAL-RES-035). Citations never silently move
+  // to a newer revision; the prior revision remains fully resolvable.
+  // Project-scoped; cross-scope returns non-enumerating 404.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/carry-forward-outcomes',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      const { sql, eq, and } = await import('drizzle-orm');
+
+      // Load the artifact revision row to get the revision ID.
+      const [revision] = await db.drizzle
+        .select({ id: db.schema.artifactRevisions.id })
+        .from(db.schema.artifactRevisions)
+        .where(
+          and(
+            eq(db.schema.artifactRevisions.artifactId, artifactId),
+            eq(db.schema.artifactRevisions.version, versionNum),
+          ),
+        )
+        .limit(1);
+
+      if (!revision) {
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      // Load carry-forward outcomes scoped by company/project.
+      const outcomeRows = (await db.drizzle.execute(sql`
+        SELECT "previous_citation_id", "new_citation_id", "outcome", "reason"
+        FROM "citation_carry_forward_outcomes"
+        WHERE "new_artifact_revision_id" = ${revision.id}
+          AND "company_id" = ${companyId}
+          AND "project_id" = ${projectId}
+        ORDER BY "created_at"
+      `)) as unknown as {
+        previous_citation_id: string;
+        new_citation_id: string | null;
+        outcome: 'carried_forward' | 'not_carried_forward';
+        reason: string | null;
+      }[];
+
+      const outcomes = outcomeRows.map((r, i) => ({
+        previousCitationId: r.previous_citation_id,
+        newCitationId: r.new_citation_id ?? undefined,
+        outcome: r.outcome,
+        reason: r.reason ?? undefined,
+        ordinal: i + 1,
+      }));
+
+      res.json({ data: { outcomes, artifactId, version: versionNum } });
     },
   );
   // -------------------------------------------------------------------------

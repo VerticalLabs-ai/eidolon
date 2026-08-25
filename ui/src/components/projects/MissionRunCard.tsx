@@ -37,6 +37,7 @@ import { MissionPlanCard } from './MissionPlanCard';
 import { MissionStepProgress } from './MissionStepProgress';
 import { MissionChildTree } from './MissionChildTree';
 import { MissionResearchProgress, MissionSourceList } from './MissionResearchSources';
+import { MissionArtifactSection } from './MissionArtifactSection';
 import { clearRunDrafts } from '@/lib/mission-drafts';
 
 /** Terminal run statuses. */
@@ -357,6 +358,14 @@ export function MissionRunCard({
       <RunCardBudget snapshot={snapshot} />
       <RunCardFailure snapshot={snapshot} status={authoritativeStatus} />
       <RunCardOutput snapshot={snapshot} status={authoritativeStatus} />
+      {authoritativeStatus === 'completed' && snapshot && (
+        <MissionArtifactSection
+          companyId={companyId}
+          projectId={projectId}
+          runId={run.id}
+          partialEvidence={snapshot.resultCompleteness === 'partial'}
+        />
+      )}
       <RunCardCancelledDetail snapshot={snapshot} status={authoritativeStatus} />
       {snapshot?.currentQuestionSet && principalId && (
         <MissionQuestionCard

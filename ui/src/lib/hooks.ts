@@ -3319,3 +3319,56 @@ export function useArtifactRevisionProvenance(
     placeholderData: (prev: api.MissionProvenanceDetail | undefined) => prev,
   });
 }
+
+/**
+ * Fetch carry-forward outcomes for an exact artifact revision
+ * (`GET /artifacts/:artifactId/revisions/:version/carry-forward-outcomes`).
+ * Returns per-citation carry-forward outcomes so the UI can show stale /
+ * not-carried-forward notices (VAL-RES-035). Citations never silently move
+ * to a newer revision; the prior revision remains fully resolvable.
+ */
+export function useCarryForwardOutcomes(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+) {
+  return useQuery({
+    queryKey: [
+      'artifact-revision-carry-forward-outcomes',
+      companyId,
+      projectId,
+      artifactId,
+      version,
+    ],
+    queryFn: async () =>
+      unwrap<{ outcomes: api.CarryForwardOutcome[]; artifactId: string; version: number }>(
+        await api.getCarryForwardOutcomes(companyId!, projectId!, artifactId!, version!),
+      ),
+    enabled: !!companyId && !!projectId && !!artifactId && version != null,
+    placeholderData: (
+      prev:
+        { outcomes: api.CarryForwardOutcome[]; artifactId: string; version: number } | undefined,
+    ) => prev,
+  });
+}
+
+/**
+ * Fetch the content of an exact artifact revision
+ * (`GET /artifacts/:artifactId/revisions/:version`). Returns the decrypted
+ * revision content (an `EvidenceDocumentV1` for documents) so the
+ * MissionArtifactCitations component can render inline citation marks.
+ */
+export function useArtifactRevisionContent(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+) {
+  return useQuery({
+    queryKey: ['artifact-revision-content', companyId, artifactId, version],
+    queryFn: async () =>
+      unwrap<api.ArtifactRevision>(await api.getRevision(companyId!, artifactId!, version!)),
+    enabled: !!companyId && !!artifactId && version != null,
+    placeholderData: (prev: api.ArtifactRevision | undefined) => prev,
+  });
+}

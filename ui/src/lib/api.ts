@@ -4466,6 +4466,9 @@ export interface MissionCitationDetail {
   section?: string;
   charStart?: number;
   charEnd?: number;
+  /** Latest source availability status (VAL-RES-042). */
+  sourceAvailabilityStatus?: 'available' | 'unavailable' | 'unknown' | null;
+  sourceAvailabilityCheckedAt?: string | null;
 }
 
 export interface ArtifactCitationsResult {
@@ -4489,6 +4492,8 @@ export interface MissionProvenanceDetail {
   citedSourceRevisionIds: string[];
   /** Whether a newer artifact revision exists (VAL-RES-031, VAL-CROSS-041). */
   newerArtifactVersionExists: boolean;
+  /** Whether any cited source has a newer revision (VAL-RES-036). */
+  newerSourceRevisionExists?: boolean;
 }
 
 export interface ArtifactProvenanceResult {
@@ -4524,4 +4529,80 @@ export function getArtifactRevisionProvenance(
   return request<ArtifactProvenanceResult>(
     `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/provenance`,
   );
+}
+
+// ── Citation Carry-Forward Outcomes (VAL-RES-035) ─────────────────────────
+
+/** A carry-forward outcome for a citation after an artifact edit. */
+export interface CarryForwardOutcome {
+  previousCitationId: string;
+  newCitationId?: string;
+  outcome: 'carried_forward' | 'not_carried_forward';
+  reason?: string;
+  ordinal: number;
+}
+
+export interface CarryForwardOutcomesResult {
+  data: { outcomes: CarryForwardOutcome[]; artifactId: string; version: number };
+}
+
+/** Fetch carry-forward outcomes for an exact artifact revision. */
+export function getCarryForwardOutcomes(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) {
+  return request<CarryForwardOutcomesResult>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/carry-forward-outcomes`,
+  );
+}
+
+// ── Exact-Revision Export Download (VAL-RES-103) ─────────────────────────
+
+/** Build the export URL for an exact artifact revision and format. */
+export function buildExportUrl(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+  format: 'markdown' | 'html',
+): string {
+  return `${API_BASE}/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/export?format=${format}`;
+}
+
+/**
+ * Download an exact-revision export (markdown or html). Triggers a browser
+ * download via a temporary anchor element. Returns the response status on
+ * success or throws an ApiError on failure (VAL-RES-103).
+ */
+export async function downloadArtifactRevisionExport(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+  format: 'markdown' | 'html',
+): Promise<{ ok: true; status: number }> {
+  const url = buildExportUrl(companyId, projectId, artifactId, version, format);
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new ApiError(res.status, body?.message || `Export failed: ${res.statusText}`, body);
+  }
+  // Trigger a browser download from the response blob.
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const filenameMatch = disposition.match(/filename="([^"]+)"/);
+  const filename = filenameMatch
+    ? filenameMatch[1]
+    : `artifact-v${version}.${format === 'markdown' ? 'md' : 'html'}`;
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(blobUrl);
+  return { ok: true, status: res.status };
 }
