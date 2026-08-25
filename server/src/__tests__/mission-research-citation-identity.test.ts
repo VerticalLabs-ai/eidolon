@@ -137,3 +137,85 @@ describe('createCitationIdentity (bind to exact revisions)', () => {
     expect(createCitationIdentity(baseInput)).toEqual(createCitationIdentity(baseInput));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression: Unicode scalar value offsets for astral characters (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('VAL-RES-112: Astral character offset conversion in citation identity', () => {
+  // 😀 is U+1F600 (surrogate pair = 2 UTF-16 code units, 1 scalar value)
+  const ASTRAL_TEXT = '😀 Hello world 🎉 end';
+
+  it('resolveQuoteLocator returns scalar offsets for unique quote with astral chars', () => {
+    const r = resolveQuoteLocator(ASTRAL_TEXT, 'Hello');
+    expect(r.kind).toBe('unique');
+    expect(r.charStart).toBe(2); // 😀(1) + space(1) = 2
+    expect(r.charEnd).toBe(7); // 2 + 5 = 7
+  });
+
+  it('resolveQuoteLocator accepts scalar offsets for locator with astral chars', () => {
+    const r = resolveQuoteLocator(ASTRAL_TEXT, 'Hello', {
+      charStart: 2,
+      charEnd: 7,
+    });
+    expect(r.kind).toBe('located');
+    expect(r.charStart).toBe(2);
+    expect(r.charEnd).toBe(7);
+  });
+
+  it('resolveQuoteLocator rejects invalid scalar offsets for astral text', () => {
+    // charStart 1 would be in the middle of the surrogate pair — invalid scalar offset
+    const r = resolveQuoteLocator(ASTRAL_TEXT, 'Hello', {
+      charStart: 1,
+      charEnd: 7,
+    });
+    expect(r.kind).toBe('rejected');
+    expect(r.reason).toBe('LOCATOR_QUOTE_MISMATCH');
+  });
+
+  it('createCitationIdentity stores scalar offsets for text with astral chars', () => {
+    const c = createCitationIdentity({
+      companyId: 'comp-1',
+      projectId: 'proj-1',
+      runId: 'run-1',
+      sourceRevisionId: 'src-rev-1',
+      artifactId: 'art-1',
+      artifactRevisionId: 'art-rev-1',
+      ordinal: 0,
+      quote: 'Hello',
+      frozenCanonicalUrl: 'https://example.com/article',
+      frozenRetrievedAt: '2026-08-24T12:00:00Z',
+      frozenProvider: 'tavily',
+      normalizedSourceText: ASTRAL_TEXT,
+    });
+    expect(c.charStart).toBe(2);
+    expect(c.charEnd).toBe(7);
+  });
+
+  it('createCitationIdentity stores scalar offsets with locator for astral text', () => {
+    const c = createCitationIdentity({
+      companyId: 'comp-1',
+      projectId: 'proj-1',
+      runId: 'run-1',
+      sourceRevisionId: 'src-rev-1',
+      artifactId: 'art-1',
+      artifactRevisionId: 'art-rev-1',
+      ordinal: 0,
+      quote: 'Hello',
+      locator: { charStart: 2, charEnd: 7 },
+      frozenCanonicalUrl: 'https://example.com/article',
+      frozenRetrievedAt: '2026-08-24T12:00:00Z',
+      frozenProvider: 'tavily',
+      normalizedSourceText: ASTRAL_TEXT,
+    });
+    expect(c.charStart).toBe(2);
+    expect(c.charEnd).toBe(7);
+  });
+
+  it('BMP-only text offsets are unchanged (backward compatible)', () => {
+    const r = resolveQuoteLocator(TEXT, 'beta');
+    expect(r.kind).toBe('unique');
+    expect(r.charStart).toBe(6); // 'alpha ' = 6
+    expect(r.charEnd).toBe(10); // 6 + 4 = 10
+  });
+});

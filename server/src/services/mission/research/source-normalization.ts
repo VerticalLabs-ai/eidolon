@@ -42,8 +42,12 @@ import type { NormalizedResearchSource } from './spi.js';
  * The normalization algorithm version. Stored on every source revision row.
  * Bump this when `normalizeText`, `boundMetadata`, or the hash inputs change
  * in a way that would produce different bytes for the same logical content.
+ *
+ * Version 2 adds: HTML entity decoding, horizontal whitespace to ASCII space,
+ * newline collapse (>2 to 2), tracking-key stripping for URL dedup, and
+ * Unicode scalar value offset conversion.
  */
-export const SOURCE_NORMALIZATION_VERSION = 1;
+export const SOURCE_NORMALIZATION_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Bounded maximums (VAL-RES-098)
@@ -61,13 +65,103 @@ export const MAX_NORMALIZED_TEXT_BYTES = 1_048_576;
 // ---------------------------------------------------------------------------
 
 /**
+ * Named HTML entities to decode during normalization.
+ * Covers the standard entities most commonly found in scraped web content.
+ */
+const HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: '\u00A0',
+  copy: '\u00A9',
+  reg: '\u00AE',
+  trade: '\u2122',
+  hellip: '\u2026',
+  mdash: '\u2014',
+  ndash: '\u2013',
+  lsquo: '\u2018',
+  rsquo: '\u2019',
+  ldquo: '\u201C',
+  rdquo: '\u201D',
+  laquo: '\u00AB',
+  raquo: '\u00BB',
+  deg: '\u00B0',
+  plusmn: '\u00B1',
+  times: '\u00D7',
+  divide: '\u00F7',
+  euro: '\u20AC',
+  pound: '\u00A3',
+  cent: '\u00A2',
+  sect: '\u00A7',
+  para: '\u00B6',
+  middot: '\u00B7',
+  bull: '\u2022',
+  dagger: '\u2020',
+  Dagger: '\u2021',
+  permil: '\u2030',
+  prime: '\u2032',
+  Prime: '\u2033',
+  infin: '\u221E',
+  ne: '\u2260',
+  le: '\u2264',
+  ge: '\u2265',
+};
+
+/**
+ * Decode standard HTML entities in text:
+ * - Named entities: &amp; &lt; &gt; &quot; &apos; &nbsp; etc.
+ * - Numeric decimal: &#123;
+ * - Numeric hex: &#x7B; or &#X7B;
+ *
+ * Unknown named entities are left unchanged (fail-safe).
+ */
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(?:[a-zA-Z]+|#\d+|#[xX][0-9a-fA-F]+);/g, (match) => {
+    const body = match.slice(1, -1); // strip & and ;
+    if (body.startsWith('#')) {
+      // Numeric entity
+      let codePoint: number;
+      if (body[1] === 'x' || body[1] === 'X') {
+        codePoint = parseInt(body.slice(2), 16);
+      } else {
+        codePoint = parseInt(body.slice(1), 10);
+      }
+      if (!Number.isFinite(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
+        return match; // invalid, leave as-is
+      }
+      try {
+        return String.fromCodePoint(codePoint);
+      } catch {
+        return match; // invalid code point, leave as-is
+      }
+    }
+    // Named entity
+    const decoded = HTML_ENTITIES[body];
+    return decoded !== undefined ? decoded : match;
+  });
+}
+
+/**
+ * Characters considered horizontal whitespace that should be converted to
+ * ASCII space (0x20). Excludes LF (newline) which is handled separately.
+ */
+// eslint-disable-next-line no-control-regex -- intentional: tab, vtab, formfeed are whitespace targets
+const HORIZONTAL_WHITESPACE = /[\t\u000B\u000C\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]/g;
+
+/**
  * Normalize text deterministically:
  * - Unicode NFC normalization.
  * - Strip a leading UTF-8 BOM.
  * - Normalize CRLF and CR line endings to LF.
+ * - Decode standard HTML entities (&amp; → &, &#39; → ', etc.).
+ * - Convert horizontal whitespace (tab, non-breaking space, etc.) to
+ *   ASCII space (0x20). Runs of ASCII spaces are preserved (content-preserving).
+ * - Collapse runs of 3+ newlines to exactly 2 newlines.
  *
- * Internal whitespace is preserved (content-preserving); collapsing it would
- * alter the source text and break quote verification.
+ * Internal ASCII whitespace runs are preserved (content-preserving); only
+ * non-ASCII horizontal whitespace characters are canonicalized to ASCII space.
  */
 export function normalizeText(raw: string): string {
   let text = raw.normalize('NFC');
@@ -75,6 +169,10 @@ export function normalizeText(raw: string): string {
     text = text.slice(1);
   }
   text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  text = decodeHtmlEntities(text);
+  text = text.replace(HORIZONTAL_WHITESPACE, ' ');
+  // Collapse 3+ consecutive newlines to exactly 2.
+  text = text.replace(/\n{3,}/g, '\n\n');
   return text;
 }
 
@@ -96,14 +194,95 @@ export function computeContentHash(normalizedOrRawText: string): string {
   return sha256Hex(normalizeText(normalizedOrRawText));
 }
 
+// ---------------------------------------------------------------------------
+// Tracking query keys (VAL-RES-019 URL dedup)
+// ---------------------------------------------------------------------------
+
 /**
- * SHA-256 hash of the canonical URL (lowercase hex). The URL is treated as
- * already-canonical (produced by the URL policy); it is NOT re-canonicalized
- * here to avoid masking adapter drift — persistence callers must pass the
- * canonical URL from the normalized source.
+ * Case-insensitive set of tracking/analytics query parameter keys that are
+ * stripped before computing the canonical URL hash for deduplication.
+ * These parameters do not change the page content and would cause the same
+ * page to be treated as different sources if included in the hash.
+ */
+export const TRACKING_QUERY_KEYS: readonly string[] = [
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_content',
+  'utm_term',
+  'utm_id',
+  'utm_referrer',
+  'fbclid',
+  'gclid',
+  'gbraid',
+  'wbraid',
+  'msclkid',
+  'yclid',
+  'dclid',
+  'mc_eid',
+  'mc_cid',
+  'mkt_tok',
+  'oly_enc_id',
+  'oly_anon_id',
+  'vero_id',
+  '_hsenc',
+  '_hsmi',
+  'hsCtaTracking',
+  'icid',
+  'ito',
+  'cmpid',
+  'campaign_id',
+  'ref',
+  'ref_src',
+  'ref_url',
+];
+
+function isTrackingQueryKey(key: string): boolean {
+  return TRACKING_QUERY_KEYS.includes(key.toLowerCase());
+}
+
+/**
+ * Strip tracking/analytics query parameters from a canonical URL before
+ * computing the dedup hash (VAL-RES-019). Tracking keys like utm_source,
+ * fbclid, gclid, etc. do not change page content and must not cause the same
+ * page to be treated as a different source.
+ *
+ * Returns the URL with tracking parameters removed. Non-tracking parameters
+ * are preserved in their original order.
+ */
+export function stripTrackingKeys(canonicalUrl: string): string {
+  try {
+    const parsed = new URL(canonicalUrl);
+    if (parsed.searchParams.size === 0) {
+      return canonicalUrl;
+    }
+    const trackingKeys: string[] = [];
+    for (const key of parsed.searchParams.keys()) {
+      if (isTrackingQueryKey(key)) {
+        trackingKeys.push(key);
+      }
+    }
+    if (trackingKeys.length === 0) {
+      return canonicalUrl;
+    }
+    for (const key of trackingKeys) {
+      parsed.searchParams.delete(key);
+    }
+    return parsed.toString();
+  } catch {
+    // If URL parsing fails, return as-is (the caller should pass a valid URL).
+    return canonicalUrl;
+  }
+}
+
+/**
+ * SHA-256 hash of the canonical URL with tracking keys stripped (lowercase hex).
+ * The URL is treated as already-canonical (produced by the URL policy);
+ * tracking/analytics parameters are removed before hashing so that the same
+ * page with different tracking tags produces the same dedup hash (VAL-RES-019).
  */
 export function computeCanonicalUrlHash(canonicalUrl: string): string {
-  return sha256Hex(canonicalUrl);
+  return sha256Hex(stripTrackingKeys(canonicalUrl));
 }
 
 /**
@@ -295,4 +474,78 @@ export function normalizeSourceForPersistence(
     retrievedAt: source.retrievedAt,
     injectionRiskLabels: source.injectionRiskLabels,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Unicode scalar value offset conversion (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a UTF-16 code unit offset to a Unicode scalar value offset.
+ *
+ * JavaScript strings use UTF-16 code units. Astral characters (code points
+ * above U+FFFF) are represented as surrogate pairs (2 UTF-16 code units)
+ * but count as 1 Unicode scalar value. This function counts the number of
+ * surrogate pairs before `utf16Offset` and subtracts them, yielding the
+ * scalar value offset.
+ *
+ * Example: text = "😀test" (😀 is U+1F600, a surrogate pair)
+ *   utf16Offset 0 → scalar 0
+ *   utf16Offset 2 → scalar 1 (after the emoji)
+ *   utf16Offset 3 → scalar 2
+ */
+export function utf16ToScalarOffset(text: string, utf16Offset: number): number {
+  let surrogatePairs = 0;
+  for (let i = 0; i < utf16Offset; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      // High surrogate — check if the next code unit is a low surrogate
+      if (i + 1 < text.length) {
+        const next = text.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          surrogatePairs++;
+          i++; // Skip the low surrogate in the counting loop
+        }
+      }
+    }
+  }
+  return utf16Offset - surrogatePairs;
+}
+
+/**
+ * Convert a Unicode scalar value offset to a UTF-16 code unit offset.
+ *
+ * This is the inverse of `utf16ToScalarOffset`. It walks the string counting
+ * scalar values until reaching `scalarOffset`, tracking the corresponding
+ * UTF-16 code unit position.
+ */
+export function scalarToUtf16Offset(text: string, scalarOffset: number): number {
+  let utf16Offset = 0;
+  let scalarCount = 0;
+  while (utf16Offset < text.length && scalarCount < scalarOffset) {
+    const code = text.charCodeAt(utf16Offset);
+    if (code >= 0xd800 && code <= 0xdbff && utf16Offset + 1 < text.length) {
+      const next = text.charCodeAt(utf16Offset + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        // Surrogate pair: 2 UTF-16 units = 1 scalar value
+        utf16Offset += 2;
+      } else {
+        utf16Offset += 1;
+      }
+    } else {
+      utf16Offset += 1;
+    }
+    scalarCount++;
+  }
+  return utf16Offset;
+}
+
+/**
+ * Convert a UTF-16 code unit length to a Unicode scalar value length.
+ * This is `utf16ToScalarOffset(text, utf16Start + utf16Length) - utf16ToScalarOffset(text, utf16Start)`.
+ */
+export function utf16ToScalarLength(text: string, utf16Start: number, utf16Length: number): number {
+  return (
+    utf16ToScalarOffset(text, utf16Start + utf16Length) - utf16ToScalarOffset(text, utf16Start)
+  );
 }

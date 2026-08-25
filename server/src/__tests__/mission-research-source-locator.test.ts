@@ -209,3 +209,66 @@ function makeLocator(): SourceLocator {
     charEnd: start + quote.length,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Regression: Unicode scalar value offsets for astral characters (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('VAL-RES-112: Unicode scalar value offsets for astral characters', () => {
+  // 😀 is U+1F600 (surrogate pair = 2 UTF-16 code units, 1 scalar value)
+  const ASTRAL_SOURCE = '😀 Hello world 🎉 end';
+
+  it('verifyQuoteIntegrity returns scalar offsets for text with astral chars', () => {
+    const quote = 'Hello';
+    const r = verifyQuoteIntegrity(ASTRAL_SOURCE, quote, computeQuoteHash(quote));
+    expect(r.valid).toBe(true);
+    expect(r.charStart).toBe(2); // scalar: 😀(1) + space(1) = 2
+    expect(r.charEnd).toBe(7); // 2 + 5 = 7
+  });
+
+  it('verifyQuoteIntegrity returns scalar offsets for quote after astral chars', () => {
+    const quote = 'end';
+    const r = verifyQuoteIntegrity(ASTRAL_SOURCE, quote, computeQuoteHash(quote));
+    expect(r.valid).toBe(true);
+    // 😀(1) + space(1) + Hello(5) + space(1) + world(5) + space(1) + 🎉(1) + space(1) = 16
+    expect(r.charStart).toBe(16);
+    expect(r.charEnd).toBe(19);
+  });
+
+  it('validateSourceLocator accepts scalar offsets for text with astral chars', () => {
+    const quote = 'Hello';
+    const r = validateSourceLocator(ASTRAL_SOURCE, {
+      canonicalUrl: 'https://example.com/article',
+      quote,
+      prefix: '😀 ',
+      suffix: ' world',
+      charStart: 2, // scalar offset
+      charEnd: 7, // scalar offset
+    });
+    expect(r.valid).toBe(true);
+    expect(r.charStart).toBe(2);
+    expect(r.charEnd).toBe(7);
+  });
+
+  it('validateSourceLocator returns scalar offsets when no offsets provided', () => {
+    const quote = 'world';
+    const r = validateSourceLocator(ASTRAL_SOURCE, {
+      canonicalUrl: 'https://example.com/article',
+      quote,
+      prefix: 'Hello ',
+      suffix: ' 🎉',
+    });
+    expect(r.valid).toBe(true);
+    // Scalar: 😀(1) + space(1) + Hello(5) + space(1) = 8
+    expect(r.charStart).toBe(8);
+    expect(r.charEnd).toBe(13);
+  });
+
+  it('BMP-only text offsets are unchanged (backward compatible)', () => {
+    const quote = 'jumps over the lazy dog';
+    const r = verifyQuoteIntegrity(SOURCE, quote, computeQuoteHash(quote));
+    expect(r.valid).toBe(true);
+    expect(r.charStart).toBe(SOURCE.indexOf(quote));
+    expect(r.charEnd).toBe(r.charStart! + quote.length);
+  });
+});

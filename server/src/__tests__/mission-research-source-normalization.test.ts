@@ -8,6 +8,9 @@ import {
   computeQuoteHash,
   boundMetadata,
   normalizeSourceForPersistence,
+  stripTrackingKeys,
+  utf16ToScalarOffset,
+  scalarToUtf16Offset,
 } from '../services/mission/research/source-normalization.js';
 import type { NormalizedResearchSource } from '../services/mission/research/spi.js';
 
@@ -176,5 +179,243 @@ describe('normalizeSourceForPersistence (VAL-RES-019, 020, 098, 112)', () => {
     const rec = normalizeSourceForPersistence({ ...baseSource, title: long, author: long });
     expect((rec.title ?? '').length).toBeLessThanOrEqual(500);
     expect((rec.author ?? '').length).toBeLessThanOrEqual(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: normalizeText entity decoding (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('normalizeText: HTML entity decoding (VAL-RES-112 regression)', () => {
+  it('decodes standard named entities', () => {
+    expect(normalizeText('a &amp; b')).toBe('a & b');
+    expect(normalizeText('a &lt; b')).toBe('a < b');
+    expect(normalizeText('a &gt; b')).toBe('a > b');
+    expect(normalizeText('&quot;hi&quot;')).toBe('"hi"');
+    expect(normalizeText('it&apos;s')).toBe("it's");
+  });
+
+  it('decodes numeric decimal entities', () => {
+    expect(normalizeText('&#65;')).toBe('A');
+    expect(normalizeText('&#123;')).toBe('{');
+  });
+
+  it('decodes numeric hex entities', () => {
+    expect(normalizeText('&#x41;')).toBe('A');
+    expect(normalizeText('&#X42;')).toBe('B');
+  });
+
+  it('decodes &nbsp; to non-breaking space then converts to ASCII space', () => {
+    // &nbsp; → U+00A0 → ASCII space (via horizontal whitespace conversion)
+    expect(normalizeText('a&nbsp;b')).toBe('a b');
+  });
+
+  it('leaves unknown named entities unchanged (fail-safe)', () => {
+    expect(normalizeText('&unknownentity;')).toBe('&unknownentity;');
+  });
+
+  it('decodes multiple entities in one string', () => {
+    expect(normalizeText('&lt;tag&gt; &amp; &quot;text&quot;')).toBe('<tag> & "text"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: normalizeText horizontal whitespace conversion (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('normalizeText: horizontal whitespace to ASCII space (VAL-RES-112 regression)', () => {
+  it('converts tab to ASCII space', () => {
+    expect(normalizeText('a\tb')).toBe('a b');
+  });
+
+  it('converts vertical tab to ASCII space', () => {
+    expect(normalizeText('a\u000Bb')).toBe('a b');
+  });
+
+  it('converts form feed to ASCII space', () => {
+    expect(normalizeText('a\u000Cb')).toBe('a b');
+  });
+
+  it('converts non-breaking space (U+00A0) to ASCII space', () => {
+    expect(normalizeText('a\u00A0b')).toBe('a b');
+  });
+
+  it('converts ideographic space (U+3000) to ASCII space', () => {
+    expect(normalizeText('a\u3000b')).toBe('a b');
+  });
+
+  it('converts various Unicode spaces (U+2000-U+200A) to ASCII space', () => {
+    expect(normalizeText('a\u2000b')).toBe('a b');
+    expect(normalizeText('a\u2009b')).toBe('a b');
+    expect(normalizeText('a\u200Ab')).toBe('a b');
+  });
+
+  it('preserves runs of ASCII spaces (content-preserving)', () => {
+    expect(normalizeText('a   b')).toBe('a   b');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: normalizeText newline collapse (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('normalizeText: newline collapse >2 to 2 (VAL-RES-112 regression)', () => {
+  it('collapses 3 newlines to 2', () => {
+    expect(normalizeText('a\n\n\nb')).toBe('a\n\nb');
+  });
+
+  it('collapses 5 newlines to 2', () => {
+    expect(normalizeText('a\n\n\n\n\nb')).toBe('a\n\nb');
+  });
+
+  it('preserves 1 newline', () => {
+    expect(normalizeText('a\nb')).toBe('a\nb');
+  });
+
+  it('preserves 2 newlines', () => {
+    expect(normalizeText('a\n\nb')).toBe('a\n\nb');
+  });
+
+  it('collapses CRLF sequences after CRLF normalization', () => {
+    // \r\n\r\n\r\n → \n\n\n → \n\n
+    expect(normalizeText('a\r\n\r\n\r\nb')).toBe('a\n\nb');
+  });
+
+  it('is idempotent after newline collapse', () => {
+    const raw = 'a\n\n\n\nb';
+    const normalized = normalizeText(raw);
+    expect(normalizeText(normalized)).toBe(normalized);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: URL dedup tracking key stripping (VAL-RES-019)
+// ---------------------------------------------------------------------------
+
+describe('stripTrackingKeys (VAL-RES-019 regression)', () => {
+  it('strips utm_source from URL', () => {
+    const result = stripTrackingKeys('https://example.com/path?utm_source=google&q=test');
+    expect(result).toBe('https://example.com/path?q=test');
+  });
+
+  it('strips all utm_* parameters', () => {
+    const result = stripTrackingKeys(
+      'https://example.com/path?utm_source=google&utm_medium=cpc&utm_campaign=spring&q=test',
+    );
+    expect(result).toBe('https://example.com/path?q=test');
+  });
+
+  it('strips fbclid', () => {
+    const result = stripTrackingKeys('https://example.com/path?fbclid=abc123&q=test');
+    expect(result).toBe('https://example.com/path?q=test');
+  });
+
+  it('strips gclid', () => {
+    const result = stripTrackingKeys('https://example.com/path?gclid=xyz789&q=test');
+    expect(result).toBe('https://example.com/path?q=test');
+  });
+
+  it('strips msclkid', () => {
+    const result = stripTrackingKeys('https://example.com/path?msclkid=abc&q=test');
+    expect(result).toBe('https://example.com/path?q=test');
+  });
+
+  it('preserves non-tracking parameters', () => {
+    const result = stripTrackingKeys('https://example.com/path?q=test&page=2&lang=en');
+    expect(result).toBe('https://example.com/path?q=test&page=2&lang=en');
+  });
+
+  it('returns URL unchanged when no tracking keys present', () => {
+    const url = 'https://example.com/path?q=test';
+    expect(stripTrackingKeys(url)).toBe(url);
+  });
+
+  it('returns URL unchanged when no query parameters', () => {
+    const url = 'https://example.com/path';
+    expect(stripTrackingKeys(url)).toBe(url);
+  });
+
+  it('handles URL with only tracking parameters', () => {
+    const result = stripTrackingKeys('https://example.com/path?utm_source=google');
+    // URL.toString() normalizes the path (no trailing slash for non-root paths)
+    expect(result).toBe('https://example.com/path');
+  });
+
+  it('is case-insensitive for tracking keys', () => {
+    const result = stripTrackingKeys('https://example.com/path?UTM_SOURCE=google&q=test');
+    expect(result).toBe('https://example.com/path?q=test');
+  });
+});
+
+describe('computeCanonicalUrlHash strips tracking keys (VAL-RES-019 regression)', () => {
+  it('produces the same hash for URLs differing only in tracking keys', () => {
+    const url1 = 'https://example.com/article?q=test';
+    const url2 = 'https://example.com/article?q=test&utm_source=google';
+    const url3 = 'https://example.com/article?q=test&fbclid=abc123';
+    expect(computeCanonicalUrlHash(url1)).toBe(computeCanonicalUrlHash(url2));
+    expect(computeCanonicalUrlHash(url1)).toBe(computeCanonicalUrlHash(url3));
+  });
+
+  it('produces different hashes for URLs with different non-tracking params', () => {
+    const url1 = 'https://example.com/article?q=test';
+    const url2 = 'https://example.com/article?q=other';
+    expect(computeCanonicalUrlHash(url1)).not.toBe(computeCanonicalUrlHash(url2));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: Unicode scalar value offset conversion (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('utf16ToScalarOffset / scalarToUtf16Offset (VAL-RES-112 regression)', () => {
+  it('returns the same offset for BMP-only text (no astral chars)', () => {
+    const text = 'hello world';
+    expect(utf16ToScalarOffset(text, 5)).toBe(5);
+    expect(scalarToUtf16Offset(text, 5)).toBe(5);
+  });
+
+  it('converts UTF-16 offset to scalar offset for astral characters', () => {
+    // 😀 is U+1F600, a surrogate pair (2 UTF-16 code units)
+    const text = '😀test';
+    // UTF-16 offset 2 = after the emoji = scalar offset 1
+    expect(utf16ToScalarOffset(text, 2)).toBe(1);
+    // UTF-16 offset 3 = 't' = scalar offset 2
+    expect(utf16ToScalarOffset(text, 3)).toBe(2);
+  });
+
+  it('converts scalar offset back to UTF-16 offset for astral characters', () => {
+    const text = '😀test';
+    expect(scalarToUtf16Offset(text, 1)).toBe(2); // scalar 1 = UTF-16 2 (after emoji)
+    expect(scalarToUtf16Offset(text, 2)).toBe(3); // scalar 2 = UTF-16 3 ('t')
+  });
+
+  it('handles multiple astral characters', () => {
+    const text = '😀🎉test';
+    // UTF-16: 😀(2) + 🎉(2) + test(4) = 8 code units
+    // Scalar: 😀(1) + 🎉(1) + test(4) = 6 scalar values
+    expect(utf16ToScalarOffset(text, 4)).toBe(2); // after both emojis
+    expect(utf16ToScalarOffset(text, 5)).toBe(3); // at 't'
+    expect(scalarToUtf16Offset(text, 2)).toBe(4);
+    expect(scalarToUtf16Offset(text, 3)).toBe(5);
+  });
+
+  it('round-trips correctly: scalar → utf16 → scalar', () => {
+    const text = '😀alpha🎉beta';
+    // Only check positions that are at scalar boundaries (not in the middle of a surrogate pair)
+    for (let i = 0; i <= text.length; i++) {
+      const code = text.charCodeAt(i);
+      // Skip positions in the middle of a surrogate pair (low surrogate)
+      if (i > 0 && code >= 0xdc00 && code <= 0xdfff) {
+        continue;
+      }
+      const scalar = utf16ToScalarOffset(text, i);
+      const back = scalarToUtf16Offset(text, scalar);
+      expect(back).toBe(i);
+    }
+  });
+
+  it('handles empty string', () => {
+    expect(utf16ToScalarOffset('', 0)).toBe(0);
+    expect(scalarToUtf16Offset('', 0)).toBe(0);
   });
 });

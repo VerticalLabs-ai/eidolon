@@ -139,7 +139,8 @@ export interface CanonicalizeResult {
 
 /**
  * Canonicalize a URL: normalize scheme to lowercase, remove default port 443,
- * remove dot-segments, and encode IDN hostnames as punycode.
+ * remove dot-segments, uppercase percent-escaped octets, normalize trailing
+ * slashes, and produce stable (alphabetically sorted) query parameter ordering.
  *
  * Returns `{ canonical: null }` if the URL cannot be parsed.
  */
@@ -162,12 +163,65 @@ export function canonicalizeUrl(raw: string): CanonicalizeResult {
   }
 
   // Remove dot segments from pathname.
-  const pathname = removeDotSegments(parsed.pathname);
+  let pathname = removeDotSegments(parsed.pathname);
+
+  // Normalize trailing slash: remove trailing '/' unless the path is just '/'.
+  // e.g. /path/ → /path, but / stays /.
+  if (pathname.length > 1 && pathname.endsWith('/')) {
+    pathname = pathname.replace(/\/+$/, '') || '/';
+  }
+
+  // Uppercase percent-escaped octets in the pathname (e.g. %2f → %2F).
+  pathname = uppercasePercentEscapes(pathname);
+
+  // Build stable query string: sort parameters by key, uppercase percent escapes.
+  const search = buildStableSearch(parsed.searchParams);
 
   // Reconstruct canonical URL.
   const hostPart = port ? `${hostname}:${port}` : hostname;
-  const canonical = `${parsed.protocol}//${hostPart}${pathname}${parsed.search}`;
+  const canonical = `${parsed.protocol}//${hostPart}${pathname}${search}`;
   return { canonical, hostname };
+}
+
+/**
+ * Uppercase percent-encoded octets in a string (e.g. %2f → %2F).
+ * Non-percent-encoded characters are left unchanged.
+ */
+function uppercasePercentEscapes(s: string): string {
+  return s.replace(/%[0-9a-fA-F]{2}/g, (match) => match.toUpperCase());
+}
+
+/**
+ * Build a stable query string from URLSearchParams.
+ *
+ * - Parameters are sorted alphabetically by key (and by value for duplicate keys).
+ * - Percent-escaped octets in keys and values are uppercased.
+ * - Returns an empty string if there are no parameters, or '?key=value&...' otherwise.
+ */
+function buildStableSearch(params: URLSearchParams): string {
+  if (params.size === 0) {
+    return '';
+  }
+  // Collect all [key, value] pairs and sort by key, then value.
+  const pairs: [string, string][] = [];
+  for (const [key, value] of params.entries()) {
+    pairs.push([key, value]);
+  }
+  pairs.sort((a, b) => {
+    if (a[0] !== b[0]) {
+      return a[0] < b[0] ? -1 : 1;
+    }
+    return a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
+  });
+  // Build the query string with uppercased percent escapes.
+  const encoded = pairs
+    .map(([key, value]) => {
+      const k = uppercasePercentEscapes(encodeURIComponent(key));
+      const v = uppercasePercentEscapes(encodeURIComponent(value));
+      return `${k}=${v}`;
+    })
+    .join('&');
+  return `?${encoded}`;
 }
 
 /**

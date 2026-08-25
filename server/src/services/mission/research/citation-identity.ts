@@ -19,7 +19,12 @@
  * metadata frozen at citation time rather than the current source metadata.
  */
 
-import { computeQuoteHash, normalizeText } from './source-normalization.js';
+import {
+  computeQuoteHash,
+  normalizeText,
+  utf16ToScalarOffset,
+  scalarToUtf16Offset,
+} from './source-normalization.js';
 
 // ---------------------------------------------------------------------------
 // Locator
@@ -28,12 +33,14 @@ import { computeQuoteHash, normalizeText } from './source-normalization.js';
 /**
  * A character-offset locator into the normalized source revision text.
  * Offsets refer to the normalized text (NFC, LF) of the exact
- * `research_source_revision`.
+ * `research_source_revision` and are expressed in Unicode scalar values
+ * (not UTF-16 code units). Astral characters (emoji, etc.) count as 1
+ * scalar value, not 2 UTF-16 code units.
  */
 export interface CitationLocator {
-  /** Inclusive start offset (UTF-16 code units into the normalized text). */
+  /** Inclusive start offset (Unicode scalar values into the normalized text). */
   charStart: number;
-  /** Exclusive end offset. */
+  /** Exclusive end offset (Unicode scalar values). */
   charEnd: number;
   /** Optional section/anchor label. */
   section?: string;
@@ -109,16 +116,21 @@ export function resolveQuoteLocator(
 
   // Validate the locator range if provided.
   if (locator) {
+    // Input offsets are Unicode scalar values; convert to UTF-16 for internal matching.
+    const utf16Start = scalarToUtf16Offset(text, locator.charStart);
+    const utf16End = scalarToUtf16Offset(text, locator.charEnd);
+    // Compute the scalar-value text length for range checking.
+    const scalarTextLength = utf16ToScalarOffset(text, text.length);
     if (
       !Number.isInteger(locator.charStart) ||
       !Number.isInteger(locator.charEnd) ||
       locator.charStart < 0 ||
       locator.charEnd <= locator.charStart ||
-      locator.charEnd > text.length
+      locator.charEnd > scalarTextLength
     ) {
       return { kind: 'rejected', reason: 'LOCATOR_INVALID', occurrences: occurrences.length };
     }
-    const slice = text.slice(locator.charStart, locator.charEnd);
+    const slice = text.slice(utf16Start, utf16End);
     if (slice !== needle) {
       return {
         kind: 'rejected',
@@ -137,8 +149,8 @@ export function resolveQuoteLocator(
   if (occurrences.length === 1) {
     return {
       kind: 'unique',
-      charStart: occurrences[0],
-      charEnd: occurrences[0] + needle.length,
+      charStart: utf16ToScalarOffset(text, occurrences[0]),
+      charEnd: utf16ToScalarOffset(text, occurrences[0] + needle.length),
       occurrences: 1,
     };
   }
@@ -174,7 +186,7 @@ export interface CitationIdentity {
   quote: string;
   /** SHA-256 hash of the exact normalized quote (lowercase hex). */
   quoteHash: string;
-  /** Resolved locator offsets (required when the quote is repeated). */
+  /** Resolved locator offsets in Unicode scalar values (required when the quote is repeated). */
   charStart?: number;
   charEnd?: number;
   section?: string;

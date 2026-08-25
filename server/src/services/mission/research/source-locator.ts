@@ -21,7 +21,12 @@
  * This module is pure: it contains no side effects and no persistence.
  */
 
-import { computeQuoteHash, normalizeText } from './source-normalization.js';
+import {
+  computeQuoteHash,
+  normalizeText,
+  utf16ToScalarOffset,
+  scalarToUtf16Offset,
+} from './source-normalization.js';
 
 // ---------------------------------------------------------------------------
 // Bounds (VAL-RES-115 prefix/suffix byte limits)
@@ -40,8 +45,10 @@ export const MAX_SUFFIX_BYTES = 256;
  * A normalized source locator for a web citation.
  *
  * Offsets refer to the normalized text (NFC, LF) of the exact
- * `research_source_revision`. The exact quote and prefix/suffix context are
- * mandatory for unambiguous verification; `section` is optional.
+ * `research_source_revision` and are expressed in Unicode scalar values
+ * (not UTF-16 code units). Astral characters (emoji, etc.) count as 1
+ * scalar value, not 2 UTF-16 code units. The exact quote and prefix/suffix
+ * context are mandatory for unambiguous verification; `section` is optional.
  */
 export interface SourceLocator {
   canonicalUrl: string;
@@ -51,9 +58,9 @@ export interface SourceLocator {
   /** Text immediately following the quote (normalized). */
   suffix: string;
   section?: string;
-  /** Inclusive start offset into the normalized source text. */
+  /** Inclusive start offset (Unicode scalar values) into the normalized source text. */
   charStart?: number;
-  /** Exclusive end offset into the normalized source text. */
+  /** Exclusive end offset (Unicode scalar values) into the normalized source text. */
   charEnd?: number;
 }
 
@@ -134,8 +141,8 @@ export function verifyQuoteIntegrity(
     return {
       valid: true,
       quoteHashMatches: true,
-      charStart: occurrences[0],
-      charEnd: occurrences[0] + needle.length,
+      charStart: utf16ToScalarOffset(text, occurrences[0]),
+      charEnd: utf16ToScalarOffset(text, occurrences[0] + needle.length),
       occurrences: 1,
     };
   }
@@ -211,26 +218,50 @@ export function validateSourceLocator(
 
   let charStart: number;
   let charEnd: number;
+  let utf16Start: number;
+  let utf16End: number;
 
   if (hasOffsets) {
-    const resolved = resolveOffsets(
-      text,
-      needle,
-      locator.charStart as number,
-      locator.charEnd as number,
-      errors,
-    );
+    // Input offsets are Unicode scalar values; validate range before conversion.
+    const scalarTextLength = utf16ToScalarOffset(text, text.length);
+    const scalarStart = locator.charStart as number;
+    const scalarEnd = locator.charEnd as number;
+    if (
+      !Number.isInteger(scalarStart) ||
+      !Number.isInteger(scalarEnd) ||
+      scalarStart < 0 ||
+      scalarEnd > scalarTextLength ||
+      scalarEnd <= scalarStart
+    ) {
+      if (!Number.isInteger(scalarStart) || !Number.isInteger(scalarEnd)) {
+        errors.push('charStart/charEnd must be integers');
+      } else if (scalarStart < 0 || scalarEnd > scalarTextLength) {
+        errors.push('charStart/charEnd out of range');
+      } else {
+        errors.push('charStart must be less than charEnd');
+      }
+      return { valid: false, errors, occurrences: occurrences.length };
+    }
+    // Convert to UTF-16 for internal matching.
+    utf16Start = scalarToUtf16Offset(text, scalarStart);
+    utf16End = scalarToUtf16Offset(text, scalarEnd);
+    const resolved = resolveOffsets(text, needle, utf16Start, utf16End, errors);
     if (!resolved) {
       return { valid: false, errors, occurrences: occurrences.length };
     }
-    charStart = resolved.charStart;
-    charEnd = resolved.charEnd;
+    // Return scalar offsets (same as input).
+    charStart = scalarStart;
+    charEnd = scalarEnd;
   } else {
-    charStart = occurrences[0];
-    charEnd = occurrences[0] + needle.length;
+    // No offsets provided: compute from occurrences (UTF-16) and convert to scalar.
+    utf16Start = occurrences[0];
+    utf16End = occurrences[0] + needle.length;
+    charStart = utf16ToScalarOffset(text, utf16Start);
+    charEnd = utf16ToScalarOffset(text, utf16End);
   }
 
-  validateContext(text, locator.prefix, locator.suffix, charStart, charEnd, errors);
+  // validateContext uses text.slice which requires UTF-16 offsets.
+  validateContext(text, locator.prefix, locator.suffix, utf16Start, utf16End, errors);
 
   if (errors.length > 0) {
     return { valid: false, errors, occurrences: occurrences.length };

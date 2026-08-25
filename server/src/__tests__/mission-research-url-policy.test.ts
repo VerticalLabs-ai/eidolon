@@ -360,3 +360,94 @@ describe('canonicalizeUrl', () => {
     expect(result.canonical).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression: canonicalizeUrl percent-escape uppercase (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('canonicalizeUrl: uppercase percent escapes (VAL-RES-112 regression)', () => {
+  it('uppercases lowercase percent escapes in the path', () => {
+    const result = canonicalizeUrl('https://example.com/a%2fb');
+    expect(result.canonical).toBe('https://example.com/a%2Fb');
+  });
+
+  it('uppercases lowercase percent escapes in the query', () => {
+    const result = canonicalizeUrl('https://example.com/path?q=%2fvalue');
+    expect(result.canonical).toBe('https://example.com/path?q=%2Fvalue');
+  });
+
+  it('preserves already-uppercase percent escapes', () => {
+    const result = canonicalizeUrl('https://example.com/a%2Fb');
+    expect(result.canonical).toBe('https://example.com/a%2Fb');
+  });
+
+  it('uppercases multiple percent escapes', () => {
+    const result = canonicalizeUrl('https://example.com/%e2%80%99text');
+    expect(result.canonical).toBe('https://example.com/%E2%80%99text');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: canonicalizeUrl trailing-slash normalization (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('canonicalizeUrl: trailing-slash normalization (VAL-RES-112 regression)', () => {
+  it('removes trailing slash from a path', () => {
+    const result = canonicalizeUrl('https://example.com/path/');
+    expect(result.canonical).toBe('https://example.com/path');
+  });
+
+  it('preserves root path slash', () => {
+    const result = canonicalizeUrl('https://example.com/');
+    expect(result.canonical).toBe('https://example.com/');
+  });
+
+  it('removes trailing slash with query parameters', () => {
+    const result = canonicalizeUrl('https://example.com/path/?q=test');
+    expect(result.canonical).toBe('https://example.com/path?q=test');
+  });
+
+  it('removes multiple trailing slashes', () => {
+    const result = canonicalizeUrl('https://example.com/path//');
+    expect(result.canonical).toBe('https://example.com/path');
+  });
+
+  it('does not remove slash from nested path', () => {
+    const result = canonicalizeUrl('https://example.com/a/b');
+    expect(result.canonical).toBe('https://example.com/a/b');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: canonicalizeUrl stable query parameter ordering (VAL-RES-112)
+// ---------------------------------------------------------------------------
+
+describe('canonicalizeUrl: stable query parameter ordering (VAL-RES-112 regression)', () => {
+  it('sorts query parameters alphabetically by key', () => {
+    const result = canonicalizeUrl('https://example.com/path?b=2&a=1');
+    expect(result.canonical).toBe('https://example.com/path?a=1&b=2');
+  });
+
+  it('sorts multiple query parameters', () => {
+    const result = canonicalizeUrl('https://example.com/path?zebra=1&apple=2&mango=3');
+    expect(result.canonical).toBe('https://example.com/path?apple=2&mango=3&zebra=1');
+  });
+
+  it('produces the same canonical URL regardless of parameter order', () => {
+    const r1 = canonicalizeUrl('https://example.com/path?a=1&b=2&c=3');
+    const r2 = canonicalizeUrl('https://example.com/path?c=3&a=1&b=2');
+    const r3 = canonicalizeUrl('https://example.com/path?b=2&c=3&a=1');
+    expect(r1.canonical).toBe(r2.canonical);
+    expect(r2.canonical).toBe(r3.canonical);
+  });
+
+  it('handles URL with no query parameters', () => {
+    const result = canonicalizeUrl('https://example.com/path');
+    expect(result.canonical).toBe('https://example.com/path');
+  });
+
+  it('combines trailing-slash, percent-escape, and query ordering', () => {
+    const result = canonicalizeUrl('https://example.com:443/path/?b=2&a=%2f');
+    expect(result.canonical).toBe('https://example.com/path?a=%2F&b=2');
+  });
+});
