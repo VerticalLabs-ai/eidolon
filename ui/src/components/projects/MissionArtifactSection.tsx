@@ -34,12 +34,21 @@ export function MissionArtifactSection({
   projectId,
   runId,
   partialEvidence,
+  targetArtifactId,
+  targetCitationId,
 }: {
   companyId: string;
   projectId: string;
   runId: string;
   /** Whether the run completed with partial evidence (VAL-RES-043). */
   partialEvidence?: boolean;
+  /** Artifact id from a citation deep-link target; restricts targetCitationId
+   *  to the matching artifact revision so only that revision auto-focuses
+   *  and auto-opens its provenance drawer (VAL-RES-037, VAL-CROSS-041). */
+  targetArtifactId?: string;
+  /** Citation id from a deep-link target to auto-focus and auto-open
+   *  provenance (VAL-RES-037, VAL-CROSS-041). */
+  targetCitationId?: string;
 }) {
   const artifactsQuery = useMissionRunArtifacts(companyId, projectId, runId);
   const artifacts = (artifactsQuery.data?.artifacts ?? []) as MissionArtifactSummary[];
@@ -60,6 +69,9 @@ export function MissionArtifactSection({
             runId={runId}
             artifact={a}
             partialEvidence={partialEvidence}
+            targetCitationId={
+              targetArtifactId && a.artifactId === targetArtifactId ? targetCitationId : undefined
+            }
           />
         ))}
       </div>
@@ -74,12 +86,16 @@ function ArtifactRevisionView({
   runId,
   artifact,
   partialEvidence,
+  targetCitationId,
 }: {
   companyId: string;
   projectId: string;
   runId: string;
   artifact: MissionArtifactSummary;
   partialEvidence?: boolean;
+  /** Citation id to auto-focus and auto-open provenance for the deep-link
+   *  target (only passed for the matching artifact revision). */
+  targetCitationId?: string;
 }) {
   const revisionQuery = useArtifactRevisionContent(
     companyId,
@@ -102,6 +118,7 @@ function ArtifactRevisionView({
           artifactId={artifact.artifactId}
           artifactVersion={artifact.version}
           content={revisionQuery.data.content}
+          targetCitationId={targetCitationId}
           partialEvidence={partialEvidence}
         />
       ) : revisionQuery.isLoading ? (

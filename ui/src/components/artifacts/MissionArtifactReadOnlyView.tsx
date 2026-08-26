@@ -46,12 +46,16 @@ export function MissionArtifactReadOnlyView({
   artifactId,
   artifactVersion,
   artifactTitle,
+  targetCitationId,
 }: {
   companyId: string;
   projectId: string;
   artifactId: string;
   artifactVersion: number;
   artifactTitle: string;
+  /** Optional citation id to auto-focus and auto-open provenance for a
+   *  deep-link target (VAL-RES-037, VAL-CROSS-041). */
+  targetCitationId?: string;
 }) {
   const revisionQuery = useArtifactRevisionContent(
     companyId,
@@ -81,6 +85,7 @@ export function MissionArtifactReadOnlyView({
           artifactId={artifactId}
           artifactVersion={artifactVersion}
           content={revisionQuery.data.content}
+          targetCitationId={targetCitationId}
         />
       ) : revisionQuery.isLoading ? (
         <p className="text-xs text-text-muted" aria-live="polite">

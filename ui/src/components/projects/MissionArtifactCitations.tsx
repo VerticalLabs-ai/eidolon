@@ -125,6 +125,7 @@ export function MissionCitationMark({
     <button
       ref={ref}
       type="button"
+      id={`mission-citation-${citationId}`}
       onClick={() => onSelect(citationId)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -716,7 +717,9 @@ function parseResearchReportBody(
 
   for (const para of paragraphs) {
     const trimmed = para.trim();
-    if (!trimmed) {continue;}
+    if (!trimmed) {
+      continue;
+    }
 
     // Check for markdown heading (## Heading)
     const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
@@ -854,6 +857,20 @@ export function MissionArtifactCitations({
     setSelectedCitationId(null);
     restoreFocusToCitationMark(closingCitationId);
   };
+
+  // Auto-open the provenance drawer for the deep-link target citation once
+  // its citation detail has loaded (VAL-RES-037, VAL-CROSS-041). The drawer
+  // opens exactly once for the target; subsequent user interactions close
+  // and reopen normally. The effect waits for the citation to exist in the
+  // authoritative citation map before opening, so a still-loading citations
+  // query does not silently skip the target.
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (targetCitationId && !autoOpenedRef.current && citationMap.has(targetCitationId)) {
+      autoOpenedRef.current = true;
+      setSelectedCitationId(targetCitationId);
+    }
+  }, [targetCitationId, citationMap]);
 
   // Carry-forward outcomes: citations not carried forward to this revision
   // (VAL-RES-035). The new revision marks them stale/not-carried-forward

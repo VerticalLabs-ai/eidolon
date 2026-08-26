@@ -583,6 +583,76 @@ describe('MissionArtifactCitations', () => {
     expect(mark).toHaveAttribute('data-citation-target', 'true');
   });
 
+  it('renders a stable id on each citation button for focus targeting (VAL-RES-037, VAL-CROSS-041)', () => {
+    mockArtifactsQuery([artifactSummary()]);
+    mockCitationsQuery([
+      citation({ citationId: 'cite-1', ordinal: 1 }),
+      citation({ citationId: 'cite-2', ordinal: 2, quote: 'Second quote.' }),
+    ]);
+    mockProvenanceQuery(provenance());
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={documentContent()}
+      />,
+    );
+
+    // Each citation button must expose a stable id so restoreHighlightFocus
+    // can locate and focus the exact citation from a deep link.
+    const mark1 = screen.getByTestId('citation-mark-cite-1');
+    const mark2 = screen.getByTestId('citation-mark-cite-2');
+    expect(mark1).toHaveAttribute('id', 'mission-citation-cite-1');
+    expect(mark2).toHaveAttribute('id', 'mission-citation-cite-2');
+  });
+
+  it('auto-opens the provenance drawer for the target citation on deep link (VAL-RES-037, VAL-CROSS-041)', () => {
+    mockArtifactsQuery([artifactSummary()]);
+    mockCitationsQuery([citation()]);
+    mockProvenanceQuery(provenance());
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={documentContent()}
+        targetCitationId="cite-1"
+      />,
+    );
+
+    // The provenance drawer should auto-open for the target citation
+    // without requiring a user click.
+    const drawer = screen.getByRole('dialog', { name: /provenance.*citation 1/i });
+    expect(drawer).toBeInTheDocument();
+  });
+
+  it('does not auto-open the drawer when no targetCitationId is provided', () => {
+    mockArtifactsQuery([artifactSummary()]);
+    mockCitationsQuery([citation()]);
+    mockProvenanceQuery(provenance());
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={documentContent()}
+      />,
+    );
+
+    // No drawer should be open on a normal (non-deep-link) render.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
   it('shows the exact artifact version, not the latest (VAL-RES-037, VAL-CROSS-041)', () => {
     mockArtifactsQuery([artifactSummary({ version: 2 })]);
     mockCitationsQuery([citation({ artifactVersion: 2 })]);
