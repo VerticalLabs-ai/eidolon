@@ -427,7 +427,7 @@ Write the report in a structured format with sections for Summary, Key Findings,
    */
   private async createArtifact(companyId: string, projectId: string): Promise<string> {
     const artifactId = randomUUID();
-    const now = this.clock();
+    const now = this.clock().toISOString();
 
     await this.db.drizzle.execute(sql`
       INSERT INTO "artifacts" ("id", "company_id", "project_id", "type", "title", "content", "version", "created_at", "updated_at")

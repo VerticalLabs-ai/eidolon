@@ -504,22 +504,22 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 2 — Firecrawl searc
   it('selectProviderForOperation includes both Tavily and Firecrawl for search', async () => {
     // The ProductionResearchExecutor's selectProviderForOperation is private,
     // but we can verify the behavior by checking that when both credentials
-    // are available, the executor constructs both adapters and includes both
-    // in the provider list for search operations.
+    // are available, the executor attempts search with both providers
+    // independently (fix-ut-m5-synthesis-date-serialization).
     //
     // We verify this by injecting a mock execution service that records
-    // the providers list passed to executeResearch.
+    // the provider name from each executeResearch call.
     vi.stubEnv('TAVILY_API_KEY', 'test-tavily-key');
     vi.stubEnv('FIRECRAWL_API_KEY', 'test-firecrawl-key');
 
-    let capturedProviders: { name: string }[] | null = null;
+    const capturedProviders: { name: string }[] = [];
 
     const mockExecutionService = {
-      executeResearch: vi.fn(async (_input: unknown, config: { providers: { name: string }[] }) => {
-        capturedProviders = config.providers.map((p) => ({ name: p.name }));
+      executeResearch: vi.fn(async (input: { provider: string }) => {
+        capturedProviders.push({ name: input.provider });
         return {
           logicalCallId: randomUUID(),
-          provider: 'tavily',
+          provider: input.provider,
           attemptId: randomUUID(),
           costCents: 10,
           sources: [
@@ -589,11 +589,10 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 2 — Firecrawl searc
 
     await executor.execute(ctx);
 
-    // Verify both Tavily and Firecrawl were in the provider list.
-    expect(capturedProviders).not.toBeNull();
-    expect(capturedProviders!.length).toBe(2);
-    expect(capturedProviders!.map((p) => p.name)).toContain('tavily');
-    expect(capturedProviders!.map((p) => p.name)).toContain('firecrawl');
+    // Verify both Tavily and Firecrawl search were attempted independently.
+    expect(capturedProviders.length).toBe(2);
+    expect(capturedProviders.map((p) => p.name)).toContain('tavily');
+    expect(capturedProviders.map((p) => p.name)).toContain('firecrawl');
 
     vi.unstubAllEnvs();
   });
@@ -697,7 +696,7 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 2 — Firecrawl searc
 describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 3 — URLs from search passed to extract/scrape', () => {
   it('URLs from search results are collected and passed to subsequent extract operation', async () => {
     vi.stubEnv('TAVILY_API_KEY', 'test-tavily-key');
-    vi.stubEnv('FIRECRAWL_API_KEY', 'test-firecrawl-key');
+    vi.stubEnv('FIRECRAWL_API_KEY', '');
 
     const searchUrls = [
       'https://example.com/page1',

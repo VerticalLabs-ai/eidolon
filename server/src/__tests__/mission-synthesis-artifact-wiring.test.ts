@@ -587,3 +587,92 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
     expect(result!.citationIds.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// fix-ut-m5-synthesis-date-serialization: Date serialization regression tests
+// ---------------------------------------------------------------------------
+
+describe('fix-ut-m5-synthesis-date-serialization: artifact INSERT succeeds with ISO 8601 timestamps', () => {
+  it('creates artifact with ISO 8601 timestamps (not Date.toString() format)', async () => {
+    const tree = await setupTree(db, '__mtest__ synth-iso-date', 1);
+    const scope = { companyId: tree.companyId, projectId: tree.projectId };
+
+    await seedResearchSource(
+      db,
+      scope,
+      tree.childRunIds[0]!,
+      tree.rootRunId,
+      'ISO Date Source',
+      'https://example.com/iso-date',
+    );
+
+    // Run synthesis.
+    const synthesisService = new MissionSynthesisService(db);
+    await db.drizzle.transaction(async (tx) => {
+      return synthesisService.attemptSynthesis(tx, {
+        companyId: tree.companyId,
+        projectId: tree.projectId,
+        runId: tree.rootRunId,
+      });
+    });
+
+    // Use a fixed clock with a non-UTC timezone offset to ensure the
+    // timestamp is serialized as ISO 8601, not Date.toString() which
+    // includes "GMT-0500" (the bug that caused PostgreSQL to reject
+    // the INSERT with "time zone gmt-0500 not recognized").
+    const fixedDate = new Date('2026-08-25T18:43:25.000Z');
+    const creator = new SynthesisArtifactCreator(db, {
+      providerCall: mockProviderCall(),
+      artifactCommitService: commit,
+      clock: () => fixedDate,
+    });
+
+    const result = await creator.createSynthesisArtifact({
+      companyId: tree.companyId,
+      projectId: tree.projectId,
+      runId: tree.rootRunId,
+      rootRunId: tree.rootRunId,
+      approvedPlanRevisionId: tree.revisionId,
+      approvedContentHash: tree.contentHash,
+      policySnapshotId: tree.policyId,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.artifactId).toBeTruthy();
+
+    // Verify the artifact row has valid timestamps.
+    // If the INSERT had used Date.toString() format (e.g. "Mon Aug 25 2026
+    // 18:43:25 GMT-0500"), PostgreSQL would have rejected it with
+    // "time zone gmt-0500 not recognized" and this query would return
+    // no rows. The fact that we get a row back proves the INSERT succeeded
+    // with ISO 8601 timestamps.
+    const artifactRows = (await db.drizzle.execute(sql`
+      SELECT "created_at", "updated_at" FROM "artifacts" WHERE "id" = ${result!.artifactId}
+    `)) as unknown as Array<{ created_at: Date | string; updated_at: Date | string }>;
+
+    expect(artifactRows).toHaveLength(1);
+    expect(artifactRows[0]!.created_at).toBeTruthy();
+    expect(artifactRows[0]!.updated_at).toBeTruthy();
+
+    // The timestamps should represent the same instant as the fixed clock.
+    // PostgreSQL may return timestamps in a different string format
+    // (e.g. "2026-08-25 18:43:25+00"), so compare parsed Date values.
+    // Note: updated_at may differ because ArtifactCommitService updates
+    // it when committing the revision with the real clock.
+    const expectedTime = fixedDate.getTime();
+    const createdAt = new Date(artifactRows[0]!.created_at as string).getTime();
+    expect(createdAt).toBe(expectedTime);
+
+    // Verify the initial artifact_revision also has a timestamp matching
+    // the fixed clock (it's inserted in createArtifact before the commit
+    // service runs).
+    const revisionRows = (await db.drizzle.execute(sql`
+      SELECT "created_at" FROM "artifact_revisions" WHERE "artifact_id" = ${result!.artifactId}
+      ORDER BY "version" ASC LIMIT 1
+    `)) as unknown as Array<{ created_at: Date | string }>;
+
+    expect(revisionRows.length).toBeGreaterThan(0);
+    const revCreatedAt = new Date(revisionRows[0]!.created_at as string).getTime();
+    expect(revCreatedAt).toBe(expectedTime);
+  });
+});
