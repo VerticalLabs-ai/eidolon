@@ -407,4 +407,108 @@ export class SourceRevisionService {
         : null,
     }));
   }
+
+  /**
+   * List bounded source summaries aggregated across a root run and all its
+   * descendant child runs, scoped by company and project
+   * (fix-ut-m5-artifact-id-source-aggregation).
+   *
+   * When a root run's `/sources` endpoint is queried, sources were only
+   * visible at the child run level because `run_research_sources.run_id`
+   * stores the child run ID, not the root run ID. This method queries by
+   * `root_run_id` instead, aggregating all sources from the root run and
+   * every child run in one response. The `runId` field in each summary
+   * remains the actual producing (child) run ID so the UI can attribute
+   * each source to its originating child run.
+   *
+   * Returns the same safe summary fields as `listRunSourceSummaries`; never
+   * full content, display metadata, credentials, or raw provider payloads.
+   */
+  async listAggregatedSourceSummaries(
+    companyId: string,
+    projectId: string | undefined,
+    rootRunId: string,
+  ): Promise<SourceSummary[]> {
+    const rows = (await this.deps.drizzle.execute(sql`
+      SELECT
+        rsr."id" AS "source_revision_id",
+        rsr."source_id" AS "source_id",
+        rrs."run_id" AS "run_id",
+        rs."canonical_url" AS "canonical_url",
+        rsr."content_hash" AS "content_hash",
+        rsr."byte_count" AS "byte_count",
+        rsr."retrieved_at" AS "retrieved_at",
+        rrs."rank" AS "rank",
+        rrs."relevance_score" AS "relevance_score",
+        rsr."status" AS "status",
+        rsr."provider" AS "provider",
+        rsr."operation" AS "operation",
+        rsr."injection_risk_labels" AS "injection_risk_labels",
+        rsr."warnings" AS "warnings",
+        rrs."excluded" AS "excluded",
+        rrs."exclusion_reason" AS "exclusion_reason",
+        rrs."selected" AS "selected",
+        latest_avail."status" AS "latest_availability_status",
+        latest_avail."created_at" AS "latest_availability_checked_at"
+      FROM "run_research_sources" rrs
+      JOIN "research_source_revisions" rsr ON rsr."id" = rrs."source_revision_id"
+      JOIN "research_sources" rs ON rs."id" = rsr."source_id"
+      LEFT JOIN LATERAL (
+        SELECT "status", "created_at"
+        FROM "research_source_availability_checks"
+        WHERE "source_revision_id" = rsr."id"
+          AND "company_id" = ${companyId}
+        ORDER BY "created_at" DESC
+        LIMIT 1
+      ) latest_avail ON TRUE
+      WHERE rrs."root_run_id" = ${rootRunId}
+        AND rrs."company_id" = ${companyId}
+        ${projectId ? sql`AND rrs."project_id" = ${projectId}` : sql`AND rrs."project_id" IS NULL`}
+      ORDER BY rrs."rank" NULLS LAST, rsr."created_at"
+    `)) as unknown as {
+      source_revision_id: string;
+      source_id: string;
+      run_id: string;
+      canonical_url: string;
+      content_hash: string | null;
+      byte_count: number;
+      retrieved_at: Date;
+      rank: number | null;
+      relevance_score: number | null;
+      status: string;
+      provider: string;
+      operation: string;
+      injection_risk_labels: string[] | null;
+      warnings: string[] | null;
+      excluded: boolean | null;
+      exclusion_reason: string | null;
+      selected: boolean | null;
+      latest_availability_status: string | null;
+      latest_availability_checked_at: Date | null;
+    }[];
+    return rows.map((r) => ({
+      sourceRevisionId: r.source_revision_id,
+      sourceId: r.source_id,
+      runId: r.run_id,
+      canonicalUrl: r.canonical_url,
+      contentHash: r.content_hash ?? undefined,
+      byteCount: r.byte_count,
+      retrievedAt: toISOString(r.retrieved_at),
+      rank: r.rank ?? undefined,
+      relevanceScore: r.relevance_score ?? undefined,
+      status: r.status,
+      provider: r.provider,
+      operation: r.operation,
+      injectionRiskLabels: r.injection_risk_labels ?? [],
+      warnings: r.warnings ?? [],
+      excluded: r.excluded ?? false,
+      exclusionReason: r.exclusion_reason,
+      selected: r.selected ?? true,
+      latestAvailabilityStatus:
+        (r.latest_availability_status as 'available' | 'unavailable' | 'unknown' | null) ?? null,
+      latestAvailabilityCheckedAt: r.latest_availability_checked_at
+        ? toISOString(r.latest_availability_checked_at)
+        : null,
+    }));
+  }
 }

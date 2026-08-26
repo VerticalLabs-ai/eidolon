@@ -1134,20 +1134,29 @@ export function missionRunsRouter(db: DbInstance): Router {
     await validateProjectOwnership(db, companyId, projectId);
 
     // Verify the run exists and is same-company/project so a cross-scope id
-    // returns a non-enumerating 404 (VAL-RES-022, VAL-RUN-069).
+    // returns a non-enumerating 404 (VAL-RES-022, VAL-RUN-069). Fetch
+    // root_run_id and depth to determine whether to aggregate child sources
+    // (fix-ut-m5-artifact-id-source-aggregation).
     const [run] = (await db.drizzle.execute(
-      sql`SELECT 1 FROM "mission_runs"
+      sql`SELECT "root_run_id", "depth" FROM "mission_runs"
           WHERE "id" = ${runId}
             AND "company_id" = ${companyId}
             AND "project_id" = ${projectId}
           LIMIT 1`,
-    )) as unknown as { 1: number }[];
+    )) as unknown as { root_run_id: string; depth: number }[];
     if (!run) {
       throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
     }
 
     const service = new SourceRevisionService({ drizzle: db.drizzle, schema: db.schema });
-    const sources = await service.listRunSourceSummaries(companyId, projectId, runId);
+    // Root runs (depth 0, root_run_id = self) aggregate sources from all
+    // child runs by querying run_research_sources by root_run_id. Child
+    // runs return only their own sources by querying by run_id
+    // (fix-ut-m5-artifact-id-source-aggregation).
+    const isRootRun = run.depth === 0 || run.root_run_id === runId;
+    const sources = isRootRun
+      ? await service.listAggregatedSourceSummaries(companyId, projectId, runId)
+      : await service.listRunSourceSummaries(companyId, projectId, runId);
     res.json({ data: { sources, runId } });
   });
 
