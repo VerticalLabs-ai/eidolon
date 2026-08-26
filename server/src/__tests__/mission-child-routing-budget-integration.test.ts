@@ -791,13 +791,19 @@ describe('Child routing budget allocation integration (fix-ut-m5-budget-allocati
     expect(childARow.available_at).not.toBeNull();
     const childARunId = childARow.id;
 
-    // child-b's run should NOT be claimable (available_at is null).
+    // child-b's run should NOT be claimable. available_at is set to a
+    // far-future sentinel (not null) because the coordinator's claim query
+    // treats available_at IS NULL as "available immediately"
+    // (fix-ut-m5-available-at-null-claimable).
     const [childBRow] = (await db.drizzle.execute(sql`
       SELECT "id", "status", "available_at" FROM "mission_runs"
       WHERE "root_run_id" = ${rootRunId} AND "id" != ${rootRunId} AND "id" != ${childARunId}
     `)) as unknown as Array<{ id: string; status: string; available_at: string | null }>;
     expect(childBRow.status).toBe('queued');
-    expect(childBRow.available_at).toBeNull();
+    expect(childBRow.available_at).not.toBeNull();
+    expect(new Date(childBRow.available_at!).getTime()).toBeGreaterThan(
+      new Date('2998-01-01').getTime(),
+    );
     const childBRunId = childBRow.id;
 
     // Step 2: Claim child-a and route it.

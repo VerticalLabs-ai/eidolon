@@ -827,8 +827,30 @@ export class RunProcessor {
       )
       .limit(1);
 
-    // No assignment or not pending_routing → not a routing candidate.
-    if (!assignment || assignment.assignmentStatus !== 'pending_routing') {
+    // No assignment → not a routing candidate.
+    if (!assignment) {
+      return false;
+    }
+
+    // Defense-in-depth guard (fix-ut-m5-available-at-null-claimable):
+    // If the child's assignment is still `pending_dependencies`, it should
+    // not have been claimable — its dependencies have not been resolved and
+    // it has not been routed (no BudgetService.allocateChild()). Re-queue it
+    // by setting available_at to a far-future sentinel and releasing the
+    // lease so it returns to `queued` without executing. This prevents the
+    // child from falling through to executeProviderCall() → settleBudget()
+    // → BudgetService.settle() → BUDGET_ALLOCATION_NOT_FOUND → PROVIDER_ERROR,
+    // which under require_all policy cascades cancellation to all research
+    // siblings before they can execute.
+    if (assignment.assignmentStatus === 'pending_dependencies') {
+      await this.requeuePendingDependenciesChild(claim);
+      await this.projectRunEvents(claim);
+      return true;
+    }
+
+    // Not pending_routing (e.g., already routed, completed, failed) → not a
+    // routing candidate; fall through to direct execution.
+    if (assignment.assignmentStatus !== 'pending_routing') {
       return false;
     }
 
@@ -899,6 +921,41 @@ export class RunProcessor {
 
     // Either way, the child was handled (routed, ephemeral, or failed).
     return true;
+  }
+
+  /**
+   * Defense-in-depth: re-queue a `pending_dependencies` child that was
+   * somehow claimed by the coordinator (fix-ut-m5-available-at-null-claimable).
+   *
+   * Sets `available_at` to a far-future sentinel, releases the lease, and
+   * transitions the run back to `queued` so it is not re-claimed until
+   * `resolveDependencies()` sets `available_at = now`. This prevents the
+   * child from falling through to `executeProviderCall()` where
+   * `settleBudget()` would throw `BUDGET_ALLOCATION_NOT_FOUND` (no budget
+   * allocation exists because routing was never performed).
+   *
+   * Uses the lease token as a fencing condition so a stale worker cannot
+   * modify a run claimed by another worker.
+   */
+  private async requeuePendingDependenciesChild(claim: Claim): Promise<void> {
+    const FAR_FUTURE = new Date('2999-01-01T00:00:00.000Z');
+    const now = this.now();
+    const nowIso = now.toISOString();
+    const farFutureIso = FAR_FUTURE.toISOString();
+
+    await this.db.drizzle.execute(sql`
+      UPDATE "mission_runs"
+      SET "lease_owner" = NULL,
+          "lease_token" = NULL,
+          "lease_expires_at" = NULL,
+          "heartbeat_at" = NULL,
+          "available_at" = ${farFutureIso}::timestamptz,
+          "status" = 'queued',
+          "updated_at" = ${nowIso}::timestamptz
+      WHERE "id" = ${claim.runId}
+        AND "lease_token" = ${claim.leaseToken}
+        AND "terminal_at" IS NULL
+    `);
   }
 
   /**

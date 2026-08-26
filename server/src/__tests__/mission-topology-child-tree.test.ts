@@ -705,13 +705,20 @@ describe('Topology materialization (VAL-SUB-001, 002, 003, 005, 095)', () => {
     // grandchild-a1: no dependencies → pending_routing (ready)
     expect(byStep.get('grandchild-a1')!['assignment_status']).toBe('pending_routing');
 
-    // Dependency-blocked children should NOT be claimable (available_at is null).
+    // Dependency-blocked children should NOT be claimable. available_at is
+    // set to a far-future sentinel (not null) because the coordinator's claim
+    // query treats available_at IS NULL as "available immediately"
+    // (fix-ut-m5-available-at-null-claimable).
     const children = await getChildRuns(db, runId);
     const stepToRun = new Map(
       assignments.map((a) => [a['step_key'] as string, a['run_id'] as string]),
     );
     const childBRun = children.find((c) => c.id === stepToRun.get('child-b'))!;
-    expect(childBRun.availableAt).toBeNull();
+    expect(childBRun.availableAt).not.toBeNull();
+    // The sentinel is far in the future so the claim query's
+    // available_at <= now check fails.
+    const childBAvailableAt = new Date(childBRun.availableAt as string);
+    expect(childBAvailableAt.getTime()).toBeGreaterThan(new Date('2998-01-01').getTime());
 
     // Ready children SHOULD be claimable (available_at is set).
     const childARun = children.find((c) => c.id === stepToRun.get('child-a'))!;

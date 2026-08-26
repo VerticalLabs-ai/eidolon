@@ -7,6 +7,24 @@ import { SubthreadProjectionService } from './subthread-projection.js';
 import { TreeLimitsService, type TreePolicyLimits } from './tree-limits.js';
 
 /**
+ * Far-future sentinel timestamp used for `available_at` on
+ * `pending_dependencies` children so they are NOT claimable by the
+ * OrchestrationCoordinator until `resolveDependencies()` sets
+ * `available_at = now`.
+ *
+ * The coordinator's claim query treats `available_at IS NULL` as
+ * "available immediately" (`AND ("available_at" IS NULL OR "available_at" <= now)`),
+ * so using `null` for dependency-blocked children would allow them to be
+ * claimed before their dependencies are resolved and before they've been
+ * routed. A far-future sentinel ensures the claim query's
+ * `available_at <= now` check fails until `resolveDependencies()` overwrites
+ * it with the current time.
+ *
+ * (fix-ut-m5-available-at-null-claimable)
+ */
+export const FAR_FUTURE_SENTINEL = new Date('2999-01-01T00:00:00.000Z');
+
+/**
  * TopologyMaterializer — materializes an approved plan topology into stable
  * child run shells and step assignments.
  *
@@ -225,8 +243,11 @@ export class TopologyMaterializer {
         lastEventSequence: 0,
         partialResultPolicy: rootRun.partialResultPolicy,
         // Ready children are claimable immediately; dependency-blocked
-        // children are not claimable until dependencies resolve.
-        availableAt: isReady ? now : null,
+        // children are NOT claimable until resolveDependencies() sets
+        // available_at = now. Use a far-future sentinel instead of null
+        // because the coordinator's claim query treats available_at IS NULL
+        // as "available immediately" (fix-ut-m5-available-at-null-claimable).
+        availableAt: isReady ? now : FAR_FUTURE_SENTINEL,
         createdAt: now,
         updatedAt: now,
       });
