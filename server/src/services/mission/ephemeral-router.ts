@@ -208,8 +208,31 @@ export function checkEphemeralRequirements(input: {
   }
 
   // 3. Required tools must be a subset of parent tool allowlist.
+  //    For research tools (research.search, research.extract, research.scrape,
+  //    research.structured_extract), check researchPolicy.access === 'allowed'
+  //    instead of the toolAllowlist. Deep Work mode has an empty toolAllowlist
+  //    (when the agent has no tools enabled) but researchPolicy.access is
+  //    'allowed'. The policy already has a researchPolicy field that explicitly
+  //    grants research access, so checking it is cleaner than requiring
+  //    research tools in the toolAllowlist
+  //    (fix-ut-m5-policy-toolallowlist-billing-agent).
+  const RESEARCH_TOOL_NAMES = new Set([
+    'research.search',
+    'research.extract',
+    'research.scrape',
+    'research.structured_extract',
+  ]);
+  const researchAccessAllowed =
+    (parentPolicy.researchPolicy as { access?: string })?.access === 'allowed';
   const parentTools = new Set(parentPolicy.toolAllowlist);
-  const missingTools = req.requiredTools.filter((t) => !parentTools.has(t));
+  const missingTools = req.requiredTools.filter((t) => {
+    if (RESEARCH_TOOL_NAMES.has(t)) {
+      // Research tools are allowed when researchPolicy.access is 'allowed',
+      // even if the toolAllowlist is empty.
+      return !researchAccessAllowed && !parentTools.has(t);
+    }
+    return !parentTools.has(t);
+  });
   if (missingTools.length > 0) {
     return 'MISSING_TOOLS';
   }

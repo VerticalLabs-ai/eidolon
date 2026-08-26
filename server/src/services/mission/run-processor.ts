@@ -208,6 +208,8 @@ interface PolicyInfo {
   toolAllowlist: string[];
   /** Domain allowlist from the immutable policy snapshot. */
   domainAllowlist: string[];
+  /** Research policy from the immutable policy snapshot. */
+  researchPolicy: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +750,10 @@ export class RunProcessor {
         claim.leaseOwner,
         null,
         policyLimits,
+        // Pass the effective billing agent ID: prefer rootRun.billingAgentId,
+        // fall back to rootRun.initiatingAgentId so children get a non-null
+        // billing identity (fix-ut-m5-policy-toolallowlist-billing-agent).
+        lockedRun.billingAgentId ?? lockedRun.initiatingAgentId,
       );
 
       // After materialization, resolve dependencies on the root orchestration
@@ -880,6 +886,14 @@ export class RunProcessor {
 
     const stepTimeoutSeconds = policy?.limits?.durationSeconds ?? 300;
     const parentProvider = policy?.provider ?? 'anthropic';
+    const researchAccessAllowed =
+      (policy?.researchPolicy as { access?: string })?.access === 'allowed';
+
+    // Resolve the effective billing agent ID: prefer the assignment's
+    // billingAgentId, fall back to the child run's initiatingAgentId so
+    // children get a non-null billing identity
+    // (fix-ut-m5-policy-toolallowlist-billing-agent).
+    const effectiveBillingAgentId = assignment.billingAgentId ?? run.initiatingAgentId;
 
     const ctx: RoutingContext = {
       companyId: claim.companyId,
@@ -891,8 +905,9 @@ export class RunProcessor {
       routingRequirements: reqs,
       stepBudgetCents,
       stepTimeoutSeconds,
-      billingAgentId: assignment.billingAgentId,
+      billingAgentId: effectiveBillingAgentId,
       parentProvider,
+      researchAccessAllowed,
     };
 
     // Route the child. If an eligible agent is found, the router records the
@@ -917,7 +932,7 @@ export class RunProcessor {
         routingRequirements: reqs,
         stepBudgetCents,
         stepTimeoutSeconds,
-        billingAgentId: assignment.billingAgentId,
+        billingAgentId: effectiveBillingAgentId,
       };
 
       await ephemeralRouter.routeOrFail(ephemeralCtx);
@@ -1348,6 +1363,7 @@ export class RunProcessor {
         limits: schema.runPolicySnapshots.limits,
         toolAllowlist: schema.runPolicySnapshots.toolAllowlist,
         domainAllowlist: schema.runPolicySnapshots.domainAllowlist,
+        researchPolicy: schema.runPolicySnapshots.researchPolicy,
       })
       .from(schema.runPolicySnapshots)
       .where(eq(schema.runPolicySnapshots.id, policySnapshotId))
@@ -1361,6 +1377,7 @@ export class RunProcessor {
       limits: policyRow.limits as Record<string, number>,
       toolAllowlist: (policyRow.toolAllowlist as string[]) ?? [],
       domainAllowlist: (policyRow.domainAllowlist as string[]) ?? [],
+      researchPolicy: (policyRow.researchPolicy as Record<string, unknown>) ?? null,
     };
   }
 

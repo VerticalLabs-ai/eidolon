@@ -112,6 +112,14 @@ export class TopologyMaterializer {
      * limits are enforced transactionally before creating child shells.
      */
     policyLimits?: TreePolicyLimits,
+    /**
+     * Override billing agent ID for step assignments. Falls back to
+     * rootRun.billingAgentId when not provided. When rootRun.billingAgentId
+     * is null, the caller should pass rootRun.initiatingAgentId as the
+     * effective billing agent so children get a non-null billing identity
+     * (fix-ut-m5-policy-toolallowlist-billing-agent).
+     */
+    billingAgentId?: string | null,
   ): Promise<MaterializeResult> {
     const schema = this.db.schema;
     const now = this.now();
@@ -268,7 +276,7 @@ export class TopologyMaterializer {
         assignmentStatus,
         routingRequirements:
           step.routing.kind === 'requirements' ? step.routing.routingRequirements : null,
-        billingAgentId: rootRun.billingAgentId,
+        billingAgentId: billingAgentId ?? rootRun.billingAgentId,
         createdAt: now,
         updatedAt: now,
       });

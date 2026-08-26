@@ -89,6 +89,15 @@ export interface RoutingContext {
   billingAgentId: string | null;
   /** Parent policy snapshot's provider (for runtime compatibility). */
   parentProvider: string;
+  /**
+   * Whether the parent policy's researchPolicy.access is 'allowed'. When
+   * true, research tools (research.search, research.extract, research.scrape,
+   * research.structured_extract) in requiredTools are considered satisfied
+   * even if the agent doesn't have them in toolsEnabled, because the policy
+   * explicitly grants research access
+   * (fix-ut-m5-policy-toolallowlist-billing-agent).
+   */
+  researchAccessAllowed?: boolean;
 }
 
 /**
@@ -441,10 +450,24 @@ export class AgentRouter {
       return null;
     }
 
-    // Recheck exact tools (VAL-SUB-013).
+    // Recheck exact tools (VAL-SUB-013). For research tools, check
+    // researchAccessAllowed from the parent policy
+    // (fix-ut-m5-policy-toolallowlist-billing-agent).
+    const RESEARCH_TOOL_NAMES_LOCK = new Set([
+      'research.search',
+      'research.extract',
+      'research.scrape',
+      'research.structured_extract',
+    ]);
     const agentTools = new Set(agent.toolsEnabled ?? []);
     const reqTools = ctx.routingRequirements.requiredTools;
-    if (!reqTools.every((t) => agentTools.has(t))) {
+    const hasAllTools = reqTools.every((t) => {
+      if (RESEARCH_TOOL_NAMES_LOCK.has(t) && ctx.researchAccessAllowed) {
+        return true; // research tool satisfied by policy
+      }
+      return agentTools.has(t);
+    });
+    if (!hasAllTools) {
       return null;
     }
 
@@ -679,7 +702,23 @@ export class AgentRouter {
       }
 
       // 3. Exact tools (VAL-SUB-013). Exact match only — no prefix/wildcard.
-      const missingTools = req.requiredTools.filter((t) => !tools.has(t));
+      //    For research tools, check researchAccessAllowed from the parent
+      //    policy. When researchPolicy.access is 'allowed', research tools
+      //    are considered satisfied even if the agent doesn't have them in
+      //    toolsEnabled, because the policy explicitly grants research access
+      //    (fix-ut-m5-policy-toolallowlist-billing-agent).
+      const RESEARCH_TOOL_NAMES = new Set([
+        'research.search',
+        'research.extract',
+        'research.scrape',
+        'research.structured_extract',
+      ]);
+      const missingTools = req.requiredTools.filter((t) => {
+        if (RESEARCH_TOOL_NAMES.has(t) && ctx.researchAccessAllowed) {
+          return false; // research tool satisfied by policy
+        }
+        return !tools.has(t);
+      });
       if (missingTools.length > 0) {
         return this.excluded(
           agent.id,

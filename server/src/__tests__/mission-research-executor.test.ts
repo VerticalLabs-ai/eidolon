@@ -124,6 +124,7 @@ function makeContext(
       limits: { durationSeconds: 300 },
       toolAllowlist: ['research.search'],
       domainAllowlist: [],
+      researchPolicy: null,
     },
     requestText: 'test query',
     operations: operations as never,
