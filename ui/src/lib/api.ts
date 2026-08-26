@@ -3009,6 +3009,24 @@ export const getRevision = (companyId: string, id: string, version: number) =>
     `/companies/${companyId}/artifacts/${id}/revisions/${version}`,
   );
 
+/**
+ * Fetch an exact artifact revision via the project-scoped endpoint.
+ * (fix-ut-m5-ui-artifact-rendering)
+ *
+ * GET /companies/:c/projects/:p/artifacts/:a/revisions/:v
+ * Returns the decrypted revision content for a project-scoped artifact.
+ * Cross-project or cross-company artifacts return a non-enumerating 404.
+ */
+export const getProjectRevision = (
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) =>
+  request<ApiResponse<ArtifactRevision>>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}`,
+  );
+
 export const restoreRevision = (companyId: string, id: string, version: number) =>
   request<ApiResponse<Artifact>>(
     `/companies/${companyId}/artifacts/${id}/revisions/${version}/restore`,

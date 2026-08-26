@@ -85,6 +85,7 @@ function ArtifactRevisionView({
     companyId,
     artifact.artifactId,
     artifact.version,
+    projectId,
   );
 
   return (

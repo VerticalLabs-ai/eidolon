@@ -3355,19 +3355,26 @@ export function useCarryForwardOutcomes(
 
 /**
  * Fetch the content of an exact artifact revision
- * (`GET /artifacts/:artifactId/revisions/:version`). Returns the decrypted
- * revision content (an `EvidenceDocumentV1` for documents) so the
- * MissionArtifactCitations component can render inline citation marks.
+ * (`GET /projects/:p/artifacts/:artifactId/revisions/:version` when
+ * projectId is supplied, otherwise `GET /artifacts/:artifactId/revisions/:version`).
+ * Returns the decrypted revision content (an `EvidenceDocumentV1` for
+ * documents, or a `research_report` object for Mission synthesis artifacts)
+ * so the MissionArtifactCitations component can render inline citation marks.
  */
 export function useArtifactRevisionContent(
   companyId: string | undefined,
   artifactId: string | undefined,
   version: number | undefined,
+  projectId?: string | undefined,
 ) {
   return useQuery({
-    queryKey: ['artifact-revision-content', companyId, artifactId, version],
+    queryKey: ['artifact-revision-content', companyId, projectId, artifactId, version],
     queryFn: async () =>
-      unwrap<api.ArtifactRevision>(await api.getRevision(companyId!, artifactId!, version!)),
+      projectId
+        ? unwrap<api.ArtifactRevision>(
+            await api.getProjectRevision(companyId!, projectId, artifactId!, version!),
+          )
+        : unwrap<api.ArtifactRevision>(await api.getRevision(companyId!, artifactId!, version!)),
     enabled: !!companyId && !!artifactId && version != null,
     placeholderData: (prev: api.ArtifactRevision | undefined) => prev,
   });

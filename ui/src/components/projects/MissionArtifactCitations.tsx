@@ -521,6 +521,7 @@ function renderBlock(
   targetCitationId?: string,
   selectedCitationId?: string | null,
   drawerId?: string,
+  blockIndex?: number,
 ): React.ReactNode {
   switch (block.type) {
     case 'heading': {
@@ -536,48 +537,48 @@ function renderBlock(
       );
       if (level === 1) {
         return (
-          <h1 key={block.type} className={className}>
+          <h1 key={blockIndex} className={className}>
             {spans}
           </h1>
         );
       }
       if (level === 2) {
         return (
-          <h2 key={block.type} className={className}>
+          <h2 key={blockIndex} className={className}>
             {spans}
           </h2>
         );
       }
       if (level === 3) {
         return (
-          <h3 key={block.type} className={className}>
+          <h3 key={blockIndex} className={className}>
             {spans}
           </h3>
         );
       }
       if (level === 4) {
         return (
-          <h4 key={block.type} className={className}>
+          <h4 key={blockIndex} className={className}>
             {spans}
           </h4>
         );
       }
       if (level === 5) {
         return (
-          <h5 key={block.type} className={className}>
+          <h5 key={blockIndex} className={className}>
             {spans}
           </h5>
         );
       }
       return (
-        <h6 key={block.type} className={className}>
+        <h6 key={blockIndex} className={className}>
           {spans}
         </h6>
       );
     }
     case 'paragraph':
       return (
-        <p key={block.type} className="text-sm text-text-primary mb-2 break-words leading-relaxed">
+        <p key={blockIndex} className="text-sm text-text-primary mb-2 break-words leading-relaxed">
           {renderSpans(
             block.spans,
             citationMap,
@@ -591,7 +592,7 @@ function renderBlock(
     case 'quote':
       return (
         <blockquote
-          key={block.type}
+          key={blockIndex}
           className="border-l-2 border-white/[0.12] pl-3 text-sm text-text-secondary mb-2 italic break-words"
         >
           {renderSpans(
@@ -606,7 +607,7 @@ function renderBlock(
       );
     case 'list':
       return block.ordered ? (
-        <ol key={block.type} className="list-decimal pl-4 mb-2 space-y-0.5">
+        <ol key={blockIndex} className="list-decimal pl-4 mb-2 space-y-0.5">
           {block.items.map((item, i) => (
             <li key={i} className="text-sm text-text-primary break-words">
               {renderSpans(
@@ -621,7 +622,7 @@ function renderBlock(
           ))}
         </ol>
       ) : (
-        <ul key={block.type} className="list-disc pl-4 mb-2 space-y-0.5">
+        <ul key={blockIndex} className="list-disc pl-4 mb-2 space-y-0.5">
           {block.items.map((item, i) => (
             <li key={i} className="text-sm text-text-primary break-words">
               {renderSpans(
@@ -638,7 +639,7 @@ function renderBlock(
       );
     case 'table':
       return (
-        <div key={block.type} className="mb-2 overflow-x-auto">
+        <div key={blockIndex} className="mb-2 overflow-x-auto">
           <table className="text-sm text-text-primary border-collapse">
             <tbody>
               {block.rows.map((row, i) => (
@@ -664,7 +665,7 @@ function renderBlock(
     case 'code':
       return (
         <pre
-          key={block.type}
+          key={blockIndex}
           className="mb-2 rounded-lg border border-white/[0.06] bg-black/20 p-3 text-xs text-text-primary overflow-x-auto"
           dir="ltr"
         >
@@ -687,6 +688,87 @@ function restoreFocusToCitationMark(citationId: string | null): void {
   if (mark) {
     mark.focus();
   }
+}
+
+// ── Research report body parsing (fix-ut-m5-ui-artifact-rendering) ───────
+
+/**
+ * Parse a `research_report` body string with `[N]` citation markers into
+ * EvidenceDocumentV1 blocks with inline citation spans. The body text is
+ * split into paragraphs (by double newlines) and markdown-style headings
+ * (lines starting with #). Each `[N]` marker is converted to a
+ * `{ type: 'citation', citationId }` span using the ordinal→citationId
+ * map from the citations API.
+ *
+ * This handles Mission synthesis artifacts whose content is stored as
+ * `{ type: 'research_report', body: '...', citationMarks: [...] }` rather
+ * than the closed `EvidenceDocumentV1` format. The UI renders the body
+ * text with interactive inline citation marks, a provenance drawer, and
+ * source links — exactly like EvidenceDocumentV1 content.
+ */
+function parseResearchReportBody(
+  body: string,
+  ordinalToCitationId: Map<number, string>,
+): EvidenceBlock[] {
+  const blocks: EvidenceBlock[] = [];
+  // Split by double newlines into paragraphs
+  const paragraphs = body.split(/\n\n+/);
+
+  for (const para of paragraphs) {
+    const trimmed = para.trim();
+    if (!trimmed) {continue;}
+
+    // Check for markdown heading (## Heading)
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const headingText = headingMatch[2];
+      const spans = parseSpansFromText(headingText, ordinalToCitationId);
+      blocks.push({ type: 'heading', level, spans });
+    } else {
+      const spans = parseSpansFromText(trimmed, ordinalToCitationId);
+      blocks.push({ type: 'paragraph', spans });
+    }
+  }
+
+  return blocks;
+}
+
+/**
+ * Parse a text string with `[N]` citation markers into TextSpan array.
+ * Each `[N]` marker is converted to a citation span if the ordinal maps
+ * to a known citation ID; otherwise it is rendered as inert text.
+ */
+function parseSpansFromText(text: string, ordinalToCitationId: Map<number, string>): TextSpan[] {
+  const spans: TextSpan[] = [];
+  // Match [N] markers where N is a number
+  const regex = /\[(\d+)\]/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    // Add text before the marker
+    if (match.index > lastIndex) {
+      spans.push({ type: 'text', text: text.slice(lastIndex, match.index) });
+    }
+    // Add citation span
+    const ordinal = parseInt(match[1], 10);
+    const citationId = ordinalToCitationId.get(ordinal);
+    if (citationId) {
+      spans.push({ type: 'citation', citationId });
+    } else {
+      // Unknown citation — render as inert text, no broken link
+      spans.push({ type: 'text', text: match[0] });
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    spans.push({ type: 'text', text: text.slice(lastIndex) });
+  }
+
+  return spans.length > 0 ? spans : [{ type: 'text', text }];
 }
 
 // ── Main component ───────────────────────────────────────────────────────
@@ -782,9 +864,33 @@ export function MissionArtifactCitations({
     [carryForwardOutcomes],
   );
 
-  // Parse the content as an EvidenceDocumentV1.
+  // Parse the content. If it's an EvidenceDocumentV1 with blocks, use
+  // them directly. If it's a research_report with a body string, parse
+  // the body text with [N] markers into blocks with inline citation
+  // spans (fix-ut-m5-ui-artifact-rendering).
   const doc = content as unknown as EvidenceDocumentV1;
-  const blocks = Array.isArray(doc?.blocks) ? doc.blocks : [];
+  const rawBlocks = Array.isArray(doc?.blocks) ? doc.blocks : [];
+
+  // Build ordinal → citationId map for research_report body parsing.
+  const ordinalToCitationId = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const c of citations) {
+      m.set(c.ordinal, c.citationId);
+    }
+    return m;
+  }, [citations]);
+
+  // If no EvidenceDocumentV1 blocks, try parsing as research_report body.
+  const blocks = useMemo(() => {
+    if (rawBlocks.length > 0) {
+      return rawBlocks;
+    }
+    const body = content?.body;
+    if (typeof body === 'string' && body.length > 0) {
+      return parseResearchReportBody(body, ordinalToCitationId);
+    }
+    return [];
+  }, [rawBlocks, content, ordinalToCitationId]);
 
   return (
     <section
@@ -905,7 +1011,7 @@ export function MissionArtifactCitations({
 
       {/* Render evidence document blocks with inline citation marks */}
       <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 w-full max-w-full break-words">
-        {blocks.map((block) =>
+        {blocks.map((block, idx) =>
           renderBlock(
             block,
             citationMap,
@@ -913,6 +1019,7 @@ export function MissionArtifactCitations({
             targetCitationId,
             selectedCitationId,
             drawerId,
+            idx,
           ),
         )}
         {blocks.length === 0 && (

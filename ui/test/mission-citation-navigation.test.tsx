@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   useMissionRunArtifacts: vi.fn(),
   useArtifactRevisionCitations: vi.fn(),
   useArtifactRevisionProvenance: vi.fn(),
+  useCarryForwardOutcomes: vi.fn(),
 }));
 
 vi.mock('@/lib/hooks', async () => {
@@ -30,6 +31,7 @@ vi.mock('@/lib/hooks', async () => {
     useMissionRunArtifacts: mocks.useMissionRunArtifacts,
     useArtifactRevisionCitations: mocks.useArtifactRevisionCitations,
     useArtifactRevisionProvenance: mocks.useArtifactRevisionProvenance,
+    useCarryForwardOutcomes: mocks.useCarryForwardOutcomes,
   };
 });
 
@@ -179,10 +181,20 @@ function mockProvenanceQuery(prov: MissionProvenanceDetail | null, loading = fal
   });
 }
 
+function mockCarryForwardQuery(outcomes: unknown[] = [], loading = false) {
+  mocks.useCarryForwardOutcomes.mockReturnValue({
+    data: loading ? undefined : { outcomes, artifactId: ARTIFACT_ID, version: ARTIFACT_VERSION },
+    isLoading: loading,
+    isError: false,
+  });
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no carry-forward outcomes
+  mockCarryForwardQuery([]);
 });
 
 describe('MissionCitationMark', () => {
@@ -740,5 +752,216 @@ describe('MissionArtifactCitations', () => {
 
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText(/could not load citations/i)).toBeInTheDocument();
+  });
+});
+
+// ── Research report format tests (fix-ut-m5-ui-artifact-rendering) ───────
+
+describe('MissionArtifactCitations — research_report format', () => {
+  /** Research report content with body text and [N] markers. */
+  function researchReportContent() {
+    return {
+      type: 'research_report',
+      title: 'Research Synthesis Report',
+      body: '## Summary\n\nThe findings are significant [1]. Another source confirms this [2].\n\n## Key Findings\n\nThe data shows clear trends [1][2].',
+      citationMarks: [
+        {
+          ordinal: 1,
+          sourceRevisionId: 'src-rev-1',
+          canonicalUrl: 'https://example.com/report',
+          title: 'Example Report',
+        },
+        {
+          ordinal: 2,
+          sourceRevisionId: 'src-rev-2',
+          canonicalUrl: 'https://example.com/data',
+          title: 'Data Source',
+        },
+      ],
+      generatedAt: '2026-08-25T10:00:00.000Z',
+    };
+  }
+
+  it('renders research_report body text with interactive citation marks (not "No content")', () => {
+    mockCitationsQuery([
+      citation({ citationId: 'cite-1', ordinal: 1 }),
+      citation({
+        citationId: 'cite-2',
+        ordinal: 2,
+        canonicalUrl: 'https://example.com/data',
+        frozenTitle: 'Data Source',
+      }),
+    ]);
+    mockProvenanceQuery(provenance());
+    mockCarryForwardQuery([]);
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={researchReportContent()}
+      />,
+    );
+
+    // Should NOT show "No content for this revision"
+    expect(screen.queryByText(/no content for this revision/i)).not.toBeInTheDocument();
+
+    // Should render interactive citation marks (multiple may exist since
+    // the body references [1] and [2] more than once)
+    const marks1 = screen.getAllByRole('button', { name: /citation 1/i });
+    const marks2 = screen.getAllByRole('button', { name: /citation 2/i });
+    expect(marks1.length).toBeGreaterThanOrEqual(1);
+    expect(marks2.length).toBeGreaterThanOrEqual(1);
+    expect(marks1[0]).toHaveTextContent('[1]');
+    expect(marks2[0]).toHaveTextContent('[2]');
+
+    // Should render body text
+    expect(screen.getByText(/the findings are significant/i)).toBeInTheDocument();
+    expect(screen.getByText(/another source confirms this/i)).toBeInTheDocument();
+  });
+
+  it('renders markdown headings from research_report body', () => {
+    mockCitationsQuery([
+      citation({ citationId: 'cite-1', ordinal: 1 }),
+      citation({ citationId: 'cite-2', ordinal: 2 }),
+    ]);
+    mockProvenanceQuery(provenance());
+    mockCarryForwardQuery([]);
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={researchReportContent()}
+      />,
+    );
+
+    // Headings should be rendered as semantic headings
+    expect(screen.getByText('Summary')).toBeInTheDocument();
+    expect(screen.getByText('Key Findings')).toBeInTheDocument();
+  });
+
+  it('opens provenance drawer when clicking a citation mark in research_report', () => {
+    mockCitationsQuery([
+      citation({ citationId: 'cite-1', ordinal: 1 }),
+      citation({ citationId: 'cite-2', ordinal: 2 }),
+    ]);
+    mockProvenanceQuery(provenance());
+    mockCarryForwardQuery([]);
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={researchReportContent()}
+      />,
+    );
+
+    // Click citation mark [1] (first occurrence)
+    const marks1 = screen.getAllByRole('button', { name: /citation 1/i });
+    fireEvent.click(marks1[0]);
+
+    // Provenance drawer should open
+    const drawer = screen.getByTestId('provenance-drawer');
+    expect(drawer).toBeInTheDocument();
+    expect(screen.getByText(/provenance — citation 1/i)).toBeInTheDocument();
+  });
+
+  it('renders consecutive citation markers [1][2] as separate interactive elements', () => {
+    mockCitationsQuery([
+      citation({ citationId: 'cite-1', ordinal: 1 }),
+      citation({ citationId: 'cite-2', ordinal: 2 }),
+    ]);
+    mockProvenanceQuery(provenance());
+    mockCarryForwardQuery([]);
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={researchReportContent()}
+      />,
+    );
+
+    // Both marks should be separate interactive buttons
+    const marks = screen.getAllByRole('button', { name: /citation \d+/i });
+    expect(marks.length).toBeGreaterThanOrEqual(4); // [1], [2] appear twice each
+  });
+
+  it('shows "Back to Mission" link in research_report view', () => {
+    mockCitationsQuery([citation({ citationId: 'cite-1', ordinal: 1 })]);
+    mockProvenanceQuery(provenance());
+    mockCarryForwardQuery([]);
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={researchReportContent()}
+      />,
+    );
+
+    const backLink = screen.getByRole('link', { name: /back to mission/i });
+    expect(backLink).toBeInTheDocument();
+    expect(backLink.getAttribute('href')).toContain(RUN);
+  });
+
+  it('renders unknown [N] markers as inert text (no broken link)', () => {
+    mockCitationsQuery([citation({ citationId: 'cite-1', ordinal: 1 })]);
+    mockProvenanceQuery(provenance());
+    mockCarryForwardQuery([]);
+
+    const content = {
+      type: 'research_report',
+      body: 'Text with known [1] and unknown [99] markers.',
+      citationMarks: [],
+    };
+
+    renderWithProviders(
+      <MissionArtifactCitations
+        companyId={COMPANY}
+        projectId={PROJECT}
+        runId={RUN}
+        artifactId={ARTIFACT_ID}
+        artifactVersion={ARTIFACT_VERSION}
+        content={content}
+      />,
+    );
+
+    // [1] should be interactive
+    expect(screen.getByRole('button', { name: /citation 1/i })).toBeInTheDocument();
+    // [99] should be inert text, not a button
+    expect(screen.queryByRole('button', { name: /citation 99/i })).not.toBeInTheDocument();
+    // But [99] should still be visible as text
+    expect(screen.getByText(/\[99\]/)).toBeInTheDocument();
+  });
+});
+
+// ── MissionArtifactReadOnlyView tests (fix-ut-m5-ui-artifact-rendering) ─
+
+describe('MissionArtifactReadOnlyView', () => {
+  it('detects research_report content format', async () => {
+    const { isMissionResearchReport } =
+      await import('../src/components/artifacts/MissionArtifactReadOnlyView');
+    expect(isMissionResearchReport({ type: 'research_report', body: 'text' })).toBe(true);
+    expect(isMissionResearchReport({ body: 'text', citationMarks: [] })).toBe(true);
+    expect(isMissionResearchReport({ format: 'markdown', body: 'text' })).toBe(false);
+    expect(isMissionResearchReport({ schemaVersion: 1, blocks: [] })).toBe(false);
+    expect(isMissionResearchReport(undefined)).toBe(false);
   });
 });

@@ -1,28 +1,50 @@
-import { useState, useCallback, useEffect, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
-import { ArrowLeft, FileText, Grid3x3, LayoutGrid, Presentation, GanttChartSquare, Images, BarChart3, AppWindow, Code2, AlertCircle, RotateCcw, Copy, Shield, Lock, Trash2, ArrowRightLeft } from "lucide-react";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/Button";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { Modal } from "@/components/ui/Modal";
-import { Select } from "@/components/ui/Input";
-import { DocEditor, type ConflictState as DocConflictState } from "./DocEditor";
-import { SheetEditor } from "./SheetEditor";
-import { BoardEditor } from "./BoardEditor";
-import { SlideEditor } from "./SlideEditor";
-import { TimelineEditor } from "./TimelineEditor";
-import { GalleryEditor } from "./GalleryEditor";
-import { DashboardEditor } from "./DashboardEditor";
-import { AppEditor } from "./AppEditor";
-import { CodeEditor } from "./CodeEditor";
-import { RevisionHistory } from "./RevisionHistory";
-import { LinksPanel } from "./LinksPanel";
-import { DiffModal } from "./DiffModal";
-import { PresenceIndicator } from "./PresenceIndicator";
-import { CoEditCursorOverlay } from "./CoEditCursorOverlay";
-import { SaveArtifactTemplateModal } from "./SaveArtifactTemplateModal";
-import { PermissionManager } from "./PermissionManager";
-import { MfaChallengeModal } from "@/components/security/MfaChallengeModal";
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  ArrowLeft,
+  FileText,
+  Grid3x3,
+  LayoutGrid,
+  Presentation,
+  GanttChartSquare,
+  Images,
+  BarChart3,
+  AppWindow,
+  Code2,
+  AlertCircle,
+  RotateCcw,
+  Copy,
+  Shield,
+  Lock,
+  Trash2,
+  ArrowRightLeft,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Modal } from '@/components/ui/Modal';
+import { Select } from '@/components/ui/Input';
+import { DocEditor, type ConflictState as DocConflictState } from './DocEditor';
+import {
+  MissionArtifactReadOnlyView,
+  isMissionResearchReport,
+} from './MissionArtifactReadOnlyView';
+import { SheetEditor } from './SheetEditor';
+import { BoardEditor } from './BoardEditor';
+import { SlideEditor } from './SlideEditor';
+import { TimelineEditor } from './TimelineEditor';
+import { GalleryEditor } from './GalleryEditor';
+import { DashboardEditor } from './DashboardEditor';
+import { AppEditor } from './AppEditor';
+import { CodeEditor } from './CodeEditor';
+import { RevisionHistory } from './RevisionHistory';
+import { LinksPanel } from './LinksPanel';
+import { DiffModal } from './DiffModal';
+import { PresenceIndicator } from './PresenceIndicator';
+import { CoEditCursorOverlay } from './CoEditCursorOverlay';
+import { SaveArtifactTemplateModal } from './SaveArtifactTemplateModal';
+import { PermissionManager } from './PermissionManager';
+import { MfaChallengeModal } from '@/components/security/MfaChallengeModal';
 import {
   useArtifact,
   useUpdateArtifact,
@@ -34,29 +56,29 @@ import {
   useResolvePermission,
   useProjects,
   useLinks,
-} from "@/lib/hooks";
-import { useMfaStepUp, isMfaStepUpRequired } from "@/lib/useMfaStepUp";
-import { useServerEvents } from "@/lib/ws";
-import { useWebSocket } from "@/lib/ws";
-import { useCoEditSession, useCoEditCursors } from "@/lib/coedit";
-import { useQueryClient } from "@tanstack/react-query";
-import { ApiError, permanentlyDeleteArtifact, transferArtifactOwnership } from "@/lib/api";
-import type { ArtifactType, Artifact } from "@/lib/api";
-import { setDirtyEditorGuard } from "@/lib/dirty-editor";
-import { applyOp, isCoEditableType } from "@eidolon/shared";
-import type { CoEditOp } from "@eidolon/shared";
+} from '@/lib/hooks';
+import { useMfaStepUp, isMfaStepUpRequired } from '@/lib/useMfaStepUp';
+import { useServerEvents } from '@/lib/ws';
+import { useWebSocket } from '@/lib/ws';
+import { useCoEditSession, useCoEditCursors } from '@/lib/coedit';
+import { useQueryClient } from '@tanstack/react-query';
+import { ApiError, permanentlyDeleteArtifact, transferArtifactOwnership } from '@/lib/api';
+import type { ArtifactType, Artifact } from '@/lib/api';
+import { setDirtyEditorGuard } from '@/lib/dirty-editor';
+import { applyOp, isCoEditableType } from '@eidolon/shared';
+import type { CoEditOp } from '@eidolon/shared';
 
 /** Header labels for the artifact types that have a dedicated editor. */
 const EDITOR_TYPE_LABELS: Partial<Record<ArtifactType, string>> = {
-  document: "Document",
-  sheet: "Sheet",
-  board: "Board",
-  slide_deck: "Slides",
-  timeline: "Timeline",
-  gallery: "Gallery",
-  dashboard: "Dashboard",
-  app: "App",
-  code: "Code",
+  document: 'Document',
+  sheet: 'Sheet',
+  board: 'Board',
+  slide_deck: 'Slides',
+  timeline: 'Timeline',
+  gallery: 'Gallery',
+  dashboard: 'Dashboard',
+  app: 'App',
+  code: 'Code',
 };
 
 interface ArtifactEditorProps {
@@ -66,15 +88,8 @@ interface ArtifactEditorProps {
   onBack: () => void;
 }
 
-export function ArtifactEditor({
-  companyId,
-  artifactId,
-  onBack,
-}: ArtifactEditorProps) {
-  const { data: artifact, isLoading, isError, refetch } = useArtifact(
-    companyId,
-    artifactId,
-  );
+export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: ArtifactEditorProps) {
+  const { data: artifact, isLoading, isError, refetch } = useArtifact(companyId, artifactId);
   const { data: revisions } = useArtifactRevisions(companyId, artifactId);
   // ── Smart artifact linking (M3) ───────────────────────────────────────
   // Fetches the link graph when the editor opens. The query key includes
@@ -87,7 +102,7 @@ export function ArtifactEditor({
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [permManagerOpen, setPermManagerOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
-  const [transferTarget, setTransferTarget] = useState<string>("");
+  const [transferTarget, setTransferTarget] = useState<string>('');
   const [transferBusy, setTransferBusy] = useState(false);
   const mfa = useMfaStepUp();
   const { data: projects } = useProjects(companyId);
@@ -100,14 +115,14 @@ export function ArtifactEditor({
   // Compare button sets the param; closing removes it. Direct navigation to
   // `?diff=v1-v2` opens the modal automatically.
   const [searchParams, setSearchParams] = useSearchParams();
-  const diffParam = searchParams.get("diff");
+  const diffParam = searchParams.get('diff');
   const diffVersions: [number, number] | null = (() => {
-    if (!diffParam) return null;
+    if (!diffParam) {return null;}
     const m = /^(\d+)-(\d+)$/.exec(diffParam);
-    if (!m) return null;
+    if (!m) {return null;}
     const a = Number(m[1]);
     const b = Number(m[2]);
-    if (!Number.isInteger(a) || a < 1 || !Number.isInteger(b) || b < 1) return null;
+    if (!Number.isInteger(a) || a < 1 || !Number.isInteger(b) || b < 1) {return null;}
     return [a, b];
   })();
   const diffOpen = diffVersions !== null;
@@ -115,7 +130,7 @@ export function ArtifactEditor({
   const openDiff = useCallback(
     (v1: number, v2: number) => {
       const next = new URLSearchParams(searchParams);
-      next.set("diff", `${v1}-${v2}`);
+      next.set('diff', `${v1}-${v2}`);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -123,7 +138,7 @@ export function ArtifactEditor({
 
   const closeDiff = useCallback(() => {
     const next = new URLSearchParams(searchParams);
-    next.delete("diff");
+    next.delete('diff');
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -131,9 +146,9 @@ export function ArtifactEditor({
   // view → read-only editor; edit → can edit; manage → can edit + manage
   // permissions + delete. null → hidden (shouldn't reach the editor; the
   // list filters hidden artifacts, and the API returns 403 on direct GET).
-  const { data: permData } = useResolvePermission(companyId, "artifact", artifactId);
+  const { data: permData } = useResolvePermission(companyId, 'artifact', artifactId);
   const accessLevel = permData?.accessLevel ?? null;
-  const canManage = accessLevel === "manage";
+  const canManage = accessLevel === 'manage';
 
   // ── Presence (M3) ──────────────────────────────────────────────────────
   // Join on open, leave on unmount. The presence list is live-patched by WS
@@ -141,11 +156,15 @@ export function ArtifactEditor({
   // reload. Typing is detected via input/keydown events bubbling to the
   // editor container (no per-editor wiring needed).
   const { data: presence } = useArtifactPresence(companyId, artifactId);
-  const { join: joinPresence, leave: leavePresence, notifyTyping, selfUserId } =
-    usePresenceActions(companyId, artifactId);
+  const {
+    join: joinPresence,
+    leave: leavePresence,
+    notifyTyping,
+    selfUserId,
+  } = usePresenceActions(companyId, artifactId);
 
   useEffect(() => {
-    if (!companyId || !artifactId) return;
+    if (!companyId || !artifactId) {return;}
     void joinPresence();
     return () => {
       void leavePresence();
@@ -172,54 +191,63 @@ export function ArtifactEditor({
   const coedit = useCoEditSession({
     companyId,
     artifactId,
-    userId: selfUserId ?? "dev-user-000",
-    name: "You",
+    userId: selfUserId ?? 'dev-user-000',
+    name: 'You',
     enabled: coeditEnabled,
-    onRemoteOp: useCallback((op: CoEditOp, _userId: string) => {
-      // Apply to editor's local state via the ref callback
-      applyRemoteOpRef.current?.(op);
-      // Also update the query cache for other components (list, etc.).
-      // Compute newContent INSIDE the updater using `old.content` (not the
-      // closure `artifact.content`) so rapid successive remote ops don't
-      // stack on a stale snapshot.
-      qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
-        if (!old) return old;
-        const newContent = applyOp(old.type, old.content, op);
-        return { ...old, content: newContent };
-      });
-    }, [companyId, artifactId, qc]),
-    onStateSync: useCallback((content: Record<string, unknown>, version: number) => {
-      qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
-        if (!old) return old;
-        return { ...old, content, version };
-      });
-    }, [companyId, artifactId, qc]),
-    onSaved: useCallback((version: number, content: Record<string, unknown>, title?: string) => {
-      qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
-        if (!old) return old;
-        return { ...old, content, version, ...(title !== undefined ? { title } : {}) };
-      });
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId, artifactId, "revisions"] });
-    }, [companyId, artifactId, qc]),
+    onRemoteOp: useCallback(
+      (op: CoEditOp, _userId: string) => {
+        // Apply to editor's local state via the ref callback
+        applyRemoteOpRef.current?.(op);
+        // Also update the query cache for other components (list, etc.).
+        // Compute newContent INSIDE the updater using `old.content` (not the
+        // closure `artifact.content`) so rapid successive remote ops don't
+        // stack on a stale snapshot.
+        qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
+          if (!old) {return old;}
+          const newContent = applyOp(old.type, old.content, op);
+          return { ...old, content: newContent };
+        });
+      },
+      [companyId, artifactId, qc],
+    ),
+    onStateSync: useCallback(
+      (content: Record<string, unknown>, version: number) => {
+        qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
+          if (!old) {return old;}
+          return { ...old, content, version };
+        });
+      },
+      [companyId, artifactId, qc],
+    ),
+    onSaved: useCallback(
+      (version: number, content: Record<string, unknown>, title?: string) => {
+        qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
+          if (!old) {return old;}
+          return { ...old, content, version, ...(title !== undefined ? { title } : {}) };
+        });
+        qc.invalidateQueries({ queryKey: ['artifacts', companyId, artifactId, 'revisions'] });
+      },
+      [companyId, artifactId, qc],
+    ),
   });
   const remoteCursors = useCoEditCursors(artifactId);
 
   // Also leave presence beforeunload (tab close) — best-effort.
   useEffect(() => {
-    if (!companyId || !artifactId) return;
+    if (!companyId || !artifactId) {return;}
     const onBeforeUnload = () => {
       // sendBeacon isn't trivially available for JSON POST with credentials;
       // the server stale-sweep (90s TTL) handles this case. This is a
       // best-effort enhancement only.
       void leavePresence();
     };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [companyId, artifactId, leavePresence]);
 
-  const [conflict, setConflict] = useState<
-    (DocConflictState & { type?: ArtifactType }) | null
-  >(null);
+  const [conflict, setConflict] = useState<(DocConflictState & { type?: ArtifactType }) | null>(
+    null,
+  );
   const backBtnRef = useRef<HTMLButtonElement>(null);
 
   // Focus the back button when the editor opens so keyboard users can
@@ -233,29 +261,29 @@ export function ArtifactEditor({
   useEffect(() => () => setDirtyEditorGuard(null), []);
 
   // Realtime: listen for artifact.updated and artifact.deleted to refresh
-  useServerEvents(companyId, "artifact.updated", (event) => {
+  useServerEvents(companyId, 'artifact.updated', (event) => {
     const payload = event.payload as { artifact?: { id: string } };
     if (payload?.artifact?.id === artifactId) {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId, artifactId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId, artifactId] });
       qc.invalidateQueries({
-        queryKey: ["artifacts", companyId, artifactId, "revisions"],
+        queryKey: ['artifacts', companyId, artifactId, 'revisions'],
       });
     }
   });
 
-  useServerEvents(companyId, "artifact.revision.created", (event) => {
+  useServerEvents(companyId, 'artifact.revision.created', (event) => {
     const payload = event.payload as { artifactId?: string };
     if (payload?.artifactId === artifactId) {
       qc.invalidateQueries({
-        queryKey: ["artifacts", companyId, artifactId, "revisions"],
+        queryKey: ['artifacts', companyId, artifactId, 'revisions'],
       });
     }
   });
 
-  useServerEvents(companyId, "artifact.deleted", (event) => {
+  useServerEvents(companyId, 'artifact.deleted', (event) => {
     const payload = event.payload as { artifact?: { id: string } };
     if (payload?.artifact?.id === artifactId) {
-      qc.invalidateQueries({ queryKey: ["artifacts", companyId, artifactId] });
+      qc.invalidateQueries({ queryKey: ['artifacts', companyId, artifactId] });
     }
   });
 
@@ -270,7 +298,7 @@ export function ArtifactEditor({
 
   const handleSave = useCallback(
     async (data: { title: string; content: Record<string, unknown> }) => {
-      if (!artifact) return;
+      if (!artifact) {return;}
       setConflict(null);
       try {
         await updateMutation.mutateAsync({
@@ -307,8 +335,8 @@ export function ArtifactEditor({
             // looping on the stale version. The editors preserve the local
             // draft because their useEffect sees isDirty and only sets
             // remoteUpdate (which is hidden while conflictState is set).
-            qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
-              if (!old) return old;
+            qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
+              if (!old) {return old;}
               return {
                 ...old,
                 version: current.version,
@@ -326,7 +354,7 @@ export function ArtifactEditor({
 
   const handleRestore = useCallback(
     async (version: number) => {
-      if (!artifact) return;
+      if (!artifact) {return;}
       setConflict(null);
       try {
         await restoreMutation.mutateAsync({ id: artifactId, version });
@@ -353,8 +381,8 @@ export function ArtifactEditor({
               currentTitle: current.title,
               currentContent: current.content,
             });
-            qc.setQueryData(["artifacts", companyId, artifactId], (old: Artifact | undefined) => {
-              if (!old) return old;
+            qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
+              if (!old) {return old;}
               return {
                 ...old,
                 version: current.version,
@@ -380,7 +408,7 @@ export function ArtifactEditor({
   // A valid TOTP code obtains a step-up token and retries the gated operation.
   // Dismissing the modal abandons the action (no mutation — VAL-SEC-003).
   const handlePermanentDelete = useCallback(async () => {
-    if (!artifact) return;
+    if (!artifact) {return;}
     if (
       !confirm(
         `Permanently delete "${artifact.title}"? This removes all revisions and cannot be undone.`,
@@ -389,51 +417,45 @@ export function ArtifactEditor({
       return;
     }
     try {
-      await permanentlyDeleteArtifact(companyId, artifactId, "");
+      await permanentlyDeleteArtifact(companyId, artifactId, '');
     } catch (err) {
       if (isMfaStepUpRequired(err)) {
         mfa.challenge({
           actionLabel: `Permanently delete artifact "${artifact.title}"`,
-          scope: "artifact_permanent_delete",
+          scope: 'artifact_permanent_delete',
           companyId,
           onStepUp: async (token) => {
             await permanentlyDeleteArtifact(companyId, artifactId, token);
-            toast.success("Artifact permanently deleted");
-            qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
+            toast.success('Artifact permanently deleted');
+            qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
             onBack();
           },
         });
       } else {
-        const msg = err instanceof Error ? err.message : "Delete failed";
+        const msg = err instanceof Error ? err.message : 'Delete failed';
         toast.error(msg);
       }
     }
   }, [artifact, companyId, artifactId, mfa, qc, onBack]);
 
   const openTransfer = useCallback(() => {
-    if (!artifact) return;
-    setTransferTarget(artifact.projectId ?? "");
+    if (!artifact) {return;}
+    setTransferTarget(artifact.projectId ?? '');
     setTransferOpen(true);
   }, [artifact]);
 
   const handleTransferSubmit = useCallback(async () => {
-    if (!artifact) return;
-    const targetProjectId =
-      transferTarget === "" ? null : transferTarget;
+    if (!artifact) {return;}
+    const targetProjectId = transferTarget === '' ? null : transferTarget;
     setTransferBusy(true);
     try {
       // Attempt without a step-up token first → expect 403 MFA_STEP_UP_REQUIRED.
-      await transferArtifactOwnership(
-        companyId,
-        artifactId,
-        targetProjectId,
-        "",
-      );
+      await transferArtifactOwnership(companyId, artifactId, targetProjectId, '');
     } catch (err) {
       if (isMfaStepUpRequired(err)) {
         mfa.challenge({
           actionLabel: `Transfer ownership of "${artifact.title}"`,
-          scope: "artifact_transfer",
+          scope: 'artifact_transfer',
           companyId,
           onStepUp: async (token) => {
             const res = await transferArtifactOwnership(
@@ -442,14 +464,14 @@ export function ArtifactEditor({
               targetProjectId,
               token,
             );
-            qc.setQueryData(["artifacts", companyId, artifactId], res.data);
-            qc.invalidateQueries({ queryKey: ["artifacts", companyId] });
-            toast.success("Ownership transferred");
+            qc.setQueryData(['artifacts', companyId, artifactId], res.data);
+            qc.invalidateQueries({ queryKey: ['artifacts', companyId] });
+            toast.success('Ownership transferred');
             setTransferOpen(false);
           },
         });
       } else {
-        const msg = err instanceof Error ? err.message : "Transfer failed";
+        const msg = err instanceof Error ? err.message : 'Transfer failed';
         toast.error(msg);
       }
     } finally {
@@ -484,7 +506,11 @@ export function ArtifactEditor({
           title="Artifact not found"
           description="This artifact may have been deleted or does not exist."
           action={
-            <Button variant="secondary" onClick={onBack} icon={<ArrowLeft className="h-3.5 w-3.5" />}>
+            <Button
+              variant="secondary"
+              onClick={onBack}
+              icon={<ArrowLeft className="h-3.5 w-3.5" />}
+            >
               Back to Artifacts
             </Button>
           }
@@ -493,7 +519,7 @@ export function ArtifactEditor({
     );
   }
 
-  if (artifact.status === "deleted") {
+  if (artifact.status === 'deleted') {
     return (
       <div className="flex h-full items-center justify-center p-6">
         <EmptyState
@@ -501,7 +527,11 @@ export function ArtifactEditor({
           title="Artifact deleted"
           description="This artifact has been deleted."
           action={
-            <Button variant="secondary" onClick={onBack} icon={<ArrowLeft className="h-3.5 w-3.5" />}>
+            <Button
+              variant="secondary"
+              onClick={onBack}
+              icon={<ArrowLeft className="h-3.5 w-3.5" />}
+            >
               Back to Artifacts
             </Button>
           }
@@ -531,21 +561,21 @@ export function ArtifactEditor({
           <ArrowLeft className="h-4 w-4" />
         </button>
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
-          {artifact.type === "document" ? (
+          {artifact.type === 'document' ? (
             <FileText className="h-3.5 w-3.5" />
-          ) : artifact.type === "board" ? (
+          ) : artifact.type === 'board' ? (
             <LayoutGrid className="h-3.5 w-3.5" />
-          ) : artifact.type === "slide_deck" ? (
+          ) : artifact.type === 'slide_deck' ? (
             <Presentation className="h-3.5 w-3.5" />
-          ) : artifact.type === "timeline" ? (
+          ) : artifact.type === 'timeline' ? (
             <GanttChartSquare className="h-3.5 w-3.5" />
-          ) : artifact.type === "gallery" ? (
+          ) : artifact.type === 'gallery' ? (
             <Images className="h-3.5 w-3.5" />
-          ) : artifact.type === "dashboard" ? (
+          ) : artifact.type === 'dashboard' ? (
             <BarChart3 className="h-3.5 w-3.5" />
-          ) : artifact.type === "app" ? (
+          ) : artifact.type === 'app' ? (
             <AppWindow className="h-3.5 w-3.5" />
-          ) : artifact.type === "code" ? (
+          ) : artifact.type === 'code' ? (
             <Code2 className="h-3.5 w-3.5" />
           ) : (
             <Grid3x3 className="h-3.5 w-3.5" />
@@ -570,7 +600,7 @@ export function ArtifactEditor({
             size="sm"
             icon={<RotateCcw className="h-3 w-3" />}
             onClick={handleDiscardConflict}
-            className={presence && presence.length > 0 ? "" : "ml-auto"}
+            className={presence && presence.length > 0 ? '' : 'ml-auto'}
           >
             Discard & Reload
           </Button>
@@ -639,7 +669,7 @@ export function ArtifactEditor({
           />
         )}
         {/* Read-only indicator (M4 RBAC) — view-only users see a badge. */}
-        {accessLevel === "view" && (
+        {accessLevel === 'view' && (
           <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-400">
             <Lock className="h-3 w-3" />
             Read-only
@@ -658,10 +688,10 @@ export function ArtifactEditor({
                   name,
                   description: description || null,
                 });
-                toast.success("Artifact template saved");
+                toast.success('Artifact template saved');
                 setSaveTemplateOpen(false);
               } catch (err) {
-                const msg = err instanceof Error ? err.message : "Save failed";
+                const msg = err instanceof Error ? err.message : 'Save failed';
                 toast.error(msg);
               }
             }}
@@ -679,9 +709,8 @@ export function ArtifactEditor({
           >
             <div className="space-y-4">
               <p className="text-sm text-text-secondary">
-                Move <strong className="text-text-primary">{artifact.title}</strong>{" "}
-                to another project, or to company-level (no project). This
-                requires step-up re-authentication.
+                Move <strong className="text-text-primary">{artifact.title}</strong> to another
+                project, or to company-level (no project). This requires step-up re-authentication.
               </p>
               <Select
                 label="Destination"
@@ -689,11 +718,11 @@ export function ArtifactEditor({
                 onChange={(e) => setTransferTarget(e.target.value)}
                 disabled={transferBusy}
                 options={[
-                  { value: "", label: "Company level (no project)" },
-                  ...((projects ?? []).map((p) => ({
+                  { value: '', label: 'Company level (no project)' },
+                  ...(projects ?? []).map((p) => ({
                     value: p.id,
                     label: p.name,
-                  }))),
+                  })),
                 ]}
               />
               <div className="flex justify-end gap-2 pt-1">
@@ -705,11 +734,7 @@ export function ArtifactEditor({
                 >
                   Cancel
                 </Button>
-                <Button
-                  type="button"
-                  onClick={handleTransferSubmit}
-                  loading={transferBusy}
-                >
+                <Button type="button" onClick={handleTransferSubmit} loading={transferBusy}>
                   Transfer
                 </Button>
               </div>
@@ -729,102 +754,110 @@ export function ArtifactEditor({
           className="relative flex-1 overflow-hidden"
           onInput={handlePresenceInput}
           onKeyDown={handlePresenceInput}
-          style={accessLevel === "view" ? { pointerEvents: "none" } : undefined}
-          aria-readonly={accessLevel === "view"}
+          style={accessLevel === 'view' ? { pointerEvents: 'none' } : undefined}
+          aria-readonly={accessLevel === 'view'}
         >
           <CoEditCursorOverlay cursors={remoteCursors} selfUserId={selfUserId} />
-          {artifact.type === "document" ? (
+          {artifact.type === 'document' && isMissionResearchReport(artifact.content) ? (
+            <MissionArtifactReadOnlyView
+              companyId={companyId}
+              projectId={projectId ?? ''}
+              artifactId={artifact.id}
+              artifactVersion={artifact.version}
+              artifactTitle={artifact.title}
+            />
+          ) : artifact.type === 'document' ? (
             <DocEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
               coeditSendOp={coedit.joined ? coedit.sendOp : undefined}
               coeditSendCursor={coedit.joined ? coedit.sendCursor : undefined}
               coeditSave={coedit.joined ? coedit.save : undefined}
               applyRemoteOpRef={coedit.joined ? applyRemoteOpRef : undefined}
             />
-          ) : artifact.type === "sheet" ? (
+          ) : artifact.type === 'sheet' ? (
             <SheetEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
-          ) : artifact.type === "board" ? (
+          ) : artifact.type === 'board' ? (
             <BoardEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
-          ) : artifact.type === "slide_deck" ? (
+          ) : artifact.type === 'slide_deck' ? (
             <SlideEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
-          ) : artifact.type === "timeline" ? (
+          ) : artifact.type === 'timeline' ? (
             <TimelineEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
-          ) : artifact.type === "gallery" ? (
+          ) : artifact.type === 'gallery' ? (
             <GalleryEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
-          ) : artifact.type === "dashboard" ? (
+          ) : artifact.type === 'dashboard' ? (
             <DashboardEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
-          ) : artifact.type === "app" ? (
+          ) : artifact.type === 'app' ? (
             <AppEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
-          ) : artifact.type === "code" ? (
+          ) : artifact.type === 'code' ? (
             <CodeEditor
               artifact={artifact}
               version={artifact.version}
               onSave={handleSave}
               saving={updateMutation.isPending}
               conflictState={conflictState}
-              wsConnected={wsStatus === "connected"}
+              wsConnected={wsStatus === 'connected'}
               onStateChange={handleEditorState}
             />
           ) : (

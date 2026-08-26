@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
 import {
   createArtifact,
   getArtifact,
@@ -182,6 +183,36 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await getRevision(db, companyId, id, Number(req.params.version)) });
+  });
+  // -------------------------------------------------------------------------
+  // Project-scoped artifact revision detail.
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version
+  // Returns the exact revision content (decrypted) for a project-scoped
+  // artifact. Validates project ownership, artifact access, and that the
+  // artifact belongs to the requested project. Cross-project or
+  // cross-company artifacts return a non-enumerating 404.
+  // (fix-ut-m5-ui-artifact-rendering)
+  // -------------------------------------------------------------------------
+  router.get('/projects/:projectId/artifacts/:artifactId/revisions/:version', async (req, res) => {
+    const { companyId, projectId, artifactId } = routeParams(req);
+    const versionNum = Number(req.params.version);
+    if (!Number.isInteger(versionNum) || versionNum < 1) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+    }
+    // Validate project ownership (throws 404 PROJECT_INVALID if the
+    // project does not belong to the company).
+    await validateProjectOwnership(db, companyId, projectId);
+    // Validate artifact view access (company-scoped).
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+    // Verify the artifact belongs to the requested project. A
+    // cross-project artifact in the same company returns a
+    // non-enumerating 404 (does not reveal existence).
+    const artifact = await getArtifact(db, companyId, artifactId);
+    if (artifact.projectId !== projectId) {
+      throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+    }
+    res.json({ data: await getRevision(db, companyId, artifactId, versionNum) });
   });
   // -------------------------------------------------------------------------
   // Exact-revision citation export (m5-f07-provenance-export-deep-links).
