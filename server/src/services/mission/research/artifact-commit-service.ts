@@ -49,7 +49,12 @@ export interface ArtifactCommitServiceDeps {
 export interface CitationCommitInput {
   sourceRevisionId: string;
   ordinal: number;
-  quote: string;
+  /**
+   * Exact quote text from the source. When omitted, a metadata-only
+   * citation is created from the frozen source metadata without requiring
+   * a verbatim quote match (fix-ut-m5-citation-quote-validation).
+   */
+  quote?: string;
   /** Required when the quote is repeated in the source (VAL-RES-097). */
   locator?: CitationLocator;
   /** Normalized source text; required to verify the locator/uniqueness. */
@@ -361,8 +366,10 @@ export class ArtifactCommitService {
     // When the caller did not supply normalized source text, load + decrypt
     // it from the scoped revision so quote/locator validation runs against
     // the actual immutable revision content (VAL-RES-097).
+    // Skip loading when no quote is provided (metadata-only citation,
+    // fix-ut-m5-citation-quote-validation).
     let normalizedSourceText = c.normalizedSourceText;
-    if (normalizedSourceText === undefined) {
+    if (normalizedSourceText === undefined && c.quote) {
       normalizedSourceText = await this.fetchNormalizedSourceText(
         tx,
         input.companyId,

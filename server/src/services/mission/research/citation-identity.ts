@@ -207,7 +207,13 @@ export interface CreateCitationIdentityInput {
   artifactId: string;
   artifactRevisionId: string;
   ordinal: number;
-  quote: string;
+  /**
+   * Exact quote text from the source. When omitted or empty, a
+   * metadata-only citation is created from the frozen source metadata
+   * without requiring a verbatim quote match against the source text
+   * (fix-ut-m5-citation-quote-validation).
+   */
+  quote?: string;
   /** Optional locator; required when the quote is repeated in the source. */
   locator?: CitationLocator;
   /** The normalized source text, required only when a locator is provided. */
@@ -252,12 +258,43 @@ export function createCitationIdentity(input: CreateCitationIdentityInput): Cita
     throw new Error('frozenProvider is required');
   }
 
-  const normalizedQuote = normalizeText(input.quote);
-  if (normalizedQuote.length === 0) {
-    throw new Error('quote must not be empty');
-  }
   if (!Number.isInteger(input.ordinal) || input.ordinal < 0) {
     throw new Error('ordinal must be a non-negative integer');
+  }
+
+  // When no quote is provided (undefined or empty after normalization),
+  // create a metadata-only citation from the frozen source metadata without
+  // requiring a verbatim quote match against the source text
+  // (fix-ut-m5-citation-quote-validation). This allows the synthesis
+  // artifact creator to generate citations from source metadata (title,
+  // URL, provider) rather than requiring exact text quotes from the LLM.
+  const normalizedQuote = input.quote ? normalizeText(input.quote) : '';
+
+  if (normalizedQuote.length === 0) {
+    // Metadata-only citation: no quote, no locator, no char offsets.
+    // The quote hash is the SHA-256 of the empty string so the NOT NULL
+    // DB constraint is satisfied while clearly distinguishing metadata-only
+    // citations from quote-bearing citations.
+    return {
+      companyId: input.companyId,
+      projectId: input.projectId,
+      runId: input.runId,
+      sourceRevisionId: input.sourceRevisionId,
+      artifactId: input.artifactId,
+      artifactRevisionId: input.artifactRevisionId,
+      ordinal: input.ordinal,
+      quote: '',
+      quoteHash: computeQuoteHash(''),
+      charStart: undefined,
+      charEnd: undefined,
+      section: undefined,
+      frozenTitle: input.frozenTitle,
+      frozenAuthor: input.frozenAuthor,
+      frozenCanonicalUrl: input.frozenCanonicalUrl,
+      frozenRetrievedAt: input.frozenRetrievedAt,
+      frozenProvider: input.frozenProvider,
+      frozenContentHash: input.frozenContentHash,
+    };
   }
 
   // Resolve the locator when source text is available. When a locator is
@@ -268,7 +305,7 @@ export function createCitationIdentity(input: CreateCitationIdentityInput): Cita
   let section: string | undefined;
 
   if (input.normalizedSourceText !== undefined) {
-    const resolved = resolveQuoteLocator(input.normalizedSourceText, input.quote, input.locator);
+    const resolved = resolveQuoteLocator(input.normalizedSourceText, input.quote!, input.locator);
     if (resolved.kind === 'rejected') {
       throw new Error(`Citation quote rejected: ${resolved.reason}`);
     }

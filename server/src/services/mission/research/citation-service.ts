@@ -49,7 +49,12 @@ export interface PersistCitationInput {
   artifactId: string;
   artifactRevisionId: string;
   ordinal: number;
-  quote: string;
+  /**
+   * Exact quote text from the source. When omitted, a metadata-only
+   * citation is created from the frozen source metadata without requiring
+   * a verbatim quote match (fix-ut-m5-citation-quote-validation).
+   */
+  quote?: string;
   /** Required when the quote is repeated in the source (VAL-RES-097). */
   locator?: CitationLocator;
   /** Normalized source text; required to verify the locator/uniqueness. */
@@ -105,8 +110,10 @@ export class CitationService {
     // Resolve the normalized source text: prefer caller-supplied text,
     // otherwise fetch + decrypt the stored revision text (scoped). This
     // enforces VAL-RES-097 against the actual immutable revision content.
+    // Skip loading when no quote is provided (metadata-only citation,
+    // fix-ut-m5-citation-quote-validation).
     let normalizedSourceText = input.normalizedSourceText;
-    if (normalizedSourceText === undefined) {
+    if (normalizedSourceText === undefined && input.quote) {
       normalizedSourceText = await this.fetchNormalizedSourceText(
         input.companyId,
         input.projectId,

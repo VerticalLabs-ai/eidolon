@@ -447,15 +447,19 @@ Write the report in a structured format with sections for Summary, Key Findings,
   /**
    * Build citation commit inputs from research sources.
    *
-   * Each citation binds the artifact to a research source revision with
-   * a quote from the source title (or URL as fallback) and frozen display
-   * metadata captured at citation creation time (VAL-RES-113).
+   * Citations are created from source metadata (source revision ID, title,
+   * URL, provider) without requiring a verbatim quote match against the
+   * source text (fix-ut-m5-citation-quote-validation). The LLM synthesis
+   * references sources by number/URL, but the citation records are created
+   * from the source metadata without requiring an exact text quote.
+   *
+   * Frozen display metadata is captured at citation creation time (VAL-RES-113).
    */
   private buildCitations(sources: ResearchSourceInfo[]): CitationCommitInput[] {
     return sources.map((s, i) => ({
       sourceRevisionId: s.sourceRevisionId,
       ordinal: i + 1,
-      quote: s.title ?? s.canonicalUrl,
+      // No quote field — metadata-only citation from source metadata
       frozenCanonicalUrl: s.canonicalUrl,
       frozenRetrievedAt: s.retrievedAt,
       frozenProvider: s.provider,

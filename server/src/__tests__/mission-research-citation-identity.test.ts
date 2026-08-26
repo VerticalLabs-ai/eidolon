@@ -99,8 +99,12 @@ describe('createCitationIdentity (bind to exact revisions)', () => {
     expect(c.frozenProvider).toBe('tavily');
   });
 
-  it('rejects an empty quote', () => {
-    expect(() => createCitationIdentity({ ...baseInput, quote: '' })).toThrow();
+  it('creates a metadata-only citation for an empty quote (fix-ut-m5-citation-quote-validation)', () => {
+    const c = createCitationIdentity({ ...baseInput, quote: '' });
+    expect(c.quote).toBe('');
+    expect(c.quoteHash).toBe(computeQuoteHash(''));
+    expect(c.charStart).toBeUndefined();
+    expect(c.charEnd).toBeUndefined();
   });
 
   it('rejects a missing source or artifact revision id', () => {
