@@ -11,6 +11,7 @@ import { ProductionPlanGenerator } from './services/mission/planner-harness.js';
 import { MissionKillSwitchService } from './services/mission/kill-switch.js';
 import { MissionWorkerHealthService } from './services/mission/worker-health.js';
 import { ProductionResearchExecutor } from './services/mission/research-executor.js';
+import { SynthesisArtifactCreator } from './services/mission/synthesis-artifact-creator.js';
 import logger from './utils/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -66,7 +67,18 @@ async function main(): Promise<void> {
   // real Tavily/Firecrawl adapters, persist source revisions, and settle
   // budget before completing the run (fix-ut-m5-research-execution-wiring).
   const researchExecutor = new ProductionResearchExecutor(db);
-  const processor = new RunProcessor(db, { planner, researchExecutor });
+  // Wire the production synthesis artifact creator into the run processor.
+  // After composite synthesis completes (all children terminal, run
+  // transitioned to completed), the processor delegates to this creator to
+  // gather research sources from child runs, make an LLM call to synthesize
+  // a research report, and commit the report as an artifact with citations
+  // and provenance (fix-ut-m5-synthesis-firecrawl-url-passing).
+  const synthesisArtifactCreator = new SynthesisArtifactCreator(db);
+  const processor = new RunProcessor(db, {
+    planner,
+    researchExecutor,
+    synthesisArtifactCreator,
+  });
   const killSwitch = new MissionKillSwitchService(db);
   const workerHealth = new MissionWorkerHealthService(db);
   const workerId = `worker-${randomUUID().slice(0, 8)}`;

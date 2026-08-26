@@ -440,6 +440,7 @@ export class RunProcessor {
     let approvedPlanRevisionId: string | null = null;
     let approvedContentHash: string | null = null;
     let policySnapshotId: string | null = null;
+    let rootRunId: string | null = null;
     try {
       const result = await this.db.drizzle.transaction(async (tx) => {
         return synthesisService.attemptSynthesis(tx, {
@@ -467,6 +468,7 @@ export class RunProcessor {
           .limit(1);
         approvedPlanRevisionId = run?.approvedPlanRevisionId ?? null;
         policySnapshotId = run?.policySnapshotId ?? null;
+        rootRunId = run?.rootRunId ?? null;
 
         if (approvedPlanRevisionId) {
           const [revision] = await this.db.drizzle
@@ -498,6 +500,7 @@ export class RunProcessor {
         approvedContentHash,
         policySnapshotId,
         manifest,
+        rootRunId: rootRunId ?? claim.runId,
       });
     }
 
@@ -519,6 +522,7 @@ export class RunProcessor {
       approvedContentHash: string;
       policySnapshotId: string | null;
       manifest: ManifestEntry[] | null;
+      rootRunId: string;
     },
   ): Promise<void> {
     try {
@@ -526,7 +530,7 @@ export class RunProcessor {
         companyId: claim.companyId,
         projectId: claim.projectId,
         runId: claim.runId,
-        rootRunId: claim.runId, // Root run is the composite run itself
+        rootRunId: info.rootRunId,
         approvedPlanRevisionId: info.approvedPlanRevisionId,
         approvedContentHash: info.approvedContentHash,
         policySnapshotId: info.policySnapshotId,
