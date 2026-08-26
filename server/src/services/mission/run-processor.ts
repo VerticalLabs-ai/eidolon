@@ -28,6 +28,29 @@ import logger from '../../utils/logger.js';
 
 // ---------------------------------------------------------------------------
 // Research operation detection
+
+/**
+ * Minimum per-step budget for steps that include research operations
+ * (search, extract, scrape, structured_extract).
+ *
+ * The conservative unknown-price estimates from the default pricing table
+ * are 100c (Tavily search/extract) and 150c (Firecrawl search/scrape/
+ * structured_extract) per operation. A step with multiple research
+ * operations (e.g., search + extract + scrape + structured_extract) needs
+ * a budget large enough to cover the conservative estimates of all
+ * operations, because each operation's preflight checks that the
+ * remaining allocation covers its conservative estimate. With a low
+ * step budget (e.g., 200c), the first search settles and consumes actual
+ * cost, leaving insufficient remaining for subsequent operations.
+ *
+ * 1000c covers the sum of conservative estimates for all five default
+ * research operations (100 + 150 + 100 + 150 + 150 = 650c) with headroom
+ * for actual costs that may exceed the conservative estimate when
+ * providers report multiple credits.
+ *
+ * (fix-ut-m5-unnest-budget)
+ */
+export const MINIMUM_RESEARCH_STEP_BUDGET_CENTS = 1000;
 // ---------------------------------------------------------------------------
 
 /**
@@ -1002,10 +1025,26 @@ export class RunProcessor {
       if (revision?.content) {
         const plan = revision.content as unknown as PlanContent;
         const step = plan.steps?.find((s) => s.stepKey === stepKey);
-        if (step?.budgetCents) {
-          return step.budgetCents;
+        if (step) {
+          // Enforce a minimum budget for steps with research operations.
+          // The plan's step budget may be too low to cover the conservative
+          // estimates of multiple research operations (search + extract +
+          // scrape + structured_extract), causing preflight failures.
+          // (fix-ut-m5-unnest-budget)
+          const researchOps = extractResearchOperations(step.toolAllowlist);
+          if (researchOps.length > 0) {
+            return Math.max(step.budgetCents, MINIMUM_RESEARCH_STEP_BUDGET_CENTS);
+          }
+          if (step.budgetCents) {
+            return step.budgetCents;
+          }
         }
       }
+    }
+    // Fallback: check if the policy has research tools and enforce minimum.
+    const policyTools = policy?.toolAllowlist;
+    if (policyTools && extractResearchOperations(policyTools).length > 0) {
+      return Math.max(policy?.limits?.costCents ?? 100, MINIMUM_RESEARCH_STEP_BUDGET_CENTS);
     }
     return policy?.limits?.costCents ?? 100;
   }

@@ -321,7 +321,10 @@ export function artifactsRouter(db: DbInstance): Router {
               sr.source_revision_id,
               ac.status,
               ac.created_at
-            FROM UNNEST(${sourceRevisionIds}::text[]) AS sr(source_revision_id)
+            FROM UNNEST(ARRAY[${sql.join(
+              sourceRevisionIds.map((id) => sql`${id}`),
+              sql`, `,
+            )}]::text[]) AS sr(source_revision_id)
             LEFT JOIN LATERAL (
               SELECT "status", "created_at"
               FROM "research_source_availability_checks"
@@ -375,6 +378,13 @@ export function artifactsRouter(db: DbInstance): Router {
       }
       const { userId, orgRole } = actor(req);
       await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      // Verify the artifact exists in the company. requireAccess returns
+      // 'manage' for owner/admin without checking existence, so we need an
+      // explicit company-scoped artifact lookup to return a non-enumerating
+      // 404 when the artifact is absent or cross-scope
+      // (fix-ut-m5-unnest-budget: artifact revision endpoint 404).
+      await getArtifact(db, companyId, artifactId);
 
       const { sql, eq, and } = await import('drizzle-orm');
 
@@ -457,7 +467,10 @@ export function artifactsRouter(db: DbInstance): Router {
         const newerRows = (await db.drizzle.execute(sql`
           SELECT EXISTS (
             SELECT 1 FROM "research_source_revisions" r2
-            JOIN UNNEST(${citedSourceIds}::text[]) AS cited(id) ON true
+            JOIN UNNEST(ARRAY[${sql.join(
+              citedSourceIds.map((id) => sql`${id}`),
+              sql`, `,
+            )}]::text[]) AS cited(id) ON true
             JOIN "research_source_revisions" r1 ON r1.id = cited.id
             WHERE r2.source_id = r1.source_id
               AND r2.company_id = ${companyId}
