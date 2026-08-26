@@ -421,4 +421,57 @@ describe('ResearchExecutionService', () => {
       expect(serialized).not.toContain('test-tavily-key');
     });
   });
+
+  describe('research.completed event payload includes providerRequestIdHash (fix-ut-m5-synthesis-artifact-citation-wiring)', () => {
+    it('includes the hashed provider request ID in the research.completed event payload', async () => {
+      const { companyId, projectId, runId, rootRunId, billingAgentId } = await seedRunWithBudget(
+        db,
+        '__mtest__ event-req-hash',
+      );
+      credentialStore.set(companyId, 'tavily', 'test-key');
+
+      const mockFetch = mockTavilySearchFetch('tavily-evt-req-999');
+      const tavilyAdapter = new TavilyAdapter({ apiKey: 'test-key', fetch: mockFetch });
+
+      await executionService.executeResearch(
+        {
+          companyId,
+          projectId,
+          runId,
+          rootRunId,
+          billingAgentId,
+          provider: 'tavily',
+          operation: 'search',
+          query: 'test event hash',
+          maxResults: 5,
+          timeoutMs: 15000,
+        },
+        { providers: [{ provider: tavilyAdapter, name: 'tavily' }] },
+      );
+
+      // Query the run_events table for the research.completed event.
+      const events = (await db.drizzle.execute(sql`
+        SELECT "type", "payload"
+        FROM "run_events"
+        WHERE "run_id" = ${runId} AND "type" = 'research.completed'
+        ORDER BY "sequence" ASC
+      `)) as unknown as Array<{
+        type: string;
+        payload: Record<string, unknown>;
+      }>;
+
+      expect(events.length).toBeGreaterThan(0);
+      const completedEvent = events[0]!;
+      expect(completedEvent.payload).toBeDefined();
+      expect(completedEvent.payload.providerRequestIdHash).toBeDefined();
+      expect(typeof completedEvent.payload.providerRequestIdHash).toBe('string');
+      // The hash should be a SHA-256 hex (64 chars).
+      expect(completedEvent.payload.providerRequestIdHash).toMatch(/^[0-9a-f]{64}$/);
+      // Verify the hash matches the expected value.
+      const expectedHash = createHash('sha256').update('tavily-evt-req-999', 'utf8').digest('hex');
+      expect(completedEvent.payload.providerRequestIdHash).toBe(expectedHash);
+      // The raw request ID should NOT appear in the event payload.
+      expect(JSON.stringify(completedEvent.payload)).not.toContain('tavily-evt-req-999');
+    });
+  });
 });

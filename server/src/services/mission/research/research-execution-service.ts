@@ -424,11 +424,14 @@ export class ResearchExecutionService {
     });
 
     // 11. Emit research.completed event (VAL-CROSS-033).
+    // Include the hashed provider request ID for trace correlation
+    // (VAL-RES-002, VAL-CROSS-031, fix-ut-m5-synthesis-artifact-citation-wiring).
     await this.emitResearchEvent(input, 'research.completed', {
       logicalCallId,
       provider: providerResult.provider,
       sourceCount: providerResult.sources.length,
       costCents,
+      providerRequestIdHash,
     });
 
     // 12. Return citation-ready evidence without leaking secrets.
