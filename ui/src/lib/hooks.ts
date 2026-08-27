@@ -2784,8 +2784,34 @@ export function useMissionRunSnapshot(
       return data.run;
     },
     enabled: !!companyId && !!projectId && !!runId,
-    staleTime: 5_000,
+    staleTime: 2_000,
     placeholderData: (prev: api.MissionRunSnapshot | undefined) => prev,
+  });
+}
+
+/**
+ * Recursive child tree for a run from the /children endpoint
+ * (VAL-M1-015..036). The server is authoritative; the browser fetches the
+ * tree rather than deriving it client-side from events. The query key
+ * includes companyId, projectId, and runId so SSE child.* events can
+ * target the exact query for invalidation (VAL-M1-027).
+ */
+export function useMissionRunChildren(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+  options?: { maxDepth?: number; enabled?: boolean },
+) {
+  const enabled = options?.enabled ?? true;
+  return useQuery({
+    queryKey: ['mission-run-children', companyId, projectId, runId],
+    queryFn: async () =>
+      unwrap<api.MissionChildTreeNode>(
+        await api.getMissionRunChildren(companyId, projectId, runId!, options?.maxDepth),
+      ),
+    enabled: !!companyId && !!projectId && !!runId && enabled,
+    staleTime: 2_000,
+    placeholderData: (prev: api.MissionChildTreeNode | undefined) => prev,
   });
 }
 

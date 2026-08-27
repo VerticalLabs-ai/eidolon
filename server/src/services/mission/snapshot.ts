@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
 import { buildMissionUiLink } from '@eidolon/shared';
 import type { DbInstance, EidolonDbSchema } from '../../types.js';
@@ -199,6 +199,20 @@ export interface ListInput {
 export interface ListResult {
   runs: RunSummary[];
   nextCursor: string | null;
+}
+
+/** A node in the child tree returned by getChildTree (VAL-M1-015..036). */
+export interface ChildTreeNode {
+  runId: string;
+  status: string;
+  cost: number;
+  routingInfo: {
+    mode: string;
+    model: string | null;
+    provider: string | null;
+  };
+  stepKey: string | null;
+  children: ChildTreeNode[];
 }
 
 const STATUS_VALUES = [
@@ -675,5 +689,156 @@ export class MissionSnapshotService {
       remainingWallMs,
       currentQuestionSet,
     };
+  }
+
+  /**
+   * Returns a recursive child tree for a run, bounded to maxDepth levels.
+   * Returns a single-node tree (root only) when the run has no children.
+   * Throws 404 RUN_NOT_FOUND when the root run does not exist or is
+   * cross-scope. The recursive CTE terminates at maxDepth so circular
+   * parent references do not cause infinite recursion (VAL-M1-109).
+   * (default 3, max 5).
+   */
+  async getChildTree(
+    companyId: string,
+    projectId: string,
+    runId: string,
+    maxDepth: number,
+  ): Promise<ChildTreeNode> {
+    // Verify the root run exists and is same-company/project so a
+    // cross-scope id returns 404 without revealing existence.
+    const schema = this.db.schema;
+    const [rootRun] = await this.db.drizzle
+      .select({ id: schema.missionRuns.id })
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.id, runId),
+          eq(schema.missionRuns.companyId, companyId),
+          eq(schema.missionRuns.projectId, projectId),
+        ),
+      )
+      .limit(1);
+
+    if (!rootRun) {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    }
+
+    // Recursive CTE: fetch the root run and all descendants up to maxDepth.
+    // The CTE terminates at maxDepth so circular parent references do not
+    // cause infinite recursion (VAL-M1-109).
+    const rows = (await this.db.drizzle.execute(sql`
+      WITH RECURSIVE child_tree AS (
+        SELECT
+          mr.id,
+          mr.parent_run_id,
+          mr.status,
+          mr.actual_cost_cents,
+          mr.resolved_mode,
+          mr.routing_kind,
+          mr.created_at,
+          rps.provider,
+          rps.model,
+          rsa.step_key,
+          0 AS tree_depth
+        FROM mission_runs mr
+        LEFT JOIN run_policy_snapshots rps ON rps.id = mr.policy_snapshot_id
+        LEFT JOIN run_step_assignments rsa ON rsa.run_id = mr.id
+        WHERE mr.id = ${runId}
+          AND mr.company_id = ${companyId}
+          AND mr.project_id = ${projectId}
+
+        UNION ALL
+
+        SELECT
+          mr.id,
+          mr.parent_run_id,
+          mr.status,
+          mr.actual_cost_cents,
+          mr.resolved_mode,
+          mr.routing_kind,
+          mr.created_at,
+          rps.provider,
+          rps.model,
+          rsa.step_key,
+          ct.tree_depth + 1
+        FROM mission_runs mr
+        INNER JOIN child_tree ct ON mr.parent_run_id = ct.id
+        LEFT JOIN run_policy_snapshots rps ON rps.id = mr.policy_snapshot_id
+        LEFT JOIN run_step_assignments rsa ON rsa.run_id = mr.id
+        WHERE ct.tree_depth < ${maxDepth}
+          AND mr.company_id = ${companyId}
+          AND mr.project_id = ${projectId}
+      )
+      SELECT * FROM child_tree ORDER BY tree_depth ASC, created_at ASC
+    `)) as unknown as {
+      id: string;
+      parent_run_id: string | null;
+      status: string;
+      actual_cost_cents: number;
+      resolved_mode: string;
+      routing_kind: string;
+      created_at: Date;
+      provider: string | null;
+      model: string | null;
+      step_key: string | null;
+      tree_depth: number;
+    }[];
+
+    if (rows.length === 0) {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    }
+
+    // Build the tree from the flat CTE result. Each node is mapped to a
+    // ChildTreeNode, then children are attached to their parent by
+    // parent_run_id. Ordering is preserved by created_at ASC within each
+    // depth level (VAL-M1-035).
+    const nodeMap = new Map<string, ChildTreeNode>();
+    const childRowsByParent = new Map<string | null, typeof rows>();
+
+    for (const row of rows) {
+      const node: ChildTreeNode = {
+        runId: row.id,
+        status: row.status,
+        cost: row.actual_cost_cents,
+        routingInfo: {
+          mode: row.resolved_mode,
+          model: row.model,
+          provider: row.provider,
+        },
+        stepKey: row.step_key,
+        children: [],
+      };
+      nodeMap.set(row.id, node);
+
+      const parentKey = row.parent_run_id;
+      if (!childRowsByParent.has(parentKey)) {
+        childRowsByParent.set(parentKey, []);
+      }
+      childRowsByParent.get(parentKey)!.push(row);
+    }
+
+    // Recursively attach children to their parent nodes.
+    for (const [parentId, childRows] of childRowsByParent) {
+      if (parentId === null) {
+        continue;
+      }
+      const parentNode = nodeMap.get(parentId);
+      if (parentNode) {
+        for (const childRow of childRows) {
+          const childNode = nodeMap.get(childRow.id);
+          if (childNode) {
+            parentNode.children.push(childNode);
+          }
+        }
+      }
+    }
+
+    const rootNode = nodeMap.get(runId);
+    if (!rootNode) {
+      throw new AppError(404, 'RUN_NOT_FOUND', 'Mission run not found');
+    }
+
+    return rootNode;
   }
 }

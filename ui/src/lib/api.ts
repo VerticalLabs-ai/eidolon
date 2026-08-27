@@ -4057,6 +4057,42 @@ export function getMissionRunSources(companyId: string, projectId: string, runId
   );
 }
 
+// ── Mission Run Children Tree ─────────────────────────────────────────────
+// Recursive child tree with status, cost, routing info, and step key
+// (VAL-M1-015..036). The server is authoritative; the browser fetches the
+// tree from the /children endpoint rather than deriving it client-side.
+
+/** A node in the child tree returned by the /children endpoint. */
+export interface MissionChildTreeNode {
+  runId: string;
+  status: string;
+  cost: number;
+  routingInfo: {
+    mode: string;
+    model: string | null;
+    provider: string | null;
+  };
+  stepKey: string | null;
+  children: MissionChildTreeNode[];
+}
+
+export interface MissionRunChildrenResult {
+  data: { tree: MissionChildTreeNode };
+}
+
+/** Fetch the recursive child tree for a run (VAL-M1-015..036). */
+export function getMissionRunChildren(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  maxDepth?: number,
+) {
+  const query = maxDepth != null ? `?maxDepth=${maxDepth}` : '';
+  return request<MissionRunChildrenResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/children${query}`,
+  );
+}
+
 // ── Mission Run Cancellation ──────────────────────────────────────────────
 
 /** Convenience cancel response. The convenience `/cancel` route maps to the

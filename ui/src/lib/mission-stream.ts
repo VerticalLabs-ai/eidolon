@@ -170,6 +170,27 @@ export function useMissionRunStream(
         qc.invalidateQueries({ queryKey: ['project-plans', companyId, projectId] });
       }
 
+      // Invalidate the child tree query on child.* events so the
+      // /children endpoint tree stays fresh (VAL-M1-027, VAL-M1-028).
+      // Also invalidate the snapshot query so the childSummary in the
+      // snapshot stays in sync with the /children tree data
+      // (VAL-M1-029).
+      if (
+        eventType === 'child.created' ||
+        eventType === 'child.routed' ||
+        eventType === 'child.started' ||
+        eventType === 'child.completed' ||
+        eventType === 'child.failed' ||
+        eventType === 'child.cancel_requested'
+      ) {
+        qc.invalidateQueries({
+          queryKey: ['mission-run-children', companyId, projectId, runId],
+        });
+        qc.invalidateQueries({
+          queryKey: ['mission-run-snapshot', companyId, projectId, runId],
+        });
+      }
+
       // Close the stream on terminal events.
       if (TERMINAL_EVENT_TYPES.has(eventType)) {
         // Cross-surface terminal consistency (VAL-CROSS-048): invalidate
@@ -337,6 +358,16 @@ export function useMissionRunStream(
       'plan.rejected',
       'plan.revision_requested',
       'plan.projected',
+      // Child lifecycle events (VAL-M1-027, VAL-M1-028). Without these
+      // named listeners, SSE frames for child events are silently dropped
+      // and the /children tree and snapshot childSummary stay stale until
+      // the next polling/refetch window.
+      'child.created',
+      'child.routed',
+      'child.started',
+      'child.completed',
+      'child.failed',
+      'child.cancel_requested',
     ];
     for (const type of namedTypes) {
       eventSource.addEventListener(type, messageHandler);

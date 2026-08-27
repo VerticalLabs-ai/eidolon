@@ -96,6 +96,19 @@ const StreamQuery = z.object({
   after: z.coerce.number().int().min(0).optional(),
 });
 
+/** Children tree query: maxDepth controls recursion depth.
+ *  Values above 5 are clamped to 5. Values of 0 or negative are rejected
+ *  with 400 (VAL-M1-018, VAL-M1-117..119). Non-numeric values are rejected
+ *  with 400 (coerce produces NaN which fails .int()). */
+const ChildrenQuery = z.object({
+  maxDepth: z.coerce
+    .number()
+    .int()
+    .min(1, 'maxDepth must be at least 1')
+    .transform((v) => Math.min(v, 5))
+    .default(3),
+});
+
 /** Command history query: bounded page with opaque keyset cursor. */
 const CommandsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -646,6 +659,37 @@ export function missionRunsRouter(db: DbInstance): Router {
         latestSequence: result.latestSequence,
       },
     });
+  });
+
+  // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId/children
+  // Recursive child tree with status, cost, routing info, and step key
+  // (VAL-M1-015..036). Gated behind the missionPolish feature flag so the
+  // new route returns 404 when the flag is disabled (VAL-M1-020). The
+  // recursive CTE is bounded to maxDepth (default 3, max 5) to prevent
+  // unbounded recursion and handle circular parent references gracefully
+  // (VAL-M1-017, VAL-M1-018, VAL-M1-109).
+  router.get('/:runId/children', async (req, res) => {
+    const { companyId, projectId, runId } = routeParams(req);
+
+    // Feature flag gate: missionPolish must be enabled for this new route
+    // (VAL-M1-020). The flag layering rule (missionPolish requires
+    // missionAgentIntelligence) is enforced by isFeatureEnabled.
+    if (!isFeatureEnabled('missionPolish', companyId)) {
+      throw new AppError(404, 'FEATURE_NOT_AVAILABLE', 'Mission run children are not available');
+    }
+
+    await validateProjectOwnership(db, companyId, projectId);
+
+    const parsed = ChildrenQuery.safeParse(req.query);
+    if (!parsed.success) {
+      throw parsed.error; // caught by errorHandler as ZodError → 400 VALIDATION_ERROR
+    }
+    const { maxDepth } = parsed.data;
+
+    const service = new MissionSnapshotService(db);
+    const tree = await service.getChildTree(companyId, projectId, runId, maxDepth);
+
+    res.json({ data: { tree } });
   });
 
   // GET /api/companies/:companyId/projects/:projectId/mission-runs/:runId/stream

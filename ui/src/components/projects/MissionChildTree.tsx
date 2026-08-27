@@ -4,8 +4,14 @@ import {
   useMissionRunSnapshot,
   useMissionRunEvents,
   useMissionCurrentPlanRevision,
+  useMissionRunChildren,
 } from '@/lib/hooks';
-import type { MissionPlanRevision, MissionRunSnapshot, MissionReplayEvent } from '@/lib/api';
+import type {
+  MissionPlanRevision,
+  MissionRunSnapshot,
+  MissionReplayEvent,
+  MissionChildTreeNode,
+} from '@/lib/api';
 import { buildMissionUiLink } from '@eidolon/shared';
 import {
   CheckCircle2,
@@ -321,6 +327,13 @@ export function MissionChildTree({
   const childSettledCents = useMemo(() => aggregateChildCostCents(nodes), [nodes]);
   const sectionRef = useRef<HTMLElement>(null);
 
+  // Server-authoritative child tree from the /children endpoint
+  // (VAL-M1-015..036). The hook fetches the tree and invalidates on
+  // child.* SSE events (VAL-M1-027, VAL-M1-028).
+  const childrenQuery = useMissionRunChildren(companyId, projectId, runId, {
+    enabled: !!runId,
+  });
+
   // Return-focus restoration (VAL-SUB-105): after Back navigation, move
   // focus to the originating child link, or the nearest surviving parent
   // heading if the origin is gone. The target is consumed once.
@@ -410,6 +423,62 @@ export function MissionChildTree({
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, [principalId, runId]);
+
+  // Loading state: show a skeleton while the /children endpoint fetches
+  // (VAL-M1-031). The tree does not flash empty content before data arrives.
+  if (childrenQuery.isLoading) {
+    return (
+      <section
+        data-testid="mission-child-tree"
+        aria-busy="true"
+        className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3"
+      >
+        <div className="flex items-center gap-2 text-sm text-text-muted">
+          <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+          <span>Loading child tree…</span>
+        </div>
+      </section>
+    );
+  }
+
+  // Error state: show an error message with a retry button (VAL-M1-032).
+  if (childrenQuery.isError) {
+    return (
+      <section
+        data-testid="mission-child-tree"
+        className="mt-3 rounded-xl border border-error/20 bg-error/5 p-3"
+      >
+        <div className="flex items-center gap-2 text-sm text-error">
+          <XCircle className="h-4 w-4" aria-hidden="true" />
+          <span>Failed to load child tree</span>
+          <button
+            type="button"
+            onClick={() => childrenQuery.refetch()}
+            className="ml-auto inline-flex items-center gap-1 rounded-lg border border-error/30 px-2 py-1 text-xs font-medium text-error transition-colors hover:bg-error/10 focus-visible:ring-2 focus-visible:ring-error/40 focus-visible:outline-none"
+          >
+            <RefreshCw className="h-3 w-3" aria-hidden="true" />
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  // Empty state: show "No child runs" when the run has no children
+  // (VAL-M1-033). The server tree has an empty children array.
+  if (nodes.length === 0 && childrenQuery.data && childrenQuery.data.children.length === 0) {
+    return (
+      <section
+        data-testid="mission-child-tree"
+        className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3"
+      >
+        <div className="flex items-center gap-2 text-sm text-text-muted">
+          <Layers className="h-4 w-4" aria-hidden="true" />
+          <span>No child runs</span>
+        </div>
+      </section>
+    );
+  }
 
   if (!planRevision || !snapshot.approvedPlanRevisionId || nodes.length === 0) {
     return null;
