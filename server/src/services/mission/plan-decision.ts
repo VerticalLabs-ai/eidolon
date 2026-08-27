@@ -9,6 +9,7 @@ import {
 } from './reason-security.js';
 import type { PlanContent } from './plan-schema.js';
 import { BudgetService } from './budget.js';
+import { normalizeToolAlias, isResearchTool } from './research-tools.js';
 
 /**
  * Canonical hash/revision-bound plan decision commands and idempotency.
@@ -1051,6 +1052,20 @@ export class PlanDecisionService {
    * time (deny-only). This can only reject the approval, never broaden it
    * (VAL-PLAN-095, VAL-PLAN-118).
    *
+   * Tool alias normalization (VAL-M1-001, VAL-M1-002, VAL-M1-005):
+   * Before the exact-match check, each step's tool names are normalized to
+   * their canonical form using the shared `RESEARCH_TOOL_TO_OPERATION` map.
+   * Aliases like `web_search` are mapped to `research.search`. Canonical
+   * names pass through unchanged (idempotent). Unknown tool names that are
+   * neither canonical nor known aliases are rejected with a clear error.
+   *
+   * Research-policy bypass (VAL-M1-003, VAL-M1-004):
+   * When the policy snapshot's `researchPolicy.access === 'allowed'`,
+   * research tools (canonical or alias) are permitted even if they are not
+   * in the snapshot's tool allowlist. This mirrors the existing bypass in
+   * `agent-router.ts` and `ephemeral-router.ts`. When access is 'denied' or
+   * absent, research tools must be in the allowlist or they are rejected.
+   *
    * The budget validation is handled separately by `BudgetService.earmarkApproval`
    * which returns 409 BUDGET_UNAVAILABLE on failure (VAL-PLAN-094).
    *
@@ -1080,6 +1095,13 @@ export class PlanDecisionService {
 
     const snapshotTools = new Set((policySnapshot.toolAllowlist as string[] | null) ?? []);
 
+    // Research-policy bypass: when researchPolicy.access === 'allowed',
+    // research tools are permitted even if not in the snapshot's tool
+    // allowlist. This mirrors the existing bypass in agent-router.ts and
+    // ephemeral-router.ts (VAL-M1-003, VAL-M1-004).
+    const researchPolicy = policySnapshot.researchPolicy as { access?: string } | null;
+    const researchAccessAllowed = researchPolicy?.access === 'allowed';
+
     // Check every step's tools against the snapshot's tool allowlist.
     // The snapshot is immutable, so this verifies the plan's tools are
     // a subset of the snapshotted authority. A live agent/company policy
@@ -1098,15 +1120,31 @@ export class PlanDecisionService {
     // was accepted at publication time and there is no snapshotted
     // authority to revoke. This is deny-only: we never broaden, we only
     // skip when there is nothing to check against.
+    //
+    // Empty plan steps array does not crash (VAL-M1-113): the loop simply
+    // iterates zero times.
     if (snapshotTools.size > 0) {
       for (const step of plan.steps) {
         for (const tool of step.toolAllowlist) {
-          if (!snapshotTools.has(tool)) {
+          // Normalize the tool alias to its canonical form before the
+          // exact-match check (VAL-M1-001, VAL-M1-005, VAL-M1-014).
+          const canonicalTool = normalizeToolAlias(tool);
+
+          // Research-policy bypass: if the tool is a research tool and
+          // researchPolicy.access === 'allowed', permit it even if not in
+          // the snapshot's tool allowlist (VAL-M1-003). When access is
+          // 'denied' or absent, research tools must be in the allowlist
+          // (VAL-M1-004).
+          if (isResearchTool(tool) && researchAccessAllowed) {
+            continue; // Bypass: research tool permitted by policy.
+          }
+
+          if (!snapshotTools.has(canonicalTool)) {
             throw new PlanDecisionError(
               new AppError(
                 409,
                 'POLICY_UNSATISFIABLE',
-                `Plan step "${step.stepKey}" requires tool "${tool}" which is not permitted by the current policy. Replan with permitted tools or cancel.`,
+                `Plan step "${step.stepKey}" requires tool "${tool}" (normalized: "${canonicalTool}") which is not permitted by the current policy. Replan with permitted tools or cancel.`,
               ),
             );
           }

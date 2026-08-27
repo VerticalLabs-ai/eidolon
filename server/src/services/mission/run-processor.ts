@@ -23,8 +23,9 @@ import { EphemeralFallbackRouter, type EphemeralRoutingContext } from './ephemer
 import type { RoutingRequirements, PlanContent } from './plan-schema.js';
 import { PLATFORM_HARD_CAPS } from './modes.js';
 import type { TreePolicyLimits } from './tree-limits.js';
-import type { ResearchOperation } from './research/spi.js';
 import logger from '../../utils/logger.js';
+import { RESEARCH_TOOL_TO_OPERATION, extractResearchOperations } from './research-tools.js';
+import type { ResearchOperation } from './research/spi.js';
 
 // ---------------------------------------------------------------------------
 // Research operation detection
@@ -53,47 +54,9 @@ import logger from '../../utils/logger.js';
 export const MINIMUM_RESEARCH_STEP_BUDGET_CENTS = 1000;
 // ---------------------------------------------------------------------------
 
-/**
- * Mapping from plan step tool-allowlist entries to research operations.
- *
- * A child run whose approved plan step includes any of these tools has
- * research operations. The RunProcessor invokes the ResearchExecutionService
- * for those operations instead of making a single LLM provider call.
- *
- * (architecture.md: ResearchProvider SPI, fix-ut-m5-research-execution-wiring)
- */
-const RESEARCH_TOOL_TO_OPERATION: Record<string, ResearchOperation> = {
-  // Canonical internal research.* tool names (architecture.md: ResearchProvider SPI).
-  'research.search': 'search',
-  'research.extract': 'extract',
-  'research.scrape': 'scrape',
-  'research.structured_extract': 'structured_extract',
-  // LLM-planner-generated aliases. The planner may emit generic web_* or
-  // provider-prefixed tool names in plan step `toolAllowlist` fields. Map
-  // them to the same research operations so children execute research
-  // instead of silently falling through to a plain LLM provider call
-  // (fix-ut-m5-tool-name-mapping).
-  web_search: 'search',
-  web_fetch: 'extract',
-  web_browse: 'search',
-  'tavily.search': 'search',
-  'firecrawl.search': 'search',
-  'firecrawl.scrape': 'scrape',
-  'firecrawl.extract': 'extract',
-  'firecrawl.structured_extract': 'structured_extract',
-};
-
-/** Extract research operations from a step's tool allowlist. */
-function extractResearchOperations(toolAllowlist: string[]): ResearchOperation[] {
-  const ops: ResearchOperation[] = [];
-  for (const tool of toolAllowlist) {
-    const op = RESEARCH_TOOL_TO_OPERATION[tool];
-    if (op) {
-      ops.push(op);
-    }
-  }
-  return ops;
-}
+// RESEARCH_TOOL_TO_OPERATION and extractResearchOperations are now imported
+// from the shared module ./research-tools.js (VAL-M1-006). This ensures both
+// run-processor.ts and plan-decision.ts reference the same map instance.
 
 /**
  * RunProcessor — the real `advance` function for the OrchestrationWorker.

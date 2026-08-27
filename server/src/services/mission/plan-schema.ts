@@ -286,6 +286,13 @@ const PresentationMetadata = z
   .object({
     cardTitle: OptionalPlanText,
     summary: OptionalPlanText,
+    /**
+     * Optional depth hint set by the planner to signal intended plan depth
+     * (e.g., "deep", "shallow"). This is advisory metadata only — it does
+     * not enforce a specific step count and is excluded from the content
+     * hash (VAL-M1-011, VAL-M1-012).
+     */
+    planDepthHint: z.string().max(50).optional(),
   })
   .strict()
   .optional();

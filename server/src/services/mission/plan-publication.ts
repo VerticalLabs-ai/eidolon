@@ -7,7 +7,9 @@ import {
   validatePlanGraph,
   planContentHash,
   validateApprovalBudgetArithmetic,
+  type PlanContent,
 } from './plan-schema.js';
+import logger from '../../utils/logger.js';
 
 /**
  * Atomic plan publication and governance gate.
@@ -56,6 +58,50 @@ export interface PlanPublishResult {
   stateVersion: number;
   /** Latest event sequence after publication. */
   lastEventSequence: number;
+  /** Soft warnings emitted during publication (advisory, non-blocking). */
+  warnings: PlanDepthWarning[];
+}
+
+/** A soft depth warning for single-step plans in Deep Work/Analyst modes. */
+export interface PlanDepthWarning {
+  /** Warning code. */
+  code: string;
+  /** Human-readable warning message. */
+  message: string;
+}
+
+/**
+ * Check whether a plan warrants a depth warning based on the resolved mode
+ * and step count (VAL-M1-009, VAL-M1-010).
+ *
+ * A single-step plan in Deep Work or Analyst mode emits a soft warning
+ * (advisory only — the plan is NOT rejected). Single-step plans in Auto or
+ * Fast mode do not emit a depth warning. Multi-step plans in any mode do
+ * not emit a depth warning.
+ *
+ * @returns An array of warnings (empty if no warnings).
+ */
+export function checkPlanDepthWarning(plan: PlanContent, resolvedMode: string): PlanDepthWarning[] {
+  const warnings: PlanDepthWarning[] = [];
+
+  // Only Deep Work and Analyst modes warrant a depth warning for
+  // single-step plans (VAL-M1-009, VAL-M1-010).
+  const depthModes = new Set(['deep_work', 'analyst']);
+  if (!depthModes.has(resolvedMode)) {
+    return warnings;
+  }
+
+  // Only single-step plans warrant a warning. Multi-step plans are fine.
+  if (plan.steps.length !== 1) {
+    return warnings;
+  }
+
+  warnings.push({
+    code: 'SINGLE_STEP_DEPTH_WARNING',
+    message: `Single-step plan in ${resolvedMode === 'deep_work' ? 'Deep Work' : 'Analyst'} mode: consider decomposing complex requests into multiple steps to leverage the deeper reasoning budget.`,
+  });
+
+  return warnings;
 }
 
 export interface PlanPublicationDeps {
@@ -328,6 +374,24 @@ export class PlanPublicationService {
       opts.failpointHook('after_event');
     }
 
+    // Check for soft depth warning: single-step plan in Deep Work/Analyst
+    // mode emits an advisory warning (VAL-M1-009, VAL-M1-010). The plan is
+    // NOT rejected — the warning is logged and returned as a warning field.
+    const warnings = checkPlanDepthWarning(content, run.resolvedMode);
+    if (warnings.length > 0) {
+      for (const w of warnings) {
+        logger.warn(
+          {
+            runId: run.id,
+            code: w.code,
+            resolvedMode: run.resolvedMode,
+            stepCount: content.steps.length,
+          },
+          `Plan depth warning: ${w.message}`,
+        );
+      }
+    }
+
     return {
       revisionId,
       revision: nextRevision,
@@ -336,6 +400,7 @@ export class PlanPublicationService {
       bindingId,
       stateVersion: newVersion,
       lastEventSequence: seq,
+      warnings,
     };
   }
 

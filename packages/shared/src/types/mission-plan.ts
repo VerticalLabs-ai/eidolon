@@ -137,7 +137,7 @@ const SYNTHESIS_AUTHORITY_FIELDS = [
 ] as const;
 
 /** Named non-authoritative presentation metadata fields (VAL-PLAN-112). */
-const PRESENTATION_FIELDS = ['cardTitle', 'summary'] as const;
+const PRESENTATION_FIELDS = ['cardTitle', 'summary', 'planDepthHint'] as const;
 
 /**
  * The complete Mission plan content contract.

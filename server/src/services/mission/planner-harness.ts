@@ -351,6 +351,8 @@ function buildPlannerMessages(ctx: PlannerContext): ChatMessage[] {
  * JSON object. The downstream `PlanContentV1` Zod schema is the authority; this
  * prompt guides the model toward the closed contract without authorizing it to
  * broaden execution authority.
+ *
+ * (VAL-M1-007, VAL-M1-008, VAL-M1-009, VAL-M1-010)
  */
 const PLANNER_SYSTEM_PROMPT = [
   'You are a Mission planning assistant for the Eidolon platform.',
@@ -385,8 +387,21 @@ const PLANNER_SYSTEM_PROMPT = [
   '  "planningBudgetCents": nonnegative integer,',
   '  "partialResultPolicy": one of "require_all"|"best_effort",',
   '  "limits": { "steps":int, "durationSeconds":int, "providerCalls":int, "totalTokens":int, "outputBytes":int, "costCents":int, "depth":int, "fanOut":int, "descendants":int },',
-  '  "presentationMetadata": { "cardTitle"?:string, "summary"?:string } (optional)',
+  '  "presentationMetadata": { "cardTitle"?:string, "summary"?:string, "planDepthHint"?:string } (optional)',
   '}',
+  '',
+  'Canonical tool names (use ONLY these in "toolAllowlist" and "requiredTools"):',
+  '- "research.search" — web search (Tavily)',
+  '- "research.extract" — extract content from a URL (Tavily)',
+  '- "research.scrape" — scrape a web page (Firecrawl)',
+  '- "research.structured_extract" — structured data extraction (Firecrawl)',
+  '- "artifact.create" — create an artifact',
+  '- "code.run" — execute code',
+  '',
+  'FORBIDDEN tool aliases (do NOT use these — they will be normalized but may cause confusion):',
+  '- "web_search", "web_fetch", "web_browse" — use "research.search", "research.extract", "research.search" instead',
+  '- "tavily.search" — use "research.search" instead',
+  '- "firecrawl.search", "firecrawl.scrape", "firecrawl.extract", "firecrawl.structured_extract" — use "research.*" equivalents instead',
   '',
   'Rules:',
   "- Keep the plan within the mode's limits. Prefer fewer, well-defined steps.",
@@ -396,6 +411,12 @@ const PLANNER_SYSTEM_PROMPT = [
   '- For Analyst-mode requests, set "citationsRequired": true where external factual claims will be made.',
   '- For web research steps, use canonical "research.*" tool names in "toolAllowlist" and "requiredTools" (research.search, research.extract, research.scrape, research.structured_extract). Do not use "web_search", "web_fetch", or provider-prefixed names.',
   '- Output ONLY the JSON object.',
+  '',
+  'Depth guidance by mode:',
+  '- **Auto/Fast mode**: Produce concise plans. A single step is acceptable when the request is simple. Do not over-decompose.',
+  '- **Deep Work mode**: Decompose complex requests into multiple steps when the request warrants it. A single-step plan is acceptable for trivial requests, but for complex requests, prefer 2-5 steps to leverage the deeper reasoning budget. Set "planDepthHint": "deep" in "presentationMetadata" when the plan is intentionally multi-step.',
+  '- **Analyst mode**: Decompose research-intensive requests into multiple steps (e.g., search → extract → analyze → synthesize). A single-step plan is acceptable for trivial requests, but for research-intensive requests, prefer 3-5 steps to ensure thorough analysis and citations. Set "planDepthHint": "deep" in "presentationMetadata" when the plan is intentionally multi-step.',
+  '- For all modes: Do not mandate multi-step for trivial requests. The guidance is conditional on request complexity.',
 ].join('\n');
 
 interface ParsedPlan {
