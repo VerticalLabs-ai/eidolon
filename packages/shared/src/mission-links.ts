@@ -17,15 +17,15 @@
  *   approval=<uuid>                              — plan approval
  *   childThread=<uuid>                           — child subthread
  *   sourceRevision=<uuid>                        — source revision
- *   artifactVersion=<uuid>&artifact=<uuid>       — artifact version (requires artifact)
- *   citation=<uuid>&artifact=<uuid>&version=<uuid> — citation (requires artifact + version)
+ *   artifactVersion=<revision>&artifact=<uuid>       — artifact version (requires artifact)
+ *   citation=<uuid>&artifact=<uuid>&version=<revision> — citation (requires artifact + version)
  *
  * Invariants enforced by this module:
  *
  *   - companyId, projectId, threadId, runId, and every target id are UUIDs.
  *   - At most one target kind is present.
- *   - `artifactVersion` requires `artifact`.
- *   - `citation` requires `artifact` and `version`.
+ *   - `artifactVersion` requires `artifact`; `version` is a positive integer revision number.
+ *   - `citation` requires `artifact` and `version`; `version` is a positive integer revision number.
  *
  * The API `Location` header remains under `/api/.../mission-runs/:runId` and
  * is NOT produced here; this module only owns the browser `links.ui` URL.
@@ -129,6 +129,26 @@ function requireUuid(value: string, name: string): void {
   }
 }
 
+// ── Numeric version validation ────────────────────────────────────────────
+
+/**
+ * True when `value` is a positive integer string (revision number). The
+ * artifact revision `version` field is a numeric revision number, not a
+ * UUID — the deep-link `?version=N` parameter carries this revision number
+ * (VAL-M1-062, VAL-M1-063).
+ */
+export function isMissionLinkVersion(value: string): boolean {
+  return /^\d+$/.test(value) && parseInt(value, 10) > 0;
+}
+
+function requireVersion(value: string, name: string): void {
+  if (!isMissionLinkVersion(value)) {
+    throw new Error(
+      `Invalid ${name}: expected positive integer revision, got ${JSON.stringify(value)}`,
+    );
+  }
+}
+
 // ── Builder ──────────────────────────────────────────────────────────────
 
 /**
@@ -186,14 +206,14 @@ function addTargetParams(params: URLSearchParams, target: MissionLinkTarget): vo
       return;
     case 'artifactVersion':
       requireUuid(target.artifactId, 'artifactId');
-      requireUuid(target.version, 'version');
+      requireVersion(target.version, 'version');
       params.set(MISSION_LINK_PARAM.artifactVersion, target.version);
       params.set(MISSION_LINK_PARAM.artifact, target.artifactId);
       return;
     case 'citation':
       requireUuid(target.citationId, 'citationId');
       requireUuid(target.artifactId, 'artifactId');
-      requireUuid(target.version, 'version');
+      requireVersion(target.version, 'version');
       params.set(MISSION_LINK_PARAM.citation, target.citationId);
       params.set(MISSION_LINK_PARAM.artifact, target.artifactId);
       params.set(MISSION_LINK_PARAM.version, target.version);
@@ -437,7 +457,7 @@ function parseTarget(params: URLSearchParams): MissionLinkTarget | false | null 
     return simpleTarget(kind, value);
   }
   if (artifactVersion !== null) {
-    if (!artifact || !isMissionLinkUuid(artifact) || !isMissionLinkUuid(artifactVersion)) {
+    if (!artifact || !isMissionLinkUuid(artifact) || !isMissionLinkVersion(artifactVersion)) {
       return false;
     }
     return { kind: 'artifactVersion', artifactId: artifact, version: artifactVersion };
@@ -448,7 +468,7 @@ function parseTarget(params: URLSearchParams): MissionLinkTarget | false | null 
       !version ||
       !isMissionLinkUuid(citation) ||
       !isMissionLinkUuid(artifact) ||
-      !isMissionLinkUuid(version)
+      !isMissionLinkVersion(version)
     ) {
       return false;
     }

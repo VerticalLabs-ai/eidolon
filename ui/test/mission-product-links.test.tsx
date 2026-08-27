@@ -304,13 +304,13 @@ describe('Mission product link grammar (VAL-CROSS-101)', () => {
       {
         kind: 'artifactVersion',
         artifactId: '00000000-0000-4000-8000-000000000015',
-        version: '00000000-0000-4000-8000-000000000016',
+        version: '3',
       },
       {
         kind: 'citation',
         citationId: '00000000-0000-4000-8000-000000000017',
         artifactId: '00000000-0000-4000-8000-000000000015',
-        version: '00000000-0000-4000-8000-000000000016',
+        version: '3',
       },
     ];
     for (const target of targets) {

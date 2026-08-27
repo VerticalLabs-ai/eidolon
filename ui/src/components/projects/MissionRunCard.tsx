@@ -365,8 +365,17 @@ export function MissionRunCard({
           projectId={projectId}
           runId={run.id}
           partialEvidence={snapshot.resultCompleteness === 'partial'}
-          targetArtifactId={target?.kind === 'citation' ? target.artifactId : undefined}
+          targetArtifactId={
+            target?.kind === 'citation' || target?.kind === 'artifactVersion'
+              ? target.artifactId
+              : undefined
+          }
           targetCitationId={target?.kind === 'citation' ? target.citationId : undefined}
+          targetVersion={
+            target?.kind === 'citation' || target?.kind === 'artifactVersion'
+              ? target.version
+              : undefined
+          }
         />
       )}
       <RunCardCancelledDetail snapshot={snapshot} status={authoritativeStatus} />

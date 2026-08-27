@@ -4,6 +4,7 @@ import {
   parseMissionUiLink,
   extractMissionLinkParams,
   isMissionLinkUuid,
+  isMissionLinkVersion,
   MISSION_LINK_PARAM,
   type MissionLinkTarget,
 } from './mission-links.js';
@@ -20,7 +21,7 @@ const APPROVAL = '00000000-0000-4000-8000-000000000012';
 const CHILD_THREAD = '00000000-0000-4000-8000-000000000013';
 const SOURCE_REV = '00000000-0000-4000-8000-000000000014';
 const ARTIFACT = '00000000-0000-4000-8000-000000000015';
-const ARTIFACT_VER = '00000000-0000-4000-8000-000000000016';
+const ARTIFACT_VER = '3';
 const CITATION = '00000000-0000-4000-8000-000000000017';
 
 function baseInput(target?: MissionLinkTarget) {
@@ -46,6 +47,39 @@ describe('isMissionLinkUuid', () => {
 
   it('rejects a UUID with wrong variant bits', () => {
     expect(isMissionLinkUuid('00000000-0000-4000-0000-000000000004')).toBe(false);
+  });
+});
+
+// ── Numeric version validation (VAL-M1-062, VAL-M1-063) ──────────────────
+
+describe('isMissionLinkVersion', () => {
+  it('accepts a positive integer string', () => {
+    expect(isMissionLinkVersion('1')).toBe(true);
+    expect(isMissionLinkVersion('3')).toBe(true);
+    expect(isMissionLinkVersion('42')).toBe(true);
+    expect(isMissionLinkVersion('999999')).toBe(true);
+  });
+
+  it('rejects zero', () => {
+    expect(isMissionLinkVersion('0')).toBe(false);
+  });
+
+  it('rejects negative numbers', () => {
+    expect(isMissionLinkVersion('-1')).toBe(false);
+    expect(isMissionLinkVersion('-42')).toBe(false);
+  });
+
+  it('rejects non-numeric strings', () => {
+    expect(isMissionLinkVersion('abc')).toBe(false);
+    expect(isMissionLinkVersion('')).toBe(false);
+    expect(isMissionLinkVersion('1.5')).toBe(false);
+    expect(isMissionLinkVersion('1a')).toBe(false);
+    expect(isMissionLinkVersion(' 1')).toBe(false);
+    expect(isMissionLinkVersion('v1')).toBe(false);
+  });
+
+  it('rejects a UUID (version is a revision number, not a UUID)', () => {
+    expect(isMissionLinkUuid(ARTIFACT_VER)).toBe(false);
   });
 });
 
@@ -136,10 +170,42 @@ describe('buildMissionUiLink', () => {
     ).toThrow();
   });
 
+  it('throws when artifactVersion has a non-numeric version', () => {
+    expect(() =>
+      buildMissionUiLink(
+        baseInput({ kind: 'artifactVersion', artifactId: ARTIFACT, version: 'not-a-number' }),
+      ),
+    ).toThrow();
+  });
+
   it('throws when citation is missing the version id', () => {
     expect(() =>
       buildMissionUiLink(
         baseInput({ kind: 'citation', citationId: CITATION, artifactId: ARTIFACT, version: '' }),
+      ),
+    ).toThrow();
+  });
+
+  it('throws when citation has a non-numeric version', () => {
+    expect(() =>
+      buildMissionUiLink(
+        baseInput({ kind: 'citation', citationId: CITATION, artifactId: ARTIFACT, version: 'abc' }),
+      ),
+    ).toThrow();
+  });
+
+  it('throws when artifactVersion has a zero version', () => {
+    expect(() =>
+      buildMissionUiLink(
+        baseInput({ kind: 'artifactVersion', artifactId: ARTIFACT, version: '0' }),
+      ),
+    ).toThrow();
+  });
+
+  it('throws when citation has a negative version', () => {
+    expect(() =>
+      buildMissionUiLink(
+        baseInput({ kind: 'citation', citationId: CITATION, artifactId: ARTIFACT, version: '-1' }),
       ),
     ).toThrow();
   });
@@ -223,6 +289,11 @@ describe('parseMissionUiLink', () => {
     expect(parseMissionUiLink(url)).toBeNull();
   });
 
+  it('rejects artifactVersion with non-numeric version', () => {
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&artifactVersion=not-a-number&artifact=${ARTIFACT}`;
+    expect(parseMissionUiLink(url)).toBeNull();
+  });
+
   it('rejects citation without version', () => {
     const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&citation=${CITATION}&artifact=${ARTIFACT}`;
     expect(parseMissionUiLink(url)).toBeNull();
@@ -233,6 +304,11 @@ describe('parseMissionUiLink', () => {
     expect(parseMissionUiLink(url)).toBeNull();
   });
 
+  it('rejects citation with non-numeric version', () => {
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&citation=${CITATION}&artifact=${ARTIFACT}&version=abc`;
+    expect(parseMissionUiLink(url)).toBeNull();
+  });
+
   it('rejects a non-UUID target id', () => {
     const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&question=not-a-uuid`;
     expect(parseMissionUiLink(url)).toBeNull();
@@ -240,6 +316,69 @@ describe('parseMissionUiLink', () => {
 
   it('returns null for a completely malformed URL', () => {
     expect(parseMissionUiLink('not a url at all')).toBeNull();
+  });
+
+  // ── Numeric version round-trip (VAL-M1-062, VAL-M1-063) ──────────────
+
+  it('round-trips artifactVersion with a numeric revision number', () => {
+    const target: MissionLinkTarget = {
+      kind: 'artifactVersion',
+      artifactId: ARTIFACT,
+      version: '7',
+    };
+    const url = buildMissionUiLink(baseInput(target));
+    expect(url).toContain(`artifactVersion=7`);
+    expect(url).toContain(`artifact=${ARTIFACT}`);
+    const parsed = parseMissionUiLink(url);
+    expect(parsed).toEqual(baseInput(target));
+  });
+
+  it('round-trips citation with a numeric revision number', () => {
+    const target: MissionLinkTarget = {
+      kind: 'citation',
+      citationId: CITATION,
+      artifactId: ARTIFACT,
+      version: '12',
+    };
+    const url = buildMissionUiLink(baseInput(target));
+    expect(url).toContain(`citation=${CITATION}`);
+    expect(url).toContain(`artifact=${ARTIFACT}`);
+    expect(url).toContain(`version=12`);
+    const parsed = parseMissionUiLink(url);
+    expect(parsed).toEqual(baseInput(target));
+  });
+
+  it('round-trips artifactVersion with version 1 (smallest revision)', () => {
+    const target: MissionLinkTarget = {
+      kind: 'artifactVersion',
+      artifactId: ARTIFACT,
+      version: '1',
+    };
+    const url = buildMissionUiLink(baseInput(target));
+    const parsed = parseMissionUiLink(url);
+    expect(parsed).toEqual(baseInput(target));
+  });
+
+  it('round-trips citation with a large numeric version', () => {
+    const target: MissionLinkTarget = {
+      kind: 'citation',
+      citationId: CITATION,
+      artifactId: ARTIFACT,
+      version: '999999',
+    };
+    const url = buildMissionUiLink(baseInput(target));
+    const parsed = parseMissionUiLink(url);
+    expect(parsed).toEqual(baseInput(target));
+  });
+
+  it('rejects artifactVersion with a UUID-shaped version (must be numeric)', () => {
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&artifactVersion=00000000-0000-4000-8000-000000000016&artifact=${ARTIFACT}`;
+    expect(parseMissionUiLink(url)).toBeNull();
+  });
+
+  it('rejects citation with a UUID-shaped version (must be numeric)', () => {
+    const url = `/company/${COMPANY}/projects/${PROJECT}?thread=${THREAD}&mission=${RUN}&citation=${CITATION}&artifact=${ARTIFACT}&version=00000000-0000-4000-8000-000000000016`;
+    expect(parseMissionUiLink(url)).toBeNull();
   });
 });
 
