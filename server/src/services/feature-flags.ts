@@ -29,6 +29,13 @@ function stableBucket(flag: string, subject: string): number {
 }
 
 export function isFeatureEnabled(flag: string, subject?: string): boolean {
+  if (
+    (flag === 'missionPolish' || flag === 'agentCustomization' || flag === 'artifactEditing') &&
+    !isFeatureEnabled('missionAgentIntelligence', subject)
+  ) {
+    return false;
+  }
+
   const config = parseFeatureFlags()[flag];
   if (!config?.enabled) {
     return false;
@@ -65,6 +72,11 @@ export const FEATURE_FLAGS = {
   // configuration leaves it off. When disabled, Mission UI is hidden, Mission
   // creation/mutation routes return 404, and the worker does not claim runs.
   missionAgentIntelligence: 'Enable the durable Mission orchestration path beside legacy Chat.',
+  // Phase 2 flags are independently configurable but require the foundational
+  // Mission gate above to be enabled first.
+  missionPolish: 'Enable Mission production polish and cost monitoring.',
+  agentCustomization: 'Enable per-agent customization and intelligence features.',
+  artifactEditing: 'Enable editing, export, and citation management for artifacts.',
 } as const;
 
 export type FeatureFlagName = keyof typeof FEATURE_FLAGS;
