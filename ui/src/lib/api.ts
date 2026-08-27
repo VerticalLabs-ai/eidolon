@@ -3995,7 +3995,7 @@ export function getMissionRunEvents(
   projectId: string,
   runId: string,
   after = 0,
-  limit = 100,
+  limit = 50,
 ) {
   return request<MissionRunEventsResult>(
     `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/events?after=${after}&limit=${limit}`,

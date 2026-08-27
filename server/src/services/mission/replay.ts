@@ -45,7 +45,7 @@ export interface ReplayInput {
   runId: string;
   /** Inclusive lower-bound cursor; default 0 (complete replay from creation). */
   after: number;
-  /** Page size, 1-100. */
+  /** Page size, 1-1000. */
   limit: number;
 }
 

@@ -87,7 +87,8 @@ const ListQuery = z.object({
 const EventsQuery = z.object({
   /** Run-local sequence cursor; default 0 replays from creation. */
   after: z.coerce.number().int().min(0).default(0),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  /** Page size, 1-1000. Default 50 (VAL-M1-037..050). */
+  limit: z.coerce.number().int().min(1).max(1000).default(50),
 });
 
 /** SSE stream query: optional `after` cursor (explicit `after` wins over

@@ -29,6 +29,7 @@ import {
   WifiOff,
   Ban,
   RotateCcw,
+  ChevronDown,
 } from 'lucide-react';
 import { MissionCancelDialog } from './MissionCancelDialog';
 import { MissionQuestionCard } from './MissionQuestionCard';
@@ -449,7 +450,13 @@ export function MissionRunCard({
         partialResultPolicy={snapshot?.partialResultPolicy ?? 'require_all'}
         runStatus={authoritativeStatus}
       />
-      <RunCardTimeline events={events} eventsError={eventsQuery.isError && !!eventsQuery.data} />
+      <RunCardTimeline
+        events={events}
+        eventsError={eventsQuery.isError && !!eventsQuery.data}
+        hasNextPage={!!eventsQuery.hasNextPage}
+        isFetchingNextPage={!!eventsQuery.isFetchingNextPage}
+        onLoadMore={() => eventsQuery.fetchNextPage?.()}
+      />
       <RunCardDecisionHistory events={events} />
       <RunCardResultCompleteness snapshot={snapshot} status={authoritativeStatus} />
       <RunCardRetryControl
@@ -1215,13 +1222,20 @@ function RunCardResultCompleteness({
   );
 }
 
-/** Chronological event timeline as a semantic ordered list (VAL-RUN-074, VAL-RUN-095). */
+/** Chronological event timeline as a semantic ordered list (VAL-RUN-074, VAL-RUN-095).
+ * Includes a load-more button for cursor-based pagination (VAL-M1-047). */
 function RunCardTimeline({
   events,
   eventsError,
+  hasNextPage,
+  isFetchingNextPage,
+  onLoadMore,
 }: {
   events: MissionReplayEvent[];
   eventsError?: boolean;
+  hasNextPage?: boolean;
+  isFetchingNextPage?: boolean;
+  onLoadMore?: () => void;
 }) {
   if (events.length === 0 && !eventsError) {
     return null;
@@ -1250,6 +1264,18 @@ function RunCardTimeline({
             </li>
           ))}
         </ol>
+      )}
+      {hasNextPage && onLoadMore && (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={isFetchingNextPage}
+          className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-white/[0.06] focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none motion-reduce:transition-none disabled:opacity-50"
+          aria-label="Load more events"
+        >
+          <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+          {isFetchingNextPage ? 'Loading…' : 'Load more events'}
+        </button>
       )}
     </div>
   );

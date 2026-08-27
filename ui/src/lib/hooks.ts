@@ -2815,29 +2815,40 @@ export function useMissionRunChildren(
   });
 }
 
-/** Bounded journal event replay for the run timeline.
- * Preserves previous data on refetch error so the timeline remains visible
- * (stale) rather than disappearing (VAL-RUN-131). */
+/** Bounded journal event replay for the run timeline with cursor-based
+ * pagination and load-more functionality (VAL-M1-046, VAL-M1-047).
+ *
+ * Uses `useInfiniteQuery` so pages are accumulated — each page's
+ * `nextCursor` drives `fetchNextPage`. The `select` transform flattens
+ * all pages into a single `events` array so existing consumers that read
+ * `data.events` continue to work without changes. Preserves previous data
+ * on refetch error so the timeline remains visible (stale) rather than
+ * disappearing (VAL-RUN-131). */
 export function useMissionRunEvents(
   companyId: string,
   projectId: string,
   runId: string | undefined,
 ) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ['mission-run-events', companyId, projectId, runId],
-    queryFn: async () =>
+    queryFn: async ({ pageParam }) =>
       unwrap<{
         events: api.MissionReplayEvent[];
         nextCursor: number;
         latestSequence: number;
-      }>(await api.getMissionRunEvents(companyId, projectId, runId!)),
+      }>(await api.getMissionRunEvents(companyId, projectId, runId!, pageParam)),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) =>
+      lastPage.nextCursor < lastPage.latestSequence ? lastPage.nextCursor : undefined,
     enabled: !!companyId && !!projectId && !!runId,
     staleTime: 5_000,
-    placeholderData: (
-      prev:
-        | { events: api.MissionReplayEvent[]; nextCursor: number; latestSequence: number }
-        | undefined,
-    ) => prev,
+    placeholderData: (prev) => prev,
+    select: (data) => ({
+      ...data,
+      events: data.pages.flatMap((p) => p.events),
+      nextCursor: data.pages[data.pages.length - 1]?.nextCursor ?? 0,
+      latestSequence: data.pages[data.pages.length - 1]?.latestSequence ?? 0,
+    }),
   });
 }
 
