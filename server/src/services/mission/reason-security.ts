@@ -31,9 +31,31 @@ const CANARY_PATTERNS: RegExp[] = [
   /(?:api[_-]?key|secret|password|passwd|token|auth[_-]?token|access[_-]?key)\s*[:=]\s*\S+/gi,
   // AWS access key IDs
   /AKIA[0-9A-Z]{16}/g,
-  // PEM private/public key blocks
-  /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g,
 ];
+
+/** Scan PEM delimiters once; repeated opening headers cannot cause backtracking. */
+function redactPemBlocks(text: string): { redacted: string; hadCanaries: boolean } {
+  const chunks: string[] = [];
+  let start: number | null = null;
+  let cursor = 0;
+  for (const match of text.matchAll(/-----(BEGIN|END) [A-Z ]{1,64}-----/g)) {
+    if (match[1] === 'BEGIN' && start === null) {
+      start = match.index;
+    } else if (match[1] === 'END' && start !== null) {
+      chunks.push(text.slice(cursor, start), '[REDACTED]');
+      cursor = match.index + match[0].length;
+      start = null;
+    }
+  }
+  if (start !== null) {
+    // An incomplete pasted key is still sensitive; redact through the end.
+    chunks.push(text.slice(cursor, start), '[REDACTED]');
+    cursor = text.length;
+  }
+  const hadCanaries = chunks.length > 0;
+  chunks.push(text.slice(cursor));
+  return { redacted: chunks.join(''), hadCanaries };
+}
 
 /**
  * Normalize a reason string to Unicode NFC form without semantic trimming.
@@ -63,8 +85,7 @@ export function validateReason(normalized: string): void {
  * Returns the redacted string and whether any canaries were found.
  */
 export function redactCanaries(reason: string): { redacted: string; hadCanaries: boolean } {
-  let redacted = reason;
-  let hadCanaries = false;
+  let { redacted, hadCanaries } = redactPemBlocks(reason);
   for (const pattern of CANARY_PATTERNS) {
     // Reset lastIndex for global regexes.
     pattern.lastIndex = 0;

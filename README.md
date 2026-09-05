@@ -183,6 +183,14 @@ worker and provider configuration have been verified in that environment.
 `pnpm duplication` applies the 5% duplication gate to production code. Test
 fixtures remain covered by the test and coverage gates; their repeated setup is
 reported separately by `pnpm duplication:fixtures` without a percentage gate.
+Linux quality jobs omit desktop dependencies. Knip therefore explicitly recognizes
+the desktop-only Electron Forge package/binary pair instead of relying on its
+installed binary metadata.
+
+The migration runner recovers missing ledger entries for historical project
+migrations 0013 and 0015–0017 before applying newer migrations. Recovery uses the
+original DDL and one transaction; a conflicting partial schema aborts the repair.
+Already recorded entries and unrelated migration history are left untouched.
 Both commands use the detector settings in `.jscpd.json`.
 
 ### CI & developer tooling

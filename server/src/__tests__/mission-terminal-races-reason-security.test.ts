@@ -699,6 +699,18 @@ describe('Cancellation reason security — VAL-RUN-138', () => {
     expect(redacted).not.toContain('MIIEvQIBADANB');
   });
 
+  it('redacts repeated unclosed PEM headers without scanning the body repeatedly', () => {
+    const reason = 'prefix ' + '-----BEGIN  -----'.repeat(20_000) + 'private material';
+    expect(redactCanaries(reason)).toEqual({ redacted: 'prefix [REDACTED]', hadCanaries: true });
+  });
+
+  it('preserves surrounding text when redacting multiple PEM blocks', () => {
+    const key = '-----BEGIN PRIVATE KEY-----secret-----END PRIVATE KEY-----';
+    expect(redactCanaries(`before ${key} between ${key} after`).redacted).toBe(
+      'before [REDACTED] between [REDACTED] after',
+    );
+  });
+
   it('passes through clean reasons without redaction', () => {
     const reason = 'I no longer need this analysis.';
     const { redacted, hadCanaries } = redactCanaries(reason);
