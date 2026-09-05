@@ -191,6 +191,10 @@ The migration runner recovers missing ledger entries for historical project
 migrations 0013 and 0015–0017 before applying newer migrations. Recovery uses the
 original DDL and one transaction; a conflicting partial schema aborts the repair.
 Already recorded entries and unrelated migration history are left untouched.
+Migration 0055 extends the server-only access policy from 0003 to all declared
+application tables: RLS is enabled and direct `anon`, `authenticated`, and public
+table grants are revoked. Clerk-authorized API queries use the database owner;
+browser clients must use that API rather than querying Supabase tables directly.
 Both commands use the detector settings in `.jscpd.json`.
 
 ### CI & developer tooling

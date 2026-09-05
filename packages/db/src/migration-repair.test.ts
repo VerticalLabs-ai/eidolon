@@ -38,7 +38,7 @@ describe('historical project migration recovery', () => {
   });
 
   afterEach(async () => {
-    await client?.end();
+    await client?.end({ timeout: 1 });
     if (admin && databaseName) {
       await admin.unsafe(`DROP DATABASE IF EXISTS "${databaseName}"`);
       await admin.end();
@@ -69,7 +69,7 @@ describe('historical project migration recovery', () => {
     await migrate(drizzle(client), { migrationsFolder });
     expect(await repairSkippedProjectMigrations(client, migrationsFolder)).toEqual([]);
     const [row] = await client`SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations`;
-    expect(row!.count).toBe(55);
+    expect(row!.count).toBe(56);
     const tables = await client`SELECT tablename FROM pg_tables WHERE schemaname = 'public'
       AND tablename IN ('project_threads', 'project_outcomes', 'automation_runs', 'mission_runs')`;
     expect(tables).toHaveLength(4);
@@ -83,5 +83,51 @@ describe('historical project migration recovery', () => {
       (SELECT count(*)::int FROM drizzle.__drizzle_migrations) AS migrations`;
     expect(row!.threads).toBeNull();
     expect(row!.migrations).toBe(25);
+  });
+
+  it('protects every application table while preserving server access', async () => {
+    await migrate(drizzle(client), { migrationsFolder });
+    const unprotected = await client`SELECT c.relname FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity`;
+    expect(unprotected).toEqual([]);
+    const probeRole = 'anon';
+    const [existingRole] = await admin`SELECT 1 FROM pg_roles WHERE rolname = 'anon'`;
+    if (!existingRole) {
+      await admin`CREATE ROLE anon NOLOGIN NOBYPASSRLS`;
+    }
+    try {
+      await client`INSERT INTO companies (id, name, settings, created_at, updated_at)
+        VALUES ('rls-company', '__mtest__ RLS probe', '{"testFixture":true}'::jsonb, now(), now())`;
+      await client`INSERT INTO projects (id, company_id, name, created_at, updated_at)
+        VALUES ('rls-project', 'rls-company', 'RLS probe', now(), now())`;
+      await client`INSERT INTO project_threads (id, company_id, project_id, title)
+        VALUES ('rls-thread', 'rls-company', 'rls-project', 'Private fixture')`;
+      await client.unsafe(`GRANT USAGE ON SCHEMA public TO "${probeRole}"`);
+      await client.unsafe(
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${probeRole}"`,
+      );
+      await client.begin(async (tx) => {
+        await tx.unsafe(`SET LOCAL ROLE "${probeRole}"`);
+        expect(await tx`SELECT id FROM project_threads`).toEqual([]);
+        expect(await tx`UPDATE project_threads SET title = 'Blocked' RETURNING id`).toEqual([]);
+        expect(await tx`DELETE FROM project_threads RETURNING id`).toEqual([]);
+      });
+      await expect(
+        client.begin(async (tx) => {
+          await tx.unsafe(`SET LOCAL ROLE "${probeRole}"`);
+          await tx`INSERT INTO project_threads (id, company_id, project_id, title)
+          VALUES ('blocked-thread', 'rls-company', 'rls-project', 'Blocked')`;
+        }),
+      ).rejects.toMatchObject({ code: '42501' });
+      const [row] = await client`SELECT title FROM project_threads WHERE id = 'rls-thread'`;
+      expect(row!.title).toBe('Private fixture');
+    } finally {
+      await client.unsafe(`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM "${probeRole}"`);
+      await client.unsafe(`REVOKE ALL ON SCHEMA public FROM "${probeRole}"`);
+      if (!existingRole) {
+        await admin`DROP ROLE anon`;
+      }
+    }
   });
 });
