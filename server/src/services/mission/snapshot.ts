@@ -740,6 +740,7 @@ export class MissionSnapshotService {
           mr.resolved_mode,
           mr.routing_kind,
           mr.created_at,
+          mr.child_ordinal,
           rps.provider,
           rps.model,
           rsa.step_key,
@@ -762,6 +763,7 @@ export class MissionSnapshotService {
           mr.resolved_mode,
           mr.routing_kind,
           mr.created_at,
+          mr.child_ordinal,
           rps.provider,
           rps.model,
           rsa.step_key,
@@ -776,7 +778,8 @@ export class MissionSnapshotService {
           AND mr.company_id = ${companyId}
           AND mr.project_id = ${projectId}
       )
-      SELECT * FROM child_tree ORDER BY tree_depth ASC, created_at ASC
+      SELECT * FROM child_tree
+      ORDER BY tree_depth ASC, created_at ASC, child_ordinal ASC NULLS LAST, id ASC
     `)) as unknown as {
       id: string;
       parent_run_id: string | null;
@@ -797,8 +800,8 @@ export class MissionSnapshotService {
 
     // Build the tree from the flat CTE result. Each node is mapped to a
     // ChildTreeNode, then children are attached to their parent by
-    // parent_run_id. Ordering is preserved by created_at ASC within each
-    // depth level (VAL-M1-035).
+    // parent_run_id. Preserve creation order within each depth, breaking
+    // timestamp ties by child ordinal and then id (VAL-M1-035).
     const nodeMap = new Map<string, ChildTreeNode>();
     const childRowsByParent = new Map<string | null, typeof rows>();
 
