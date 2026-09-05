@@ -22,6 +22,22 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * Detect an Express body-parser JSON parse error. When `express.json()`
+ * fails to parse a malformed JSON body, it calls `next(err)` with a
+ * `SyntaxError` carrying `status: 400` and `type: 'entity.parse.failed'`.
+ * Without this check the error falls through to the 500 handler and
+ * exposes the raw V8 `JSON.parse` message (VAL-RUN-012).
+ */
+export function isBodyParseError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  const status = (err as { status?: unknown }).status;
+  const type = (err as { type?: unknown }).type;
+  return err instanceof SyntaxError && (status === 400 || type === 'entity.parse.failed');
+}
+
 function findDatabaseError(err: unknown): Record<string, unknown> | null {
   let current = err;
   for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth += 1) {
@@ -81,6 +97,18 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
       ...(typeof databaseError.detail === 'string'
         ? { details: { reason: databaseError.detail } }
         : {}),
+    } satisfies ApiError);
+    return;
+  }
+
+  // Body-parser / JSON parse errors: malformed JSON body is a client error
+  // (400 VALIDATION_ERROR), not a server error. The raw V8 JSON.parse
+  // message must never be exposed to the client (VAL-RUN-012).
+  if (isBodyParseError(err)) {
+    res.status(400).json({
+      status: 400,
+      code: 'VALIDATION_ERROR',
+      message: 'Malformed JSON body',
     } satisfies ApiError);
     return;
   }

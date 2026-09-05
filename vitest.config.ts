@@ -24,13 +24,16 @@ export default defineConfig({
     // With real Postgres there is no WASM blocking, so we can run more
     // forks in parallel. Each fork clones the template database (fast
     // file-level copy, no migrations) and creates a small connection pool.
-    // A cap of 6 forks balances speed with Postgres server load from
-    // concurrent database clone/drop operations (reduced from 8 to relieve
-    // connection contention that caused non-deterministic failures).
+    // A cap of 3 forks balances speed with Postgres server load from
+    // concurrent database clone/drop operations. Higher fork counts (6/8)
+    // caused non-deterministic 401/auth-context failures in
+    // mission-rbac-tenant-isolation.test.ts and observability.test.ts under
+    // parallel Postgres connection contention; 3 stabilizes those flaky
+    // tests while keeping parallelism for throughput.
     globalSetup: ['./server/src/test-global-setup.ts'],
     poolOptions: {
       forks: {
-        maxForks: 6,
+        maxForks: 3,
       },
     },
     // Template clone takes ~100-300ms on first call per file. Under

@@ -1,0 +1,11 @@
+-- Add result_completeness column to mission_runs (VAL-CROSS-091, VAL-CROSS-102).
+--
+-- Durable resultCompleteness:null|full|partial field that governs synthesis,
+-- artifact metadata, parent tree, Project Plan, Activity, and cards. Approved
+-- best-effort may be completed-partial; missing mandatory criteria is failed
+-- and no surface infers a conflicting label.
+--
+-- Forward-only and additive; nullable so existing rows remain valid. Null
+-- means the run has not reached a completion outcome (nonterminal, failed,
+-- or cancelled before synthesis).
+ALTER TABLE "mission_runs" ADD COLUMN "result_completeness" text;

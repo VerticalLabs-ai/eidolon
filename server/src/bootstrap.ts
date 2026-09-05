@@ -75,6 +75,37 @@ import {
   companyMembers,
   companyInvitations,
   agentApiKeys,
+  runPolicySnapshots,
+  missionRuns,
+  budgetReservations,
+  budgetAllocations,
+  budgetSettlements,
+  runCommands,
+  runEvents,
+  runToolInvocations,
+  runProjectionLinks,
+  missionWorkerHeartbeats,
+  modeProfiles,
+  runQuestionSets,
+  runQuestions,
+  runQuestionAnswers,
+  runPlanRevisions,
+  runPlanApprovalBindings,
+  runStepAssignments,
+  runSchedulingPermits,
+  runDescendantMirrors,
+  runSynthesisManifests,
+  researchProviderHealth,
+  researchPricingSnapshots,
+  researchSources,
+  researchSourceRevisions,
+  runResearchSources,
+  citations,
+  artifactProvenance,
+  citationCarryForwardOutcomes,
+  carryForwardOutcomeEnum,
+  researchAttempts,
+  researchSourceAvailabilityChecks,
 } from '@eidolon/db';
 
 // ---------------------------------------------------------------------------
@@ -147,6 +178,37 @@ const SCHEMA_BUNDLE = {
   companyMembers,
   companyInvitations,
   agentApiKeys,
+  runPolicySnapshots,
+  missionRuns,
+  budgetReservations,
+  budgetAllocations,
+  budgetSettlements,
+  runCommands,
+  runEvents,
+  runToolInvocations,
+  runProjectionLinks,
+  missionWorkerHeartbeats,
+  modeProfiles,
+  runQuestionSets,
+  runQuestions,
+  runQuestionAnswers,
+  runPlanRevisions,
+  runPlanApprovalBindings,
+  runStepAssignments,
+  runSchedulingPermits,
+  runDescendantMirrors,
+  runSynthesisManifests,
+  researchProviderHealth,
+  researchPricingSnapshots,
+  researchSources,
+  researchSourceRevisions,
+  runResearchSources,
+  citations,
+  artifactProvenance,
+  citationCarryForwardOutcomes,
+  carryForwardOutcomeEnum,
+  researchAttempts,
+  researchSourceAvailabilityChecks,
 } as const;
 
 export interface BootstrapOptions {
@@ -236,6 +298,7 @@ async function build(options: BootstrapOptions): Promise<BootstrapResult> {
   const db: DbInstance = {
     drizzle: drizzleDb,
     schema: SCHEMA_BUNDLE,
+    client,
   };
 
   const app = createApp(db);
@@ -261,4 +324,80 @@ export function getServer(options: BootstrapOptions = {}): Promise<BootstrapResu
     });
   }
   return cached;
+}
+
+// ---------------------------------------------------------------------------
+// Worker-only bootstrap: DB connection without an Express app.
+//
+// The orchestration worker is a separate Node process with no HTTP port. It
+// needs the same Postgres connection and schema bundle as the API server but
+// does not need Express, routes, or the activity-log event listener. This
+// function reuses the same schema bundle and connection-string resolution as
+// `getServer` while skipping `createApp` and `setupActivityLogger`.
+// ---------------------------------------------------------------------------
+
+let workerCached: Promise<WorkerBootstrapResult> | null = null;
+
+export interface WorkerBootstrapOptions {
+  /** Run Drizzle migrations on boot. Default false (the API server owns this). */
+  runMigrations?: boolean;
+  /** Maximum pool size for the postgres.js client. Default 5. */
+  maxConnections?: number;
+}
+
+export interface WorkerBootstrapResult {
+  db: DbInstance;
+  client: Sql;
+  connectionString: string;
+}
+
+async function buildWorker(options: WorkerBootstrapOptions): Promise<WorkerBootstrapResult> {
+  const { runMigrations = false, maxConnections = 5 } = options;
+
+  const connectionString = resolveConnectionString();
+  logger.info({ db: maskUrl(connectionString) }, 'Worker opening Postgres connection');
+
+  const rawClient = postgres(connectionString, { max: maxConnections });
+  const client = isTracingEnabled() ? wrapClientWithTracing(rawClient) : rawClient;
+  const drizzleDb = drizzle(client);
+
+  if (runMigrations) {
+    const migrationsPath = path.resolve(__dirname, '../../packages/db/drizzle');
+    try {
+      await migrate(drizzleDb, { migrationsFolder: migrationsPath });
+      logger.info('Database migrations applied (worker)');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = (err as { code?: string })?.code;
+      if (code === 'ENOENT' || message.includes('No migration files')) {
+        logger.warn(
+          'No migration files found — run "pnpm run db:generate && pnpm run db:migrate" first',
+        );
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const db: DbInstance = {
+    drizzle: drizzleDb,
+    schema: SCHEMA_BUNDLE,
+    client,
+  };
+
+  return { db, client, connectionString };
+}
+
+/**
+ * Memoized worker bootstrap. Returns a DB instance without creating an
+ * Express app. Used by the orchestration worker process.
+ */
+export function getDb(options: WorkerBootstrapOptions = {}): Promise<WorkerBootstrapResult> {
+  if (!workerCached) {
+    workerCached = buildWorker(options).catch((err) => {
+      workerCached = null;
+      throw err;
+    });
+  }
+  return workerCached;
 }

@@ -20,6 +20,9 @@ export const costEvents = pgTable('cost_events', {
   inputTokens: integer('input_tokens').notNull().default(0),
   outputTokens: integer('output_tokens').notNull().default(0),
   costCents: integer('cost_cents').notNull().default(0),
+  /** Nullable link to the Mission budget settlement that created this
+   *  compatibility cost event. Null for legacy (non-Mission) cost events. */
+  budgetSettlementId: text('budget_settlement_id'),
   createdAt: timestamp('created_at', { mode: 'date', precision: 3 })
     .notNull()
     .$defaultFn(() => new Date()),

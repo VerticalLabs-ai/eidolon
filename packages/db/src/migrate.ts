@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { resolve } from 'node:path';
+import { repairSkippedProjectMigrations } from './migration-repair.js';
 
 // Precedence mirrors bootstrap.ts but with a hard preference for the
 // non-pooling URL when both are present. Drizzle's migrator acquires an
@@ -10,9 +11,7 @@ import { resolve } from 'node:path';
 // the Supabase Marketplace integration provisions both URLs; CI/deploy
 // should prefer the direct connection.
 const connectionString =
-  process.env.POSTGRES_URL_NON_POOLING ??
-  process.env.DATABASE_URL ??
-  process.env.POSTGRES_URL;
+  process.env.POSTGRES_URL_NON_POOLING ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
 
 if (!connectionString) {
   throw new Error(
@@ -30,7 +29,9 @@ const db = drizzle(client);
 function maskUrl(url: string): string {
   try {
     const u = new URL(url);
-    if (u.password) u.password = '***';
+    if (u.password) {
+      u.password = '***';
+    }
     return u.toString();
   } catch {
     return '(unparseable url)';
@@ -39,9 +40,12 @@ function maskUrl(url: string): string {
 
 console.log(`Running migrations against ${maskUrl(connectionString)}...`);
 
-await migrate(db, {
-  migrationsFolder: resolve(import.meta.dirname ?? '.', '..', 'drizzle'),
-});
+const migrationsFolder = resolve(import.meta.dirname ?? '.', '..', 'drizzle');
+const repaired = await repairSkippedProjectMigrations(client, migrationsFolder);
+if (repaired.length > 0) {
+  console.log(`Recovered skipped project migrations: ${repaired.join(', ')}`);
+}
+await migrate(db, { migrationsFolder });
 
 console.log('Migrations complete.');
 

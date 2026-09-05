@@ -5,12 +5,13 @@ import { TaskCheckoutService } from './task-checkout.js';
 import { resolveTaskProjectId } from '../utils/task-project-resolver.js';
 import type { DbInstance } from '../types.js';
 
-export type RoutineTriggerStatus =
-  | 'session_started'
-  | 'task_created_without_agent';
+export type RoutineTriggerStatus = 'session_started' | 'task_created_without_agent';
 
-type TableRow<Name extends keyof DbInstance['schema']> =
-  DbInstance['schema'][Name]['$inferSelect'];
+type TableRow<Name extends keyof DbInstance['schema']> = DbInstance['schema'][Name] extends {
+  $inferSelect: infer T;
+}
+  ? T
+  : never;
 
 type RoutineTriggerWork = {
   routine: TableRow<'routines'>;
@@ -77,9 +78,7 @@ export class RoutineTriggerService {
       }
     }
 
-    const status: RoutineTriggerStatus = session
-      ? 'session_started'
-      : 'task_created_without_agent';
+    const status: RoutineTriggerStatus = session ? 'session_started' : 'task_created_without_agent';
 
     // Complete the automation_run now that all work is linked
     await this.completeRun(companyId, result.runId, {
@@ -89,9 +88,10 @@ export class RoutineTriggerService {
 
     return {
       ...result,
-      execution: result.execution && session
-        ? { ...result.execution, runtimeSessionId: session.id }
-        : result.execution,
+      execution:
+        result.execution && session
+          ? { ...result.execution, runtimeSessionId: session.id }
+          : result.execution,
       session,
       status,
     };
@@ -251,7 +251,9 @@ export class RoutineTriggerService {
     work: RoutineTriggerWork,
     error: unknown,
   ) {
-    if (!work.execution) return;
+    if (!work.execution) {
+      return;
+    }
 
     const { tasks, agentExecutions, taskThreadItems, automationRuns } = this.db.schema;
     const now = new Date();
@@ -267,10 +269,9 @@ export class RoutineTriggerService {
           lastEventAt: now,
           updatedAt: now,
         })
-        .where(and(
-          eq(agentExecutions.companyId, companyId),
-          eq(agentExecutions.id, work.execution!.id),
-        ));
+        .where(
+          and(eq(agentExecutions.companyId, companyId), eq(agentExecutions.id, work.execution!.id)),
+        );
 
       await tx
         .update(tasks)
@@ -290,10 +291,9 @@ export class RoutineTriggerService {
           resolvedAt: now,
           updatedAt: now,
         })
-        .where(and(
-          eq(taskThreadItems.companyId, companyId),
-          eq(taskThreadItems.id, work.threadItem.id),
-        ));
+        .where(
+          and(eq(taskThreadItems.companyId, companyId), eq(taskThreadItems.id, work.threadItem.id)),
+        );
 
       // Mark the automation_run as failed
       await tx
@@ -304,10 +304,7 @@ export class RoutineTriggerService {
           completedAt: now,
           updatedAt: now,
         })
-        .where(and(
-          eq(automationRuns.companyId, companyId),
-          eq(automationRuns.id, work.runId),
-        ));
+        .where(and(eq(automationRuns.companyId, companyId), eq(automationRuns.id, work.runId)));
     });
   }
 
@@ -327,10 +324,7 @@ export class RoutineTriggerService {
         completedAt: now,
         updatedAt: now,
       })
-      .where(and(
-        eq(automationRuns.companyId, companyId),
-        eq(automationRuns.id, runId),
-      ));
+      .where(and(eq(automationRuns.companyId, companyId), eq(automationRuns.id, runId)));
   }
 }
 

@@ -11,14 +11,11 @@ describe('Inbox unified feed', () => {
     db = await createTestDb();
     app = await createTestServer(db);
 
-    const res = await request(app)
-      .post('/api/companies')
-      .send({ name: 'Inbox Corp' });
+    const res = await request(app).post('/api/companies').send({ name: 'Inbox Corp' });
     companyId = res.body.data.id;
   });
 
-  const url = (query = '') =>
-    `/api/companies/${companyId}/inbox${query}`;
+  const url = (query = '') => `/api/companies/${companyId}/inbox${query}`;
 
   it('returns an empty feed when nothing is pending', async () => {
     const res = await request(app).get(url()).expect(200);
@@ -27,6 +24,7 @@ describe('Inbox unified feed', () => {
       pendingApprovals: 0,
       pendingCollaborations: 0,
       pendingThreadItems: 0,
+      pendingMissionQuestions: 0,
       total: 0,
       unread: 0,
     });
@@ -120,9 +118,7 @@ describe('Inbox unified feed', () => {
       .expect(200);
 
     const res = await request(app).get(url()).expect(200);
-    const approvalItems = res.body.data.filter(
-      (i: { kind: string }) => i.kind === 'approval',
-    );
+    const approvalItems = res.body.data.filter((i: { kind: string }) => i.kind === 'approval');
     expect(approvalItems).toHaveLength(1);
     expect(approvalItems[0].id).toBe(`approval:${created.body.data.id}`);
   });
@@ -170,18 +166,13 @@ describe('Inbox unified feed', () => {
       await request(app)
         .post(url('/read'))
         .send({
-          itemIds: [
-            `approval:${a.body.data.id}`,
-            `approval:${b.body.data.id}`,
-          ],
+          itemIds: [`approval:${a.body.data.id}`, `approval:${b.body.data.id}`],
         })
         .expect(200);
 
       const after = await request(app).get(url()).expect(200);
       expect(after.body.meta.unread).toBe(0);
-      expect(after.body.data.every((i: any) => typeof i.readAt === 'string')).toBe(
-        true,
-      );
+      expect(after.body.data.every((i: any) => typeof i.readAt === 'string')).toBe(true);
     });
 
     it('POST /read is idempotent — marking twice is a no-op', async () => {
@@ -203,7 +194,10 @@ describe('Inbox unified feed', () => {
         .send({ title: 'Flip flop' });
       const id = `approval:${a.body.data.id}`;
 
-      await request(app).post(url('/read')).send({ itemIds: [id] }).expect(200);
+      await request(app)
+        .post(url('/read'))
+        .send({ itemIds: [id] })
+        .expect(200);
       let feed = await request(app).get(url());
       expect(feed.body.data[0].readAt).not.toBeNull();
 
@@ -217,10 +211,7 @@ describe('Inbox unified feed', () => {
     });
 
     it('rejects empty itemIds array', async () => {
-      await request(app)
-        .post(url('/read'))
-        .send({ itemIds: [] })
-        .expect(400);
+      await request(app).post(url('/read')).send({ itemIds: [] }).expect(400);
     });
 
     it('dedupes duplicate ids in the same payload', async () => {

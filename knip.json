@@ -2,6 +2,12 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "exclude": ["exports", "types", "duplicates"],
   "ignoreBinaries": ["supabase", "psql"],
+  "workspaces": {
+    "packages/desktop": {
+      "ignoreDependencies": ["@electron-forge/cli"],
+      "ignoreBinaries": ["electron-forge"]
+    }
+  },
   "ignoreFiles": [
     "api/**/*.js",
     "packages/desktop/src/preload.cjs",

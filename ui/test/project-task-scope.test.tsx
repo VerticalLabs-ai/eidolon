@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskBoard } from "../src/pages/TaskBoard";
+import { render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { TaskBoard } from '../src/pages/TaskBoard';
 
 const mocks = vi.hoisted(() => ({
   createTask: vi.fn(),
@@ -10,22 +10,23 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
 }));
 
-vi.mock("react-router-dom", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react-router-dom")>();
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>();
   return {
     ...actual,
-    useParams: () => ({ companyId: "company-1", projectId: "project-1" }),
+    useParams: () => ({ companyId: 'company-1', projectId: 'project-1' }),
   };
 });
 
-vi.mock("@/lib/hooks", () => ({
+vi.mock('@/lib/hooks', () => ({
+  useMyRole: () => ({ data: 'owner', isLoading: false, isError: false }),
   useCreateTask: () => ({ mutate: mocks.createTask, isPending: false }),
   useTasks: mocks.useTasks,
   useUpdateTask: () => ({ mutate: mocks.updateTask }),
 }));
 
-vi.mock("@/components/tasks/CreateTaskModal", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/components/tasks/CreateTaskModal")>();
+vi.mock('@/components/tasks/CreateTaskModal', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/tasks/CreateTaskModal')>();
   return {
     ...actual,
     CreateTaskModal: (props: Record<string, unknown>) => {
@@ -35,34 +36,34 @@ vi.mock("@/components/tasks/CreateTaskModal", async (importOriginal) => {
   };
 });
 
-describe("project task scope", () => {
+describe('project task scope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.useTasks.mockReturnValue({ data: [], isLoading: false });
   });
 
-  it("requests and creates tasks within the current project", () => {
+  it('requests and creates tasks within the current project', () => {
     render(<TaskBoard title="Work" />);
 
-    expect(mocks.useTasks).toHaveBeenCalledWith("company-1", {
-      projectId: "project-1",
+    expect(mocks.useTasks).toHaveBeenCalledWith('company-1', {
+      projectId: 'project-1',
     });
     expect(mocks.modalProps).toHaveBeenCalledWith(
-      expect.objectContaining({ companyId: "company-1", projectId: "project-1" }),
+      expect.objectContaining({ companyId: 'company-1', projectId: 'project-1' }),
     );
   });
 
   // VAL-WORK-009: Work tab loading state
-  it("shows a loading indicator when tasks are loading", () => {
+  it('shows a loading indicator when tasks are loading', () => {
     mocks.useTasks.mockReturnValue({ data: undefined, isLoading: true });
     render(<TaskBoard title="Work" />);
     // The loading state renders animated pulse columns
-    const pulses = document.querySelectorAll(".animate-pulse");
+    const pulses = document.querySelectorAll('.animate-pulse');
     expect(pulses.length).toBeGreaterThan(0);
   });
 
   // VAL-WORK-009: Work tab error state
-  it("shows an error message when tasks fail to load", () => {
+  it('shows an error message when tasks fail to load', () => {
     mocks.useTasks.mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -70,13 +71,13 @@ describe("project task scope", () => {
       refetch: mocks.refetch,
     });
     render(<TaskBoard title="Work" />);
-    expect(screen.getByText("Tasks could not be loaded")).toBeInTheDocument();
+    expect(screen.getByText('Tasks could not be loaded')).toBeInTheDocument();
   });
 
-  it("renders the caller-provided title for standalone Issues", () => {
+  it('renders the caller-provided title for standalone Issues', () => {
     render(<TaskBoard title="Issues" />);
 
-    expect(screen.getByRole("heading", { name: "Issues" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Work" })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Issues' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Work' })).not.toBeInTheDocument();
   });
 });

@@ -1,0 +1,15 @@
+-- No-op migration.
+--
+-- The is_current_authorization column and the
+-- uq_run_plan_approval_bindings_run_current partial unique index were
+-- originally added here (m3-f12) to support post-approval revision
+-- branching: multiple historical approved bindings may coexist with one
+-- current execution authorization per run (VAL-PLAN-102, VAL-PLAN-039,
+-- VAL-PLAN-101, VAL-PLAN-121).
+--
+-- These changes have been folded into migration 0041 so that the
+-- migration SQL and the Drizzle TS schema are in sync from the moment
+-- the run_plan_approval_bindings table is created (the TS schema already
+-- referenced is_current_authorization from m3-f03). This migration is
+-- retained as a no-op to preserve the journal entry ordering; it applies
+-- no statements.

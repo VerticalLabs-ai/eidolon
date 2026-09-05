@@ -1,22 +1,16 @@
-import { useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
-import {
-  ShieldCheck,
-  Clock,
-  Check,
-  X as XIcon,
-  Plus,
-  MessageSquare,
-} from "lucide-react";
-import { clsx } from "clsx";
-import { Card } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
-import { Badge } from "@/components/ui/Badge";
-import { Input, Select, Textarea } from "@/components/ui/Input";
-import { Modal } from "@/components/ui/Modal";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { PageTransition } from "@/components/ui/PageTransition";
-import { Tabs, type Tab } from "@/components/ui/Tabs";
+import { useMemo, useState } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
+import { ShieldCheck, Clock, Check, X as XIcon, Plus, MessageSquare } from 'lucide-react';
+import { clsx } from 'clsx';
+import { Card } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
+import { Badge } from '@/components/ui/Badge';
+import { Input, Select, Textarea } from '@/components/ui/Input';
+import { Modal } from '@/components/ui/Modal';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { PageTransition } from '@/components/ui/PageTransition';
+import { Tabs, type Tab } from '@/components/ui/Tabs';
+import { MissionPlanGateApproval } from '@/components/projects/MissionPlanGateApproval';
 import {
   useApprovals,
   useApproval,
@@ -24,46 +18,44 @@ import {
   useDecideApproval,
   useCancelApproval,
   useAddApprovalComment,
-} from "@/lib/hooks";
-import type {
-  Approval,
-  ApprovalKind,
-  ApprovalPriority,
-  ApprovalStatus,
-} from "@/lib/api";
+} from '@/lib/hooks';
+import type { Approval, ApprovalKind, ApprovalPriority, ApprovalStatus } from '@/lib/api';
 
 const statusTabs: Tab[] = [
-  { id: "pending", label: "Pending" },
-  { id: "approved", label: "Approved" },
-  { id: "rejected", label: "Rejected" },
-  { id: "cancelled", label: "Cancelled" },
+  { id: 'pending', label: 'Pending' },
+  { id: 'approved', label: 'Approved' },
+  { id: 'rejected', label: 'Rejected' },
+  { id: 'cancelled', label: 'Cancelled' },
 ];
 
 const kindLabels: Record<ApprovalKind, string> = {
-  budget_change: "Budget change",
-  agent_termination: "Agent termination",
-  task_review: "Task review",
-  custom: "Custom",
-  plan_gate: "Plan gate",
+  budget_change: 'Budget change',
+  agent_termination: 'Agent termination',
+  task_review: 'Task review',
+  custom: 'Custom',
+  plan_gate: 'Plan gate',
 };
 
-const priorityVariant: Record<
-  ApprovalPriority,
-  "info" | "warning" | "error" | "success"
-> = {
-  low: "info",
-  medium: "info",
-  high: "warning",
-  critical: "error",
+const priorityVariant: Record<ApprovalPriority, 'info' | 'warning' | 'error' | 'success'> = {
+  low: 'info',
+  medium: 'info',
+  high: 'warning',
+  critical: 'error',
 };
 
 function formatRelative(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diffMs / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) {
+    return 'just now';
+  }
+  if (mins < 60) {
+    return `${mins}m ago`;
+  }
   const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
   return `${Math.round(hours / 24)}d ago`;
 }
 
@@ -80,21 +72,17 @@ function ApprovalRow({
     <button
       onClick={onSelect}
       className={clsx(
-        "w-full rounded-lg border px-4 py-3 text-left transition-all duration-200",
+        'w-full rounded-lg border px-4 py-3 text-left transition-all duration-200',
         selected
-          ? "border-accent/40 bg-accent/[0.05]"
-          : "border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.02]",
+          ? 'border-accent/40 bg-accent/[0.05]'
+          : 'border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.02]',
       )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-medium text-text-primary">
-              {approval.title}
-            </p>
-            <Badge variant={priorityVariant[approval.priority]}>
-              {approval.priority}
-            </Badge>
+            <p className="truncate text-sm font-medium text-text-primary">{approval.title}</p>
+            <Badge variant={priorityVariant[approval.priority]}>{approval.priority}</Badge>
           </div>
           <p className="mt-0.5 text-xs text-text-secondary">
             {kindLabels[approval.kind]} · {formatRelative(approval.createdAt)}
@@ -105,20 +93,23 @@ function ApprovalRow({
   );
 }
 
-function ApprovalDetail({
-  companyId,
-  approvalId,
-}: {
-  companyId: string;
-  approvalId: string;
-}) {
-  const { data, isLoading } = useApproval(companyId, approvalId);
+function ApprovalDetail({ companyId, approvalId }: { companyId: string; approvalId: string }) {
+  const { data, isLoading, isError } = useApproval(companyId, approvalId);
   const decide = useDecideApproval(companyId);
   const cancel = useCancelApproval(companyId);
   const addComment = useAddApprovalComment(companyId);
-  const [note, setNote] = useState("");
-  const [comment, setComment] = useState("");
+  const [note, setNote] = useState('');
+  const [comment, setComment] = useState('');
 
+  if (isError) {
+    return (
+      <Card className="h-full p-6">
+        <p role="alert" className="text-sm text-text-secondary">
+          Approval unavailable
+        </p>
+      </Card>
+    );
+  }
   if (isLoading || !data) {
     return (
       <Card className="h-full p-6">
@@ -128,20 +119,17 @@ function ApprovalDetail({
   }
 
   const { approval, comments } = data;
-  const isPending = approval.status === "pending";
+  const isPending = approval.status === 'pending';
+  const isPlanGate = approval.kind === 'plan_gate';
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
       <div className="border-b border-white/[0.06] p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-text-primary">
-              {approval.title}
-            </h2>
+            <h2 className="text-base font-semibold text-text-primary">{approval.title}</h2>
             <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
-              <Badge variant={priorityVariant[approval.priority]}>
-                {approval.priority}
-              </Badge>
+              <Badge variant={priorityVariant[approval.priority]}>{approval.priority}</Badge>
               <span>·</span>
               <span>{kindLabels[approval.kind]}</span>
               <span>·</span>
@@ -149,25 +137,36 @@ function ApprovalDetail({
             </div>
           </div>
         </div>
-        {approval.description && (
+        {approval.description && !isPlanGate && (
           <p className="mt-3 whitespace-pre-wrap text-sm text-text-secondary">
             {approval.description}
           </p>
         )}
-        {Object.keys(approval.payload).length > 0 && (
+        {!isPlanGate && Object.keys(approval.payload).length > 0 && (
           <pre className="mt-3 max-h-40 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-text-secondary">
             {JSON.stringify(approval.payload, null, 2)}
           </pre>
         )}
         {approval.resolutionNote && (
           <p className="mt-3 rounded-md border border-white/[0.06] bg-white/[0.02] p-3 text-xs text-text-secondary">
-            <span className="font-medium text-text-primary">Resolution:</span>{" "}
+            <span className="font-medium text-text-primary">Resolution:</span>{' '}
             {approval.resolutionNote}
           </p>
         )}
       </div>
 
-      {isPending && (
+      {/* Mission plan_gate approvals render the authoritative Mission-bound
+       * decision surface instead of generic legacy decide/cancel controls
+       * (VAL-CROSS-045, VAL-CROSS-085). Decisions submit through the
+       * canonical Mission command transaction with run version, revision
+       * ID, and hash. */}
+      {isPlanGate && (
+        <div className="border-b border-white/[0.06] p-5">
+          <MissionPlanGateApproval companyId={companyId} approval={approval} />
+        </div>
+      )}
+
+      {isPending && !isPlanGate && (
         <div className="space-y-3 border-b border-white/[0.06] p-5">
           <Textarea
             label="Resolution note (optional)"
@@ -180,8 +179,8 @@ function ApprovalDetail({
             <Button
               onClick={() =>
                 decide.mutate(
-                  { id: approval.id, decision: "approved", resolutionNote: note },
-                  { onSuccess: () => setNote("") },
+                  { id: approval.id, decision: 'approved', resolutionNote: note },
+                  { onSuccess: () => setNote('') },
                 )
               }
               disabled={decide.isPending}
@@ -193,8 +192,8 @@ function ApprovalDetail({
               variant="secondary"
               onClick={() =>
                 decide.mutate(
-                  { id: approval.id, decision: "rejected", resolutionNote: note },
-                  { onSuccess: () => setNote("") },
+                  { id: approval.id, decision: 'rejected', resolutionNote: note },
+                  { onSuccess: () => setNote('') },
                 )
               }
               disabled={decide.isPending}
@@ -207,7 +206,7 @@ function ApprovalDetail({
               onClick={() =>
                 cancel.mutate(
                   { id: approval.id, resolutionNote: note },
-                  { onSuccess: () => setNote("") },
+                  { onSuccess: () => setNote('') },
                 )
               }
               disabled={cancel.isPending}
@@ -224,31 +223,26 @@ function ApprovalDetail({
           Comments ({comments.length})
         </div>
         <div className="space-y-2">
-          {comments.length === 0 && (
-            <p className="text-xs text-text-secondary">No comments yet.</p>
-          )}
+          {comments.length === 0 && <p className="text-xs text-text-secondary">No comments yet.</p>}
           {comments.map((c) => (
-            <div
-              key={c.id}
-              className="rounded-md border border-white/[0.06] bg-white/[0.02] p-3"
-            >
+            <div key={c.id} className="rounded-md border border-white/[0.06] bg-white/[0.02] p-3">
               <p className="text-[11px] text-text-secondary">
-                {c.authorAgentId ? `agent ${c.authorAgentId.slice(0, 6)}` : "user"} ·{" "}
+                {c.authorAgentId ? `agent ${c.authorAgentId.slice(0, 6)}` : 'user'} ·{' '}
                 {formatRelative(c.createdAt)}
               </p>
-              <p className="mt-1 whitespace-pre-wrap text-sm text-text-primary">
-                {c.content}
-              </p>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-text-primary">{c.content}</p>
             </div>
           ))}
         </div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!comment.trim()) return;
+            if (!comment.trim()) {
+              return;
+            }
             addComment.mutate(
               { id: approval.id, content: comment.trim() },
-              { onSuccess: () => setComment("") },
+              { onSuccess: () => setComment('') },
             );
           }}
           className="mt-4 flex gap-2"
@@ -278,16 +272,16 @@ function NewApprovalModal({
   onClose: () => void;
 }) {
   const mutation = useCreateApproval(companyId);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [kind, setKind] = useState<ApprovalKind>("custom");
-  const [priority, setPriority] = useState<ApprovalPriority>("medium");
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [kind, setKind] = useState<ApprovalKind>('custom');
+  const [priority, setPriority] = useState<ApprovalPriority>('medium');
 
   function reset() {
-    setTitle("");
-    setDescription("");
-    setKind("custom");
-    setPriority("medium");
+    setTitle('');
+    setDescription('');
+    setKind('custom');
+    setPriority('medium');
   }
 
   return (
@@ -295,7 +289,9 @@ function NewApprovalModal({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (!title.trim()) return;
+          if (!title.trim()) {
+            return;
+          }
           mutation.mutate(
             {
               title: title.trim(),
@@ -333,23 +329,21 @@ function NewApprovalModal({
             value={kind}
             onChange={(e) => setKind(e.target.value as ApprovalKind)}
             options={[
-              { value: "custom", label: "Custom" },
-              { value: "budget_change", label: "Budget change" },
-              { value: "agent_termination", label: "Agent termination" },
-              { value: "task_review", label: "Task review" },
+              { value: 'custom', label: 'Custom' },
+              { value: 'budget_change', label: 'Budget change' },
+              { value: 'agent_termination', label: 'Agent termination' },
+              { value: 'task_review', label: 'Task review' },
             ]}
           />
           <Select
             label="Priority"
             value={priority}
-            onChange={(e) =>
-              setPriority(e.target.value as ApprovalPriority)
-            }
+            onChange={(e) => setPriority(e.target.value as ApprovalPriority)}
             options={[
-              { value: "low", label: "Low" },
-              { value: "medium", label: "Medium" },
-              { value: "high", label: "High" },
-              { value: "critical", label: "Critical" },
+              { value: 'low', label: 'Low' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'high', label: 'High' },
+              { value: 'critical', label: 'Critical' },
             ]}
           />
         </div>
@@ -368,15 +362,16 @@ function NewApprovalModal({
 
 export function Approvals() {
   const { companyId } = useParams();
-  const [activeStatus, setActiveStatus] = useState<ApprovalStatus>("pending");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusId = searchParams.get('focus');
+  const [activeStatus, setActiveStatus] = useState<ApprovalStatus>('pending');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const { data: approvals, isLoading } = useApprovals(companyId, activeStatus);
 
   const visible = useMemo(() => approvals ?? [], [approvals]);
-  const selected =
-    visible.find((a) => a.id === selectedId) ?? visible[0] ?? null;
+  const selectedApprovalId = selectedId ?? focusId ?? visible[0]?.id ?? null;
 
   return (
     <PageTransition>
@@ -407,6 +402,11 @@ export function Approvals() {
             onTabChange={(id) => {
               setActiveStatus(id as ApprovalStatus);
               setSelectedId(null);
+              setSearchParams((previous) => {
+                const next = new URLSearchParams(previous);
+                next.delete('focus');
+                return next;
+              });
             }}
           />
         </div>
@@ -420,8 +420,8 @@ export function Approvals() {
                 icon={<Clock className="h-6 w-6" />}
                 title={`No ${activeStatus} approvals`}
                 description={
-                  activeStatus === "pending"
-                    ? "Nothing is waiting on a decision right now."
+                  activeStatus === 'pending'
+                    ? 'Nothing is waiting on a decision right now.'
                     : `You'll see ${activeStatus} requests here.`
                 }
               />
@@ -430,7 +430,7 @@ export function Approvals() {
                 <ApprovalRow
                   key={a.id}
                   approval={a}
-                  selected={(selected?.id ?? null) === a.id}
+                  selected={selectedApprovalId === a.id}
                   onSelect={() => setSelectedId(a.id)}
                 />
               ))
@@ -438,13 +438,11 @@ export function Approvals() {
           </div>
 
           <div className="min-h-0 overflow-hidden">
-            {selected ? (
-              <ApprovalDetail companyId={companyId!} approvalId={selected.id} />
+            {selectedApprovalId ? (
+              <ApprovalDetail companyId={companyId!} approvalId={selectedApprovalId} />
             ) : (
               <Card className="flex h-full items-center justify-center p-6">
-                <p className="text-sm text-text-secondary">
-                  Select an approval to see details.
-                </p>
+                <p className="text-sm text-text-secondary">Select an approval to see details.</p>
               </Card>
             )}
           </div>

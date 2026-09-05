@@ -204,6 +204,195 @@
       "when": 1786635777069,
       "tag": "0028_slippery_king_cobra",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1787258048219,
+      "tag": "0029_pretty_vulture",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1787319231547,
+      "tag": "0030_peaceful_pete_wisdom",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1787400000000,
+      "tag": "0031_cancellation_deadline",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787486400000,
+      "tag": "0032_trace_id_run_commands",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1787330512861,
+      "tag": "0033_ordinary_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1787331830206,
+      "tag": "0034_new_warbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1787344252711,
+      "tag": "0035_encrypted_ingress",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1787430000000,
+      "tag": "0036_worker_heartbeat",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1787516400000,
+      "tag": "0037_mode_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787602800000,
+      "tag": "0038_immutable_policy_snapshot_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787689200000,
+      "tag": "0039_question_sets_questions",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1787775600000,
+      "tag": "0040_question_answers",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787862000000,
+      "tag": "0041_plan_revisions_approval_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1787948400000,
+      "tag": "0042_execution_earmark_cents",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1788034800000,
+      "tag": "0043_current_authorization",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1788121200000,
+      "tag": "0044_run_step_assignments",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1788207600000,
+      "tag": "0045_routing_policy_permits",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1788294000000,
+      "tag": "0046_subthreads_context_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788380400000,
+      "tag": "0047_synthesis_manifests",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1788466800000,
+      "tag": "0048_result_completeness",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1788553200000,
+      "tag": "0049_research_provider_health_pricing",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1788639600000,
+      "tag": "0050_research_sources_citations_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1788726000000,
+      "tag": "0051_citation_carry_forward_outcomes",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1788812400000,
+      "tag": "0052_research_attempt_accounting",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1788898800000,
+      "tag": "0053_run_events_notify_trigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1788985200000,
+      "tag": "0054_provider_health_deadlines_bigint",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1789071600000,
+      "tag": "0055_server_only_table_access",
+      "breakpoints": true
     }
   ]
 }

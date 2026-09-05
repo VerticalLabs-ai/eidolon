@@ -17,13 +17,20 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
+  // Merge headers explicitly so a caller-supplied `headers` field does not
+  // overwrite the default Content-Type. Previously `...options` was spread
+  // after `headers`, which replaced the merged headers object with the raw
+  // caller headers and dropped Content-Type on every POST that supplied
+  // headers (e.g. Mission start with Idempotency-Key), causing 400
+  // VALIDATION_ERROR (VAL-RUN-126, VAL-CROSS-002).
+  const { headers: callerHeaders, ...rest } = options;
   const res = await fetch(url, {
     credentials: 'include',
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...(callerHeaders as Record<string, string> | undefined),
     },
-    ...options,
   });
 
   // Redirect to login on 401
@@ -2693,7 +2700,8 @@ export const createArtifactFromTemplate = (
 
 // ── Inbox (unified feed) ────────────────────────────────────────────────
 
-export type InboxItemKind = 'approval' | 'collaboration' | 'activity' | 'task_thread';
+export type InboxItemKind =
+  'approval' | 'collaboration' | 'activity' | 'task_thread' | 'mission_question';
 
 export interface InboxItem {
   id: string;
@@ -2710,6 +2718,12 @@ export interface InboxItem {
   link: string;
   createdAt: string;
   readAt: string | null;
+  /** Mission question attention context (kind === 'mission_question'). */
+  projectId?: string;
+  runId?: string;
+  questionSetId?: string;
+  /** Whether the attention item is still actionable (open) or resolved history. */
+  actionable?: boolean;
 }
 
 export interface InboxResponse {
@@ -2718,6 +2732,7 @@ export interface InboxResponse {
     pendingApprovals: number;
     pendingCollaborations: number;
     pendingThreadItems?: number;
+    pendingMissionQuestions?: number;
     total: number;
     unread: number;
   };
@@ -2992,6 +3007,24 @@ export const listRevisions = (companyId: string, id: string) =>
 export const getRevision = (companyId: string, id: string, version: number) =>
   request<ApiResponse<ArtifactRevision>>(
     `/companies/${companyId}/artifacts/${id}/revisions/${version}`,
+  );
+
+/**
+ * Fetch an exact artifact revision via the project-scoped endpoint.
+ * (fix-ut-m5-ui-artifact-rendering)
+ *
+ * GET /companies/:c/projects/:p/artifacts/:a/revisions/:v
+ * Returns the decrypted revision content for a project-scoped artifact.
+ * Cross-project or cross-company artifacts return a non-enumerating 404.
+ */
+export const getProjectRevision = (
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) =>
+  request<ApiResponse<ArtifactRevision>>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}`,
   );
 
 export const restoreRevision = (companyId: string, id: string, version: number) =>
@@ -3513,3 +3546,1118 @@ export const transferArtifactOwnership = (
       body: JSON.stringify({ projectId }),
     },
   );
+
+// ── Feature Flags (evaluated for the caller's company) ───────────────────
+
+export interface FeatureFlagsResponse {
+  subject: string;
+  flags: Record<string, boolean>;
+}
+
+export const getFeatureFlags = (companyId: string) =>
+  request<{ data: FeatureFlagsResponse }>(`/companies/${companyId}/flags`);
+
+// ── Mission Runs ─────────────────────────────────────────────────────────
+
+export type MissionMode = 'auto' | 'fast' | 'deep_work' | 'analyst';
+
+/** Company-defined custom mode profile (server-owned registry, later feature).
+ * The UI consumes this typed contract; the registry endpoint is implemented
+ * by a later orchestration-backend feature. Built-in modes are code-owned
+ * constants and never appear as profile rows. */
+export interface MissionModeProfile {
+  id: string;
+  companyId: string;
+  slug: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  version: number;
+  /** Stable deterministic display order among custom profiles. */
+  order: number;
+  /** Safe reason when the profile is incompatible with the selected
+   * initiating agent, or null when eligible. The UI shows incompatible
+   * profiles as disabled with this reason rather than hiding them. */
+  incompatibilityReason?: string | null;
+}
+
+/** Display metadata for a built-in mode (code-owned, versioned constants).
+ * Order matches the validation contract: Auto, Fast, Deep Work, Analyst. */
+export interface BuiltInModeDisplay {
+  id: MissionMode;
+  name: string;
+  description: string;
+}
+
+export const BUILT_IN_MODE_DISPLAY: BuiltInModeDisplay[] = [
+  {
+    id: 'auto',
+    name: 'Auto',
+    description:
+      'Chooses a concrete mode (Fast, Deep Work, or Analyst) from your request rather than running as its own execution policy.',
+  },
+  {
+    id: 'fast',
+    name: 'Fast',
+    description: 'Short, bounded work. Plans only for complex requests. No parallel children.',
+  },
+  {
+    id: 'deep_work',
+    name: 'Deep Work',
+    description:
+      'Structured planning and approval, deeper reasoning, research available, and bounded parallel work.',
+  },
+  {
+    id: 'analyst',
+    name: 'Analyst',
+    description:
+      'Structured planning, evidence-oriented research, and citations for external factual claims.',
+  },
+];
+
+export interface MissionStartBody {
+  projectThreadId: string;
+  mode: MissionMode | 'custom';
+  /** Custom profile ID when a company-defined profile is selected.
+   * Additive: absent for built-in modes. */
+  modeProfileId?: string;
+  initiatingAgentId?: string;
+  request: {
+    text: string;
+    attachments?: string[];
+    context?: Record<string, unknown>;
+  };
+  limits?: {
+    costCents?: number;
+    totalTokens?: number;
+    durationSeconds?: number;
+    providerCalls?: number;
+    steps?: number;
+    outputBytes?: number;
+  };
+}
+
+/** List company-defined custom mode profiles (enabled profiles only, in
+ * deterministic order). The server registry is mounted at
+ * `/mission-mode-profiles`; reads require company.view and the Mission
+ * flag to be enabled. A disabled flag or missing registry fails closed so
+ * the selector shows an accessible error and Start is unavailable. */
+export function listModeProfiles(companyId: string) {
+  return request<{ data: { profiles: MissionModeProfile[] } }>(
+    `/companies/${companyId}/mission-mode-profiles`,
+  );
+}
+
+export interface MissionRun {
+  id: string;
+  companyId: string;
+  projectId: string;
+  projectThreadId: string;
+  status: string;
+  stateVersion: number;
+  lastEventSequence: number;
+  mode: MissionMode;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MissionStartResult {
+  data: { run: MissionRun; command: { id: string } };
+  links: { ui: string };
+}
+
+export const startMissionRun = (
+  companyId: string,
+  projectId: string,
+  body: MissionStartBody,
+  idempotencyKey: string,
+) =>
+  request<MissionStartResult>(`/companies/${companyId}/projects/${projectId}/mission-runs`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'Idempotency-Key': idempotencyKey },
+  });
+
+// ── Mission Run Snapshot, List, and Events ──────────────────────────────
+
+/** Authoritative run snapshot from the server (RunSnapshot in snapshot.ts). */
+export interface MissionRunSnapshot {
+  requestSafeSummary?: string | null;
+  id: string;
+  companyId: string;
+  projectId: string;
+  projectThreadId: string;
+  rootRunId: string;
+  parentRunId: string | null;
+  retryOfRunId: string | null;
+  depth: number;
+  childOrdinal: number | null;
+  routingKind: string;
+  status: string;
+  stateVersion: number;
+  lastEventSequence: number;
+  resolvedMode: string;
+  modeProfileId: string | null;
+  policySnapshotId: string | null;
+  policyContentHash: string | null;
+  requestContentHash: string;
+  currentQuestionSetId: string | null;
+  currentPlanRevisionId: string | null;
+  approvedPlanRevisionId: string | null;
+  waitingFromStatus: string | null;
+  partialResultPolicy: string;
+  cancelRequestedAt: string | null;
+  cancelRequestedBy: string | null;
+  cancellationDeadlineAt: string | null;
+  failureCategory: string | null;
+  failureCode: string | null;
+  safeErrorMessage: string | null;
+  startedAt: string | null;
+  terminalAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  attemptCount: number;
+  providerCallCount: number;
+  descendantCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  outputBytes: number;
+  actualCostCents: number;
+  budget: {
+    reservedCents: number;
+    settledCents: number;
+    releasedCents: number;
+    costCentsCeiling: number;
+    actualCostCents: number;
+  };
+  childSummary: {
+    running: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+    total: number;
+  };
+  artifacts: never[];
+  links: { ui: string };
+  /**
+   * The dedicated subthread ID for this run, if it is a child run with a
+   * Mission subthread projection (VAL-SUB-007, VAL-SUB-103). Null for root
+   * runs or when no subthread projection exists yet (a bounded recovering
+   * state until repair recreates the deterministic link once).
+   */
+  subthreadId?: string | null;
+  /**
+   * Result completeness for a completed run (VAL-PLAN-117).
+   * - `null`: not applicable (run not completed or no partial policy).
+   * - `'full'`: all required steps completed and synthesis criteria met.
+   * - `'partial'`: best-effort run where some steps failed but approved
+   *   completion criteria permitted a partial result.
+   */
+  resultCompleteness?: 'full' | 'partial' | null;
+  /** Server-derived queue health: "unavailable" when no worker heartbeat for >= 30s. */
+  queueHealth?: 'available' | 'unavailable';
+  /**
+   * Absolute Mission wall-time deadline (createdAt + limits.durationSeconds)
+   * (VAL-MODEQ-128). Null when no policy snapshot exists.
+   */
+  deadlineAt?: string | null;
+  /** Remaining wall time in ms until the deadline (VAL-MODEQ-128). */
+  remainingWallMs?: number | null;
+  /**
+   * Current open question set with its immutable question definitions
+   * (VAL-MODEQ-044, VAL-MODEQ-045). Null when the run is not awaiting_input
+   * or has no open set. Questions are ordered by their persisted `order`.
+   */
+  currentQuestionSet?: MissionCurrentQuestionSet | null;
+}
+
+/** A question definition in the current open question set. */
+export interface MissionQuestionDefinition {
+  questionKey: string;
+  order: number;
+  type: string;
+  label: string;
+  help: string | null;
+  required: boolean;
+  default: unknown;
+  options: unknown[] | null;
+  validation: Record<string, unknown> | null;
+}
+
+/** The current open question set exposed by the run snapshot. */
+export interface MissionCurrentQuestionSet {
+  id: string;
+  ordinal: number;
+  version: number;
+  status: string;
+  invalidationReason: string | null;
+  createdAt: string;
+  questions: MissionQuestionDefinition[];
+}
+
+/** Lean run summary from the scoped list endpoint. */
+export interface MissionRunSummary {
+  id: string;
+  companyId: string;
+  projectId: string;
+  status: string;
+  stateVersion: number;
+  lastEventSequence: number;
+  resolvedMode: string;
+  policyContentHash: string | null;
+  requestContentHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Sanitized replay event from the journal. */
+export interface MissionReplayEvent {
+  sequence: number;
+  type: string;
+  schemaVersion: number;
+  payload: Record<string, unknown>;
+  commandId: string | null;
+  actorType: string | null;
+  actorId: string | null;
+  traceId: string | null;
+  occurredAt: string;
+}
+
+export interface MissionRunListResult {
+  data: { runs: MissionRunSummary[]; nextCursor: string | null };
+}
+
+export interface MissionRunSnapshotResult {
+  data: { run: MissionRunSnapshot; links: { ui: string } };
+}
+
+// ── Mission Plan Revision (current proposed/approved plan content) ───────
+// Mirrors the server's closed `PlanContentV1` schema (VAL-PLAN-124). The
+// server is the authoritative source; this client contract is kept in sync
+// so the UI renders objective, topology, routing authority, exact tools,
+// expected outputs, and completion criteria from the immutable revision.
+
+/** A typed input-binding source (closed discriminated union). */
+export type MissionPlanInputSource =
+  | { kind: 'stepOutput'; stepKey: string; output: string }
+  | { kind: 'requestContext'; key: string }
+  | { kind: 'artifact'; artifactId: string; revision?: number };
+
+/** A step input binding. */
+export interface MissionPlanInputBinding {
+  name: string;
+  source: MissionPlanInputSource;
+}
+
+/** Evidence requirements for a step or synthesis. */
+export interface MissionPlanEvidenceRequirements {
+  citationsRequired: boolean;
+}
+
+/** Routing is a closed discriminated union (VAL-PLAN-124).
+ *  - `requirements`: routing authority (what an agent must have) — the
+ *    step is not yet assigned to a concrete agent (pre-routing).
+ *  - `concreteAgent`: execution assignment to a specific agent
+ *    (post-routing). */
+export type MissionPlanRouting =
+  | {
+      kind: 'requirements';
+      routingRequirements: {
+        capabilities: string[];
+        requiredTools: string[];
+        requiredDomains: string[];
+        ephemeralAllowed: boolean;
+      };
+    }
+  | { kind: 'concreteAgent'; executingAgentId: string };
+
+/** One executable plan step (VAL-PLAN-124). */
+export interface MissionPlanStep {
+  stepKey: string;
+  parentStepKey: string | null;
+  childOrdinal: number;
+  nodeKind: 'root' | 'child';
+  title: string;
+  description: string;
+  dependencies: string[];
+  inputBindings: MissionPlanInputBinding[];
+  routing: MissionPlanRouting;
+  toolAllowlist: string[];
+  replayClass: 'read_only' | 'idempotent_write' | 'non_replayable';
+  sideEffecting: boolean;
+  expectedOutputs: string[];
+  evidenceRequirements: MissionPlanEvidenceRequirements;
+  completionCriteria: string;
+  budgetCents: number;
+  limits: Record<string, number | undefined>;
+}
+
+/** Synthesis section (VAL-PLAN-124). */
+export interface MissionPlanSynthesis {
+  instructions: string;
+  declaredInputs: Array<{ kind: 'stepOutput'; stepKey: string; output: string }>;
+  declaredOutput: string;
+  evidenceRequirements: MissionPlanEvidenceRequirements;
+  completionCriteria: string;
+  budgetCents: number;
+}
+
+/** Top-level plan limits (integer, nonnegative). */
+export interface MissionPlanLimits {
+  steps: number;
+  durationSeconds: number;
+  providerCalls: number;
+  totalTokens: number;
+  outputBytes: number;
+  costCents: number;
+  depth: number;
+  fanOut: number;
+  descendants: number;
+}
+
+/** The complete `PlanContentV1` (VAL-PLAN-124). */
+export interface MissionPlanContent {
+  schemaVersion: number;
+  objective: string;
+  steps: MissionPlanStep[];
+  synthesis: MissionPlanSynthesis;
+  planningBudgetCents: number;
+  partialResultPolicy: 'require_all' | 'best_effort';
+  limits: MissionPlanLimits;
+  presentationMetadata?: { cardTitle?: string; summary?: string };
+}
+
+/** An immutable plan revision exposed for card rendering. */
+export interface MissionPlanRevision {
+  id: string;
+  revision: number;
+  status: 'proposed' | 'superseded' | 'approved' | 'rejected';
+  contentHash: string;
+  parentRevisionId: string | null;
+  createdAt: string;
+  content: MissionPlanContent;
+}
+
+export interface MissionCurrentPlanResult {
+  data: { planRevision: MissionPlanRevision };
+}
+
+export interface MissionRunEventsResult {
+  data: {
+    events: MissionReplayEvent[];
+    nextCursor: number;
+    latestSequence: number;
+  };
+}
+
+export function listMissionRuns(
+  companyId: string,
+  projectId: string,
+  opts?: { status?: string; limit?: number; cursor?: string },
+) {
+  const params = new URLSearchParams();
+  if (opts?.status) {
+    params.set('status', opts.status);
+  }
+  if (opts?.limit) {
+    params.set('limit', String(opts.limit));
+  }
+  if (opts?.cursor) {
+    params.set('cursor', opts.cursor);
+  }
+  const qs = params.toString();
+  return request<MissionRunListResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export function getMissionRunSnapshot(companyId: string, projectId: string, runId: string) {
+  return request<MissionRunSnapshotResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}`,
+  );
+}
+
+/**
+ * Read the current plan revision (proposed or approved) for a run
+ * (VAL-PLAN-008..017, VAL-PLAN-125). Returns the immutable revision with
+ * the complete `PlanContentV1` so the UI can render objective, ordered
+ * steps, dependencies, routing authority, exact tools, expected outputs,
+ * and completion criteria from authoritative content. Returns 404
+ * `PLAN_NOT_FOUND` when the run has no current plan revision.
+ */
+export function getMissionCurrentPlanRevision(companyId: string, projectId: string, runId: string) {
+  return request<MissionCurrentPlanResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/plan`,
+  );
+}
+
+export function getMissionRunEvents(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  after = 0,
+  limit = 50,
+) {
+  return request<MissionRunEventsResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/events?after=${after}&limit=${limit}`,
+  );
+}
+
+// ── Mission Run Research Sources ─────────────────────────────────────────
+// Provider-neutral, bounded source summaries exposed by
+// `GET /:runId/sources` (architecture.md API contract; VAL-CROSS-034,
+// VAL-RES-001, VAL-RES-018, VAL-RES-041, VAL-RES-047, VAL-RES-076,
+// VAL-RES-105, VAL-RES-117, VAL-CROSS-030). The server is authoritative;
+// this client contract is kept in sync. Source content and display
+// metadata remain server-side/encrypted; only safe summary fields,
+// plaintext risk labels, warnings, and exclusion metadata reach the
+// browser. Provider names appear only as bounded provenance metadata.
+
+/** A provider-neutral research source summary for one run. */
+export interface MissionSourceSummary {
+  sourceRevisionId: string;
+  sourceId: string;
+  runId: string;
+  /** Canonical HTTPS URL (plaintext for deep links; rendered inert). */
+  canonicalUrl: string;
+  /** SHA-256 of normalized text (lowercase hex). Undefined when no text. */
+  contentHash?: string;
+  byteCount: number;
+  retrievedAt: string;
+  rank?: number;
+  relevanceScore?: number;
+  /** Revision status: 'available' | 'excluded'. */
+  status: string;
+  /** Provenance provider: 'tavily' | 'firecrawl'. Metadata only. */
+  provider: string;
+  /** Provider operation: 'search' | 'extract' | 'scrape' | 'structured_extract'. */
+  operation: string;
+  /** Plaintext injection/exfiltration risk labels (metadata, not content). */
+  injectionRiskLabels: string[];
+  /** Bounded safe warnings (plaintext, no credentials/body). */
+  warnings: string[];
+  /** Whether the run excluded this source revision. */
+  excluded: boolean;
+  /** Safe exclusion reason (plaintext). */
+  exclusionReason: string | null;
+  /** Whether the run selected this source revision for synthesis. */
+  selected: boolean;
+  /** Latest availability-check status, if any (VAL-RES-119). */
+  latestAvailabilityStatus?: 'available' | 'unavailable' | 'unknown' | null;
+  latestAvailabilityCheckedAt?: string | null;
+}
+
+export interface MissionRunSourcesResult {
+  data: { sources: MissionSourceSummary[]; runId: string };
+}
+
+/** Fetch bounded provider-neutral source summaries for a run. */
+export function getMissionRunSources(companyId: string, projectId: string, runId: string) {
+  return request<MissionRunSourcesResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/sources`,
+  );
+}
+
+// ── Mission Run Children Tree ─────────────────────────────────────────────
+// Recursive child tree with status, cost, routing info, and step key
+// (VAL-M1-015..036). The server is authoritative; the browser fetches the
+// tree from the /children endpoint rather than deriving it client-side.
+
+/** A node in the child tree returned by the /children endpoint. */
+export interface MissionChildTreeNode {
+  runId: string;
+  status: string;
+  cost: number;
+  routingInfo: {
+    mode: string;
+    model: string | null;
+    provider: string | null;
+  };
+  stepKey: string | null;
+  children: MissionChildTreeNode[];
+}
+
+export interface MissionRunChildrenResult {
+  data: { tree: MissionChildTreeNode };
+}
+
+/** Fetch the recursive child tree for a run (VAL-M1-015..036). */
+export function getMissionRunChildren(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  maxDepth?: number,
+) {
+  const query = maxDepth != null ? `?maxDepth=${maxDepth}` : '';
+  return request<MissionRunChildrenResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/children${query}`,
+  );
+}
+
+// ── Mission Run Cancellation ──────────────────────────────────────────────
+
+/** Convenience cancel response. The convenience `/cancel` route maps to the
+ * canonical `run.cancel` command and returns the applied/accepted command
+ * result plus the current run snapshot. */
+export interface MissionCancelResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/**
+ * Submit an idempotent cancellation request for a Mission run
+ * (`POST /:runId/cancel`). The reason is 1–2000 Unicode code points (the
+ * server normalizes to NFC). An optional `ifMatch` state version sends a
+ * strong quoted `If-Match` ETag so a stale action is rejected by the server
+ * rather than overwriting newer state (VAL-RUN-055).
+ *
+ * The browser never advances state optimistically; the authoritative
+ * snapshot/event refetch reveals cancellation requested → cancelled.
+ */
+export function cancelMissionRun(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  body: { reason: string },
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionCancelResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers,
+    },
+  );
+}
+
+// ── Mission Run Retry ──────────────────────────────────────────────────────
+
+/** Convenience retry response. The convenience `/retry` route maps to the
+ * canonical `run.retry` command and returns the accepted command result
+ * plus the new successor run snapshot. The server returns 202 with a
+ * Location header pointing to the successor run. */
+export interface MissionRetryResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/** Optional lower-limit overrides and optional request text for a retry.
+ * Limits may only lower the original run's effective ceiling; the server
+ * rejects broadening. Request text, if supplied, replaces the original
+ * request for the successor run. */
+export interface MissionRetryBody {
+  limits?: {
+    costCents?: number;
+    totalTokens?: number;
+    durationSeconds?: number;
+    providerCalls?: number;
+    steps?: number;
+    outputBytes?: number;
+  };
+  request?: {
+    text?: string;
+    attachments?: string[];
+    context?: Record<string, unknown>;
+  };
+}
+
+/**
+ * Submit an idempotent retry for a terminal Mission run
+ * (`POST /:runId/retry`). Creates a new linked run with a fresh
+ * reservation and policy snapshot. The original run remains terminal and
+ * immutable (VAL-CROSS-074, VAL-CROSS-096).
+ *
+ * An optional `ifMatch` state version sends a strong quoted `If-Match` ETag
+ * so a stale action is rejected by the server (VAL-RUN-056). The body may
+ * include optional lower limits or a replacement request.
+ *
+ * The browser never advances state optimistically; the authoritative
+ * snapshot/event refetch reveals the new successor run.
+ */
+export function retryMissionRun(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  body: MissionRetryBody,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionRetryResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/retry`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers,
+    },
+  );
+}
+
+// ── Mission Question Answers ──────────────────────────────────────────────
+
+/** Convenience answer response. The convenience `/answers` route maps to the
+ * canonical `questions.answer` command and returns the applied command result
+ * plus the current run snapshot. */
+export interface MissionAnswerResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/** Answer body for the convenience `/answers` route (VAL-MODEQ-064).
+ * Submission is atomic and idempotent: all answers validate together or
+ * none commit, and the set closes only when every required question is
+ * valid. The question-set id and version bind the submission to the exact
+ * persisted definition (VAL-MODEQ-075). */
+export interface MissionAnswerBody {
+  questionSetId: string;
+  questionSetVersion: number;
+  /** Map of question key → validated answer value. */
+  answers: Record<string, unknown>;
+}
+
+/**
+ * Submit an idempotent, atomic answer to a Mission run's current open
+ * question set (`POST /:runId/answers`). The body names the exact
+ * question-set id and version; a stale version is rejected with
+ * `QUESTION_SET_VERSION_MISMATCH` (VAL-MODEQ-075) and an invalidated set
+ * with `QUESTION_SET_INVALIDATED` (VAL-MODEQ-076).
+ *
+ * The `ifMatch` state version sends a strong quoted `If-Match` ETag so a
+ * stale run action is rejected (VAL-MODEQ-073). The browser never advances
+ * state optimistically; the authoritative snapshot/event refetch reveals
+ * the answered/resumed state (VAL-MODEQ-109).
+ */
+export function answerMissionRun(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  body: MissionAnswerBody,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionAnswerResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/answers`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers,
+    },
+  );
+}
+
+// ── Mission Plan Decisions (canonical commands) ───────────────────────────
+// Project Work and Approvals are the Phase 1 actionable decision surfaces
+// (VAL-PLAN-104). Both submit identical Mission command fields through the
+// canonical `POST /:runId/commands` discriminated endpoint so they share one
+// idempotency namespace, RBAC, confirmation, stale-state, validation, and
+// attribution behavior. The browser never advances decision state
+// optimistically; the authoritative snapshot/event refetch reveals the
+// applied decision (VAL-PLAN-042).
+
+/** Convenience decision response. Each plan decision maps to a canonical
+ *  command and returns the applied/accepted command result plus the current
+ *  run snapshot. */
+export interface MissionPlanDecisionResult {
+  data: { run: MissionRunSnapshot; command?: { id: string } };
+  links?: { ui: string };
+}
+
+/** Canonical `plan.approve` command body (VAL-PLAN-104, mutation matrix).
+ *  Approval binds to the exact current revision ID and content hash; the
+ *  server validates both under the run lock with the strong `If-Match` ETag. */
+export interface MissionPlanApproveCommand {
+  type: 'plan.approve';
+  planRevisionId: string;
+  contentHash: string;
+}
+
+/** Canonical `plan.reject` command body. Default disposition cancels the
+ *  Mission; an explicit `disposition: 'revise'` with feedback returns the
+ *  run to planning and records a rejection decision (VAL-PLAN-040,
+ *  VAL-PLAN-041). The reason is required and NFC-normalized server-side. */
+export interface MissionPlanRejectCommand {
+  type: 'plan.reject';
+  planRevisionId: string;
+  contentHash: string;
+  reason: string;
+  /** `'revise'` returns to planning with a rejection record; absent/`'cancel'`
+   *  cancels the Mission (default). */
+  disposition?: 'revise' | 'cancel';
+}
+
+/** Canonical `plan.revision_request` command body. A human
+ *  member/owner/admin content action that supersedes the old gate without a
+ *  rejection decision and returns the run to planning for a new proposal
+ *  (VAL-PLAN-037, VAL-PLAN-123). Feedback is required. */
+export interface MissionPlanRevisionRequestCommand {
+  type: 'plan.revision_request';
+  planRevisionId: string;
+  contentHash: string;
+  feedback: string;
+}
+
+/**
+ * Submit an idempotent plan approval through the canonical command endpoint
+ * (`POST /:runId/commands`, type `plan.approve`). Requires owner/admin
+ * `mission.approve` permission (server-enforced; the UI also hides the
+ * control for unauthorized users but never relies on that alone). The
+ * strong quoted `If-Match` ETag protects against stale-version overwrites
+ * (VAL-PLAN-043, VAL-PLAN-055). The browser never shows an approved status
+ * before the server applies the command (VAL-PLAN-042).
+ */
+export function approveMissionPlan(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  command: MissionPlanApproveCommand,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionPlanDecisionResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/commands`,
+    {
+      method: 'POST',
+      body: JSON.stringify(command),
+      headers,
+    },
+  );
+}
+
+/**
+ * Submit an idempotent plan rejection through the canonical command endpoint
+ * (`POST /:runId/commands`, type `plan.reject`). Default disposition cancels
+ * the Mission (VAL-PLAN-040); `disposition: 'revise'` returns to planning
+ * with a rejection record (VAL-PLAN-041). Requires owner/admin
+ * `mission.approve` permission. The strong `If-Match` ETag protects against
+ * stale-version overwrites.
+ */
+export function rejectMissionPlan(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  command: MissionPlanRejectCommand,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionPlanDecisionResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/commands`,
+    {
+      method: 'POST',
+      body: JSON.stringify(command),
+      headers,
+    },
+  );
+}
+
+/**
+ * Submit an idempotent plan revision request through the canonical command
+ * endpoint (`POST /:runId/commands`, type `plan.revision_request`). A human
+ * content action that supersedes the current proposal without a rejection
+ * decision and returns the run to planning for a new linked proposal
+ * (VAL-PLAN-037). Feedback is required (VAL-PLAN-038). The strong `If-Match`
+ * ETag protects against stale-version overwrites.
+ */
+export function reviseMissionPlan(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  command: MissionPlanRevisionRequestCommand,
+  idempotencyKey: string,
+  ifMatch?: number,
+) {
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (ifMatch != null) {
+    headers['If-Match'] = `"${ifMatch}"`;
+  }
+  return request<MissionPlanDecisionResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/commands`,
+    {
+      method: 'POST',
+      body: JSON.stringify(command),
+      headers,
+    },
+  );
+}
+
+// ── Mission Question-Set History ───────────────────────────────────────────
+
+/** A question definition in a historical question-set entry. */
+export interface MissionHistoryQuestion {
+  id: string;
+  questionKey: string;
+  order: number;
+  type: string;
+  label: string;
+  help: string | null;
+  required: boolean;
+  default: unknown;
+  options: unknown[] | null;
+  validation: Record<string, unknown> | null;
+}
+
+/** An accepted answer in a historical question-set entry. Viewers receive
+ * `{ redacted: true }` in place of the value (VAL-MODEQ-148). */
+export interface MissionHistoryAnswer {
+  id: string;
+  questionKey: string;
+  answerRevision: number;
+  value: unknown;
+  contentHash: string;
+  actorType: string;
+  actorId: string | null;
+  createdAt: string;
+}
+
+/** A historical question-set entry: immutable definitions plus accepted
+ * answers (VAL-MODEQ-110, VAL-MODEQ-148). Ordered by (ordinal, id). */
+export interface MissionQuestionSetHistoryEntry {
+  id: string;
+  ordinal: number;
+  version: number;
+  status: string;
+  invalidationReason: string | null;
+  promptContextHash: string | null;
+  createdAt: string;
+  answeredAt: string | null;
+  invalidatedAt: string | null;
+  questions: MissionHistoryQuestion[];
+  answers: MissionHistoryAnswer[];
+}
+
+export interface MissionQuestionSetsResult {
+  data: { questionSets: MissionQuestionSetHistoryEntry[]; nextCursor: string | null };
+}
+
+/**
+ * Read scoped, bounded question-set history for a run
+ * (`GET /:runId/question-sets?limit=&cursor=`). Returns at most 50 entries
+ * ordered by (ordinal ASC, id ASC) with opaque keyset cursors. Each entry
+ * includes immutable question definitions and accepted answer revisions;
+ * viewers receive redacted answer values (VAL-MODEQ-110, VAL-MODEQ-148).
+ */
+export function getMissionQuestionSets(
+  companyId: string,
+  projectId: string,
+  runId: string,
+  opts?: { limit?: number; cursor?: string },
+) {
+  const params = new URLSearchParams();
+  if (opts?.limit) {
+    params.set('limit', String(opts.limit));
+  }
+  if (opts?.cursor) {
+    params.set('cursor', opts.cursor);
+  }
+  const qs = params.toString();
+  return request<MissionQuestionSetsResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/question-sets${qs ? `?${qs}` : ''}`,
+  );
+}
+
+// ── Mission Run Artifacts, Citations, and Provenance ──────────────────────
+// (feature m5-f14-citation-navigation-ui; VAL-RES-027, VAL-RES-028,
+//  VAL-RES-029, VAL-RES-030, VAL-RES-031, VAL-RES-037, VAL-RES-038,
+//  VAL-CROSS-040, VAL-CROSS-041, VAL-CROSS-047)
+//
+// The server is authoritative; this client contract is kept in sync.
+// Citations bind to the EXACT immutable source and artifact revisions and
+// never float to newer content. Frozen display metadata is captured at
+// citation creation time (VAL-RES-113) so historical views are stable.
+// All quote/title/author text is untrusted data and rendered inert.
+
+/** A produced artifact summary for a Mission run. */
+export interface MissionArtifactSummary {
+  artifactId: string;
+  title: string;
+  type: string;
+  version: number;
+  artifactRevisionId: string;
+  citationCount: number;
+  producingRunId: string;
+  producingStepKey: string | null;
+  producingChildRunId: string | null;
+}
+
+export interface MissionRunArtifactsResult {
+  data: { artifacts: MissionArtifactSummary[]; runId: string };
+}
+
+/** A citation detail with frozen display metadata for the provenance drawer. */
+export interface MissionCitationDetail {
+  citationId: string;
+  ordinal: number;
+  /** Exact quote (decrypted, untrusted data — rendered inert). */
+  quote: string;
+  frozenTitle?: string;
+  frozenAuthor?: string;
+  canonicalUrl: string;
+  frozenRetrievedAt: string;
+  frozenProvider: string;
+  frozenOperation?: string;
+  sourceRevisionId: string;
+  artifactRevisionId: string;
+  artifactVersion: number;
+  section?: string;
+  charStart?: number;
+  charEnd?: number;
+  /** Latest source availability status (VAL-RES-042). */
+  sourceAvailabilityStatus?: 'available' | 'unavailable' | 'unknown' | null;
+  sourceAvailabilityCheckedAt?: string | null;
+}
+
+export interface ArtifactCitationsResult {
+  data: { citations: MissionCitationDetail[]; artifactId: string; version: number };
+}
+
+/** Provenance detail for an artifact revision. */
+export interface MissionProvenanceDetail {
+  provenanceId: string;
+  runId: string;
+  rootRunId: string;
+  artifactId: string;
+  artifactRevisionId: string;
+  artifactVersion: number;
+  approvedPlanRevisionId?: string;
+  approvedPlanHash?: string;
+  policyHash?: string;
+  producingStepKey?: string;
+  producingChildRunId?: string | null;
+  generationTime: string;
+  citedSourceRevisionIds: string[];
+  /** Whether a newer artifact revision exists (VAL-RES-031, VAL-CROSS-041). */
+  newerArtifactVersionExists: boolean;
+  /** Whether any cited source has a newer revision (VAL-RES-036). */
+  newerSourceRevisionExists?: boolean;
+}
+
+export interface ArtifactProvenanceResult {
+  data: MissionProvenanceDetail;
+}
+
+/** Fetch produced artifacts and provenance links for a run. */
+export function getMissionRunArtifacts(companyId: string, projectId: string, runId: string) {
+  return request<MissionRunArtifactsResult>(
+    `/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/artifacts`,
+  );
+}
+
+/** Fetch citations for an exact artifact revision as JSON (not export). */
+export function getArtifactRevisionCitations(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) {
+  return request<ArtifactCitationsResult>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/citations`,
+  );
+}
+
+/** Fetch provenance for an exact artifact revision. */
+export function getArtifactRevisionProvenance(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) {
+  return request<ArtifactProvenanceResult>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/provenance`,
+  );
+}
+
+// ── Citation Carry-Forward Outcomes (VAL-RES-035) ─────────────────────────
+
+/** A carry-forward outcome for a citation after an artifact edit. */
+export interface CarryForwardOutcome {
+  previousCitationId: string;
+  newCitationId?: string;
+  outcome: 'carried_forward' | 'not_carried_forward';
+  reason?: string;
+  ordinal: number;
+}
+
+export interface CarryForwardOutcomesResult {
+  data: { outcomes: CarryForwardOutcome[]; artifactId: string; version: number };
+}
+
+/** Fetch carry-forward outcomes for an exact artifact revision. */
+export function getCarryForwardOutcomes(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+) {
+  return request<CarryForwardOutcomesResult>(
+    `/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/carry-forward-outcomes`,
+  );
+}
+
+// ── Exact-Revision Export Download (VAL-RES-103) ─────────────────────────
+
+/** Build the export URL for an exact artifact revision and format. */
+export function buildExportUrl(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+  format: 'markdown' | 'html',
+): string {
+  return `${API_BASE}/companies/${companyId}/projects/${projectId}/artifacts/${artifactId}/revisions/${version}/export?format=${format}`;
+}
+
+/**
+ * Download an exact-revision export (markdown or html). Triggers a browser
+ * download via a temporary anchor element. Returns the response status on
+ * success or throws an ApiError on failure (VAL-RES-103).
+ */
+export async function downloadArtifactRevisionExport(
+  companyId: string,
+  projectId: string,
+  artifactId: string,
+  version: number,
+  format: 'markdown' | 'html',
+): Promise<{ ok: true; status: number }> {
+  const url = buildExportUrl(companyId, projectId, artifactId, version, format);
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new ApiError(res.status, body?.message || `Export failed: ${res.statusText}`, body);
+  }
+  // Trigger a browser download from the response blob.
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const filenameMatch = disposition.match(/filename="([^"]+)"/);
+  const filename = filenameMatch
+    ? filenameMatch[1]
+    : `artifact-v${version}.${format === 'markdown' ? 'md' : 'html'}`;
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(blobUrl);
+  return { ok: true, status: res.status };
+}

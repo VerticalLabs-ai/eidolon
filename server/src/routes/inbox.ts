@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, sql, or, gte } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../middleware/error-handler.js';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { buildMissionUiLink } from '@eidolon/shared';
 
 // ---------------------------------------------------------------------------
 // Unified inbox feed
@@ -23,7 +24,7 @@ import { routeParams } from '../utils/route-params.js';
 
 export interface InboxItem {
   id: string;
-  kind: 'approval' | 'collaboration' | 'activity' | 'task_thread';
+  kind: 'approval' | 'collaboration' | 'activity' | 'task_thread' | 'mission_question';
   title: string;
   subtitle?: string;
   priority?: 'critical' | 'high' | 'medium' | 'low';
@@ -36,6 +37,12 @@ export interface InboxItem {
   link: string;
   createdAt: string;
   readAt: string | null;
+  /** Mission question attention item context (kind === 'mission_question'). */
+  projectId?: string;
+  runId?: string;
+  questionSetId?: string;
+  /** Whether the attention item is still actionable (open) or resolved history. */
+  actionable?: boolean;
 }
 
 const ACTIVITY_KINDS_OF_INTEREST = new Set([
@@ -52,14 +59,29 @@ const ACTIVITY_KINDS_OF_INTEREST = new Set([
   'thread.mention',
 ]);
 
+/**
+ * Resolved mission question sets are retained in the inbox feed as
+ * non-actionable history for this many days (VAL-MODEQ-090). Older
+ * resolved sets fall out of the bounded feed and remain reachable only
+ * via the run timeline / snapshot.
+ */
+const MISSION_QUESTION_RETENTION_DAYS = 7;
+
 const MarkBody = z.object({
   itemIds: z.array(z.string().min(1).max(255)).min(1).max(500),
 });
 
 export function inboxRouter(db: DbInstance): Router {
   const router = Router({ mergeParams: true });
-  const { approvals, agentCollaborations, activityLog, inboxReadStates, taskThreadItems } =
-    db.schema;
+  const {
+    approvals,
+    agentCollaborations,
+    activityLog,
+    inboxReadStates,
+    taskThreadItems,
+    runQuestionSets,
+    missionRuns,
+  } = db.schema;
 
   // Capture auth mode at router creation time (during createApp() when
   // AUTH_MODE is set). In tests, AUTH_MODE is only set during createApp()
@@ -96,9 +118,7 @@ export function inboxRouter(db: DbInstance): Router {
     const pendingApprovals = await db.drizzle
       .select()
       .from(approvals)
-      .where(
-        and(eq(approvals.companyId, companyId), eq(approvals.status, 'pending')),
-      )
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.status, 'pending')))
       .orderBy(desc(approvals.createdAt))
       .limit(limit);
 
@@ -135,13 +155,55 @@ export function inboxRouter(db: DbInstance): Router {
       .orderBy(desc(activityLog.createdAt))
       .limit(limit * 2);
 
+    // Mission question needs-attention items (VAL-MODEQ-087..091, 120, 141).
+    // Active items = open question sets whose run is awaiting_input. Resolved
+    // history = answered/invalidated sets resolved within the retention
+    // window. The query is company-scoped; project/content permission to
+    // answer is enforced when the user opens Project Work, never inferred
+    // here. No answer text is joined into the item.
+    const missionQuestionRows = await db.drizzle
+      .select({
+        setId: runQuestionSets.id,
+        setCompanyId: runQuestionSets.companyId,
+        setProjectId: runQuestionSets.projectId,
+        setRunId: runQuestionSets.runId,
+        ordinal: runQuestionSets.ordinal,
+        version: runQuestionSets.version,
+        setStatus: runQuestionSets.status,
+        invalidationReason: runQuestionSets.invalidationReason,
+        setCreatedAt: runQuestionSets.createdAt,
+        answeredAt: runQuestionSets.answeredAt,
+        invalidatedAt: runQuestionSets.invalidatedAt,
+        runStatus: missionRuns.status,
+        threadId: missionRuns.projectThreadId,
+        requestSafeSummary: missionRuns.requestSafeSummary,
+      })
+      .from(runQuestionSets)
+      .innerJoin(missionRuns, eq(missionRuns.id, runQuestionSets.runId))
+      .where(
+        and(
+          eq(runQuestionSets.companyId, companyId),
+          // Active open sets, OR resolved sets within the retention window.
+          or(
+            eq(runQuestionSets.status, 'open'),
+            and(
+              inArray(runQuestionSets.status, ['answered', 'invalidated']),
+              gte(
+                sql`coalesce(${runQuestionSets.answeredAt}, ${runQuestionSets.invalidatedAt})`,
+                sql`now() - interval ${sql.raw(`'${MISSION_QUESTION_RETENTION_DAYS} days'`)}`,
+              ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(desc(runQuestionSets.createdAt))
+      .limit(limit);
+
     // Accurate meta counts (independent of the feed limit)
     const [{ pendingApprovalTotal }] = await db.drizzle
       .select({ pendingApprovalTotal: sql<number>`count(*)` })
       .from(approvals)
-      .where(
-        and(eq(approvals.companyId, companyId), eq(approvals.status, 'pending')),
-      );
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.status, 'pending')));
     const [{ pendingCollabTotal }] = await db.drizzle
       .select({ pendingCollabTotal: sql<number>`count(*)` })
       .from(agentCollaborations)
@@ -162,21 +224,30 @@ export function inboxRouter(db: DbInstance): Router {
           isNotNull(taskThreadItems.taskId),
         ),
       );
+    // Active mission question attention count = open sets on awaiting_input runs.
+    const [{ pendingMissionQuestionTotal }] = await db.drizzle
+      .select({ pendingMissionQuestionTotal: sql<number>`count(*)` })
+      .from(runQuestionSets)
+      .innerJoin(missionRuns, eq(missionRuns.id, runQuestionSets.runId))
+      .where(
+        and(
+          eq(runQuestionSets.companyId, companyId),
+          eq(runQuestionSets.status, 'open'),
+          eq(missionRuns.status, 'awaiting_input'),
+        ),
+      );
 
     const items: InboxItem[] = [];
 
     for (const a of pendingApprovals) {
       const itemId = `approval:${a.id}`;
-      const taskThreadLink = a.taskId
-        ? taskThreadUrl(companyId, a.taskId, itemId)
-        : null;
+      const taskThreadLink = a.taskId ? taskThreadUrl(companyId, a.taskId, itemId) : null;
       items.push({
         id: itemId,
         kind: 'approval',
         title: a.title,
         subtitle:
-          (a.description ?? '').slice(0, 160) ||
-          `Pending ${(a.kind as string).replace('_', ' ')}`,
+          (a.description ?? '').slice(0, 160) || `Pending ${(a.kind as string).replace('_', ' ')}`,
         priority: a.priority as InboxItem['priority'],
         status: a.status as string,
         entityType: 'approval',
@@ -211,7 +282,9 @@ export function inboxRouter(db: DbInstance): Router {
     }
 
     for (const item of pendingThreadItems) {
-      if (!item.taskId) continue;
+      if (!item.taskId) {
+        continue;
+      }
       const inboxItemId = `thread:${item.id}`;
       const interactionLabel = (item.interactionType ?? 'interaction').replace('_', ' ');
       items.push({
@@ -231,8 +304,47 @@ export function inboxRouter(db: DbInstance): Router {
       });
     }
 
+    for (const q of missionQuestionRows) {
+      // Only open sets whose run is still awaiting input are actionable.
+      const actionable = q.setStatus === 'open' && q.runStatus === 'awaiting_input';
+      // Skip resolved rows that are not actually resolved (e.g. an open set
+      // whose run advanced past awaiting_input without the set being closed —
+      // a defensive guard; the run/set transition should keep these in sync).
+      if (q.setStatus === 'open' && !actionable) {
+        continue;
+      }
+      const link = buildMissionUiLink({
+        companyId,
+        projectId: q.setProjectId,
+        threadId: q.threadId,
+        runId: q.setRunId,
+        target: { kind: 'question', questionSetId: q.setId },
+      });
+      const summary = (q.requestSafeSummary ?? '').slice(0, 120);
+      items.push({
+        id: `mission_question:${q.setId}`,
+        kind: 'mission_question',
+        title: actionable ? 'Mission needs input' : 'Mission question resolved',
+        subtitle: actionable
+          ? summary || 'Mission is awaiting your answer'
+          : `Set ${q.setStatus}${q.invalidationReason ? ` (${q.invalidationReason})` : ''}`,
+        status: q.setStatus,
+        entityType: 'mission_question_set',
+        entityId: q.setId,
+        projectId: q.setProjectId,
+        runId: q.setRunId,
+        questionSetId: q.setId,
+        actionable,
+        link: withInboxItem(link, `mission_question:${q.setId}`),
+        createdAt: new Date(q.setCreatedAt).toISOString(),
+        readAt: null,
+      });
+    }
+
     for (const row of recentActivity) {
-      if (!ACTIVITY_KINDS_OF_INTEREST.has(row.action)) continue;
+      if (!ACTIVITY_KINDS_OF_INTEREST.has(row.action)) {
+        continue;
+      }
       // thread.mention notifications are recipient-scoped: only the
       // mentioned user should see them in their inbox. Filter out
       // thread.mention entries whose metadata.mentionedUserId does not
@@ -263,9 +375,7 @@ export function inboxRouter(db: DbInstance): Router {
       });
     }
 
-    items.sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const limited = items.slice(0, limit);
 
@@ -291,7 +401,9 @@ export function inboxRouter(db: DbInstance): Router {
       }
       for (const item of limited) {
         const when = readMap.get(item.id);
-        if (when) item.readAt = new Date(when).toISOString();
+        if (when) {
+          item.readAt = new Date(when).toISOString();
+        }
       }
     }
 
@@ -303,6 +415,7 @@ export function inboxRouter(db: DbInstance): Router {
         pendingApprovals: Number(pendingApprovalTotal),
         pendingCollaborations: Number(pendingCollabTotal),
         pendingThreadItems: Number(pendingThreadItemTotal),
+        pendingMissionQuestions: Number(pendingMissionQuestionTotal),
         total: items.length,
         unread,
       },
@@ -339,11 +452,7 @@ export function inboxRouter(db: DbInstance): Router {
         })),
       )
       .onConflictDoUpdate({
-        target: [
-          inboxReadStates.userId,
-          inboxReadStates.companyId,
-          inboxReadStates.itemId,
-        ],
+        target: [inboxReadStates.userId, inboxReadStates.companyId, inboxReadStates.itemId],
         set: { readAt: now },
       });
 
@@ -389,7 +498,9 @@ function linkForActivity(
 ): string {
   const base = `/company/${companyId}`;
   const taskId = activityTaskId(row);
-  if (taskId) return `${base}/tasks/${taskId}`;
+  if (taskId) {
+    return `${base}/tasks/${taskId}`;
+  }
 
   switch (row.entityType) {
     case 'agent':
@@ -399,9 +510,7 @@ function linkForActivity(
     case 'goal':
       return `${base}/goals`;
     case 'approval':
-      return row.entityId
-        ? `${base}/approvals?focus=${row.entityId}`
-        : `${base}/approvals`;
+      return row.entityId ? `${base}/approvals?focus=${row.entityId}` : `${base}/approvals`;
     case 'execution':
       return `${base}/agents`;
     default:
@@ -414,7 +523,9 @@ function activityTaskId(row: {
   entityId: string | null;
   metadata?: Record<string, unknown>;
 }): string | null {
-  if (row.entityType === 'task') return row.entityId;
+  if (row.entityType === 'task') {
+    return row.entityId;
+  }
   const taskId = row.metadata?.taskId;
   return typeof taskId === 'string' && taskId.length > 0 ? taskId : null;
 }

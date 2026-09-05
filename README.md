@@ -162,6 +162,7 @@ eidolon/
 pnpm run dev           # Start server + UI in dev mode
 pnpm run dev:server    # Server only  (Express on :3100)
 pnpm run dev:ui        # UI only      (Vite on :5173)
+pnpm --filter @eidolon/server worker  # Mission orchestration worker (separate process)
 pnpm run build         # Build shared → server → UI
 pnpm run typecheck     # tsc -b across all projects
 pnpm run test          # vitest watch mode
@@ -172,6 +173,29 @@ pnpm run db:reset      # Drop the DB and re-apply Drizzle migrations
 pnpm run db:generate   # Regenerate migration SQL from schema
 pnpm run db:migrate    # Apply outstanding migrations
 ```
+
+The Mission worker must run alongside the API for enabled Mission runs to advance.
+After building, use `pnpm --filter @eidolon/server start:worker` on a persistent
+worker host connected to the same Postgres database. The API's Vercel deployment
+does not start this process. Keep `missionAgentIntelligence` disabled until the
+worker and provider configuration have been verified in that environment.
+
+`pnpm duplication` applies the 5% duplication gate to production code. Test
+fixtures remain covered by the test and coverage gates; their repeated setup is
+reported separately by `pnpm duplication:fixtures` without a percentage gate.
+Linux quality jobs omit desktop dependencies. Knip therefore explicitly recognizes
+the desktop-only Electron Forge package/binary pair instead of relying on its
+installed binary metadata.
+
+The migration runner recovers missing ledger entries for historical project
+migrations 0013 and 0015–0017 before applying newer migrations. Recovery uses the
+original DDL and one transaction; a conflicting partial schema aborts the repair.
+Already recorded entries and unrelated migration history are left untouched.
+Migration 0055 extends the server-only access policy from 0003 to all declared
+application tables: RLS is enabled and direct `anon`, `authenticated`, and public
+table grants are revoked. Clerk-authorized API queries use the database owner;
+browser clients must use that API rather than querying Supabase tables directly.
+Both commands use the detector settings in `.jscpd.json`.
 
 ### CI & developer tooling
 

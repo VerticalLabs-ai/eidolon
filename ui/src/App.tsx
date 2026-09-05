@@ -4,6 +4,9 @@ import {
   createRoutesFromElements,
   Route,
   RouterProvider,
+  Navigate,
+  useParams,
+  useSearchParams,
 } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import { AuthGuard } from '@/components/auth/AuthGuard';
@@ -80,6 +83,21 @@ const router = createBrowserRouter(
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
 
+      {/* Redirect: server links.ui uses plural /companies/ path but the app
+       * route uses singular /company/. Redirect preserving all query params
+       * so deep links from start responses and snapshots resolve correctly
+       * (VAL-RUN-097, VAL-CROSS-076, VAL-CROSS-083, VAL-CROSS-101).
+       *
+       * The canonical Mission link grammar appends `/work` to the path; the
+       * redirect strips that subpath and adds `tab=work` to the query so the
+       * singular app route renders the Work tab while preserving the
+       * `thread`/`mission`/target query params. */}
+      <Route
+        path="/companies/:companyId/projects/:projectId/work"
+        element={<PluralCompanyRedirect forceWorkTab />}
+      />
+      <Route path="/companies/:companyId/projects/:projectId" element={<PluralCompanyRedirect />} />
+
       {/* Protected routes */}
       <Route
         path="/"
@@ -140,4 +158,28 @@ export function App() {
       <RouterProvider router={router} />
     </ErrorBoundary>
   );
+}
+
+/**
+ * Redirect from the plural `/companies/:companyId/projects/:projectId` path
+ * (used by server-generated `links.ui`) to the singular
+ * `/company/:companyId/projects/:projectId` app route, preserving all query
+ * params (thread, mission, target, tab) so deep links restore context
+ * (VAL-RUN-097, VAL-CROSS-076, VAL-CROSS-083, VAL-CROSS-101).
+ *
+ * When `forceWorkTab` is set (the canonical `/work` subpath route), the
+ * redirect adds `tab=work` to the query unless an explicit `tab` is already
+ * present, so the singular app route renders the Work tab while preserving
+ * the `thread`/`mission`/target query params from the closed grammar.
+ */
+function PluralCompanyRedirect({ forceWorkTab = false }: { forceWorkTab?: boolean }) {
+  const { companyId, projectId } = useParams();
+  const [searchParams] = useSearchParams();
+  const next = new URLSearchParams(searchParams);
+  if (forceWorkTab && !next.has('tab')) {
+    next.set('tab', 'work');
+  }
+  const qs = next.toString();
+  const target = `/company/${companyId}/projects/${projectId}${qs ? `?${qs}` : ''}`;
+  return <Navigate to={target} replace />;
 }

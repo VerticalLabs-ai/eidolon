@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { WebSocket } from 'ws';
 import { createTestServer, createTestDb } from '../test-utils.js';
@@ -15,8 +15,14 @@ import type { CoEditOp } from '@eidolon/shared';
 function openWs(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-    const onOpen = () => { ws.off('error', onError); resolve(ws); };
-    const onError = (err: unknown) => { ws.off('open', onOpen); reject(err); };
+    const onOpen = () => {
+      ws.off('error', onError);
+      resolve(ws);
+    };
+    const onError = (err: unknown) => {
+      ws.off('open', onOpen);
+      reject(err);
+    };
     ws.once('open', onOpen);
     ws.once('error', onError);
   });
@@ -50,11 +56,18 @@ function collectUntil(
 ): Promise<Record<string, unknown>[]> {
   return new Promise((resolve) => {
     const out: Record<string, unknown>[] = [];
-    const timer = setTimeout(() => { ws.off('message', onMessage); resolve(out); }, timeout);
+    const timer = setTimeout(() => {
+      ws.off('message', onMessage);
+      resolve(out);
+    }, timeout);
     const onMessage = (raw: unknown) => {
       const msg = JSON.parse(String(raw)) as Record<string, unknown>;
       out.push(msg);
-      if (predicate(msg)) { clearTimeout(timer); ws.off('message', onMessage); resolve(out); }
+      if (predicate(msg)) {
+        clearTimeout(timer);
+        ws.off('message', onMessage);
+        resolve(out);
+      }
     };
     ws.on('message', onMessage);
   });
@@ -64,9 +77,14 @@ function collectUntil(
 function collectFor(ws: WebSocket, ms = 500): Promise<Record<string, unknown>[]> {
   return new Promise((resolve) => {
     const out: Record<string, unknown>[] = [];
-    const onMessage = (raw: unknown) => { out.push(JSON.parse(String(raw))); };
+    const onMessage = (raw: unknown) => {
+      out.push(JSON.parse(String(raw)));
+    };
     ws.on('message', onMessage);
-    setTimeout(() => { ws.off('message', onMessage); resolve(out); }, ms);
+    setTimeout(() => {
+      ws.off('message', onMessage);
+      resolve(out);
+    }, ms);
   });
 }
 
@@ -83,16 +101,24 @@ function waitForCoEdit(
     }, timeout);
     const onMessage = (raw: unknown) => {
       const msg = JSON.parse(String(raw)) as Record<string, unknown>;
-      if (msg.type === type) { clearTimeout(timer); ws.off('message', onMessage); resolve(msg); }
+      if (msg.type === type) {
+        clearTimeout(timer);
+        ws.off('message', onMessage);
+        resolve(msg);
+      }
     };
     ws.on('message', onMessage);
   });
 }
 
 function closeWs(ws: WebSocket | null): Promise<void> {
-  if (!ws) return Promise.resolve();
+  if (!ws) {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
-    if (ws.readyState === WebSocket.CLOSED) return resolve();
+    if (ws.readyState === WebSocket.CLOSED) {
+      return resolve();
+    }
     ws.once('close', () => resolve());
     ws.close();
   });
@@ -138,9 +164,14 @@ describe('Co-editing WebSocket — real WS clients', () => {
   });
 
   afterEach(async () => {
-    await closeWs(wsA); await closeWs(wsB); await closeWs(wsC);
-    wsA = null; wsB = null; wsC = null;
-    wss?.close(); wss = null;
+    await closeWs(wsA);
+    await closeWs(wsB);
+    await closeWs(wsC);
+    wsA = null;
+    wsB = null;
+    wsC = null;
+    wss?.close();
+    wss = null;
   });
 
   // ── Helpers ──────────────────────────────────────────────────────────
@@ -148,14 +179,24 @@ describe('Co-editing WebSocket — real WS clients', () => {
   async function createDoc(body = '# Hello'): Promise<{ id: string; version: number }> {
     const res = await request(app)
       .post(`/api/companies/${companyId}/artifacts`)
-      .send({ type: 'document', title: '__mtest__ CoEdit Doc', content: { format: 'markdown', body }, projectId })
+      .send({
+        type: 'document',
+        title: '__mtest__ CoEdit Doc',
+        content: { format: 'markdown', body },
+        projectId,
+      })
       .expect(201);
     return res.body.data;
   }
 
-  async function createSheet(content?: Record<string, unknown>): Promise<{ id: string; version: number }> {
+  async function createSheet(
+    content?: Record<string, unknown>,
+  ): Promise<{ id: string; version: number }> {
     const c = content ?? {
-      columns: [{ id: 'c1', key: 'name' }, { id: 'c2', key: 'role' }],
+      columns: [
+        { id: 'c1', key: 'name' },
+        { id: 'c2', key: 'role' },
+      ],
       rows: [{ id: 'r1', cells: { name: { value: 'Alice' }, role: { value: 'Engineer' } } }],
     };
     const res = await request(app)
@@ -184,7 +225,12 @@ describe('Co-editing WebSocket — real WS clients', () => {
     return res.body.data;
   }
 
-  async function joinSession(ws: WebSocket, artifactId: string, userId: string, name: string): Promise<Record<string, unknown>> {
+  async function joinSession(
+    ws: WebSocket,
+    artifactId: string,
+    userId: string,
+    name: string,
+  ): Promise<Record<string, unknown>> {
     sendWs(ws, { type: 'coedit.join', artifactId, companyId, userId, name });
     return waitForCoEdit(ws, 'coedit.joined');
   }
@@ -206,7 +252,12 @@ describe('Co-editing WebSocket — real WS clients', () => {
     expect((joinedB as any).content.body).toBe('# Hello');
 
     // Client A appends "AAA"
-    const opA: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: '\n\nAAA', opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'doc.insert',
+      position: '# Hello'.length,
+      text: '\n\nAAA',
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: opA });
 
     // Wait for B to receive the broadcast
@@ -215,7 +266,12 @@ describe('Co-editing WebSocket — real WS clients', () => {
     expect((recvB as any).op.text).toBe('\n\nAAA');
 
     // Client B appends "BBB" after "AAA"
-    const opB: CoEditOp = { kind: 'doc.insert', position: '# Hello\n\nAAA'.length, text: '\n\nBBB', opId: genOpId() };
+    const opB: CoEditOp = {
+      kind: 'doc.insert',
+      position: '# Hello\n\nAAA'.length,
+      text: '\n\nBBB',
+      opId: genOpId(),
+    };
     sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: opB });
 
     // Wait for A to receive the broadcast
@@ -285,13 +341,21 @@ describe('Co-editing WebSocket — real WS clients', () => {
     // Agent PATCH while session is active (simulates concurrent edit)
     const patchRes = await request(app)
       .patch(`/api/companies/${companyId}/artifacts/${doc.id}`)
-      .send({ content: { format: 'markdown', body: '# Hello\n\nAgent edit' }, version: doc.version })
+      .send({
+        content: { format: 'markdown', body: '# Hello\n\nAgent edit' },
+        version: doc.version,
+      })
       .expect(200); // NOT 409 — merges through session
 
     expect(patchRes.body.data.content.body).toContain('Agent edit');
 
     // User also sends an op
-    const opA: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: '\n\nUser edit', opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'doc.insert',
+      position: '# Hello'.length,
+      text: '\n\nUser edit',
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: opA });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
@@ -329,7 +393,12 @@ describe('Co-editing WebSocket — real WS clients', () => {
     sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: delP3 });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
-    const insP3: CoEditOp = { kind: 'doc.insert', position: 7, text: 'Para3 edited', opId: genOpId() };
+    const insP3: CoEditOp = {
+      kind: 'doc.insert',
+      position: 7,
+      text: 'Para3 edited',
+      opId: genOpId(),
+    };
     sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: insP3 });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
@@ -358,12 +427,24 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, sheet.id, 'user-b', 'Bob');
 
     // A sets cell (r1, name) to "A1"
-    const opA: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'name', value: 'A1', opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'name',
+      value: 'A1',
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-a', op: opA });
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
 
     // B sets cell (r1, role) to "B2"
-    const opB: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'role', value: 'B2', opId: genOpId() };
+    const opB: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'role',
+      value: 'B2',
+      opId: genOpId(),
+    };
     sendWs(wsB, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-b', op: opB });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
@@ -391,8 +472,20 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, sheet.id, 'user-b', 'Bob');
 
     // Both set cell (r1, name) to different values
-    const opA: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'name', value: 'AAA', opId: genOpId() };
-    const opB: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'name', value: 'BBB', opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'name',
+      value: 'AAA',
+      opId: genOpId(),
+    };
+    const opB: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'name',
+      value: 'BBB',
+      opId: genOpId(),
+    };
 
     // A first, then B — B wins (last-arrival)
     sendWs(wsA, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-a', op: opA });
@@ -431,7 +524,13 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
 
     // B edits cell (r1, name)
-    const opB: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'name', value: 'Alicia', opId: genOpId() };
+    const opB: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'name',
+      value: 'Alicia',
+      opId: genOpId(),
+    };
     sendWs(wsB, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-b', op: opB });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
@@ -461,12 +560,24 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, board.id, 'user-b', 'Bob');
 
     // A moves card_a to "In Progress"
-    const opA: CoEditOp = { kind: 'board.moveCard', cardId: 'card_a', columnId: 'col_progress', order: 0, opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'board.moveCard',
+      cardId: 'card_a',
+      columnId: 'col_progress',
+      order: 0,
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: board.id, companyId, userId: 'user-a', op: opA });
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
 
     // B moves card_b to "Done"
-    const opB: CoEditOp = { kind: 'board.moveCard', cardId: 'card_b', columnId: 'col_done', order: 0, opId: genOpId() };
+    const opB: CoEditOp = {
+      kind: 'board.moveCard',
+      cardId: 'card_b',
+      columnId: 'col_done',
+      order: 0,
+      opId: genOpId(),
+    };
     sendWs(wsB, { type: 'coedit.op', artifactId: board.id, companyId, userId: 'user-b', op: opB });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
@@ -496,12 +607,21 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, board.id, 'user-b', 'Bob');
 
     // A adds a new column
-    const opA: CoEditOp = { kind: 'board.addColumn', column: { id: 'col_review', title: 'Review' }, opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'board.addColumn',
+      column: { id: 'col_review', title: 'Review' },
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: board.id, companyId, userId: 'user-a', op: opA });
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
 
     // B edits card_a title
-    const opB: CoEditOp = { kind: 'board.editCard', cardId: 'card_a', title: 'Card A (edited)', opId: genOpId() };
+    const opB: CoEditOp = {
+      kind: 'board.editCard',
+      cardId: 'card_a',
+      title: 'Card A (edited)',
+      opId: genOpId(),
+    };
     sendWs(wsB, { type: 'coedit.op', artifactId: board.id, companyId, userId: 'user-b', op: opB });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
@@ -530,7 +650,14 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, doc.id, 'user-b', 'Bob');
 
     // B sends cursor position
-    sendWs(wsB, { type: 'coedit.cursor', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', position: 3 });
+    sendWs(wsB, {
+      type: 'coedit.cursor',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      position: 3,
+    });
 
     const cursorMsg = await waitForCoEdit(wsA, 'coedit.cursor.broadcast');
     expect(cursorMsg.userId).toBe('user-b');
@@ -548,7 +675,14 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
     await joinSession(wsB, doc.id, 'user-b', 'Bob');
 
-    sendWs(wsB, { type: 'coedit.selection', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', range: { start: 2, end: 7 } });
+    sendWs(wsB, {
+      type: 'coedit.selection',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      range: { start: 2, end: 7 },
+    });
 
     const selMsg = await waitForCoEdit(wsA, 'coedit.selection.broadcast');
     expect(selMsg.userId).toBe('user-b');
@@ -578,7 +712,9 @@ describe('Co-editing WebSocket — real WS clients', () => {
 
   it('VAL-COEDIT-014: save produces exactly one new revision row with merged content', async () => {
     const doc = await createDoc('# Hello');
-    const revsBefore = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}/revisions`);
+    const revsBefore = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${doc.id}/revisions`,
+    );
     const countBefore = revsBefore.body.data.length;
 
     wsA = await openWs(port);
@@ -586,16 +722,30 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
     // Apply two ops
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 7, text: ' World', opId: genOpId() } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 7, text: ' World', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.ack');
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 13, text: '!', opId: genOpId() } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 13, text: '!', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
     // Save (one flush)
     sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
     await waitForCoEdit(wsA, 'coedit.saved');
 
-    const revsAfter = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}/revisions`);
+    const revsAfter = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${doc.id}/revisions`,
+    );
     expect(revsAfter.body.data.length).toBe(countBefore + 1); // exactly one new revision
     const latestRev = revsAfter.body.data[revsAfter.body.data.length - 1];
     expect(latestRev.content.body).toBe('# Hello World!');
@@ -612,9 +762,21 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
     await joinSession(wsB, doc.id, 'user-b', 'Bob');
 
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 7, text: ' A', opId: genOpId() } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 7, text: ' A', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
-    sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: { kind: 'doc.insert', position: 9, text: ' B', opId: genOpId() } as CoEditOp });
+    sendWs(wsB, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      op: { kind: 'doc.insert', position: 9, text: ' B', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
     // Set up both saved listeners BEFORE sending save to avoid timing issue
@@ -644,7 +806,13 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, doc.id, 'user-b', 'Bob');
 
     // B edits
-    sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: { kind: 'doc.insert', position: 6, text: ' B-edit', opId: genOpId() } as CoEditOp });
+    sendWs(wsB, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      op: { kind: 'doc.insert', position: 6, text: ' B-edit', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
     // B disconnects
@@ -653,7 +821,13 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await waitForCoEdit(wsA, 'coedit.user.left');
 
     // A edits while B is disconnected
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 6, text: ' A-edit', opId: genOpId() } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 6, text: ' A-edit', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
     // B reconnects and re-joins — should get current merged state
@@ -705,7 +879,9 @@ describe('Co-editing WebSocket — real WS clients', () => {
 
   it('VAL-COEDIT-018: revision history is append-only through co-editing', async () => {
     const doc = await createDoc('# Hello');
-    const revsBefore = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}/revisions`);
+    const revsBefore = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${doc.id}/revisions`,
+    );
     const versionsBefore = revsBefore.body.data.map((r: any) => r.version);
 
     wsA = await openWs(port);
@@ -714,13 +890,21 @@ describe('Co-editing WebSocket — real WS clients', () => {
 
     // Multiple save cycles
     for (let i = 0; i < 3; i++) {
-      sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 100, text: ` edit${i}`, opId: genOpId() } as CoEditOp });
+      sendWs(wsA, {
+        type: 'coedit.op',
+        artifactId: doc.id,
+        companyId,
+        userId: 'user-a',
+        op: { kind: 'doc.insert', position: 100, text: ` edit${i}`, opId: genOpId() } as CoEditOp,
+      });
       await waitForCoEdit(wsA, 'coedit.op.ack');
       sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
       await waitForCoEdit(wsA, 'coedit.saved');
     }
 
-    const revsAfter = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}/revisions`);
+    const revsAfter = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${doc.id}/revisions`,
+    );
     const versionsAfter = revsAfter.body.data.map((r: any) => r.version);
 
     // All original versions still present (append-only)
@@ -742,7 +926,12 @@ describe('Co-editing WebSocket — real WS clients', () => {
     // Create an agent in the company first
     const agentRes = await request(app)
       .post(`/api/companies/${companyId}/agents`)
-      .send({ name: 'CoEdit Agent', role: 'engineer', provider: 'anthropic', model: 'claude-sonnet-4-6' })
+      .send({
+        name: 'CoEdit Agent',
+        role: 'engineer',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+      })
       .expect(201);
     const agentId = agentRes.body.data.id;
 
@@ -752,7 +941,13 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
     // User sends an op (unsaved)
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 7, text: '\n\nUser edit', opId: genOpId() } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 7, text: '\n\nUser edit', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
     // Set up listener BEFORE the PATCH so we catch the broadcast
@@ -762,7 +957,10 @@ describe('Co-editing WebSocket — real WS clients', () => {
     const agentPatchRes = await request(app)
       .patch(`/api/companies/${companyId}/artifacts/${doc.id}`)
       .set('X-Eidolon-Agent-Id', agentId)
-      .send({ content: { format: 'markdown', body: '# Hello\n\nAgent added this' }, version: doc.version })
+      .send({
+        content: { format: 'markdown', body: '# Hello\n\nAgent added this' },
+        version: doc.version,
+      })
       .expect(200); // NOT 409 — merges through session
 
     // The user should receive the agent's ops as broadcasts
@@ -774,7 +972,9 @@ describe('Co-editing WebSocket — real WS clients', () => {
     expect(body).toContain('Agent added this');
 
     // Verify revision has editSource=agent for the agent contribution
-    const revsRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}/revisions`);
+    const revsRes = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${doc.id}/revisions`,
+    );
     const latestRev = revsRes.body.data[revsRes.body.data.length - 1];
     expect(latestRev.editSource).toBe('agent');
   });
@@ -798,14 +998,32 @@ describe('Co-editing WebSocket — real WS clients', () => {
 
     // Each appends a distinct marker at the end
     // A appends "AAA"
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 4, text: 'AAA', opId: 'op-aaa' } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 4, text: 'AAA', opId: 'op-aaa' } as CoEditOp,
+    });
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
     // B's local state still has 'Base' at position 4, but it receives A's op
     // B appends "BBB" after "AAA" (position 4 + 3 = 7 in canonical)
-    sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: { kind: 'doc.insert', position: 7, text: 'BBB', opId: 'op-bbb' } as CoEditOp });
+    sendWs(wsB, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      op: { kind: 'doc.insert', position: 7, text: 'BBB', opId: 'op-bbb' } as CoEditOp,
+    });
     await waitForCoEdit(wsC, 'coedit.op.broadcast');
     // C appends "CCC" after "BBB" (position 7 + 3 = 10 in canonical)
-    sendWs(wsC, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-c', op: { kind: 'doc.insert', position: 10, text: 'CCC', opId: 'op-ccc' } as CoEditOp });
+    sendWs(wsC, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-c',
+      op: { kind: 'doc.insert', position: 10, text: 'CCC', opId: 'op-ccc' } as CoEditOp,
+    });
     // Let all broadcasts propagate
     await collectFor(wsA, 300);
     await collectFor(wsB, 300);
@@ -828,10 +1046,19 @@ describe('Co-editing WebSocket — real WS clients', () => {
   it('VAL-COEDIT-022: formula preserved when another cell is edited concurrently', async () => {
     const sheet = await createSheet({
       columns: [
-        { id: 'c1', key: 'a' }, { id: 'c2', key: 'b' }, { id: 'c3', key: 'sum' },
+        { id: 'c1', key: 'a' },
+        { id: 'c2', key: 'b' },
+        { id: 'c3', key: 'sum' },
       ],
       rows: [
-        { id: 'r1', cells: { a: { value: 10 }, b: { value: 20 }, sum: { value: 30, formula: '=SUM(r1a:r1b)' } } },
+        {
+          id: 'r1',
+          cells: {
+            a: { value: 10 },
+            b: { value: 20 },
+            sum: { value: 30, formula: '=SUM(r1a:r1b)' },
+          },
+        },
       ],
     });
     wsA = await openWs(port);
@@ -843,12 +1070,25 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, sheet.id, 'user-b', 'Bob');
 
     // A sets cell (r1, a) to 100
-    const opA: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'a', value: 100, opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'a',
+      value: 100,
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-a', op: opA });
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
 
     // B sets cell (r1, sum) formula to a new formula
-    const opB: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'sum', value: 120, formula: '=SUM(r1a:r1b)', opId: genOpId() };
+    const opB: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'sum',
+      value: 120,
+      formula: '=SUM(r1a:r1b)',
+      opId: genOpId(),
+    };
     sendWs(wsB, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-b', op: opB });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
@@ -877,7 +1117,13 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, doc.id, 'user-b', 'Bob');
 
     // B edits while A is connected
-    sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: { kind: 'doc.insert', position: 7, text: ' World', opId: genOpId() } as CoEditOp });
+    sendWs(wsB, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      op: { kind: 'doc.insert', position: 7, text: ' World', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.broadcast');
 
     // A drops connection
@@ -886,7 +1132,13 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await waitForCoEdit(wsB, 'coedit.user.left');
 
     // B continues editing
-    sendWs(wsB, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-b', op: { kind: 'doc.insert', position: 13, text: '!', opId: genOpId() } as CoEditOp });
+    sendWs(wsB, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      op: { kind: 'doc.insert', position: 13, text: '!', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsB, 'coedit.op.ack');
 
     // A reconnects
@@ -896,7 +1148,13 @@ describe('Co-editing WebSocket — real WS clients', () => {
     expect((rejoinMsg as any).content.body).toBe('# Hello World!');
 
     // A can continue editing (subsequent edits work)
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 14, text: ' Yay', opId: genOpId() } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 14, text: ' Yay', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsB, 'coedit.op.broadcast');
 
     sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
@@ -924,18 +1182,34 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, doc2.id, 'user-b', 'Bob');
 
     // B sends cursor on doc1
-    sendWs(wsB, { type: 'coedit.cursor', artifactId: doc1.id, companyId, userId: 'user-b', name: 'Bob', position: 3 });
+    sendWs(wsB, {
+      type: 'coedit.cursor',
+      artifactId: doc1.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      position: 3,
+    });
 
     // A (on doc1) should receive it
     const cursorMsg = await waitForCoEdit(wsA, 'coedit.cursor.broadcast');
     expect(cursorMsg.artifactId).toBe(doc1.id);
 
     // B sends cursor on doc2 — A should NOT receive it (A is not on doc2)
-    sendWs(wsB, { type: 'coedit.cursor', artifactId: doc2.id, companyId, userId: 'user-b', name: 'Bob', position: 1 });
+    sendWs(wsB, {
+      type: 'coedit.cursor',
+      artifactId: doc2.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      position: 1,
+    });
 
     // Collect for a short time — A should not receive doc2 cursor
     const msgs = await collectFor(wsA, 400);
-    const doc2Cursors = msgs.filter(m => m.type === 'coedit.cursor.broadcast' && m.artifactId === doc2.id);
+    const doc2Cursors = msgs.filter(
+      (m) => m.type === 'coedit.cursor.broadcast' && m.artifactId === doc2.id,
+    );
     expect(doc2Cursors).toHaveLength(0);
   });
 
@@ -952,15 +1226,30 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, sheet.id, 'user-a', 'Alice');
 
     // Another participant sends an op to the session (changes cell name → "SessionEdit")
-    const opSession: CoEditOp = { kind: 'sheet.setCell', rowId: 'r1', colKey: 'name', value: 'SessionEdit', opId: genOpId() };
-    sendWs(wsA, { type: 'coedit.op', artifactId: sheet.id, companyId, userId: 'user-a', op: opSession });
+    const opSession: CoEditOp = {
+      kind: 'sheet.setCell',
+      rowId: 'r1',
+      colKey: 'name',
+      value: 'SessionEdit',
+      opId: genOpId(),
+    };
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: sheet.id,
+      companyId,
+      userId: 'user-a',
+      op: opSession,
+    });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
     // The SheetEditor (option b) saves via REST PATCH with its FULL local
     // content (which includes the user's local cell change). The session is
     // active so updateArtifact routes through mergeExternalUpdate.
     const localContent = {
-      columns: [{ id: 'c1', key: 'name' }, { id: 'c2', key: 'role' }],
+      columns: [
+        { id: 'c1', key: 'name' },
+        { id: 'c2', key: 'role' },
+      ],
       rows: [{ id: 'r1', cells: { name: { value: 'LocalEdit' }, role: { value: 'Engineer' } } }],
     };
     const patchRes = await request(app)
@@ -991,8 +1280,20 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, board.id, 'user-a', 'Alice');
 
     // Another participant sends an op (moves card_a to In Progress)
-    const opSession: CoEditOp = { kind: 'board.moveCard', cardId: 'card_a', columnId: 'col_progress', order: 0, opId: genOpId() };
-    sendWs(wsA, { type: 'coedit.op', artifactId: board.id, companyId, userId: 'user-a', op: opSession });
+    const opSession: CoEditOp = {
+      kind: 'board.moveCard',
+      cardId: 'card_a',
+      columnId: 'col_progress',
+      order: 0,
+      opId: genOpId(),
+    };
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: board.id,
+      companyId,
+      userId: 'user-a',
+      op: opSession,
+    });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
     // The BoardEditor (option b) saves via REST PATCH with its FULL local
@@ -1034,11 +1335,23 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
     // Apply a content op so the session is dirty
-    sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: { kind: 'doc.insert', position: 7, text: ' World', opId: genOpId() } as CoEditOp });
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: { kind: 'doc.insert', position: 7, text: ' World', opId: genOpId() } as CoEditOp,
+    });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
     // Save with a new title via the coedit.save WS message (with title field)
-    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a', title: 'Updated Doc Title' });
+    sendWs(wsA, {
+      type: 'coedit.save',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      title: 'Updated Doc Title',
+    });
     const savedMsg = await waitForCoEdit(wsA, 'coedit.saved');
     expect(savedMsg.title).toBe('Updated Doc Title');
 
@@ -1075,7 +1388,7 @@ describe('Co-editing WebSocket — real WS clients', () => {
 
     // A should NOT receive the injected op as a broadcast
     const msgs = await collectFor(wsA, 400);
-    const broadcasts = msgs.filter(m => m.type === 'coedit.op.broadcast');
+    const broadcasts = msgs.filter((m) => m.type === 'coedit.op.broadcast');
     expect(broadcasts).toHaveLength(0);
 
     // Verify the content was not modified
@@ -1100,7 +1413,14 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
     // B (non-participant) tries to send a cursor event
-    sendWs(wsB, { type: 'coedit.cursor', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', position: 3 });
+    sendWs(wsB, {
+      type: 'coedit.cursor',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      position: 3,
+    });
 
     // B should receive a coedit.error
     const errorMsg = await waitForCoEdit(wsB, 'coedit.error');
@@ -1109,7 +1429,7 @@ describe('Co-editing WebSocket — real WS clients', () => {
 
     // A (participant) should NOT receive the injected cursor as a broadcast
     const msgs = await collectFor(wsA, 400);
-    const cursorBroadcasts = msgs.filter(m => m.type === 'coedit.cursor.broadcast');
+    const cursorBroadcasts = msgs.filter((m) => m.type === 'coedit.cursor.broadcast');
     expect(cursorBroadcasts).toHaveLength(0);
   });
 
@@ -1124,7 +1444,14 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
     // B (non-participant) tries to send a selection event
-    sendWs(wsB, { type: 'coedit.selection', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', range: { start: 2, end: 7 } });
+    sendWs(wsB, {
+      type: 'coedit.selection',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      range: { start: 2, end: 7 },
+    });
 
     // B should receive a coedit.error
     const errorMsg = await waitForCoEdit(wsB, 'coedit.error');
@@ -1133,7 +1460,7 @@ describe('Co-editing WebSocket — real WS clients', () => {
 
     // A (participant) should NOT receive the injected selection as a broadcast
     const msgs = await collectFor(wsA, 400);
-    const selBroadcasts = msgs.filter(m => m.type === 'coedit.selection.broadcast');
+    const selBroadcasts = msgs.filter((m) => m.type === 'coedit.selection.broadcast');
     expect(selBroadcasts).toHaveLength(0);
   });
 
@@ -1149,13 +1476,27 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsB, doc.id, 'user-b', 'Bob');
 
     // B (participant) sends a cursor event — A should receive it
-    sendWs(wsB, { type: 'coedit.cursor', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', position: 3 });
+    sendWs(wsB, {
+      type: 'coedit.cursor',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      position: 3,
+    });
     const cursorMsg = await waitForCoEdit(wsA, 'coedit.cursor.broadcast');
     expect(cursorMsg.userId).toBe('user-b');
     expect(cursorMsg.position).toBe(3);
 
     // B (participant) sends a selection event — A should receive it
-    sendWs(wsB, { type: 'coedit.selection', artifactId: doc.id, companyId, userId: 'user-b', name: 'Bob', range: { start: 2, end: 7 } });
+    sendWs(wsB, {
+      type: 'coedit.selection',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-b',
+      name: 'Bob',
+      range: { start: 2, end: 7 },
+    });
     const selMsg = await waitForCoEdit(wsA, 'coedit.selection.broadcast');
     expect(selMsg.userId).toBe('user-b');
     expect(selMsg.range).toEqual({ start: 2, end: 7 });
@@ -1198,7 +1539,9 @@ describe('Co-editing WebSocket — real WS clients', () => {
     expect(getRes.body.data.version).toBe(doc.version + 1);
 
     // Exactly one new revision row (atomic single save)
-    const revsRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}/revisions`);
+    const revsRes = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${doc.id}/revisions`,
+    );
     expect(revsRes.body.data.length).toBe(2); // create + one PATCH
   });
 
@@ -1207,7 +1550,11 @@ describe('Co-editing WebSocket — real WS clients', () => {
   //    to create a session, so PATCH goes through the standard LWW path.
   // =========================================================================
 
-  async function createGallery(): Promise<{ id: string; version: number; content: Record<string, unknown> }> {
+  async function createGallery(): Promise<{
+    id: string;
+    version: number;
+    content: Record<string, unknown>;
+  }> {
     const content = {
       items: [
         { id: 'g1', type: 'image', url: 'https://example.com/a.png', caption: 'First' },
@@ -1221,7 +1568,11 @@ describe('Co-editing WebSocket — real WS clients', () => {
     return res.body.data;
   }
 
-  async function createDashboard(): Promise<{ id: string; version: number; content: Record<string, unknown> }> {
+  async function createDashboard(): Promise<{
+    id: string;
+    version: number;
+    content: Record<string, unknown>;
+  }> {
     const content = {
       dataSources: [{ id: 'ds1', type: 'manual_json', config: { data: [1, 2, 3] } }],
       widgets: [{ id: 'w1', type: 'chart', dataSourceId: 'ds1', config: { chartType: 'bar' } }],
@@ -1233,7 +1584,11 @@ describe('Co-editing WebSocket — real WS clients', () => {
     return res.body.data;
   }
 
-  async function createApp(): Promise<{ id: string; version: number; content: Record<string, unknown> }> {
+  async function createApp(): Promise<{
+    id: string;
+    version: number;
+    content: Record<string, unknown>;
+  }> {
     const content = {
       definition: { name: 'demo', entrypoint: 'index.html' },
       files: [{ path: 'index.html', content: '<h1>Hello</h1>' }],
@@ -1250,14 +1605,20 @@ describe('Co-editing WebSocket — real WS clients', () => {
     wsA = await openWs(port);
     await subscribe(wsA, companyId);
 
-    sendWs(wsA, { type: 'coedit.join', artifactId: gallery.id, companyId, userId: 'user-a', name: 'Alice' });
+    sendWs(wsA, {
+      type: 'coedit.join',
+      artifactId: gallery.id,
+      companyId,
+      userId: 'user-a',
+      name: 'Alice',
+    });
     const errorMsg = await waitForCoEdit(wsA, 'coedit.error');
     expect(errorMsg.artifactId).toBe(gallery.id);
     expect(errorMsg.message).toContain('does not support co-editing');
 
     // No coedit.joined message should arrive
     const msgs = await collectFor(wsA, 400);
-    expect(msgs.find(m => m.type === 'coedit.joined')).toBeUndefined();
+    expect(msgs.find((m) => m.type === 'coedit.joined')).toBeUndefined();
   });
 
   it('gallery PATCH (reorder) persists via standard LWW path — no session created', async () => {
@@ -1281,9 +1642,7 @@ describe('Co-editing WebSocket — real WS clients', () => {
   it('gallery PATCH (delete item) persists via standard LWW path', async () => {
     const gallery = await createGallery();
     const reduced = {
-      items: [
-        { id: 'g1', type: 'image', url: 'https://example.com/a.png', caption: 'First' },
-      ],
+      items: [{ id: 'g1', type: 'image', url: 'https://example.com/a.png', caption: 'First' }],
     };
     await request(app)
       .patch(`/api/companies/${companyId}/artifacts/${gallery.id}`)
@@ -1326,7 +1685,9 @@ describe('Co-editing WebSocket — real WS clients', () => {
       .send({ content: updated, version: appArtifact.version })
       .expect(200);
 
-    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${appArtifact.id}`);
+    const getRes = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${appArtifact.id}`,
+    );
     expect(getRes.body.data.content.definition.name).toBe('demo2');
     expect(getRes.body.data.content.files).toHaveLength(2);
     expect(getRes.body.data.content.files[0].content).toBe('<h1>Updated</h1>');
@@ -1344,13 +1705,7 @@ describe('Co-editing WebSocket — real WS clients', () => {
     const gallery = await createGallery();
     // Inject a session directly to simulate the edge case where a session
     // exists for a non-co-editable type (bypassing the joinSession guard).
-    __injectSessionForTest(
-      gallery.id,
-      companyId,
-      'gallery',
-      gallery.content,
-      gallery.version,
-    );
+    __injectSessionForTest(gallery.id, companyId, 'gallery', gallery.content, gallery.version);
 
     const reordered = {
       items: [
@@ -1418,7 +1773,9 @@ describe('Co-editing WebSocket — real WS clients', () => {
       .send({ content: updated, version: appArtifact.version })
       .expect(200);
 
-    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${appArtifact.id}`);
+    const getRes = await request(app).get(
+      `/api/companies/${companyId}/artifacts/${appArtifact.id}`,
+    );
     expect(getRes.body.data.content.definition.name).toBe('demo2');
     expect(getRes.body.data.content.files).toHaveLength(2);
   });
@@ -1429,7 +1786,12 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await subscribe(wsA, companyId);
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
-    const opA: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: ' World', opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'doc.insert',
+      position: '# Hello'.length,
+      text: ' World',
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: opA });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
@@ -1452,7 +1814,12 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
     // Apply an op so the session is dirty
-    const opA: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: ' Save1', opId: genOpId() };
+    const opA: CoEditOp = {
+      kind: 'doc.insert',
+      position: '# Hello'.length,
+      text: ' Save1',
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: opA });
     await waitForCoEdit(wsA, 'coedit.op.ack');
 
@@ -1461,7 +1828,7 @@ describe('Co-editing WebSocket — real WS clients', () => {
     // the second saveArtifactContent call would hit a 409. With serialization,
     // the second save waits for the first to bump session.version.
     sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
-    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, 'userId': 'user-a' });
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
 
     // Wait for both saves to complete (two coedit.saved messages)
     const savedMsg1 = await waitForCoEdit(wsA, 'coedit.saved');
@@ -1489,13 +1856,23 @@ describe('Co-editing WebSocket — real WS clients', () => {
     await joinSession(wsA, doc.id, 'user-a', 'Alice');
 
     // First op + save
-    const op1: CoEditOp = { kind: 'doc.insert', position: '# Hello'.length, text: ' A', opId: genOpId() };
+    const op1: CoEditOp = {
+      kind: 'doc.insert',
+      position: '# Hello'.length,
+      text: ' A',
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: op1 });
     await waitForCoEdit(wsA, 'coedit.op.ack');
     sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
 
     // Immediately apply a second op and save (before the first save completes)
-    const op2: CoEditOp = { kind: 'doc.insert', position: '# Hello A'.length, text: ' B', opId: genOpId() };
+    const op2: CoEditOp = {
+      kind: 'doc.insert',
+      position: '# Hello A'.length,
+      text: ' B',
+      opId: genOpId(),
+    };
     sendWs(wsA, { type: 'coedit.op', artifactId: doc.id, companyId, userId: 'user-a', op: op2 });
     await waitForCoEdit(wsA, 'coedit.op.ack');
     sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
@@ -1511,5 +1888,82 @@ describe('Co-editing WebSocket — real WS clients', () => {
     // captures both (version=2); if the first flush completes before op2,
     // two saves occur (version=3). Either way, no 409.
     expect(getRes.body.data.version).toBeGreaterThanOrEqual(2);
+  });
+
+  it('persists an op arriving during a flush in the queued second flush', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    let markFirstSaveStarted!: () => void;
+    const firstSaveStarted = new Promise<void>((resolve) => {
+      markFirstSaveStarted = resolve;
+    });
+    let releaseFirstSave!: () => void;
+    const firstSaveGate = new Promise<void>((resolve) => {
+      releaseFirstSave = resolve;
+    });
+
+    const originalTransaction = db.drizzle.transaction.bind(db.drizzle);
+    vi.spyOn(db.drizzle, 'transaction').mockImplementationOnce(async (...args) => {
+      markFirstSaveStarted();
+      await firstSaveGate;
+      return originalTransaction(...args);
+    });
+
+    let savedCount = 0;
+    const messagesPromise = collectUntil(wsA, (message) => {
+      if (message.type === 'coedit.saved') {
+        savedCount += 1;
+      }
+      return savedCount === 2;
+    });
+
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: {
+        kind: 'doc.insert',
+        position: '# Hello'.length,
+        text: ' A',
+        opId: genOpId(),
+      } as CoEditOp,
+    });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
+    await firstSaveStarted;
+
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: {
+        kind: 'doc.insert',
+        position: '# Hello A'.length,
+        text: ' B',
+        opId: genOpId(),
+      } as CoEditOp,
+    });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
+
+    releaseFirstSave();
+    const messages = await messagesPromise;
+    await backgroundWork.drain();
+
+    const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+    expect(getRes.body.data.content.body).toBe('# Hello A B');
+    expect(getRes.body.data.version).toBe(3);
+    expect(
+      messages
+        .filter((message) => message.type === 'coedit.saved')
+        .map((message) => message.version),
+    ).toEqual([2, 3]);
+    expect(messages.some((message) => message.type === 'coedit.error')).toBe(false);
   });
 });

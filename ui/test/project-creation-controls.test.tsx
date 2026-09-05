@@ -1,32 +1,33 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Sidebar } from "../src/components/layout/Sidebar";
-import { ProjectList } from "../src/pages/ProjectList";
+import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Sidebar } from '../src/components/layout/Sidebar';
+import { ProjectList } from '../src/pages/ProjectList';
 
 const mocks = vi.hoisted(() => ({
   openProjectCreation: vi.fn(),
 }));
 
-vi.mock("@/components/projects/ProjectCreationProvider", () => ({
+vi.mock('@/components/projects/ProjectCreationProvider', () => ({
   useProjectCreation: () => ({ openProjectCreation: mocks.openProjectCreation }),
 }));
 
-vi.mock("@/lib/hooks", () => ({
+vi.mock('@/lib/hooks', () => ({
+  useMyRole: () => ({ data: 'owner', isLoading: false, isError: false }),
   useCompanies: () => ({ data: [] }),
   useInbox: () => ({ data: { meta: { unread: 0 } } }),
   useProjects: () => ({ data: [], isLoading: false }),
 }));
 
-vi.mock("@/lib/ws", () => ({
-  useWebSocket: () => ({ status: "disabled" }),
+vi.mock('@/lib/ws', () => ({
+  useWebSocket: () => ({ status: 'disabled' }),
 }));
 
-describe("project creation controls", () => {
+describe('project creation controls', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    Object.defineProperty(window, "matchMedia", {
+    Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn().mockReturnValue({
         matches: false,
@@ -36,10 +37,10 @@ describe("project creation controls", () => {
     });
   });
 
-  it("opens the shared workflow from the sidebar", async () => {
+  it('opens the shared workflow from the sidebar', async () => {
     const user = userEvent.setup();
     render(
-      <MemoryRouter initialEntries={["/company/company-1/projects"]}>
+      <MemoryRouter initialEntries={['/company/company-1/projects']}>
         <Routes>
           <Route
             path="/company/:companyId/projects"
@@ -49,31 +50,31 @@ describe("project creation controls", () => {
       </MemoryRouter>,
     );
 
-    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(screen.getByRole('button', { name: 'New' }));
     expect(mocks.openProjectCreation).toHaveBeenCalledOnce();
   });
 
-  it("opens the same workflow from header and empty-state controls", async () => {
+  it('opens the same workflow from header and empty-state controls', async () => {
     const user = userEvent.setup();
     render(
-      <MemoryRouter initialEntries={["/company/company-1/projects"]}>
+      <MemoryRouter initialEntries={['/company/company-1/projects']}>
         <Routes>
           <Route path="/company/:companyId/projects" element={<ProjectList />} />
         </Routes>
       </MemoryRouter>,
     );
 
-    const buttons = screen.getAllByRole("button", { name: "New Project" });
+    const buttons = screen.getAllByRole('button', { name: 'New Project' });
     expect(buttons).toHaveLength(2);
     await user.click(buttons[0]);
     await user.click(buttons[1]);
     expect(mocks.openProjectCreation).toHaveBeenCalledTimes(2);
   });
 
-  it("closes the mobile drawer with Escape and restores page scrolling", () => {
+  it('closes the mobile drawer with Escape and restores page scrolling', () => {
     const onClose = vi.fn();
     const { unmount } = render(
-      <MemoryRouter initialEntries={["/company/company-1/goals"]}>
+      <MemoryRouter initialEntries={['/company/company-1/goals']}>
         <Routes>
           <Route
             path="/company/:companyId/goals"
@@ -83,11 +84,11 @@ describe("project creation controls", () => {
       </MemoryRouter>,
     );
 
-    expect(document.body.style.overflow).toBe("hidden");
-    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledOnce();
 
     unmount();
-    expect(document.body.style.overflow).toBe("");
+    expect(document.body.style.overflow).toBe('');
   });
 });

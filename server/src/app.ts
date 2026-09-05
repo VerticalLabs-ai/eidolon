@@ -39,6 +39,8 @@ import { projectThreadsRouter } from './routes/project-threads.js';
 import { projectPlansRouter } from './routes/project-plans.js';
 import { projectDecisionsRouter } from './routes/project-decisions.js';
 import { projectOutcomesRouter } from './routes/project-outcomes.js';
+import { missionRunsRouter } from './routes/mission-runs.js';
+import { missionModeProfilesRouter } from './routes/mission-mode-profiles.js';
 import { adaptersRouter } from './routes/adapters.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { inboxRouter } from './routes/inbox.js';
@@ -339,6 +341,33 @@ export function createApp(db: DbInstance): express.Express {
       delete: 'content.delete',
     }),
     projectOutcomesRouter(db),
+  );
+  // Mission runs (Phase 1 durable orchestration). Start requires
+  // content.create; reads require company.view. The route checks the
+  // fail-closed missionAgentIntelligence feature flag on mutations.
+  app.use(
+    '/api/companies/:companyId/projects/:projectId/mission-runs',
+    requireAuth,
+    requirePermissionByMethod({
+      read: 'company.view',
+      create: 'content.create',
+      update: 'content.update',
+      delete: 'content.delete',
+    }),
+    missionRunsRouter(db),
+  );
+  // Mission mode profiles (company-scoped custom mode registry). Reads
+  // require company.view; writes (create/update/enable/disable) require
+  // company.settings.update (owner/admin only). The route checks the
+  // fail-closed missionAgentIntelligence feature flag on mutations.
+  app.use(
+    '/api/companies/:companyId/mission-mode-profiles',
+    requireAuth,
+    requirePermissionByMethod({
+      read: 'company.view',
+      write: 'company.settings.update',
+    }),
+    missionModeProfilesRouter(db),
   );
   app.use(
     '/api/companies/:companyId/tasks',

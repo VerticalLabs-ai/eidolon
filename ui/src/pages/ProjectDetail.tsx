@@ -1,47 +1,58 @@
-import { useState } from "react";
-import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Archive, ArrowLeft, ExternalLink, FolderKanban, Pencil, FileEdit, Copy } from "lucide-react";
-import { toast } from "sonner";
-import { useArchiveProject, useProject, useProjectWork, useSaveProjectTemplate } from "@/lib/hooks";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Tabs } from "@/components/ui/Tabs";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { Modal } from "@/components/ui/Modal";
-import { ProjectFormModal } from "@/components/projects/ProjectFormModal";
-import { ProjectActivity } from "@/components/projects/ProjectActivity";
-import { isHttpUrl } from "@/lib/urls";
-import { TaskBoard } from "@/pages/TaskBoard";
-import { ProjectHome } from "@/pages/ProjectHome";
-import { ProjectDrive } from "@/pages/ProjectDrive";
-import { ProjectArtifacts } from "@/pages/ProjectArtifacts";
-import { ProjectMeetings } from "@/components/projects/ProjectMeetings";
-import { ProjectThreadComposer } from "@/components/projects/ProjectThreadComposer";
-import { ProjectPlansPanel } from "@/components/projects/ProjectPlansPanel";
-import { ProjectDecisionsPanel } from "@/components/projects/ProjectDecisionsPanel";
-import { ProjectOutcomesPanel } from "@/components/projects/ProjectOutcomesPanel";
-import { AutomationRunsPanel } from "@/components/projects/AutomationRunsPanel";
-import type { Tab } from "@/components/ui/Tabs";
-import { formatDistanceToNow } from "date-fns";
+import { useState } from 'react';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  Archive,
+  ArrowLeft,
+  ExternalLink,
+  FolderKanban,
+  Pencil,
+  FileEdit,
+  Copy,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { useArchiveProject, useProject, useProjectWork, useSaveProjectTemplate } from '@/lib/hooks';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Tabs } from '@/components/ui/Tabs';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Modal } from '@/components/ui/Modal';
+import { ProjectFormModal } from '@/components/projects/ProjectFormModal';
+import { ProjectActivity } from '@/components/projects/ProjectActivity';
+import { isHttpUrl } from '@/lib/urls';
+import { extractMissionLinkParams, type MissionLinkTarget } from '@eidolon/shared';
+import { TaskBoard } from '@/pages/TaskBoard';
+import { ProjectHome } from '@/pages/ProjectHome';
+import { ProjectDrive } from '@/pages/ProjectDrive';
+import { ProjectArtifacts } from '@/pages/ProjectArtifacts';
+import { ProjectMeetings } from '@/components/projects/ProjectMeetings';
+import { ProjectThreadComposer } from '@/components/projects/ProjectThreadComposer';
+import { ChatMissionComposer } from '@/components/projects/ChatMissionComposer';
+import { MissionRunList } from '@/components/projects/MissionRunList';
+import { ProjectPlansPanel } from '@/components/projects/ProjectPlansPanel';
+import { ProjectDecisionsPanel } from '@/components/projects/ProjectDecisionsPanel';
+import { ProjectOutcomesPanel } from '@/components/projects/ProjectOutcomesPanel';
+import { AutomationRunsPanel } from '@/components/projects/AutomationRunsPanel';
+import type { Tab } from '@/components/ui/Tabs';
+import { formatDistanceToNow } from 'date-fns';
 
-const VALID_TABS = ["home", "work", "drive", "artifacts", "meetings", "activity"] as const;
+const VALID_TABS = ['home', 'work', 'drive', 'artifacts', 'meetings', 'activity'] as const;
 type ValidTab = (typeof VALID_TABS)[number];
 
 const tabs: Tab[] = [
-  { id: "home", label: "Home" },
-  { id: "work", label: "Work" },
-  { id: "drive", label: "Drive" },
-  { id: "artifacts", label: "Artifacts" },
-  { id: "meetings", label: "Meetings" },
-  { id: "activity", label: "Activity" },
+  { id: 'home', label: 'Home' },
+  { id: 'work', label: 'Work' },
+  { id: 'drive', label: 'Drive' },
+  { id: 'artifacts', label: 'Artifacts' },
+  { id: 'meetings', label: 'Meetings' },
+  { id: 'activity', label: 'Activity' },
 ];
 
-const statusVariant: Record<string, "default" | "success" | "warning" | "info" | "error"> = {
-  active: "success",
-  planning: "info",
-  paused: "warning",
-  completed: "success",
-  archived: "default",
+const statusVariant: Record<string, 'default' | 'success' | 'warning' | 'info' | 'error'> = {
+  active: 'success',
+  planning: 'info',
+  paused: 'warning',
+  completed: 'success',
+  archived: 'default',
 };
 
 // ── Work view: Artifacts panel (VAL-ART-057) ─────────────────────────────
@@ -59,7 +70,10 @@ function WorkArtifactsPanel({
   const artifacts = workSummary?.artifacts ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4" aria-label="Artifacts">
+    <div
+      className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4"
+      aria-label="Artifacts"
+    >
       <div className="mb-3 flex items-center gap-2">
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/10 text-accent">
           <FileEdit className="h-4 w-4" />
@@ -81,7 +95,7 @@ function WorkArtifactsPanel({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-text-primary">{artifact.title}</p>
                 <p className="text-xs text-text-muted capitalize">
-                  {artifact.type} · v{artifact.version} ·{" "}
+                  {artifact.type} · v{artifact.version} ·{' '}
                   {formatDistanceToNow(new Date(artifact.updatedAt), { addSuffix: true })}
                 </p>
               </div>
@@ -100,32 +114,66 @@ function WorkArtifactsPanel({
   );
 }
 
+/**
+ * Resolve the active Project Work tab plus any canonical `links.ui` Mission
+ * deep-link target from the surviving search params (VAL-RUN-097,
+ * VAL-CROSS-076, VAL-CROSS-083, VAL-CROSS-101). An explicit `tab` param
+ * wins; otherwise a `mission=` deep link auto-selects the Work tab so the
+ * targeted run card is visible and highlighted. Extracted from
+ * `ProjectDetail` so its cyclomatic complexity stays bounded.
+ */
+function resolveMissionDeepLink(
+  rawTab: string | null,
+  searchParams: URLSearchParams,
+): {
+  activeTab: ValidTab;
+  deepLinkRunId: string | undefined;
+  deepLinkTarget: MissionLinkTarget | undefined;
+} {
+  const linkParams = extractMissionLinkParams(searchParams);
+  const deepLinkRunId = linkParams?.runId;
+  const deepLinkTarget: MissionLinkTarget | undefined = linkParams?.target;
+  const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
+    ? (rawTab as ValidTab)
+    : deepLinkRunId
+      ? 'work'
+      : 'home';
+  return { activeTab, deepLinkRunId, deepLinkTarget };
+}
+
 export function ProjectDetail() {
   const { companyId, projectId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, isLoading, isError, refetch } = useProject(companyId, projectId);
-  const archiveMutation = useArchiveProject(companyId ?? "");
-  const saveProjectTemplateMutation = useSaveProjectTemplate(companyId ?? "");
+  const archiveMutation = useArchiveProject(companyId ?? '');
+  const saveProjectTemplateMutation = useSaveProjectTemplate(companyId ?? '');
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
-  const [templateName, setTemplateName] = useState("");
-  const [templateDescription, setTemplateDescription] = useState("");
+  const [templateName, setTemplateName] = useState('');
+  const [templateDescription, setTemplateDescription] = useState('');
 
-  const rawTab = searchParams.get("tab");
-  const activeTab: ValidTab = VALID_TABS.includes(rawTab as ValidTab)
-    ? (rawTab as ValidTab)
-    : "home";
+  const rawTab = searchParams.get('tab');
+  // Deep-link: the canonical `links.ui` grammar is
+  // `/companies/:c/p/:p/work?thread=:t&mission=:r[&<target>]`. The app
+  // redirect strips `/work` and adds `tab=work`, so by the time this
+  // component renders, the canonical params are `?tab=work&thread=...&mission=...[&<target>]`.
+  // We parse the closed grammar from the search params: an explicit `tab`
+  // still wins; otherwise a `mission=` deep link auto-selects the Work tab so
+  // the run card is visible and highlighted (VAL-RUN-097, VAL-CROSS-076,
+  // VAL-CROSS-083, VAL-CROSS-101). The resolution lives in a helper so this
+  // component's cyclomatic complexity stays bounded.
+  const { activeTab, deepLinkRunId, deepLinkTarget } = resolveMissionDeepLink(rawTab, searchParams);
 
   const handleTabChange = (id: string) => {
     // Update only the `tab` query param, preserving any other query params.
     const next = new URLSearchParams(searchParams);
-    if (id === "home") {
-      next.delete("tab");
+    if (id === 'home') {
+      next.delete('tab');
     } else {
-      next.set("tab", id);
+      next.set('tab', id);
     }
     setSearchParams(next, { replace: true });
   };
@@ -145,7 +193,11 @@ export function ProjectDetail() {
           icon={<FolderKanban className="h-6 w-6" />}
           title="Project could not be loaded"
           description="Check your connection and try again."
-          action={<Button variant="secondary" onClick={() => void refetch()}>Try again</Button>}
+          action={
+            <Button variant="secondary" onClick={() => void refetch()}>
+              Try again
+            </Button>
+          }
         />
       </div>
     );
@@ -191,9 +243,7 @@ export function ProjectDetail() {
               <h1 className="text-lg font-bold text-text-primary font-display tracking-wide truncate">
                 {project.name}
               </h1>
-              <Badge variant={statusVariant[project.status] ?? "default"}>
-                {project.status}
-              </Badge>
+              <Badge variant={statusVariant[project.status] ?? 'default'}>{project.status}</Badge>
             </div>
             {project.description && (
               <p className="mt-0.5 line-clamp-2 text-xs text-text-secondary">
@@ -212,7 +262,7 @@ export function ProjectDetail() {
               </a>
             )}
           </div>
-          {project.status !== "archived" && (
+          {project.status !== 'archived' && (
             <div className="flex w-full gap-2 sm:w-auto">
               <Button
                 variant="secondary"
@@ -228,7 +278,7 @@ export function ProjectDetail() {
                 icon={<Copy className="h-3.5 w-3.5" />}
                 onClick={() => {
                   setTemplateName(`${project.name} Template`);
-                  setTemplateDescription("");
+                  setTemplateDescription('');
                   setSaveTemplateOpen(true);
                 }}
               >
@@ -253,51 +303,58 @@ export function ProjectDetail() {
 
       {/* Tab content */}
       <div className="flex-1 overflow-auto">
-        {activeTab === "home" && (
-          <ProjectHome companyId={companyId ?? ""} projectId={project.id} />
-        )}
-        {activeTab === "work" && (
+        {activeTab === 'home' && <ProjectHome companyId={companyId ?? ''} projectId={project.id} />}
+        {activeTab === 'work' && (
           <div className="space-y-4 p-5 sm:p-6">
             <TaskBoard title="Work" />
             <WorkArtifactsPanel
-              companyId={companyId ?? ""}
+              companyId={companyId ?? ''}
               projectId={project.id}
-              onNavigateToArtifacts={() => handleTabChange("artifacts")}
+              onNavigateToArtifacts={() => handleTabChange('artifacts')}
             />
             <div className="mx-auto max-w-6xl">
-              <ProjectPlansPanel companyId={companyId ?? ""} projectId={project.id} />
+              <ProjectPlansPanel companyId={companyId ?? ''} projectId={project.id} />
             </div>
             <div className="mx-auto max-w-6xl">
-              <ProjectDecisionsPanel companyId={companyId ?? ""} projectId={project.id} />
+              <ProjectDecisionsPanel companyId={companyId ?? ''} projectId={project.id} />
             </div>
             <div className="mx-auto max-w-6xl">
-              <ProjectOutcomesPanel companyId={companyId ?? ""} projectId={project.id} />
+              <ProjectOutcomesPanel companyId={companyId ?? ''} projectId={project.id} />
             </div>
             <div className="mx-auto max-w-6xl">
-              <AutomationRunsPanel companyId={companyId ?? ""} projectId={project.id} />
+              <AutomationRunsPanel companyId={companyId ?? ''} projectId={project.id} />
             </div>
             <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4">
-              <ProjectThreadComposer companyId={companyId ?? ""} projectId={project.id} />
+              <ProjectThreadComposer companyId={companyId ?? ''} projectId={project.id} />
             </div>
+            <div className="mx-auto max-w-6xl rounded-xl border border-white/[0.06] bg-surface p-4">
+              <ChatMissionComposer companyId={companyId ?? ''} projectId={project.id} />
+            </div>
+            <MissionRunList
+              companyId={companyId ?? ''}
+              projectId={project.id}
+              highlightRunId={deepLinkRunId ?? undefined}
+              highlightTarget={deepLinkTarget}
+            />
           </div>
         )}
-        {activeTab === "drive" && (
-          <ProjectDrive companyId={companyId ?? ""} projectId={project.id} />
+        {activeTab === 'drive' && (
+          <ProjectDrive companyId={companyId ?? ''} projectId={project.id} />
         )}
-        {activeTab === "artifacts" && (
-          <ProjectArtifacts companyId={companyId ?? ""} projectId={project.id} />
+        {activeTab === 'artifacts' && (
+          <ProjectArtifacts companyId={companyId ?? ''} projectId={project.id} />
         )}
-        {activeTab === "meetings" && (
-          <ProjectMeetings companyId={companyId ?? ""} projectId={project.id} />
+        {activeTab === 'meetings' && (
+          <ProjectMeetings companyId={companyId ?? ''} projectId={project.id} />
         )}
-        {activeTab === "activity" && (
-          <ProjectActivity key={project.id} companyId={companyId ?? ""} projectId={project.id} />
+        {activeTab === 'activity' && (
+          <ProjectActivity key={project.id} companyId={companyId ?? ''} projectId={project.id} />
         )}
       </div>
 
       <ProjectFormModal
         open={editOpen}
-        companyId={companyId ?? ""}
+        companyId={companyId ?? ''}
         project={project}
         onClose={() => setEditOpen(false)}
         onSaved={(savedProject) => toast.success(`Project updated: ${savedProject.name}`)}
@@ -315,7 +372,8 @@ export function ProjectDetail() {
       >
         <div className="space-y-4">
           <p className="text-sm leading-relaxed text-text-secondary">
-            Archive <strong className="text-text-primary">{project.name}</strong>? Its data and history will be retained, and the project will remain identifiable as archived.
+            Archive <strong className="text-text-primary">{project.name}</strong>? Its data and
+            history will be retained, and the project will remain identifiable as archived.
           </p>
           {archiveError && (
             <div
@@ -349,7 +407,7 @@ export function ProjectDetail() {
                       navigate(`/company/${companyId}/projects`, { replace: true });
                     },
                     onError: (error) => {
-                      setArchiveError(error instanceof Error ? error.message : "Archive failed.");
+                      setArchiveError(error instanceof Error ? error.message : 'Archive failed.');
                     },
                   },
                 );
@@ -370,9 +428,8 @@ export function ProjectDetail() {
       >
         <div className="space-y-4">
           <p className="text-sm text-text-secondary">
-            Capture this project's artifacts, folders, and settings as a reusable
-            template. The template is a snapshot — editing the original project
-            afterwards does not change it.
+            Capture this project's artifacts, folders, and settings as a reusable template. The
+            template is a snapshot — editing the original project afterwards does not change it.
           </p>
           <label className="block">
             <span className="text-xs font-medium text-text-secondary mb-1 block">
@@ -415,11 +472,11 @@ export function ProjectDetail() {
                   },
                   {
                     onSuccess: () => {
-                      toast.success("Project template saved");
+                      toast.success('Project template saved');
                       setSaveTemplateOpen(false);
                     },
                     onError: (err) => {
-                      const msg = err instanceof Error ? err.message : "Save failed";
+                      const msg = err instanceof Error ? err.message : 'Save failed';
                       toast.error(msg);
                     },
                   },

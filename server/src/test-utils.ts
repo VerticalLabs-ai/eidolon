@@ -345,7 +345,7 @@ export async function createTestDb(queryLogger?: Logger): Promise<DbInstance> {
     restoreDateSerializers(client);
     wrapExecute(drizzleDb);
 
-    const instance: DbInstance = { drizzle: drizzleDb, schema };
+    const instance: DbInstance = { drizzle: drizzleDb, schema, client };
     _client = client;
     _mgmtClient = mgmtClient;
     _testDbName = testDbName;

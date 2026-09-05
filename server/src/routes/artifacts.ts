@@ -2,26 +2,59 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { routeParams } from '../utils/route-params.js';
-import { createArtifact, getArtifact, listArtifacts, updateArtifact, setArtifactStatus, listRevisions, getRevision, permanentlyDeleteArtifact, transferArtifactOwnership } from '../services/artifact-service.js';
+import { validateProjectOwnership } from '../utils/project-validation.js';
+import {
+  createArtifact,
+  getArtifact,
+  listArtifacts,
+  updateArtifact,
+  setArtifactStatus,
+  listRevisions,
+  getRevision,
+  permanentlyDeleteArtifact,
+  transferArtifactOwnership,
+} from '../services/artifact-service.js';
 import { moveArtifactToFolder } from '../services/folder-service.js';
 import { runCodeArtifact } from '../services/code-run-service.js';
 import { agentBelongsToCompany } from '../utils/agent-validation.js';
-import { ArtifactTypeSchema, DashboardContentSchema, formatArtifactValidationIssues, summarizeArtifactValidationIssues } from '@eidolon/shared';
+import {
+  ArtifactTypeSchema,
+  DashboardContentSchema,
+  formatArtifactValidationIssues,
+  summarizeArtifactValidationIssues,
+} from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
-import { resolveAccess, requireAccess, filterAccessibleArtifacts, type AccessLevel } from '../services/permission-service.js';
+import {
+  resolveAccess,
+  requireAccess,
+  filterAccessibleArtifacts,
+  type AccessLevel,
+} from '../services/permission-service.js';
 import { requireStepUp, type StepUpScope } from '../services/stepup-service.js';
 import { resolveDataSource, type DashboardDataSource } from '../services/dashboard-data-source.js';
 import { diffRevisions } from '../services/diff-service.js';
 import { getLinks } from '../services/link-service.js';
+import { ExportRevisionService } from '../services/mission/research/export-revision-service.js';
+import {
+  buildExportFilename,
+  exportToMarkdown,
+  exportToHtml,
+} from '../services/mission/research/export-service.js';
 import type { DbInstance } from '../types.js';
 
 const CreateBody = z.object({
-  type: ArtifactTypeSchema, title: z.string().trim().min(1).max(500),
-  content: z.unknown(), projectId: z.string().uuid().nullable().optional(), folderId: z.string().uuid().nullable().optional(),
+  type: ArtifactTypeSchema,
+  title: z.string().trim().min(1).max(500),
+  content: z.unknown(),
+  projectId: z.string().uuid().nullable().optional(),
+  folderId: z.string().uuid().nullable().optional(),
 });
 const UpdateBody = z.object({
-  version: z.number().int().positive().optional(), title: z.string().trim().min(1).max(500).optional(),
-  content: z.unknown().optional(), projectId: z.string().uuid().nullable().optional(), message: z.string().max(2000).optional(),
+  version: z.number().int().positive().optional(),
+  title: z.string().trim().min(1).max(500).optional(),
+  content: z.unknown().optional(),
+  projectId: z.string().uuid().nullable().optional(),
+  message: z.string().max(2000).optional(),
   folderId: z.string().uuid().nullable().optional(),
 });
 const ListQuery = z.object({
@@ -30,7 +63,8 @@ const ListQuery = z.object({
   type: ArtifactTypeSchema.optional(),
   status: z.enum(['active', 'archived', 'deleted']).default('active'),
   folderId: z.union([z.string().uuid(), z.literal('null')]).optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
   sort: z.enum(['updatedAt', 'title', 'type', 'createdAt']).optional(),
   order: z.enum(['asc', 'desc']).optional(),
 });
@@ -48,7 +82,11 @@ async function editor(db: DbInstance, companyId: string, req: any) {
     if (await agentBelongsToCompany(db, companyId, agentId)) {
       return { agentId, userId: null, editSource: 'agent' as const };
     }
-    throw new AppError(403, 'AGENT_NOT_IN_COMPANY', 'The specified agent does not belong to this company');
+    throw new AppError(
+      403,
+      'AGENT_NOT_IN_COMPANY',
+      'The specified agent does not belong to this company',
+    );
   }
   return { userId: req.user?.id ?? null, editSource: 'user' as const };
 }
@@ -69,7 +107,14 @@ export function artifactsRouter(db: DbInstance): Router {
     const result = await listArtifacts(db, companyId, { projectId, limit: 50, offset: 0 });
     // Filter by view access (hide no-access artifacts — VAL-TEAM-006/017).
     const { userId, orgRole } = actor(req);
-    const accessibleIds = await filterAccessibleArtifacts(db, companyId, userId, orgRole, result.rows.map((r: any) => r.id), 'view');
+    const accessibleIds = await filterAccessibleArtifacts(
+      db,
+      companyId,
+      userId,
+      orgRole,
+      result.rows.map((r: any) => r.id),
+      'view',
+    );
     const filteredRows = result.rows.filter((r: any) => accessibleIds.includes(r.id));
     res.json({ data: filteredRows, meta: { total: result.total, limit: 50, offset: 0 } });
   });
@@ -96,7 +141,14 @@ export function artifactsRouter(db: DbInstance): Router {
     const { companyId } = routeParams(req);
     const query = (req as any).validated.query;
     // Normalize projectId: 'null' string or unscoped flag → null (unscoped filter)
-    const filters: any = { limit: query.limit, offset: query.offset, status: query.status, type: query.type, sort: query.sort, order: query.order };
+    const filters: any = {
+      limit: query.limit,
+      offset: query.offset,
+      status: query.status,
+      type: query.type,
+      sort: query.sort,
+      order: query.order,
+    };
     if (query.unscoped === true || query.projectId === 'null') {
       filters.projectId = null;
       filters.filterNullProject = true;
@@ -112,9 +164,19 @@ export function artifactsRouter(db: DbInstance): Router {
     const result = await listArtifacts(db, companyId, filters);
     // Filter by view access (hide no-access artifacts — VAL-TEAM-006/017).
     const { userId, orgRole } = actor(req);
-    const accessibleIds = await filterAccessibleArtifacts(db, companyId, userId, orgRole, result.rows.map((r: any) => r.id), 'view');
+    const accessibleIds = await filterAccessibleArtifacts(
+      db,
+      companyId,
+      userId,
+      orgRole,
+      result.rows.map((r: any) => r.id),
+      'view',
+    );
     const filteredRows = result.rows.filter((r: any) => accessibleIds.includes(r.id));
-    res.json({ data: filteredRows, meta: { total: result.total, limit: query.limit, offset: query.offset } });
+    res.json({
+      data: filteredRows,
+      meta: { total: result.total, limit: query.limit, offset: query.offset },
+    });
   });
   router.get('/artifacts/:id/revisions/:version', async (req, res) => {
     const { companyId, id } = routeParams(req);
@@ -122,6 +184,418 @@ export function artifactsRouter(db: DbInstance): Router {
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
     res.json({ data: await getRevision(db, companyId, id, Number(req.params.version)) });
   });
+  // -------------------------------------------------------------------------
+  // Project-scoped artifact revision detail.
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version
+  // Returns the exact revision content (decrypted) for a project-scoped
+  // artifact. Validates project ownership, artifact access, and that the
+  // artifact belongs to the requested project. Cross-project or
+  // cross-company artifacts return a non-enumerating 404.
+  // (fix-ut-m5-ui-artifact-rendering)
+  // -------------------------------------------------------------------------
+  router.get('/projects/:projectId/artifacts/:artifactId/revisions/:version', async (req, res) => {
+    const { companyId, projectId, artifactId } = routeParams(req);
+    const versionNum = Number(req.params.version);
+    if (!Number.isInteger(versionNum) || versionNum < 1) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+    }
+    // Validate project ownership (throws 404 PROJECT_INVALID if the
+    // project does not belong to the company).
+    await validateProjectOwnership(db, companyId, projectId);
+    // Validate artifact view access (company-scoped).
+    const { userId, orgRole } = actor(req);
+    await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+    // Verify the artifact belongs to the requested project. A
+    // cross-project artifact in the same company returns a
+    // non-enumerating 404 (does not reveal existence).
+    const artifact = await getArtifact(db, companyId, artifactId);
+    if (artifact.projectId !== projectId) {
+      throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+    }
+    res.json({ data: await getRevision(db, companyId, artifactId, versionNum) });
+  });
+  // -------------------------------------------------------------------------
+  // Exact-revision citation export (m5-f07-provenance-export-deep-links).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/export?format=markdown|html
+  // Exports the exact positive integer revision as UTF-8 `.md` or sanitized
+  // `.html`, with attachment filename `<sanitized-title>-v<version>.<ext>`,
+  // stable citation ordinals, canonical links, and a bound source list
+  // unchanged by newer edits (VAL-RES-039, VAL-RES-040, VAL-RES-101,
+  // VAL-RES-102). Project-scoped: a cross-project or cross-company revision
+  // returns a non-enumerating 404. Unsupported format → 400
+  // UNSUPPORTED_EXPORT_FORMAT; malformed version → 400 VALIDATION_ERROR.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/export',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      // Validate version is a positive integer (VAL-RES-102: malformed → 400).
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      // Validate format (VAL-RES-102: unsupported → 400 UNSUPPORTED_EXPORT_FORMAT).
+      const format = req.query.format;
+      if (format !== 'markdown' && format !== 'html') {
+        throw new AppError(
+          400,
+          'UNSUPPORTED_EXPORT_FORMAT',
+          'Unsupported export format; use markdown or html',
+        );
+      }
+      // View access on the artifact (company-scoped). Cross-company artifacts
+      // surface a 404 here; cross-project artifacts in the same company pass
+      // access but are rejected by the scoped export loader below.
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      const exportSvc = new ExportRevisionService({ drizzle: db.drizzle, schema: db.schema });
+      const data = await exportSvc.loadExportData(companyId, projectId, artifactId, versionNum);
+      if (!data) {
+        // Non-enumerating 404 for absent, cross-project, or cross-scope
+        // revisions (VAL-RES-102, VAL-RES-022).
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      const filename = buildExportFilename(data.title, data.version, format);
+      const contentType =
+        format === 'markdown' ? 'text/markdown; charset=utf-8' : 'text/html; charset=utf-8';
+      const body =
+        format === 'markdown'
+          ? exportToMarkdown(data.content, data.citations, {
+              title: data.title,
+              version: data.version,
+            })
+          : exportToHtml(data.content, data.citations, {
+              title: data.title,
+              version: data.version,
+            });
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(Buffer.from(body, 'utf8'));
+    },
+  );
+  // -------------------------------------------------------------------------
+  // Exact-revision citations as JSON (m5-f14-citation-navigation-ui).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/citations
+  // Returns citations with frozen display metadata for the exact artifact
+  // revision, ordered by ordinal (VAL-RES-027). Citations bind to the EXACT
+  // immutable artifact revision and never float to newer content
+  // (VAL-CROSS-041). Project-scoped; cross-scope returns non-enumerating 404.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/citations',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      const exportSvc = new ExportRevisionService({ drizzle: db.drizzle, schema: db.schema });
+      const data = await exportSvc.loadExportData(companyId, projectId, artifactId, versionNum);
+      if (!data) {
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      // Return citations with frozen display metadata as JSON. The
+      // citationId is included for inline mark mapping; all other fields
+      // are safe public metadata (VAL-RES-030).
+      const citations = data.citations.map((c) => ({
+        citationId: c.citationId,
+        ordinal: c.ordinal,
+        quote: c.quote,
+        frozenTitle: c.frozenTitle,
+        frozenAuthor: c.frozenAuthor,
+        canonicalUrl: c.canonicalUrl,
+        frozenRetrievedAt: c.frozenRetrievedAt,
+        frozenProvider: c.frozenProvider,
+        section: c.section,
+        sourceRevisionId: '', // Populated below from the citation row
+        artifactRevisionId: '',
+        artifactVersion: data.version,
+        sourceAvailabilityStatus: null as string | null,
+        sourceAvailabilityCheckedAt: null as string | null,
+      }));
+
+      // Fetch source revision IDs and artifact revision ID for each citation
+      // from the citations table (scoped by company/project).
+      const { sql } = await import('drizzle-orm');
+      const citationRows = (await db.drizzle.execute(sql`
+        SELECT "id", "source_revision_id", "artifact_revision_id"
+        FROM "citations"
+        WHERE "artifact_id" = ${artifactId}
+          AND "company_id" = ${companyId}
+          AND "project_id" = ${projectId}
+      `)) as unknown as { id: string; source_revision_id: string; artifact_revision_id: string }[];
+      const citeMap = new Map(citationRows.map((r) => [r.id, r]));
+      for (const c of citations) {
+        const row = citeMap.get(c.citationId);
+        if (row) {
+          c.sourceRevisionId = row.source_revision_id;
+          c.artifactRevisionId = row.artifact_revision_id;
+        }
+      }
+
+      // Fetch latest source availability status for each citation's source
+      // revision (VAL-RES-042). The artifact remains reviewable against its
+      // immutable source revision while the live source is labelled
+      // unavailable when checked.
+      if (citations.length > 0) {
+        const sourceRevisionIds = citations.map((c) => c.sourceRevisionId).filter(Boolean);
+        if (sourceRevisionIds.length > 0) {
+          const availRows = (await db.drizzle.execute(sql`
+            SELECT DISTINCT ON (sr.source_revision_id)
+              sr.source_revision_id,
+              ac.status,
+              ac.created_at
+            FROM UNNEST(ARRAY[${sql.join(
+              sourceRevisionIds.map((id) => sql`${id}`),
+              sql`, `,
+            )}]::text[]) AS sr(source_revision_id)
+            LEFT JOIN LATERAL (
+              SELECT "status", "created_at"
+              FROM "research_source_availability_checks"
+              WHERE "source_revision_id" = sr.source_revision_id
+                AND "company_id" = ${companyId}
+              ORDER BY "created_at" DESC
+              LIMIT 1
+            ) ac ON true
+          `)) as unknown as {
+            source_revision_id: string;
+            status: string | null;
+            created_at: Date | null;
+          }[];
+          const availMap = new Map(availRows.map((r) => [r.source_revision_id, r]));
+          for (const c of citations) {
+            const avail = availMap.get(c.sourceRevisionId);
+            if (avail) {
+              c.sourceAvailabilityStatus =
+                (avail.status as 'available' | 'unavailable' | 'unknown') ?? null;
+              c.sourceAvailabilityCheckedAt = avail.created_at
+                ? avail.created_at instanceof Date
+                  ? avail.created_at.toISOString()
+                  : new Date(avail.created_at).toISOString()
+                : null;
+            }
+          }
+        }
+      }
+
+      res.json({
+        data: { citations, artifactId, version: data.version },
+      });
+    },
+  );
+  // -------------------------------------------------------------------------
+  // Exact-revision provenance as JSON (m5-f14-citation-navigation-ui).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/provenance
+  // Returns the producing run, plan revision/hash, policy hash, producing
+  // step/child, generation time, and cited source revisions (VAL-RES-030,
+  // VAL-RES-033). Also reports whether a newer artifact revision exists
+  // (VAL-RES-031, VAL-CROSS-041). Project-scoped; cross-scope returns
+  // non-enumerating 404.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/provenance',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      // Verify the artifact exists in the company. requireAccess returns
+      // 'manage' for owner/admin without checking existence, so we need an
+      // explicit company-scoped artifact lookup to return a non-enumerating
+      // 404 when the artifact is absent or cross-scope
+      // (fix-ut-m5-unnest-budget: artifact revision endpoint 404).
+      await getArtifact(db, companyId, artifactId);
+
+      const { sql, eq, and } = await import('drizzle-orm');
+
+      // Load the artifact revision row to get the revision ID.
+      const [revision] = await db.drizzle
+        .select({
+          id: db.schema.artifactRevisions.id,
+        })
+        .from(db.schema.artifactRevisions)
+        .where(
+          and(
+            eq(db.schema.artifactRevisions.artifactId, artifactId),
+            eq(db.schema.artifactRevisions.version, versionNum),
+          ),
+        )
+        .limit(1);
+
+      if (!revision) {
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      // Load the provenance row for this exact revision, scoped by company.
+      const provRows = (await db.drizzle.execute(sql`
+        SELECT "id", "run_id", "root_run_id", "artifact_id", "artifact_revision_id",
+               "approved_plan_revision_id", "approved_plan_hash", "policy_hash",
+               "producing_step_key", "producing_child_run_id", "generation_time",
+               "cited_source_revision_ids"
+        FROM "artifact_provenance"
+        WHERE "artifact_revision_id" = ${revision.id}
+          AND "company_id" = ${companyId}
+          AND "project_id" = ${projectId}
+        LIMIT 1
+      `)) as unknown as {
+        id: string;
+        run_id: string;
+        root_run_id: string;
+        artifact_id: string;
+        artifact_revision_id: string;
+        approved_plan_revision_id: string | null;
+        approved_plan_hash: string | null;
+        policy_hash: string | null;
+        producing_step_key: string | null;
+        producing_child_run_id: string | null;
+        generation_time: Date | string;
+        cited_source_revision_ids: string[];
+      }[];
+
+      if (provRows.length === 0) {
+        throw new AppError(404, 'PROVENANCE_NOT_FOUND', 'Provenance not found for this revision');
+      }
+
+      const p = provRows[0];
+      const generationTime =
+        p.generation_time instanceof Date
+          ? p.generation_time.toISOString()
+          : new Date(p.generation_time).toISOString();
+
+      // Check whether a newer artifact revision exists (VAL-RES-031,
+      // VAL-CROSS-041).
+      const [artifact] = await db.drizzle
+        .select({
+          version: db.schema.artifacts.version,
+        })
+        .from(db.schema.artifacts)
+        .where(
+          and(eq(db.schema.artifacts.id, artifactId), eq(db.schema.artifacts.companyId, companyId)),
+        )
+        .limit(1);
+
+      const newerArtifactVersionExists = artifact ? artifact.version > versionNum : false;
+
+      // Check whether any cited source has a newer revision (VAL-RES-036).
+      // The citation continues to resolve to its original source revision
+      // while clearly indicating that newer source evidence exists.
+      const citedSourceIds = (p.cited_source_revision_ids ?? []) as string[];
+      let newerSourceRevisionExists = false;
+      if (citedSourceIds.length > 0) {
+        // For each cited source revision, check if a newer revision exists
+        // for the same source (later retrieved timestamp).
+        const newerRows = (await db.drizzle.execute(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM "research_source_revisions" r2
+            JOIN UNNEST(ARRAY[${sql.join(
+              citedSourceIds.map((id) => sql`${id}`),
+              sql`, `,
+            )}]::text[]) AS cited(id) ON true
+            JOIN "research_source_revisions" r1 ON r1.id = cited.id
+            WHERE r2.source_id = r1.source_id
+              AND r2.company_id = ${companyId}
+              AND r2.retrieved_at > r1.retrieved_at
+          ) AS has_newer
+        `)) as unknown as { has_newer: boolean }[];
+        newerSourceRevisionExists = newerRows[0]?.has_newer ?? false;
+      }
+
+      res.json({
+        data: {
+          provenanceId: p.id,
+          runId: p.run_id,
+          rootRunId: p.root_run_id,
+          artifactId: p.artifact_id,
+          artifactRevisionId: p.artifact_revision_id,
+          artifactVersion: versionNum,
+          approvedPlanRevisionId: p.approved_plan_revision_id ?? undefined,
+          approvedPlanHash: p.approved_plan_hash ?? undefined,
+          policyHash: p.policy_hash ?? undefined,
+          producingStepKey: p.producing_step_key ?? undefined,
+          producingChildRunId: p.producing_child_run_id ?? null,
+          generationTime,
+          citedSourceRevisionIds: p.cited_source_revision_ids ?? [],
+          newerArtifactVersionExists,
+          newerSourceRevisionExists,
+        },
+      });
+    },
+  );
+  // -------------------------------------------------------------------------
+  // Exact-revision carry-forward outcomes as JSON (m5-f15-stale-evidence-
+  // export-ui).
+  // GET /projects/:projectId/artifacts/:artifactId/revisions/:version/carry-forward-outcomes
+  // Returns per-citation carry-forward outcomes so the UI can show stale /
+  // not-carried-forward notices (VAL-RES-035). Citations never silently move
+  // to a newer revision; the prior revision remains fully resolvable.
+  // Project-scoped; cross-scope returns non-enumerating 404.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/artifacts/:artifactId/revisions/:version/carry-forward-outcomes',
+    async (req, res) => {
+      const { companyId, projectId, artifactId } = routeParams(req);
+      const versionNum = Number(req.params.version);
+      if (!Number.isInteger(versionNum) || versionNum < 1) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Revision version must be a positive integer');
+      }
+      const { userId, orgRole } = actor(req);
+      await requireAccess(db, companyId, userId, orgRole, 'artifact', artifactId, 'view');
+
+      const { sql, eq, and } = await import('drizzle-orm');
+
+      // Load the artifact revision row to get the revision ID.
+      const [revision] = await db.drizzle
+        .select({ id: db.schema.artifactRevisions.id })
+        .from(db.schema.artifactRevisions)
+        .where(
+          and(
+            eq(db.schema.artifactRevisions.artifactId, artifactId),
+            eq(db.schema.artifactRevisions.version, versionNum),
+          ),
+        )
+        .limit(1);
+
+      if (!revision) {
+        throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found in scope');
+      }
+
+      // Load carry-forward outcomes scoped by company/project.
+      const outcomeRows = (await db.drizzle.execute(sql`
+        SELECT "previous_citation_id", "new_citation_id", "outcome", "reason"
+        FROM "citation_carry_forward_outcomes"
+        WHERE "new_artifact_revision_id" = ${revision.id}
+          AND "company_id" = ${companyId}
+          AND "project_id" = ${projectId}
+        ORDER BY "created_at"
+      `)) as unknown as {
+        previous_citation_id: string;
+        new_citation_id: string | null;
+        outcome: 'carried_forward' | 'not_carried_forward';
+        reason: string | null;
+      }[];
+
+      const outcomes = outcomeRows.map((r, i) => ({
+        previousCitationId: r.previous_citation_id,
+        newCitationId: r.new_citation_id ?? undefined,
+        outcome: r.outcome,
+        reason: r.reason ?? undefined,
+        ordinal: i + 1,
+      }));
+
+      res.json({ data: { outcomes, artifactId, version: versionNum } });
+    },
+  );
   // -------------------------------------------------------------------------
   // Revision diff (M2): structured diff between two revisions.
   // GET /artifacts/:id/revisions/:v1/diff/:v2
@@ -138,7 +612,11 @@ export function artifactsRouter(db: DbInstance): Router {
     const v1Num = Number(v1Raw);
     const v2Num = Number(v2Raw);
     if (!Number.isInteger(v1Num) || v1Num < 1 || !Number.isInteger(v2Num) || v2Num < 1) {
-      throw new AppError(400, 'DIFF_INVALID_VERSION', `Revision versions must be positive integers (got v1=${v1Raw}, v2=${v2Raw})`);
+      throw new AppError(
+        400,
+        'DIFF_INVALID_VERSION',
+        `Revision versions must be positive integers (got v1=${v1Raw}, v2=${v2Raw})`,
+      );
     }
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'view');
@@ -155,7 +633,17 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     const revision = await getRevision(db, companyId, id, Number(req.params.version));
-    const row = await updateArtifact(db, companyId, id, { version: (await getArtifact(db, companyId, id)).version, content: revision.content, message: 'restore revision' }, await editor(db, companyId, req));
+    const row = await updateArtifact(
+      db,
+      companyId,
+      id,
+      {
+        version: (await getArtifact(db, companyId, id)).version,
+        content: revision.content,
+        message: 'restore revision',
+      },
+      await editor(db, companyId, req),
+    );
     res.json({ data: row });
   });
   router.get('/artifacts/:id/revisions', async (req, res) => {
@@ -212,7 +700,9 @@ export function artifactsRouter(db: DbInstance): Router {
     // folder move) via updateArtifact — the folderId is not silently dropped.
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'edit');
-    res.json({ data: await updateArtifact(db, companyId, id, body, await editor(db, companyId, req)) });
+    res.json({
+      data: await updateArtifact(db, companyId, id, body, await editor(db, companyId, req)),
+    });
   });
   router.delete('/artifacts/:id', async (req, res) => {
     const { companyId, id } = routeParams(req);
@@ -227,9 +717,7 @@ export function artifactsRouter(db: DbInstance): Router {
     const permanent = req.query.permanent === 'true';
     if (permanent) {
       const stepUpToken =
-        (req.query.stepUpToken as string | undefined) ??
-        req.get('X-Eidolon-Step-Up-Token') ??
-        null;
+        (req.query.stepUpToken as string | undefined) ?? req.get('X-Eidolon-Step-Up-Token') ?? null;
       await requireStepUp(db, userId, 'artifact_permanent_delete' as StepUpScope, stepUpToken);
       await db.drizzle.insert(db.schema.activityLog).values({
         companyId,
@@ -245,7 +733,9 @@ export function artifactsRouter(db: DbInstance): Router {
       res.json({ data: await permanentlyDeleteArtifact(db, companyId, id) });
       return;
     }
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)) });
+    res.json({
+      data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)),
+    });
     // VAL-SEC-007: direct audit insert for artifact soft-delete with the
     // acting user (the event-based logger skips artifact.deleted).
     await db.drizzle.insert(db.schema.activityLog).values({
@@ -268,9 +758,7 @@ export function artifactsRouter(db: DbInstance): Router {
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
     const stepUpToken =
-      (req.query.stepUpToken as string | undefined) ??
-      req.get('X-Eidolon-Step-Up-Token') ??
-      null;
+      (req.query.stepUpToken as string | undefined) ?? req.get('X-Eidolon-Step-Up-Token') ?? null;
     await requireStepUp(db, userId, 'artifact_transfer' as StepUpScope, stepUpToken);
     const projectId =
       req.body?.projectId === null || req.body?.projectId === undefined
@@ -287,19 +775,37 @@ export function artifactsRouter(db: DbInstance): Router {
       metadata: { targetProjectId: projectId },
       createdAt: new Date(),
     });
-    res.json({ data: await transferArtifactOwnership(db, companyId, id, { projectId }, await editor(db, companyId, req)) });
+    res.json({
+      data: await transferArtifactOwnership(
+        db,
+        companyId,
+        id,
+        { projectId },
+        await editor(db, companyId, req),
+      ),
+    });
   });
   router.post('/artifacts/:id/archive', async (req, res) => {
     const { companyId, id } = routeParams(req);
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'archived', await editor(db, companyId, req)) });
+    res.json({
+      data: await setArtifactStatus(
+        db,
+        companyId,
+        id,
+        'archived',
+        await editor(db, companyId, req),
+      ),
+    });
   });
   router.post('/artifacts/:id/restore', async (req, res) => {
     const { companyId, id } = routeParams(req);
     const { userId, orgRole } = actor(req);
     await requireAccess(db, companyId, userId, orgRole, 'artifact', id, 'manage');
-    res.json({ data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)) });
+    res.json({
+      data: await setArtifactStatus(db, companyId, id, 'active', await editor(db, companyId, req)),
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -334,12 +840,21 @@ export function artifactsRouter(db: DbInstance): Router {
     const parsed = DashboardContentSchema.safeParse(artifact.content);
     if (!parsed.success) {
       const summary = summarizeArtifactValidationIssues(parsed.error);
-      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Dashboard content is invalid${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
+      throw new AppError(
+        400,
+        'INVALID_ARTIFACT_CONTENT',
+        `Dashboard content is invalid${summary ? `: ${summary}` : ''}`,
+        formatArtifactValidationIssues(parsed.error),
+      );
     }
     const dataSourceId = req.params.dataSourceId;
     const source = parsed.data.dataSources.find((ds) => ds.id === dataSourceId);
     if (!source) {
-      throw new AppError(404, 'DATA_SOURCE_NOT_FOUND', `Data source ${dataSourceId} not found on dashboard ${id}`);
+      throw new AppError(
+        404,
+        'DATA_SOURCE_NOT_FOUND',
+        `Data source ${dataSourceId} not found on dashboard ${id}`,
+      );
     }
     const resolved = await resolveDataSource(db, companyId, source as DashboardDataSource);
     res.json({ data: resolved });
@@ -358,7 +873,12 @@ export function artifactsRouter(db: DbInstance): Router {
     const parsed = DashboardContentSchema.safeParse(artifact.content);
     if (!parsed.success) {
       const summary = summarizeArtifactValidationIssues(parsed.error);
-      throw new AppError(400, 'INVALID_ARTIFACT_CONTENT', `Dashboard content is invalid${summary ? `: ${summary}` : ''}`, formatArtifactValidationIssues(parsed.error));
+      throw new AppError(
+        400,
+        'INVALID_ARTIFACT_CONTENT',
+        `Dashboard content is invalid${summary ? `: ${summary}` : ''}`,
+        formatArtifactValidationIssues(parsed.error),
+      );
     }
     const results = await Promise.all(
       parsed.data.dataSources.map((ds) =>

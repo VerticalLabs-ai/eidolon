@@ -1,0 +1,166 @@
+/**
+ * Built-in Mission mode definitions (code-owned, versioned constants).
+ *
+ * Custom company profiles are a later feature; built-ins are the only source of
+ * mode defaults in Phase 1 milestone 1. The full deny-biased resolution that
+ * intersects platform/company/agent/mode/user layers is a later feature; this
+ * module supplies the mode's own defaults and platform hard caps.
+ */
+
+export type BuiltInMode = 'fast' | 'deep_work' | 'analyst' | 'auto';
+
+/** All selectable Mission modes, including company-defined custom profiles. */
+export type MissionMode = BuiltInMode | 'custom';
+
+export type ResolvedMode = 'fast' | 'deep_work' | 'analyst' | 'custom';
+
+/** Numeric limits snapshot for one run. All values are finite integers. */
+export interface ModeLimits {
+  steps: number;
+  durationSeconds: number;
+  providerCalls: number;
+  totalTokens: number;
+  outputBytes: number;
+  costCents: number;
+  depth: number;
+  fanOut: number;
+  descendants: number;
+}
+
+export interface ModePolicy {
+  mode: BuiltInMode;
+  planning: 'never' | 'when_complex' | 'always';
+  approval: 'never' | 'when_complex' | 'always';
+  research: 'off' | 'allowed' | 'required';
+  partialResultPolicy: 'require_all' | 'best_effort';
+  limits: ModeLimits;
+}
+
+/** Platform hard caps. Deployment configuration may lower, never raise, these. */
+export const PLATFORM_HARD_CAPS = {
+  depth: 2,
+  fanOut: 4,
+  descendants: 16,
+  durationSeconds: 3600, // 60 minutes
+  providerCalls: 64,
+  totalTokens: 500_000,
+  outputBytes: 10 * 1024 * 1024, // 10 MiB
+  perSourceBytes: 1024 * 1024, // 1 MiB
+  costCents: 10_000,
+} as const;
+
+const FAST_LIMITS: ModeLimits = {
+  steps: 4,
+  durationSeconds: 300,
+  providerCalls: 6,
+  totalTokens: 32_000,
+  outputBytes: 1024 * 1024,
+  costCents: 500,
+  depth: 0,
+  fanOut: 0,
+  descendants: 0,
+};
+
+const DEEP_WORK_LIMITS: ModeLimits = {
+  steps: 12,
+  durationSeconds: 2700,
+  providerCalls: 48,
+  totalTokens: 300_000,
+  outputBytes: 8 * 1024 * 1024,
+  costCents: 5000,
+  depth: 2,
+  fanOut: 4,
+  descendants: 12,
+};
+
+const ANALYST_LIMITS: ModeLimits = {
+  steps: 10,
+  durationSeconds: 2700,
+  providerCalls: 48,
+  totalTokens: 250_000,
+  outputBytes: 8 * 1024 * 1024,
+  costCents: 5000,
+  depth: 2,
+  fanOut: 3,
+  descendants: 10,
+};
+
+export const BUILT_IN_MODES: Record<BuiltInMode, ModePolicy> = {
+  fast: {
+    mode: 'fast',
+    planning: 'when_complex',
+    approval: 'when_complex',
+    research: 'off',
+    partialResultPolicy: 'require_all',
+    limits: FAST_LIMITS,
+  },
+  deep_work: {
+    mode: 'deep_work',
+    planning: 'always',
+    approval: 'always',
+    research: 'allowed',
+    partialResultPolicy: 'require_all',
+    limits: DEEP_WORK_LIMITS,
+  },
+  analyst: {
+    mode: 'analyst',
+    planning: 'always',
+    approval: 'always',
+    research: 'required',
+    partialResultPolicy: 'require_all',
+    limits: ANALYST_LIMITS,
+  },
+  // Auto resolves to a concrete mode (Fast, Deep Work, or Analyst) via the
+  // deterministic complexity classifier before policy snapshot. The
+  // classifier lives in mode-classifier.ts and is invoked by the start
+  // service. This built-in entry is the fallback default (fast) used only
+  // when resolveBuiltInMode is called directly without classification.
+  auto: {
+    mode: 'auto',
+    planning: 'when_complex',
+    approval: 'when_complex',
+    research: 'off',
+    partialResultPolicy: 'require_all',
+    limits: FAST_LIMITS,
+  },
+};
+
+/**
+ * Human-readable display names for built-in modes. Used in policy snapshots
+ * so historical mode identity survives (VAL-MODEQ-129). These are display
+ * text and are NOT included in the canonical content hash (VAL-MODEQ-127).
+ */
+export const BUILT_IN_MODE_DISPLAY_NAMES: Record<BuiltInMode, string> = {
+  fast: 'Fast',
+  deep_work: 'Deep Work',
+  analyst: 'Analyst',
+  auto: 'Auto',
+};
+
+/**
+ * Descriptions for built-in modes. Same survival and exclusion rules as
+ * display names (VAL-MODEQ-129, VAL-MODEQ-127).
+ */
+export const BUILT_IN_MODE_DESCRIPTIONS: Record<BuiltInMode, string> = {
+  fast: 'Short, bounded work. Plans only for complex requests. No parallel children.',
+  deep_work:
+    'Structured planning and approval, deeper reasoning, research available, and bounded parallel work.',
+  analyst:
+    'Structured planning, evidence-oriented research, and citations for external factual claims.',
+  auto: 'Chooses a concrete mode (Fast, Deep Work, or Analyst) from your request rather than running as its own execution policy.',
+};
+
+/**
+ * Resolve a selected built-in mode to a concrete mode + policy. Auto
+ * provisionally resolves to `fast` as a fallback; the start service runs the
+ * deterministic classifier (mode-classifier.ts) and passes the concrete mode
+ * before calling resolvePolicy.
+ */
+export function resolveBuiltInMode(mode: BuiltInMode): {
+  resolvedMode: ResolvedMode;
+  policy: ModePolicy;
+} {
+  const policy = BUILT_IN_MODES[mode];
+  const resolvedMode: ResolvedMode = mode === 'auto' ? 'fast' : mode;
+  return { resolvedMode, policy };
+}

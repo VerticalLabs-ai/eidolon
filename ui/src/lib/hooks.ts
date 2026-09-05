@@ -9,6 +9,8 @@ import {
 } from '@tanstack/react-query';
 import * as api from './api';
 import { toast } from 'sonner';
+export { useMissionRunStream } from './mission-stream';
+export type { StreamStatus, UseMissionRunStreamResult } from './mission-stream';
 import { useServerEvents } from './ws';
 import type { GoalFilters, TaskFilters, FileFilters } from './api';
 
@@ -2677,5 +2679,750 @@ export function useResolvePermission(
         await api.resolvePermission(companyId!, resourceType!, resourceId!),
       ),
     enabled: !!companyId && !!resourceType && !!resourceId,
+  });
+}
+
+// ── Feature Flags (evaluated for the caller's company) ───────────────────
+
+/**
+ * Fetch the evaluated feature flags for the caller's company. The server
+ * returns declared flag names with a boolean outcome and nothing else.
+ * The `missionAgentIntelligence` flag defaults to off; absent, malformed,
+ * or unparseable configuration leaves it off (fail-closed).
+ */
+export function useFeatureFlags(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ['feature-flags', companyId],
+    queryFn: async () => unwrap<api.FeatureFlagsResponse>(await api.getFeatureFlags(companyId!)),
+    enabled: !!companyId,
+    staleTime: 30_000,
+    retry: false,
+    // On error, keep `data` undefined so callers treat it as fail-closed.
+    placeholderData: (prev) => prev,
+    // Don't refetch on window focus — flag state is server-authoritative.
+    refetchOnWindowFocus: false,
+  });
+}
+
+// ── Mission Mode Profiles ───────────────────────────────────────────────
+
+/** Company-defined custom mode profiles in deterministic order.
+ * Preserves previous data on refetch error so the selector remains stable
+ * rather than flashing empty. When the endpoint is unavailable (later
+ * backend feature not yet deployed), the hook returns an empty list rather
+ * than blocking the composer — built-in modes are always available. */
+export function useModeProfiles(companyId: string | undefined) {
+  return useQuery({
+    queryKey: ['mode-profiles', companyId],
+    queryFn: async () =>
+      unwrap<{ profiles: api.MissionModeProfile[] }>(await api.listModeProfiles(companyId!)),
+    enabled: !!companyId,
+    staleTime: 30_000,
+    retry: false,
+    placeholderData: (prev: { profiles: api.MissionModeProfile[] } | undefined) => prev,
+    refetchOnWindowFocus: false,
+  });
+}
+
+// ── Mission Runs ─────────────────────────────────────────────────────────
+
+export function useStartMissionRun(companyId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { body: api.MissionStartBody; idempotencyKey: string }) => {
+      const res = await api.startMissionRun(companyId, projectId, args.body, args.idempotencyKey);
+      return res;
+    },
+    onSuccess: (data, variables) => {
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+      // Store request text for the run card so it survives until the list
+      // refetches. The server snapshot carries requestContentHash but not
+      // the request text; encrypted ingress (later feature) will add a
+      // server-side safe summary. Until then, the card shows the text from
+      // the start mutation, or the hash as a stable identifier.
+      const runId = data.data?.run?.id;
+      if (runId && variables.body.request.text) {
+        qc.setQueryData(['mission-request-text', runId], variables.body.request.text);
+      }
+    },
+  });
+}
+
+/** Scoped run list ordered by (createdAt DESC, id DESC) with stable pagination.
+ * Preserves previous data on refetch error so existing cards remain visible
+ * (stale) rather than disappearing (VAL-RUN-131). */
+export function useMissionRuns(companyId: string, projectId: string) {
+  return useQuery({
+    queryKey: ['mission-runs', companyId, projectId],
+    queryFn: async () =>
+      unwrap<{ runs: api.MissionRunSummary[]; nextCursor: string | null }>(
+        await api.listMissionRuns(companyId, projectId),
+      ),
+    enabled: !!companyId && !!projectId,
+    staleTime: 5_000,
+    // Keep previous data when refetching or on error so existing cards
+    // remain visible as stale rather than disappearing (VAL-RUN-131).
+    placeholderData: (
+      prev: { runs: api.MissionRunSummary[]; nextCursor: string | null } | undefined,
+    ) => prev,
+  });
+}
+
+/** Authoritative single-run snapshot with strong ETag.
+ * Preserves previous data on refetch error so the card remains visible
+ * (stale) rather than disappearing (VAL-RUN-131). */
+export function useMissionRunSnapshot(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-run-snapshot', companyId, projectId, runId],
+    queryFn: async () => {
+      const res = await api.getMissionRunSnapshot(companyId, projectId, runId!);
+      const data = unwrap<{ run: api.MissionRunSnapshot; links: { ui: string } }>(res);
+      return data.run;
+    },
+    enabled: !!companyId && !!projectId && !!runId,
+    staleTime: 2_000,
+    placeholderData: (prev: api.MissionRunSnapshot | undefined) => prev,
+  });
+}
+
+/**
+ * Recursive child tree for a run from the /children endpoint
+ * (VAL-M1-015..036). The server is authoritative; the browser fetches the
+ * tree rather than deriving it client-side from events. The query key
+ * includes companyId, projectId, and runId so SSE child.* events can
+ * target the exact query for invalidation (VAL-M1-027).
+ */
+export function useMissionRunChildren(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+  options?: { maxDepth?: number; enabled?: boolean },
+) {
+  const enabled = options?.enabled ?? true;
+  return useQuery({
+    queryKey: ['mission-run-children', companyId, projectId, runId],
+    queryFn: async () =>
+      unwrap<{ tree: api.MissionChildTreeNode }>(
+        await api.getMissionRunChildren(companyId, projectId, runId!, options?.maxDepth),
+      ).tree,
+    enabled: !!companyId && !!projectId && !!runId && enabled,
+    staleTime: 2_000,
+    placeholderData: (prev: api.MissionChildTreeNode | undefined) => prev,
+  });
+}
+
+/** Bounded journal event replay for the run timeline with cursor-based
+ * pagination and load-more functionality (VAL-M1-046, VAL-M1-047).
+ *
+ * Uses `useInfiniteQuery` so pages are accumulated — each page's
+ * `nextCursor` drives `fetchNextPage`. The `select` transform flattens
+ * all pages into a single `events` array so existing consumers that read
+ * `data.events` continue to work without changes. Preserves previous data
+ * on refetch error so the timeline remains visible (stale) rather than
+ * disappearing (VAL-RUN-131). */
+export function useMissionRunEvents(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  const query = useInfiniteQuery({
+    queryKey: ['mission-run-events', companyId, projectId, runId],
+    queryFn: async ({ pageParam }) =>
+      unwrap<{
+        events: api.MissionReplayEvent[];
+        nextCursor: number;
+        latestSequence: number;
+      }>(await api.getMissionRunEvents(companyId, projectId, runId!, pageParam)),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) =>
+      lastPage.nextCursor < lastPage.latestSequence ? lastPage.nextCursor : undefined,
+    enabled: !!companyId && !!projectId && !!runId,
+    staleTime: 5_000,
+    placeholderData: (prev) => prev,
+    select: (data) => ({
+      ...data,
+      events: data.pages.flatMap((p) => p.events),
+      nextCursor: data.pages[data.pages.length - 1]?.nextCursor ?? 0,
+      latestSequence: data.pages[data.pages.length - 1]?.latestSequence ?? 0,
+    }),
+  });
+  const { hasNextPage, isFetching, isFetchNextPageError, fetchNextPage } = query;
+  const replayCursor = query.data?.nextCursor;
+  useEffect(() => {
+    // A live journal can outgrow the first page between invalidations.
+    // Drain contiguous pages so progress consumers eventually see the tail.
+    if (hasNextPage && !isFetching && !isFetchNextPageError) {
+      void fetchNextPage();
+    }
+  }, [hasNextPage, isFetching, isFetchNextPageError, fetchNextPage, replayCursor]);
+  return query;
+}
+
+/**
+ * Bounded provider-neutral research source summaries for a run
+ * (VAL-RES-001, VAL-RES-018, VAL-RES-041, VAL-RES-047, VAL-RES-076,
+ * VAL-RES-105, VAL-RES-117, VAL-CROSS-030). The server is authoritative;
+ * the browser never invents source state. Preserves previous data on
+ * refetch error so source cards remain visible as stale rather than
+ * disappearing (VAL-RUN-131).
+ */
+export function useMissionRunSources(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-run-sources', companyId, projectId, runId],
+    queryFn: async () =>
+      unwrap<{ sources: api.MissionSourceSummary[]; runId: string }>(
+        await api.getMissionRunSources(companyId, projectId, runId!),
+      ),
+    enabled: !!companyId && !!projectId && !!runId,
+    staleTime: 5_000,
+    placeholderData: (prev: { sources: api.MissionSourceSummary[]; runId: string } | undefined) =>
+      prev,
+  });
+}
+
+/** Read the request text stored from a start mutation, if available. */
+export function useMissionRequestText(runId: string | undefined): string | undefined {
+  const qc = useQueryClient();
+  return (
+    useQuery({
+      queryKey: ['mission-request-text', runId],
+      queryFn: () => qc.getQueryData<string>(['mission-request-text', runId!]) ?? null,
+      enabled: !!runId,
+      staleTime: Infinity,
+      gcTime: Infinity,
+      // Read-only from cache; no network.
+      retry: false,
+    }).data ?? undefined
+  );
+}
+
+/**
+ * Current plan revision for a run (VAL-PLAN-008..017, VAL-PLAN-125).
+ *
+ * Fetches the immutable current proposed/approved plan revision content so
+ * the plan card renders objective, ordered steps, dependencies, routing
+ * authority, exact tools, expected outputs, and completion criteria from
+ * authoritative server content. Only fetches when the snapshot reports a
+ * current plan revision pointer. A 404 (no current plan) resolves to
+ * `null` so the card renders nothing rather than an error. Preserves
+ * previous data on refetch error so the card remains visible as stale
+ * rather than disappearing (VAL-RUN-131).
+ */
+export function useMissionCurrentPlanRevision(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+  currentPlanRevisionId: string | null | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-plan-revision', companyId, projectId, runId, currentPlanRevisionId],
+    queryFn: async () => {
+      try {
+        const res = await api.getMissionCurrentPlanRevision(companyId, projectId, runId!);
+        const data = unwrap<{ planRevision: api.MissionPlanRevision }>(res);
+        return data.planRevision;
+      } catch (err) {
+        // 404 PLAN_NOT_FOUND: the run has no current plan revision. Resolve
+        // to null so the card renders nothing rather than an error.
+        const apiErr = err as { status?: number; body?: { code?: string } };
+        if (apiErr?.status === 404 || apiErr?.body?.code === 'PLAN_NOT_FOUND') {
+          return null;
+        }
+        throw err;
+      }
+    },
+    enabled: !!companyId && !!projectId && !!runId && !!currentPlanRevisionId,
+    staleTime: 5_000,
+    retry: false,
+    placeholderData: (prev: api.MissionPlanRevision | null | undefined) => prev,
+  });
+}
+
+/**
+ * Cursor-based paginated fetch of Mission runs ordered by
+ * (createdAt DESC, id DESC). Uses `useInfiniteQuery` so pages are
+ * accumulated — each page's opaque `nextCursor` drives `fetchNextPage`.
+ * The cursor carries an anchor so runs inserted or changing status during
+ * traversal do not duplicate or skip the anchored result set (VAL-RUN-132).
+ *
+ * Preserves previous data on refetch error so existing cards remain visible
+ * as stale rather than disappearing (VAL-RUN-131).
+ */
+export function useMissionRunsPaginated(companyId: string, projectId: string) {
+  return useInfiniteQuery({
+    queryKey: ['mission-runs', companyId, projectId, 'paginated'],
+    queryFn: async ({ pageParam }) =>
+      unwrap<{ runs: api.MissionRunSummary[]; nextCursor: string | null }>(
+        await api.listMissionRuns(companyId, projectId, {
+          cursor: (pageParam as string | undefined) ?? undefined,
+          limit: 10,
+        }),
+      ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: !!companyId && !!projectId,
+    staleTime: 5_000,
+  });
+}
+
+/**
+ * Idempotent Mission cancellation mutation
+ * (`POST /:runId/cancel` → canonical `run.cancel` command).
+ *
+ * The caller supplies the typed reason, a stable idempotency key (reused
+ * across recoverable retries so duplicate/retry submissions are idempotent),
+ * and an optional `ifMatch` state version for stale-action protection
+ * (VAL-RUN-055).
+ *
+ * The browser never advances status optimistically. On success the snapshot,
+ * events, and run-list caches are invalidated so the authoritative server
+ * state reveals `cancellation requested` → `cancelled` (VAL-RUN-035).
+ *
+ * Recoverable errors (stale version `412 RUN_VERSION_MISMATCH` or a network
+ * failure) are surfaced through the returned `error` so the caller can
+ * preserve the typed reason for resubmission (VAL-RUN-038).
+ */
+export function useCancelMissionRun(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { reason: string; idempotencyKey: string; ifMatch?: number }) => {
+      const res = await api.cancelMissionRun(
+        companyId,
+        projectId,
+        runId,
+        { reason: args.reason },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+      return res;
+    },
+    onSuccess: () => {
+      // Invalidate authoritative caches so the card refetches server state.
+      qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+    },
+    retry: false,
+  });
+}
+
+/**
+ * Idempotent Mission retry mutation
+ * (`POST /:runId/retry` → canonical `run.retry` command).
+ *
+ * Creates a new linked run with a fresh reservation and policy snapshot.
+ * The original terminal run remains immutable (VAL-CROSS-074, VAL-CROSS-096).
+ *
+ * The caller supplies a stable idempotency key (reused across recoverable
+ * retries so duplicate/retry submissions are idempotent) and an optional
+ * `ifMatch` state version for stale-action protection (VAL-RUN-056).
+ *
+ * The browser never advances status optimistically. On success the
+ * snapshot, events, and run-list caches are invalidated so the
+ * authoritative server state reveals the new successor run.
+ *
+ * Recoverable errors (stale version `412 RUN_VERSION_MISMATCH` or a network
+ * failure) are surfaced through the returned `error` so the caller can
+ * distinguish acceptance from rejection (VAL-RUN-130).
+ */
+export function useRetryMissionRun(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      body?: api.MissionRetryBody;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      const res = await api.retryMissionRun(
+        companyId,
+        projectId,
+        runId,
+        args.body ?? {},
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+      return res;
+    },
+    onSuccess: () => {
+      // Invalidate authoritative caches so the card and list refetch
+      // server state, revealing the new successor run.
+      qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+    },
+    retry: false,
+  });
+}
+
+// ── Mission Question Answers ──────────────────────────────────────────────
+
+/**
+ * Idempotent, atomic Mission answer submission
+ * (`POST /:runId/answers`). The idempotency key is retained by the
+ * caller across recoverable retries so a lost response replays the
+ * identical logical command (Normative Boundary 2 / VAL-MODEQ-133). The
+ * browser never advances state optimistically; the authoritative
+ * snapshot/event/question-set-history refetch reveals the answered/resumed
+ * state (VAL-MODEQ-109). On success the run's question-set history, run
+ * snapshot, events, and run list are invalidated so all authoritative
+ * surfaces converge (Normative Boundary 1).
+ */
+export function useAnswerMissionRun(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      body: api.MissionAnswerBody;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      const res = await api.answerMissionRun(
+        companyId,
+        projectId,
+        runId,
+        args.body,
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+      return res;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ['mission-question-sets', companyId, projectId, runId],
+      });
+      qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+    },
+    retry: false,
+  });
+}
+
+// ── Mission Plan Decisions ────────────────────────────────────────────────
+
+/**
+ * Shared cache invalidation for any applied plan decision. On success the
+ * run snapshot, events, run list, current plan revision, and approvals
+ * caches are invalidated so every authoritative surface converges to the
+ * server-applied decision (VAL-PLAN-062, VAL-PLAN-104). The browser never
+ * advances decision state optimistically; invalidation drives the refetch.
+ */
+function invalidatePlanDecisionCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  companyId: string,
+  projectId: string,
+  runId: string,
+) {
+  qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+  qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+  qc.invalidateQueries({ queryKey: ['mission-runs', companyId, projectId] });
+  // The current plan revision query is keyed by the revision pointer, which
+  // changes when a decision advances the run; invalidate the whole family so
+  // both the old and new revision reads converge (VAL-PLAN-037, VAL-PLAN-064).
+  qc.invalidateQueries({
+    queryKey: ['mission-plan-revision', companyId, projectId, runId],
+    exact: false,
+  });
+  qc.invalidateQueries({ queryKey: ['approvals', companyId] });
+}
+
+/**
+ * Idempotent Mission plan approval mutation (canonical `plan.approve`
+ * command). The caller supplies the exact revision ID + content hash, a
+ * stable idempotency key (reused across recoverable retries), and the
+ * authoritative `ifMatch` state version. The browser never advances state
+ * optimistically; the authoritative snapshot refetch reveals the approved
+ * decision (VAL-PLAN-042). Recoverable errors (stale version or network
+ * failure) are surfaced through the returned `error` so the caller can
+ * preserve intent (VAL-PLAN-092).
+ */
+export function useApproveMissionPlan(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      planRevisionId: string;
+      contentHash: string;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      return api.approveMissionPlan(
+        companyId,
+        projectId,
+        runId,
+        {
+          type: 'plan.approve',
+          planRevisionId: args.planRevisionId,
+          contentHash: args.contentHash,
+        },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+    },
+    onSuccess: () => invalidatePlanDecisionCaches(qc, companyId, projectId, runId),
+    retry: false,
+  });
+}
+
+/**
+ * Idempotent Mission plan rejection mutation (canonical `plan.reject`
+ * command). Default disposition cancels the Mission (VAL-PLAN-040);
+ * `disposition: 'revise'` returns to planning with a rejection record
+ * (VAL-PLAN-041). The caller supplies the exact revision ID + content hash,
+ * the required reason, a stable idempotency key, and the authoritative
+ * `ifMatch` state version. Recoverable errors preserve the typed reason
+ * (VAL-PLAN-092).
+ */
+export function useRejectMissionPlan(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      planRevisionId: string;
+      contentHash: string;
+      reason: string;
+      disposition?: 'revise' | 'cancel';
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      return api.rejectMissionPlan(
+        companyId,
+        projectId,
+        runId,
+        {
+          type: 'plan.reject',
+          planRevisionId: args.planRevisionId,
+          contentHash: args.contentHash,
+          reason: args.reason,
+          disposition: args.disposition,
+        },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+    },
+    onSuccess: () => invalidatePlanDecisionCaches(qc, companyId, projectId, runId),
+    retry: false,
+  });
+}
+
+/**
+ * Idempotent Mission plan revision request mutation (canonical
+ * `plan.revision_request` command). A human content action that supersedes
+ * the current proposal without a rejection decision and returns the run to
+ * planning for a new linked proposal (VAL-PLAN-037). Feedback is required
+ * (VAL-PLAN-038). The caller supplies the exact revision ID + content hash,
+ * the required feedback, a stable idempotency key, and the authoritative
+ * `ifMatch` state version. Recoverable errors preserve the typed feedback
+ * (VAL-PLAN-092).
+ */
+export function useReviseMissionPlan(companyId: string, projectId: string, runId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      planRevisionId: string;
+      contentHash: string;
+      feedback: string;
+      idempotencyKey: string;
+      ifMatch?: number;
+    }) => {
+      return api.reviseMissionPlan(
+        companyId,
+        projectId,
+        runId,
+        {
+          type: 'plan.revision_request',
+          planRevisionId: args.planRevisionId,
+          contentHash: args.contentHash,
+          feedback: args.feedback,
+        },
+        args.idempotencyKey,
+        args.ifMatch,
+      );
+    },
+    onSuccess: () => invalidatePlanDecisionCaches(qc, companyId, projectId, runId),
+    retry: false,
+  });
+}
+
+// ── Mission Question-Set History ───────────────────────────────────────────
+
+/**
+ * Read scoped, bounded question-set history for a run
+ * (`GET /:runId/question-sets`). Returns immutable question definitions and
+ * accepted answer revisions ordered by (ordinal, id) with stable opaque
+ * keyset pagination (VAL-MODEQ-110, VAL-MODEQ-148). Used to render the
+ * reviewable, non-editable question/answer history in the Mission timeline.
+ */
+export function useMissionQuestionSets(
+  companyId: string,
+  projectId: string,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-question-sets', companyId, projectId, runId],
+    queryFn: async () => {
+      const res = await api.getMissionQuestionSets(companyId, projectId, runId!, {
+        limit: 50,
+      });
+      return unwrap<{
+        questionSets: api.MissionQuestionSetHistoryEntry[];
+        nextCursor: string | null;
+      }>(res);
+    },
+    enabled: !!runId,
+    placeholderData: (
+      prev:
+        | {
+            questionSets: api.MissionQuestionSetHistoryEntry[];
+            nextCursor: string | null;
+          }
+        | undefined,
+    ) => prev,
+  });
+}
+
+// ── Mission Run Artifacts, Citations, and Provenance ──────────────────────
+// (feature m5-f14-citation-navigation-ui; VAL-RES-027, VAL-RES-028,
+//  VAL-RES-029, VAL-RES-030, VAL-RES-031, VAL-RES-037, VAL-RES-038,
+//  VAL-CROSS-040, VAL-CROSS-041, VAL-CROSS-047)
+
+/**
+ * Fetch produced artifacts and provenance links for a Mission run
+ * (`GET /:runId/artifacts`). Returns artifact summaries with revision and
+ * citation indicators (VAL-CROSS-047). The browser never invents artifact
+ * state; every field is server-authoritative.
+ */
+export function useMissionRunArtifacts(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  runId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['mission-run-artifacts', companyId, projectId, runId],
+    queryFn: async () =>
+      unwrap<{ artifacts: api.MissionArtifactSummary[]; runId: string }>(
+        await api.getMissionRunArtifacts(companyId!, projectId!, runId!),
+      ),
+    enabled: !!companyId && !!projectId && !!runId,
+    placeholderData: (
+      prev: { artifacts: api.MissionArtifactSummary[]; runId: string } | undefined,
+    ) => prev,
+  });
+}
+
+/**
+ * Fetch citations for an exact artifact revision as JSON
+ * (`GET /artifacts/:artifactId/revisions/:version/citations`). Returns
+ * citations with frozen display metadata, ordered by ordinal (VAL-RES-027).
+ * Citations bind to the EXACT immutable artifact revision and never float
+ * to newer content (VAL-CROSS-041).
+ */
+export function useArtifactRevisionCitations(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+) {
+  return useQuery({
+    queryKey: ['artifact-revision-citations', companyId, projectId, artifactId, version],
+    queryFn: async () =>
+      unwrap<{ citations: api.MissionCitationDetail[]; artifactId: string; version: number }>(
+        await api.getArtifactRevisionCitations(companyId!, projectId!, artifactId!, version!),
+      ),
+    enabled: !!companyId && !!projectId && !!artifactId && version != null,
+    placeholderData: (
+      prev:
+        { citations: api.MissionCitationDetail[]; artifactId: string; version: number } | undefined,
+    ) => prev,
+  });
+}
+
+/**
+ * Fetch provenance for an exact artifact revision
+ * (`GET /artifacts/:artifactId/revisions/:version/provenance`). Returns
+ * the producing run, plan revision/hash, policy hash, step/child, and cited
+ * source revisions (VAL-RES-030, VAL-RES-033). The drawer defaults to the
+ * viewed revision and shows a newer-revision notice rather than substituting
+ * current provenance (VAL-RES-031, VAL-CROSS-041).
+ */
+export function useArtifactRevisionProvenance(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+) {
+  return useQuery({
+    queryKey: ['artifact-revision-provenance', companyId, projectId, artifactId, version],
+    queryFn: async () =>
+      unwrap<api.MissionProvenanceDetail>(
+        await api.getArtifactRevisionProvenance(companyId!, projectId!, artifactId!, version!),
+      ),
+    enabled: !!companyId && !!projectId && !!artifactId && version != null,
+    placeholderData: (prev: api.MissionProvenanceDetail | undefined) => prev,
+  });
+}
+
+/**
+ * Fetch carry-forward outcomes for an exact artifact revision
+ * (`GET /artifacts/:artifactId/revisions/:version/carry-forward-outcomes`).
+ * Returns per-citation carry-forward outcomes so the UI can show stale /
+ * not-carried-forward notices (VAL-RES-035). Citations never silently move
+ * to a newer revision; the prior revision remains fully resolvable.
+ */
+export function useCarryForwardOutcomes(
+  companyId: string | undefined,
+  projectId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+) {
+  return useQuery({
+    queryKey: [
+      'artifact-revision-carry-forward-outcomes',
+      companyId,
+      projectId,
+      artifactId,
+      version,
+    ],
+    queryFn: async () =>
+      unwrap<{ outcomes: api.CarryForwardOutcome[]; artifactId: string; version: number }>(
+        await api.getCarryForwardOutcomes(companyId!, projectId!, artifactId!, version!),
+      ),
+    enabled: !!companyId && !!projectId && !!artifactId && version != null,
+    placeholderData: (
+      prev:
+        { outcomes: api.CarryForwardOutcome[]; artifactId: string; version: number } | undefined,
+    ) => prev,
+  });
+}
+
+/**
+ * Fetch the content of an exact artifact revision
+ * (`GET /projects/:p/artifacts/:artifactId/revisions/:version` when
+ * projectId is supplied, otherwise `GET /artifacts/:artifactId/revisions/:version`).
+ * Returns the decrypted revision content (an `EvidenceDocumentV1` for
+ * documents, or a `research_report` object for Mission synthesis artifacts)
+ * so the MissionArtifactCitations component can render inline citation marks.
+ */
+export function useArtifactRevisionContent(
+  companyId: string | undefined,
+  artifactId: string | undefined,
+  version: number | undefined,
+  projectId?: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['artifact-revision-content', companyId, projectId, artifactId, version],
+    queryFn: async () =>
+      projectId
+        ? unwrap<api.ArtifactRevision>(
+            await api.getProjectRevision(companyId!, projectId, artifactId!, version!),
+          )
+        : unwrap<api.ArtifactRevision>(await api.getRevision(companyId!, artifactId!, version!)),
+    enabled: !!companyId && !!artifactId && version != null,
+    placeholderData: (prev: api.ArtifactRevision | undefined) => prev,
   });
 }

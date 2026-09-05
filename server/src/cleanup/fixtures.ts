@@ -56,6 +56,24 @@ export interface CleanupResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Phase 1a — direct tables with `company_id` that reference `artifact_revisions`
+ * via CASCADE FKs. These must be deleted BEFORE the indirect `artifact_revisions`
+ * deletion in phase 1b, otherwise the CASCADE would silently remove them and
+ * the per-table counts would be zero.
+ *
+ * `citations` references `artifact_revisions` via `artifact_revision_id`
+ * (ON DELETE CASCADE) and `research_source_revisions` via `source_revision_id`
+ * (ON DELETE CASCADE). Deleting by `company_id` first gives accurate counts.
+ *
+ * `artifact_provenance` references `artifact_revisions` via
+ * `artifact_revision_id` (ON DELETE CASCADE). Same reasoning.
+ *
+ * (VAL-CROSS-100: cleanup removes all marked Mission data including research
+ *  citations and provenance.)
+ */
+const DIRECT_TABLES_PHASE1A: ReadonlyArray<string> = ['citations', 'artifact_provenance'];
+
+/**
  * Indirect children — tables without a direct `company_id` column that must
  * be deleted via a subquery against their parent table. These are deleted
  * first so that the parent rows can be safely removed afterwards.
@@ -133,11 +151,56 @@ const DIRECT_TABLES_PHASE2: ReadonlyArray<string> = [
   'routines',
   'agent_skills',
   'company_skills',
+  // run_plan_approval_bindings MUST precede approvals: its
+  // approval_id → approvals.id FK is ON DELETE NO ACTION. Deleting
+  // approvals first raises "update or delete on table 'approvals'
+  // violates foreign key constraint … on table 'run_plan_approval_bindings'".
+  'run_plan_approval_bindings',
   'approvals',
   'project_decisions',
   'project_outcomes',
   'project_plan_steps',
   'project_plans',
+  // Mission child tables — must be deleted before mission_runs (cascade),
+  // before run_policy_snapshots (mission_runs.policy_snapshot_id NO ACTION),
+  // and before agents (mission_runs / budget_*.billing_agent_id NO ACTION).
+  // Children are deleted before parents; per-table counts are reported
+  // explicitly instead of relying on the mission_runs/company cascade.
+  //   run_events → run_commands → budget_* → step/permit/synthesis/mirror/
+  //   question/projection/tool → run_plan_revisions → mission_runs →
+  //   run_policy_snapshots
+  'run_events',
+  'run_commands',
+  'budget_settlements',
+  'budget_allocations',
+  'budget_reservations',
+  'run_step_assignments',
+  'run_scheduling_permits',
+  'run_synthesis_manifests',
+  'run_descendant_mirrors',
+  'run_question_answers',
+  'run_questions',
+  'run_question_sets',
+  'run_projection_links',
+  'run_tool_invocations',
+  // Research tables — must be deleted before mission_runs (they reference
+  // mission_runs via run_id with ON DELETE CASCADE) and before
+  // research_sources (research_source_revisions references it via source_id
+  // CASCADE). Order: run_research_sources → research_source_revisions →
+  // research_sources. (VAL-CROSS-100: cleanup removes all marked Mission
+  // research data.)
+  'run_research_sources',
+  'research_source_revisions',
+  'research_sources',
+  // run_plan_revisions: mission_runs.current_plan_revision_id and
+  // approved_plan_revision_id reference this table with ON DELETE NO ACTION.
+  // executeDeletion nulls those columns BEFORE this delete runs (see the
+  // special-case in the phase 2-4 loop). run_step_assignments,
+  // run_synthesis_manifests, and run_plan_approval_bindings (which reference
+  // run_plan_revisions via CASCADE) are already deleted above.
+  'run_plan_revisions',
+  'mission_runs',
+  'run_policy_snapshots',
   'project_threads',
   'agent_executions',
   // artifacts must be deleted before agents (created_by_agent_id /
@@ -225,7 +288,9 @@ async function deleteArtifactFoldersReverseHierarchical(
        RETURNING id`,
     );
     totalDeleted += rows.length;
-    if (rows.length === 0) break;
+    if (rows.length === 0) {
+      break;
+    }
   }
   return totalDeleted;
 }
@@ -270,12 +335,19 @@ export async function findFixtures(
  * Dry-run: count rows per table that *would* be deleted. No modifications.
  * @internal
  */
-async function countDryRun(
-  runner: SqlRunner,
-  staleHours?: number,
-): Promise<TableCount[]> {
+async function countDryRun(runner: SqlRunner, staleHours?: number): Promise<TableCount[]> {
   const sub = fixtureSubquery(staleHours);
   const counts: TableCount[] = [];
+
+  // Phase 1a — direct tables with company_id that reference artifact_revisions
+  // via CASCADE. Must be counted/deleted BEFORE the indirect artifact_revisions
+  // deletion, otherwise the CASCADE would silently remove them.
+  for (const table of DIRECT_TABLES_PHASE1A) {
+    const rows = await runner.query<{ count: string }>(
+      `SELECT count(*) as count FROM ${table} WHERE company_id IN (${sub})`,
+    );
+    counts.push({ table, count: parseInt(rows[0]?.count ?? '0', 10) });
+  }
 
   for (const { table, childCol, parentTable, parentCol } of INDIRECT_TABLES) {
     const rows = await runner.query<{ count: string }>(
@@ -312,15 +384,24 @@ async function countDryRun(
  * Rolls back on any error.
  * @internal
  */
-async function executeDeletion(
-  runner: SqlRunner,
-  staleHours?: number,
-): Promise<TableCount[]> {
+async function executeDeletion(runner: SqlRunner, staleHours?: number): Promise<TableCount[]> {
   const sub = fixtureSubquery(staleHours);
   const counts: TableCount[] = [];
 
   await runner.begin(async (tx) => {
-    // Phase 1 — indirect children via subquery
+    // Phase 1a — direct tables with company_id that reference
+    // artifact_revisions via CASCADE. Must be deleted BEFORE the indirect
+    // artifact_revisions deletion, otherwise the CASCADE would silently
+    // remove them and per-table counts would be zero.
+    // (VAL-CROSS-100: cleanup removes citations and artifact_provenance.)
+    for (const table of DIRECT_TABLES_PHASE1A) {
+      const rows = await tx.query<{ id: string }>(
+        `DELETE FROM ${table} WHERE company_id IN (${sub}) RETURNING id`,
+      );
+      counts.push({ table, count: rows.length });
+    }
+
+    // Phase 1b — indirect children via subquery
     for (const { table, childCol, parentTable, parentCol } of INDIRECT_TABLES) {
       const rows = await tx.query<{ id: string }>(
         `DELETE FROM ${table} WHERE ${childCol} IN (SELECT ${parentCol} FROM ${parentTable} WHERE company_id IN (${sub})) RETURNING id`,
@@ -338,6 +419,17 @@ async function executeDeletion(
 
     // Phase 2-4 — direct tables in dependency order
     for (const table of ALL_DIRECT_TABLES) {
+      // run_plan_revisions is referenced by mission_runs.current_plan_revision_id
+      // and approved_plan_revision_id via ON DELETE NO ACTION. Null those
+      // pointers out BEFORE deleting the revisions so the NO ACTION check
+      // passes. All other tables that reference run_plan_revisions
+      // (run_step_assignments, run_synthesis_manifests, run_plan_approval_bindings)
+      // use ON DELETE CASCADE and are already deleted above.
+      if (table === 'run_plan_revisions') {
+        await tx.query(
+          `UPDATE mission_runs SET current_plan_revision_id = NULL, approved_plan_revision_id = NULL WHERE company_id IN (${sub})`,
+        );
+      }
       const rows = await tx.query<{ id: string }>(
         `DELETE FROM ${table} WHERE company_id IN (${sub}) RETURNING id`,
       );
@@ -352,6 +444,51 @@ async function executeDeletion(
   });
 
   return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Provider circuit health reset (global, not company-scoped)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reset all `research_provider_health` rows to a healthy closed state.
+ *
+ * `research_provider_health` is a platform-level table with no `company_id`
+ * column (VAL-RES-015). It holds ONLY bounded provider/operation/status/
+ * latency data — never tenant queries, URLs, source text, or credentials.
+ *
+ * Validation runs may leave circuits in an open or half-open state after
+ * testing retry, fallback, and disruption scenarios. This reset restores
+ * all circuits to `closed` with zero consecutive failures so subsequent
+ * runs start from a clean health state.
+ *
+ * (VAL-CROSS-100: cleanup restores changed provider/circuit state.)
+ *
+ * @param runner - The SQL runner to use.
+ * @param execute - If false, count rows that would be reset (dry-run).
+ * @returns The number of rows reset (or that would be reset in dry-run).
+ */
+export async function resetProviderCircuitHealth(
+  runner: SqlRunner,
+  execute: boolean,
+): Promise<number> {
+  if (execute) {
+    const rows = await runner.query<{ id: string }>(
+      `UPDATE research_provider_health
+       SET state = 'closed',
+           consecutive_failures = 0,
+           open_until_ms = 0,
+           half_open_probe_owner = NULL,
+           half_open_probe_lease_expires_ms = 0,
+           updated_at = NOW()
+       RETURNING id`,
+    );
+    return rows.length;
+  }
+  const rows = await runner.query<{ count: string }>(
+    `SELECT count(*) as count FROM research_provider_health WHERE state != 'closed' OR consecutive_failures > 0`,
+  );
+  return parseInt(rows[0]?.count ?? '0', 10);
 }
 
 // ---------------------------------------------------------------------------

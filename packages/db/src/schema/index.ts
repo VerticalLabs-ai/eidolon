@@ -57,3 +57,40 @@ export { localTrustedSessions } from './local_trusted_sessions.js';
 export { companyMembers } from './company_members.js';
 export { companyInvitations } from './company_invitations.js';
 export { agentApiKeys } from './agent_api_keys.js';
+
+// Mission orchestration (Phase 1 — durable runs)
+export { runPolicySnapshots } from './run_policy_snapshots.js';
+export { missionRuns } from './mission_runs.js';
+export { budgetReservations } from './budget_reservations.js';
+export { budgetAllocations } from './budget_allocations.js';
+export { budgetSettlements } from './budget_settlements.js';
+export { runCommands } from './run_commands.js';
+export { runEvents } from './run_events.js';
+export { runToolInvocations } from './run_tool_invocations.js';
+export { runProjectionLinks } from './run_projection_links.js';
+export { missionWorkerHeartbeats } from './mission_worker_heartbeats.js';
+export { modeProfiles } from './mode_profiles.js';
+export { runQuestionSets } from './run_question_sets.js';
+export { runQuestions } from './run_questions.js';
+export { runQuestionAnswers } from './run_question_answers.js';
+export { runPlanRevisions } from './run_plan_revisions.js';
+export { runPlanApprovalBindings } from './run_plan_approval_bindings.js';
+export { runStepAssignments } from './run_step_assignments.js';
+export { runSchedulingPermits } from './run_scheduling_permits.js';
+export { runDescendantMirrors } from './run_descendant_mirrors.js';
+export { runSynthesisManifests } from './run_synthesis_manifests.js';
+export { researchProviderHealth } from './research_provider_health.js';
+export { researchPricingSnapshots } from './research_pricing_snapshots.js';
+export {
+  researchSources,
+  researchSourceRevisions,
+  runResearchSources,
+} from './research_sources.js';
+export {
+  citations,
+  artifactProvenance,
+  citationCarryForwardOutcomes,
+  carryForwardOutcomeEnum,
+} from './research_citations.js';
+export { researchAttempts } from './research_attempts.js';
+export { researchSourceAvailabilityChecks } from './research_source_availability_checks.js';

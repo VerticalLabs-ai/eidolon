@@ -260,6 +260,30 @@ export const PERSONAL_DATA_RULES: PersonalDataRule[] = [
     exportable: true,
     why: 'Audit rows are never deleted. The actor id is replaced so the trail stays intact without identifying the person.',
   },
+  {
+    table: 'run_commands',
+    column: 'actor_id',
+    strategy: 'pseudonymise',
+    scope: { kind: 'direct' },
+    exportable: true,
+    why: 'The immutable command ingress ledger is Mission audit evidence. The actor id is pseudonymised so the command trail stays intact without identifying the person.',
+  },
+  {
+    table: 'run_events',
+    column: 'actor_id',
+    strategy: 'pseudonymise',
+    scope: { kind: 'direct' },
+    exportable: true,
+    why: 'The append-only event journal is Mission audit evidence. The actor id is pseudonymised so the event trail stays intact without identifying the person.',
+  },
+  {
+    table: 'run_question_answers',
+    column: 'actor_id',
+    strategy: 'pseudonymise',
+    scope: { kind: 'direct' },
+    exportable: true,
+    why: 'Immutable answer records are Mission audit evidence. The actor id is pseudonymised so the answer trail stays intact without identifying the person.',
+  },
 ];
 
 /**
@@ -575,6 +599,13 @@ const NON_IDENTITY_CLASSIFICATIONS: PiiFieldClassification[] = [
     protection: 'company-owned',
     why: 'Template snapshot of artifact content. Reusable company asset that may contain personal data; confidential.',
   },
+  {
+    table: 'run_plan_revisions',
+    column: 'content',
+    sensitivity: 'confidential',
+    protection: 'company-owned',
+    why: 'Validated PlanContentV1 for a Mission plan revision. May reference people, sensitive objectives, or internal decisions; confidential company content.',
+  },
   // --- Metadata: JSONB blobs that may carry arbitrary personal data ---------
   {
     table: 'agents',
@@ -681,6 +712,13 @@ const NON_IDENTITY_CLASSIFICATIONS: PiiFieldClassification[] = [
     sensitivity: 'metadata',
     protection: 'company-owned',
     why: 'Template config JSONB. Could carry sensitive configuration patterns; metadata-tier sensitive.',
+  },
+  {
+    table: 'mode_profiles',
+    column: 'config',
+    sensitivity: 'metadata',
+    protection: 'company-owned',
+    why: 'Custom Mission mode profile config JSONB. Holds closed, bounded policy/instructions that may reference sensitive company directives; metadata-tier sensitive.',
   },
   // --- Financial -----------------------------------------------------------
   {

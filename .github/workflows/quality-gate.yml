@@ -49,6 +49,9 @@ jobs:
       - name: Create test database
         run: psql postgres://postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE eidolon_test'
 
+      - name: Build workspace packages for test setup
+        run: pnpm --filter @eidolon/shared build && pnpm --filter @eidolon/db build
+
       # Coverage gate — vitest enforces thresholds configured in
       # vitest.config.ts. The step (and workflow) fail if coverage
       # falls below any threshold.
@@ -66,6 +69,9 @@ jobs:
         run: |
           set -o pipefail
           pnpm dead-code 2>&1 | tee dead-code-output.txt
+
+      - name: Report test-fixture duplication
+        run: pnpm duplication:fixtures
 
       # Publish quality metrics to the GitHub Actions run summary.
       # scripts/quality-metrics-summary.mjs writes a Markdown table to
