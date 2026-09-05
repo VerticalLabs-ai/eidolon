@@ -995,3 +995,11 @@ describe('VAL-MODEQ-140: Optional defaults and empty values remain distinct', ()
     expect(submittedZero.value).toBe(0);
   });
 });
+
+// Ambiguous alternatives can backtrack exponentially without an inner quantifier.
+it.each(['^(a|aa)+$', '^(a|a?)+$', '^((a|aa)){30}$'])(
+  'rejects ambiguous quantified group %s',
+  (pattern) => {
+    expect(validatePatternSafety(pattern).safe).toBe(false);
+  },
+);

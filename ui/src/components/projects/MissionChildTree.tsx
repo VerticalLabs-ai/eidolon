@@ -5,6 +5,7 @@ import {
   useMissionRunEvents,
   useMissionCurrentPlanRevision,
   useMissionRunChildren,
+  useFeatureFlags,
 } from '@/lib/hooks';
 import type {
   MissionPlanRevision,
@@ -12,6 +13,7 @@ import type {
   MissionReplayEvent,
   MissionChildTreeNode,
 } from '@/lib/api';
+import { ApiError } from '@/lib/api';
 import { buildMissionUiLink } from '@eidolon/shared';
 import {
   CheckCircle2,
@@ -330,8 +332,10 @@ export function MissionChildTree({
   // Server-authoritative child tree from the /children endpoint
   // (VAL-M1-015..036). The hook fetches the tree and invalidates on
   // child.* SSE events (VAL-M1-027, VAL-M1-028).
+  const { data: featureFlags } = useFeatureFlags(companyId);
+  const polishEnabled = featureFlags?.flags.missionPolish === true;
   const childrenQuery = useMissionRunChildren(companyId, projectId, runId, {
-    enabled: !!runId,
+    enabled: !!runId && polishEnabled,
   });
 
   // Return-focus restoration (VAL-SUB-105): after Back navigation, move
@@ -424,9 +428,20 @@ export function MissionChildTree({
     return () => window.removeEventListener('popstate', onPopState);
   }, [principalId, runId]);
 
+  // The optional Phase 2 endpoint must not hide Phase 1's durable
+  // plan/event projection while loading or when its flag is disabled.
+  const featureUnavailable =
+    childrenQuery.error instanceof ApiError &&
+    childrenQuery.error.status === 404 &&
+    (childrenQuery.error.body as { code?: string } | undefined)?.code === 'FEATURE_NOT_AVAILABLE';
+
+  if (!planRevision || !snapshot.approvedPlanRevisionId) {
+    return null;
+  }
+
   // Loading state: show a skeleton while the /children endpoint fetches
   // (VAL-M1-031). The tree does not flash empty content before data arrives.
-  if (childrenQuery.isLoading) {
+  if (polishEnabled && childrenQuery.isLoading && nodes.length === 0) {
     return (
       <section
         data-testid="mission-child-tree"
@@ -442,7 +457,7 @@ export function MissionChildTree({
   }
 
   // Error state: show an error message with a retry button (VAL-M1-032).
-  if (childrenQuery.isError) {
+  if (polishEnabled && childrenQuery.isError && !featureUnavailable && nodes.length === 0) {
     return (
       <section
         data-testid="mission-child-tree"
@@ -466,7 +481,7 @@ export function MissionChildTree({
 
   // Empty state: show "No child runs" when the run has no children
   // (VAL-M1-033). The server tree has an empty children array.
-  if (nodes.length === 0 && childrenQuery.data && childrenQuery.data.children.length === 0) {
+  if (polishEnabled && nodes.length === 0 && childrenQuery.data?.children.length === 0) {
     return (
       <section
         data-testid="mission-child-tree"
@@ -515,6 +530,11 @@ export function MissionChildTree({
           {nodes.length} child{nodes.length === 1 ? '' : 'ren'}
         </span>
       </div>
+      {childrenQuery.isError && !featureUnavailable && (
+        <p role="status" className="mb-2 text-xs text-text-muted">
+          Live child details are unavailable. Showing the recorded plan and events.
+        </p>
+      )}
       {/* Root cost reconciliation with billing identities (VAL-SUB-101). */}
       <MissionCostBreakdown snapshot={snapshot} childSettledCents={childSettledCents} />
       <ChildNodeList

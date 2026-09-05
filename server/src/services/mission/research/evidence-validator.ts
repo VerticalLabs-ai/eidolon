@@ -385,57 +385,19 @@ export function validateClaimSupport(claim: EvidenceClaim): ClaimSupportResult {
 }
 
 /**
- * Conservative semantic support check: the claim is supported by the quote
- * when the claim text is a substring of the quote, OR a significant majority
- * of the claim's non-stopword tokens appear in the quote. Contradictory
- * passages (claim asserts a value not in the quote) fail because the token
- * overlap is low or the specific numeric/entity tokens diverge.
+ * Identity support is deliberately conservative: the claim must be the quoted
+ * phrase itself after whitespace/case/terminal-punctuation normalization.
+ * Token bags cannot prove paraphrases or the scope of negation. Structured
+ * numeric/date claims use their explicit transformations instead.
  */
 function isClaimSupportedByQuote(claimText: string, quote: string): boolean {
-  const claim = normalizeText(claimText);
-  if (claim.length === 0) {
-    return false;
-  }
-  // Direct containment.
-  if (quote.includes(claim)) {
-    return true;
-  }
-  // Token overlap: at least 60% of claim content tokens appear in the quote.
-  const stop = new Set([
-    'the',
-    'a',
-    'an',
-    'is',
-    'was',
-    'were',
-    'are',
-    'for',
-    'of',
-    'to',
-    'in',
-    'on',
-    'by',
-    'and',
-    'or',
-    'as',
-    'at',
-    'be',
-    'with',
-    'that',
-    'this',
-    'it',
-  ]);
-  const claimTokens = claim
-    .toLowerCase()
-    .split(/[^a-z0-9$%.-]+/)
-    .filter((t) => t.length > 0 && !stop.has(t));
-  if (claimTokens.length === 0) {
-    return false;
-  }
-  const quoteLower = quote.toLowerCase();
-  const present = claimTokens.filter((t) => quoteLower.includes(t));
-  const overlap = present.length / claimTokens.length;
-  return overlap >= 0.6;
+  const canonical = (text: string) =>
+    normalizeText(text)
+      .toLowerCase()
+      .replace(/[.!?]+$/, '')
+      .trim();
+  const claim = canonical(claimText);
+  return claim.length > 0 && claim === canonical(quote);
 }
 
 // ---------------------------------------------------------------------------

@@ -119,7 +119,9 @@ async function getRunRow(db: AnyDb, runId: string) {
            "lease_token", "lease_expires_at", "created_at"
     FROM "mission_runs" WHERE "id" = ${runId}
   `)) as unknown as Record<string, unknown>[];
-  if (!rows[0]) {return null;}
+  if (!rows[0]) {
+    return null;
+  }
   const row = rows[0];
   return {
     ...row,

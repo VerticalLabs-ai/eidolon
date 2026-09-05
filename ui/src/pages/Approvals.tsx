@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { ShieldCheck, Clock, Check, X as XIcon, Plus, MessageSquare } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Card } from '@/components/ui/Card';
@@ -46,10 +46,16 @@ const priorityVariant: Record<ApprovalPriority, 'info' | 'warning' | 'error' | '
 function formatRelative(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diffMs / 60_000);
-  if (mins < 1) {return 'just now';}
-  if (mins < 60) {return `${mins}m ago`;}
+  if (mins < 1) {
+    return 'just now';
+  }
+  if (mins < 60) {
+    return `${mins}m ago`;
+  }
   const hours = Math.round(mins / 60);
-  if (hours < 24) {return `${hours}h ago`;}
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
   return `${Math.round(hours / 24)}d ago`;
 }
 
@@ -88,13 +94,22 @@ function ApprovalRow({
 }
 
 function ApprovalDetail({ companyId, approvalId }: { companyId: string; approvalId: string }) {
-  const { data, isLoading } = useApproval(companyId, approvalId);
+  const { data, isLoading, isError } = useApproval(companyId, approvalId);
   const decide = useDecideApproval(companyId);
   const cancel = useCancelApproval(companyId);
   const addComment = useAddApprovalComment(companyId);
   const [note, setNote] = useState('');
   const [comment, setComment] = useState('');
 
+  if (isError) {
+    return (
+      <Card className="h-full p-6">
+        <p role="alert" className="text-sm text-text-secondary">
+          Approval unavailable
+        </p>
+      </Card>
+    );
+  }
   if (isLoading || !data) {
     return (
       <Card className="h-full p-6">
@@ -222,7 +237,9 @@ function ApprovalDetail({ companyId, approvalId }: { companyId: string; approval
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!comment.trim()) {return;}
+            if (!comment.trim()) {
+              return;
+            }
             addComment.mutate(
               { id: approval.id, content: comment.trim() },
               { onSuccess: () => setComment('') },
@@ -272,7 +289,9 @@ function NewApprovalModal({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (!title.trim()) {return;}
+          if (!title.trim()) {
+            return;
+          }
           mutation.mutate(
             {
               title: title.trim(),
@@ -343,6 +362,8 @@ function NewApprovalModal({
 
 export function Approvals() {
   const { companyId } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusId = searchParams.get('focus');
   const [activeStatus, setActiveStatus] = useState<ApprovalStatus>('pending');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -350,7 +371,7 @@ export function Approvals() {
   const { data: approvals, isLoading } = useApprovals(companyId, activeStatus);
 
   const visible = useMemo(() => approvals ?? [], [approvals]);
-  const selected = visible.find((a) => a.id === selectedId) ?? visible[0] ?? null;
+  const selectedApprovalId = selectedId ?? focusId ?? visible[0]?.id ?? null;
 
   return (
     <PageTransition>
@@ -381,6 +402,11 @@ export function Approvals() {
             onTabChange={(id) => {
               setActiveStatus(id as ApprovalStatus);
               setSelectedId(null);
+              setSearchParams((previous) => {
+                const next = new URLSearchParams(previous);
+                next.delete('focus');
+                return next;
+              });
             }}
           />
         </div>
@@ -404,7 +430,7 @@ export function Approvals() {
                 <ApprovalRow
                   key={a.id}
                   approval={a}
-                  selected={(selected?.id ?? null) === a.id}
+                  selected={selectedApprovalId === a.id}
                   onSelect={() => setSelectedId(a.id)}
                 />
               ))
@@ -412,8 +438,8 @@ export function Approvals() {
           </div>
 
           <div className="min-h-0 overflow-hidden">
-            {selected ? (
-              <ApprovalDetail companyId={companyId!} approvalId={selected.id} />
+            {selectedApprovalId ? (
+              <ApprovalDetail companyId={companyId!} approvalId={selectedApprovalId} />
             ) : (
               <Card className="flex h-full items-center justify-center p-6">
                 <p className="text-sm text-text-secondary">Select an approval to see details.</p>

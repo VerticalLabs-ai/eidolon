@@ -117,12 +117,18 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
   const [searchParams, setSearchParams] = useSearchParams();
   const diffParam = searchParams.get('diff');
   const diffVersions: [number, number] | null = (() => {
-    if (!diffParam) {return null;}
+    if (!diffParam) {
+      return null;
+    }
     const m = /^(\d+)-(\d+)$/.exec(diffParam);
-    if (!m) {return null;}
+    if (!m) {
+      return null;
+    }
     const a = Number(m[1]);
     const b = Number(m[2]);
-    if (!Number.isInteger(a) || a < 1 || !Number.isInteger(b) || b < 1) {return null;}
+    if (!Number.isInteger(a) || a < 1 || !Number.isInteger(b) || b < 1) {
+      return null;
+    }
     return [a, b];
   })();
   const diffOpen = diffVersions !== null;
@@ -164,7 +170,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
   } = usePresenceActions(companyId, artifactId);
 
   useEffect(() => {
-    if (!companyId || !artifactId) {return;}
+    if (!companyId || !artifactId) {
+      return;
+    }
     void joinPresence();
     return () => {
       void leavePresence();
@@ -203,7 +211,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
         // closure `artifact.content`) so rapid successive remote ops don't
         // stack on a stale snapshot.
         qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
-          if (!old) {return old;}
+          if (!old) {
+            return old;
+          }
           const newContent = applyOp(old.type, old.content, op);
           return { ...old, content: newContent };
         });
@@ -213,7 +223,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
     onStateSync: useCallback(
       (content: Record<string, unknown>, version: number) => {
         qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
-          if (!old) {return old;}
+          if (!old) {
+            return old;
+          }
           return { ...old, content, version };
         });
       },
@@ -222,7 +234,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
     onSaved: useCallback(
       (version: number, content: Record<string, unknown>, title?: string) => {
         qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
-          if (!old) {return old;}
+          if (!old) {
+            return old;
+          }
           return { ...old, content, version, ...(title !== undefined ? { title } : {}) };
         });
         qc.invalidateQueries({ queryKey: ['artifacts', companyId, artifactId, 'revisions'] });
@@ -234,7 +248,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
 
   // Also leave presence beforeunload (tab close) — best-effort.
   useEffect(() => {
-    if (!companyId || !artifactId) {return;}
+    if (!companyId || !artifactId) {
+      return;
+    }
     const onBeforeUnload = () => {
       // sendBeacon isn't trivially available for JSON POST with credentials;
       // the server stale-sweep (90s TTL) handles this case. This is a
@@ -298,7 +314,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
 
   const handleSave = useCallback(
     async (data: { title: string; content: Record<string, unknown> }) => {
-      if (!artifact) {return;}
+      if (!artifact) {
+        return;
+      }
       setConflict(null);
       try {
         await updateMutation.mutateAsync({
@@ -336,7 +354,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
             // draft because their useEffect sees isDirty and only sets
             // remoteUpdate (which is hidden while conflictState is set).
             qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
-              if (!old) {return old;}
+              if (!old) {
+                return old;
+              }
               return {
                 ...old,
                 version: current.version,
@@ -354,7 +374,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
 
   const handleRestore = useCallback(
     async (version: number) => {
-      if (!artifact) {return;}
+      if (!artifact) {
+        return;
+      }
       setConflict(null);
       try {
         await restoreMutation.mutateAsync({ id: artifactId, version });
@@ -382,7 +404,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
               currentContent: current.content,
             });
             qc.setQueryData(['artifacts', companyId, artifactId], (old: Artifact | undefined) => {
-              if (!old) {return old;}
+              if (!old) {
+                return old;
+              }
               return {
                 ...old,
                 version: current.version,
@@ -408,7 +432,9 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
   // A valid TOTP code obtains a step-up token and retries the gated operation.
   // Dismissing the modal abandons the action (no mutation — VAL-SEC-003).
   const handlePermanentDelete = useCallback(async () => {
-    if (!artifact) {return;}
+    if (!artifact) {
+      return;
+    }
     if (
       !confirm(
         `Permanently delete "${artifact.title}"? This removes all revisions and cannot be undone.`,
@@ -439,13 +465,17 @@ export function ArtifactEditor({ companyId, artifactId, projectId, onBack }: Art
   }, [artifact, companyId, artifactId, mfa, qc, onBack]);
 
   const openTransfer = useCallback(() => {
-    if (!artifact) {return;}
+    if (!artifact) {
+      return;
+    }
     setTransferTarget(artifact.projectId ?? '');
     setTransferOpen(true);
   }, [artifact]);
 
   const handleTransferSubmit = useCallback(async () => {
-    if (!artifact) {return;}
+    if (!artifact) {
+      return;
+    }
     const targetProjectId = transferTarget === '' ? null : transferTarget;
     setTransferBusy(true);
     try {

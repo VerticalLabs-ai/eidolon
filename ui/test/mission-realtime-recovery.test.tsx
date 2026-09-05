@@ -178,7 +178,7 @@ function startResult() {
   };
 }
 
-function streamResult(overrides: Partial<ReturnType<typeof useMissionRunStream>> = {}) {
+function streamResult(overrides: Partial<ReturnType<typeof useMissionRunStreamReal>> = {}) {
   return {
     status: 'connected' as const,
     lastSequence: 4,
@@ -727,6 +727,46 @@ describe('useMissionRunStream hook', () => {
 
   afterEach(() => {
     global.EventSource = originalEventSource;
+  });
+
+  it('refetches durable history on buffer overflow without advancing the journal cursor', async () => {
+    global.EventSource = MockEventSourceClass as unknown as typeof EventSource;
+    const invalidate = vi.spyOn(hookQc, 'invalidateQueries');
+    const { result } = tlRenderHook(
+      () => useMissionRunStreamReal('company-1', 'project-1', 'run-1'),
+      { wrapper: hookWrapper },
+    );
+    await act(async () => {
+      MockEventSourceClass.lastInstance?.simulateEvent(
+        'buffer_overflow',
+        JSON.stringify({ runId: 'run-1', lastSequence: 12 }),
+        '',
+      );
+    });
+    expect(result.current.status).toBe('reconnecting');
+    expect(result.current.lastSequence).toBe(0);
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['mission-run-events', 'company-1', 'project-1', 'run-1'],
+    });
+  });
+
+  it('resets the cursor for a new run and leaves native reconnect headers authoritative', async () => {
+    global.EventSource = MockEventSourceClass as unknown as typeof EventSource;
+    const { result, rerender } = tlRenderHook(
+      ({ runId }) => useMissionRunStreamReal('company-1', 'project-1', runId),
+      { wrapper: hookWrapper, initialProps: { runId: 'old-run' } },
+    );
+    const oldSource = MockEventSourceClass.lastInstance!;
+    expect(new URL(oldSource.url, 'http://localhost').searchParams.has('after')).toBe(false);
+    await act(async () => oldSource.simulateEvent('execution.progress', '{}', '120'));
+    expect(result.current.lastSequence).toBe(120);
+    rerender({ runId: 'new-run' });
+    expect(result.current.lastSequence).toBe(0);
+    const newSource = MockEventSourceClass.lastInstance!;
+    expect(oldSource.closeFn).toHaveBeenCalled();
+    await act(async () => newSource.simulateEvent('run.created', '{}', '1'));
+    expect(result.current.lastSequence).toBe(1);
+    expect(result.current.gapDetected).toBe(false);
   });
 
   it('returns idle status when runId is undefined', () => {

@@ -226,6 +226,47 @@ describe('ResearchExecutionService', () => {
     await closeTestDb();
   });
 
+  it('records and charges each retry attempt with the reported pricing snapshot', async () => {
+    const scope = await seedRunWithBudget(db, '__mtest__ physical-retry');
+    credentialStore.set(scope.companyId, 'tavily', 'test-key');
+    const successFetch = mockTavilySearchFetch('final-attempt');
+    let calls = 0;
+    const adapter = new TavilyAdapter({
+      apiKey: 'test-key',
+      fetch: async (...args: Parameters<FetchFn>) => {
+        if (++calls === 1) {
+          return new Response('{}', { status: 500 });
+        }
+        return successFetch(...args);
+      },
+    });
+    const result = await executionService.executeResearch(
+      {
+        ...scope,
+        provider: 'tavily',
+        operation: 'search',
+        query: 'attempt accounting',
+        maxResults: 5,
+        timeoutMs: 15000,
+      },
+      { providers: [{ name: 'tavily', provider: adapter }] },
+    );
+    const attempts = (await db.drizzle.execute(sql`
+      SELECT state, attempt_ordinal FROM research_attempts WHERE run_id = ${scope.runId}
+      ORDER BY attempt_ordinal`)) as unknown as { state: string; attempt_ordinal: number }[];
+    expect(attempts).toHaveLength(2);
+    expect(attempts.map((row) => row.state)).toEqual(['unknown', 'succeeded']);
+    expect(result.costCents).toBe(110);
+    const snapshots = (await db.drizzle.execute(sql`
+      SELECT p.reported_credits, p.resulting_cents FROM research_pricing_snapshots p
+      JOIN research_attempts a ON a.pricing_snapshot_id = p.id WHERE a.id = ${result.attemptId}`)) as unknown as {
+      reported_credits: number;
+      resulting_cents: number;
+    }[];
+    expect(Number(snapshots[0].reported_credits)).toBe(1);
+    expect(Number(snapshots[0].resulting_cents)).toBe(10);
+  });
+
   describe('executeResearch — Tavily search', () => {
     it('normalizes sources, persists revisions, settles credits, and returns citation-ready evidence', async () => {
       const { companyId, projectId, runId, rootRunId, billingAgentId } = await seedRunWithBudget(

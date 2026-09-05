@@ -2806,9 +2806,9 @@ export function useMissionRunChildren(
   return useQuery({
     queryKey: ['mission-run-children', companyId, projectId, runId],
     queryFn: async () =>
-      unwrap<api.MissionChildTreeNode>(
+      unwrap<{ tree: api.MissionChildTreeNode }>(
         await api.getMissionRunChildren(companyId, projectId, runId!, options?.maxDepth),
-      ),
+      ).tree,
     enabled: !!companyId && !!projectId && !!runId && enabled,
     staleTime: 2_000,
     placeholderData: (prev: api.MissionChildTreeNode | undefined) => prev,
@@ -2829,7 +2829,7 @@ export function useMissionRunEvents(
   projectId: string,
   runId: string | undefined,
 ) {
-  return useInfiniteQuery({
+  const query = useInfiniteQuery({
     queryKey: ['mission-run-events', companyId, projectId, runId],
     queryFn: async ({ pageParam }) =>
       unwrap<{
@@ -2850,6 +2850,16 @@ export function useMissionRunEvents(
       latestSequence: data.pages[data.pages.length - 1]?.latestSequence ?? 0,
     }),
   });
+  const { hasNextPage, isFetching, isFetchNextPageError, fetchNextPage } = query;
+  const replayCursor = query.data?.nextCursor;
+  useEffect(() => {
+    // A live journal can outgrow the first page between invalidations.
+    // Drain contiguous pages so progress consumers eventually see the tail.
+    if (hasNextPage && !isFetching && !isFetchNextPageError) {
+      void fetchNextPage();
+    }
+  }, [hasNextPage, isFetching, isFetchNextPageError, fetchNextPage, replayCursor]);
+  return query;
 }
 
 /**

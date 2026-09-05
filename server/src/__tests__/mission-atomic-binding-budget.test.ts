@@ -739,7 +739,11 @@ describe('VAL-PLAN-094: Approval budget earmarks the existing root hold atomical
     const app = await createTestServer(db);
 
     // Create an agent with a monthly budget of 500 cents.
-    const agentId = await seedAgent(db, companyId, { budget: 500, spent: 0 });
+    const agentId = await seedAgent(db, companyId, {
+      budget: 500,
+      spent: 0,
+      tools: ['research.search'],
+    });
 
     // Start a run with the agent.
     const startRes = await request(app)

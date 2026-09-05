@@ -282,7 +282,9 @@ export function inboxRouter(db: DbInstance): Router {
     }
 
     for (const item of pendingThreadItems) {
-      if (!item.taskId) {continue;}
+      if (!item.taskId) {
+        continue;
+      }
       const inboxItemId = `thread:${item.id}`;
       const interactionLabel = (item.interactionType ?? 'interaction').replace('_', ' ');
       items.push({
@@ -308,7 +310,9 @@ export function inboxRouter(db: DbInstance): Router {
       // Skip resolved rows that are not actually resolved (e.g. an open set
       // whose run advanced past awaiting_input without the set being closed —
       // a defensive guard; the run/set transition should keep these in sync).
-      if (q.setStatus === 'open' && !actionable) {continue;}
+      if (q.setStatus === 'open' && !actionable) {
+        continue;
+      }
       const link = buildMissionUiLink({
         companyId,
         projectId: q.setProjectId,
@@ -338,7 +342,9 @@ export function inboxRouter(db: DbInstance): Router {
     }
 
     for (const row of recentActivity) {
-      if (!ACTIVITY_KINDS_OF_INTEREST.has(row.action)) {continue;}
+      if (!ACTIVITY_KINDS_OF_INTEREST.has(row.action)) {
+        continue;
+      }
       // thread.mention notifications are recipient-scoped: only the
       // mentioned user should see them in their inbox. Filter out
       // thread.mention entries whose metadata.mentionedUserId does not
@@ -395,7 +401,9 @@ export function inboxRouter(db: DbInstance): Router {
       }
       for (const item of limited) {
         const when = readMap.get(item.id);
-        if (when) {item.readAt = new Date(when).toISOString();}
+        if (when) {
+          item.readAt = new Date(when).toISOString();
+        }
       }
     }
 
@@ -490,7 +498,9 @@ function linkForActivity(
 ): string {
   const base = `/company/${companyId}`;
   const taskId = activityTaskId(row);
-  if (taskId) {return `${base}/tasks/${taskId}`;}
+  if (taskId) {
+    return `${base}/tasks/${taskId}`;
+  }
 
   switch (row.entityType) {
     case 'agent':
@@ -513,7 +523,9 @@ function activityTaskId(row: {
   entityId: string | null;
   metadata?: Record<string, unknown>;
 }): string | null {
-  if (row.entityType === 'task') {return row.entityId;}
+  if (row.entityType === 'task') {
+    return row.entityId;
+  }
   const taskId = row.metadata?.taskId;
   return typeof taskId === 'string' && taskId.length > 0 ? taskId : null;
 }

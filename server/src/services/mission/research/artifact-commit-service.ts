@@ -279,6 +279,7 @@ export class ArtifactCommitService {
       FROM "mission_runs"
       WHERE "id" = ${runId} AND "company_id" = ${companyId}
       LIMIT 1
+      FOR UPDATE
     `)) as unknown as { status: string; cancel_requested_at: Date | null }[];
 
     if (rows.length === 0) {

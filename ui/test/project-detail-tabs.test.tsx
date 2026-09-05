@@ -23,6 +23,12 @@ const project = {
   updatedAt: '2026-07-30T22:00:00.000Z',
 };
 
+vi.mock('@/lib/auth', () => ({
+  useSession: () => ({ isPending: false, data: { user: { id: 'test-operator' } } }),
+  isLocalTrustedAuth: () => true,
+  CLERK_PUBLISHABLE_KEY: '',
+}));
+
 vi.mock('@/lib/hooks', () => ({
   useArchiveProject: () => ({
     mutate: mocks.archiveProject,

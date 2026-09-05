@@ -242,6 +242,18 @@ describe('MissionRunList and MissionRunCard', () => {
     expect(within(card).getByText(/2026/i)).toBeInTheDocument();
   });
 
+  it('recovers the request summary from the snapshot after a reload or retry', () => {
+    mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary()]));
+    mocks.useMissionRunSnapshot.mockReturnValue(
+      snapshotResult(runSnapshot({ requestSafeSummary: 'Analyze the quarterly report' })),
+    );
+    render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {
+      wrapper,
+    });
+    expect(screen.getByText('Analyze the quarterly report')).toBeInTheDocument();
+    expect(screen.queryByText(/hash-1/i)).not.toBeInTheDocument();
+  });
+
   it('shows the request content hash when request text is unavailable', () => {
     mocks.useMissionRunsPaginated.mockReturnValue(listResult([runSummary()]));
     render(<MissionRunList companyId="company-1" projectId="project-1" requestTexts={{}} />, {

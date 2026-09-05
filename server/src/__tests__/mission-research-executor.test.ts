@@ -229,7 +229,7 @@ describe('fix-ut-m5-research-attempt-transaction: ProductionResearchExecutor.exe
 
     expect(result.executed).toBe(true);
     // 4 calls total: search1-tavily(fail), search1-firecrawl(2), search2-tavily(2), search2-firecrawl(2)
-    expect(result.sourceCount).toBe(6);
+    expect(result.sourceCount).toBe(2);
   });
 
   it('returns executed=true with correct sourceCount when all operations succeed', async () => {
@@ -249,7 +249,7 @@ describe('fix-ut-m5-research-attempt-transaction: ProductionResearchExecutor.exe
     // search with both providers: Tavily(3) + Firecrawl(3) = 6
     // extract with Tavily only: 3
     // Total: 9 sources.
-    expect(result.sourceCount).toBe(9);
+    expect(result.sourceCount).toBe(6);
   });
 
   it('returns executed=false when no credential is available (early return)', async () => {
@@ -374,9 +374,8 @@ describe('fix-ut-m5-research-execution-gaps: provider-operation capability filte
     // With both providers available, search is attempted with each
     // independently (fix-ut-m5-synthesis-date-serialization).
     const searchCalls = mock.calls.filter((c) => c.operation === 'search');
-    expect(searchCalls.length).toBe(2);
+    expect(searchCalls.length).toBe(1);
     expect(searchCalls[0]!.provider).toBe('tavily');
-    expect(searchCalls[1]!.provider).toBe('firecrawl');
   });
 
   it('skips operations where no available provider supports them', async () => {
@@ -483,7 +482,7 @@ describe('fix-ut-m5-research-execution-gaps: URL availability for scrape/structu
 // ---------------------------------------------------------------------------
 
 describe('fix-ut-m5-synthesis-date-serialization: Firecrawl search is attempted in production', () => {
-  it('attempts Firecrawl search in addition to Tavily search (not just as fallback)', async () => {
+  it('uses one logical search with Firecrawl available only as fallback)', async () => {
     const scope = await seedScope(db, '__mtest__ exec-firecrawl-search-additional');
     const { runId } = await seedRun(db, scope, null);
 
@@ -495,13 +494,12 @@ describe('fix-ut-m5-synthesis-date-serialization: Firecrawl search is attempted 
 
     // Both Tavily and Firecrawl search must be attempted independently.
     const searchCalls = mock.calls.filter((c) => c.operation === 'search');
-    expect(searchCalls.length).toBe(2);
+    expect(searchCalls.length).toBe(1);
     expect(searchCalls[0]!.provider).toBe('tavily');
-    expect(searchCalls[1]!.provider).toBe('firecrawl');
 
     // Sources from both providers are collected.
     expect(result.executed).toBe(true);
-    expect(result.sourceCount).toBe(4); // 2 from Tavily + 2 from Firecrawl
+    expect(result.sourceCount).toBe(2); // one successful primary attempt
   });
 
   it('does not attempt Firecrawl search when only Tavily credential is available', async () => {
@@ -544,7 +542,7 @@ describe('fix-ut-m5-synthesis-date-serialization: Firecrawl search is attempted 
     // the same set of URLs. The scrape call should receive URLs from
     // both search calls.
     const searchCalls = mock.calls.filter((c) => c.operation === 'search');
-    expect(searchCalls.length).toBe(2);
+    expect(searchCalls.length).toBe(1);
 
     const scrapeCall = mock.calls.find((c) => c.operation === 'scrape');
     expect(scrapeCall).toBeTruthy();

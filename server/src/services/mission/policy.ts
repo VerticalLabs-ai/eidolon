@@ -154,7 +154,7 @@ function minFinite(base: number, override?: number): number {
 function intersectAllowlists(base: string[], ...layers: (string[] | undefined)[]): string[] {
   let result = base;
   for (const layer of layers) {
-    if (layer !== undefined && layer.length > 0) {
+    if (layer !== undefined) {
       const allowed = new Set(layer);
       result = result.filter((item) => allowed.has(item));
     }
@@ -208,7 +208,7 @@ export function resolvePolicy(input: {
 
   // Company governance: if allowedProviders is specified, the agent's
   // provider must be in it. An empty intersection is unsatisfiable.
-  if (company?.allowedProviders && company.allowedProviders.length > 0) {
+  if (company?.allowedProviders !== undefined) {
     if (!company.allowedProviders.includes(provider)) {
       throw new AppError(
         422,
@@ -494,7 +494,7 @@ export function resolveCustomPolicy(input: {
   // --- Provider governance (VAL-MODEQ-035, VAL-MODEQ-037) ---
   // Company governance: if allowedProviders is specified, the provider
   // must be in it. Also check against custom profile's requiredProvider.
-  if (company?.allowedProviders && company.allowedProviders.length > 0) {
+  if (company?.allowedProviders !== undefined) {
     if (!company.allowedProviders.includes(provider)) {
       throw new AppError(
         422,

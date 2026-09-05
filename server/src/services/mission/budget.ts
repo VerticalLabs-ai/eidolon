@@ -796,35 +796,17 @@ export class BudgetService {
         ),
       );
 
-    // Also get the root allocation to compute how much the root has consumed.
-    const [rootAllocation] = await tx
-      .select({
-        allocatedCents: schema.budgetAllocations.allocatedCents,
-        settledCents: schema.budgetAllocations.settledCents,
-        releasedCents: schema.budgetAllocations.releasedCents,
-      })
-      .from(schema.budgetAllocations)
-      .where(
-        and(
-          eq(schema.budgetAllocations.rootReservationId, input.rootReservationId),
-          eq(schema.budgetAllocations.runId, reservation.runId),
-        ),
-      )
-      .limit(1);
-
-    const totalChildAllocatedActive = existingAllocations.reduce(
-      (sum, r) => sum + (r.allocatedCents - r.releasedCents),
+    // The reservation includes settlement and release from every descendant.
+    // Deduct only outstanding child holds to avoid double-counting their spend.
+    const outstandingChildCents = existingAllocations.reduce(
+      (sum, r) => sum + Math.max(0, r.allocatedCents - r.settledCents - r.releasedCents),
       0,
     );
-
-    // Unallocated residual = root allocation - root settled - root released -
-    // active child allocations. This is the amount available for new child
-    // allocations without double-reserving company funds.
-    const rootConsumed = (rootAllocation?.settledCents ?? 0) + (rootAllocation?.releasedCents ?? 0);
     const residualCents =
-      (rootAllocation?.allocatedCents ?? reservation.reservedCents) -
-      rootConsumed -
-      totalChildAllocatedActive;
+      reservation.reservedCents -
+      reservation.settledCents -
+      reservation.releasedCents -
+      outstandingChildCents;
 
     if (input.allocatedCents > residualCents) {
       throw new AppError(
@@ -910,7 +892,7 @@ export class BudgetService {
             schemaVersion: 1,
             payload: {
               reservedCents: reservation.reservedCents,
-              totalAllocatedCents: totalChildAllocatedActive + input.allocatedCents,
+              totalAllocatedCents: outstandingChildCents + input.allocatedCents,
             },
             actorType: input.actorType ?? 'system',
             actorId: input.actorId ?? null,

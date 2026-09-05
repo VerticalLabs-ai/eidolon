@@ -298,6 +298,7 @@ async function build(options: BootstrapOptions): Promise<BootstrapResult> {
   const db: DbInstance = {
     drizzle: drizzleDb,
     schema: SCHEMA_BUNDLE,
+    client,
   };
 
   const app = createApp(db);
@@ -381,6 +382,7 @@ async function buildWorker(options: WorkerBootstrapOptions): Promise<WorkerBoots
   const db: DbInstance = {
     drizzle: drizzleDb,
     schema: SCHEMA_BUNDLE,
+    client,
   };
 
   return { db, client, connectionString };

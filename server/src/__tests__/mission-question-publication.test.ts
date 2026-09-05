@@ -93,7 +93,9 @@ async function getRunRow(db: AnyDb, runId: string): Promise<Record<string, unkno
     SELECT * FROM "mission_runs" WHERE "id" = ${runId}
   `)) as unknown as Record<string, unknown>[];
   const row = rows[0];
-  if (!row) {return null;}
+  if (!row) {
+    return null;
+  }
   return {
     ...row,
     state_version: Number(row.state_version),

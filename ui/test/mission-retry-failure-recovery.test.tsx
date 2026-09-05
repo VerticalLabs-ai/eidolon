@@ -27,6 +27,7 @@ vi.mock('@/lib/hooks', async () => {
   const actual = await vi.importActual('@/lib/hooks');
   return {
     ...actual,
+    useModeProfiles: () => ({ data: { profiles: [] }, isLoading: false, isError: false }),
     useMissionRunsPaginated: mocks.useMissionRunsPaginated,
     useMissionRunSnapshot: mocks.useMissionRunSnapshot,
     useMissionRunEvents: mocks.useMissionRunEvents,

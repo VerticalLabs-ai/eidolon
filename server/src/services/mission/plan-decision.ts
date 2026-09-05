@@ -1078,76 +1078,81 @@ export class PlanDecisionService {
   ): Promise<void> {
     const schema = this.db.schema;
 
-    // Load the run's immutable policy snapshot.
+    const deny = (message: string): never => {
+      throw new PlanDecisionError(new AppError(409, 'POLICY_UNSATISFIABLE', message));
+    };
     if (!run.policySnapshotId) {
-      return; // No snapshot to validate against; skip.
+      deny('The run policy snapshot is missing.');
     }
-    const [policySnapshot] = await tx
+    const [snapshot] = await tx
       .select()
       .from(schema.runPolicySnapshots)
-      .where(eq(schema.runPolicySnapshots.id, run.policySnapshotId))
+      .where(eq(schema.runPolicySnapshots.id, run.policySnapshotId!))
       .limit(1);
-    if (!policySnapshot) {
-      return; // Snapshot missing; skip (fail-open here is acceptable
-      // because the snapshot is the authority and its absence is an
-      // internal error, not a policy decision).
+    if (!snapshot) {
+      deny('The run policy snapshot is missing.');
     }
-
-    const snapshotTools = new Set((policySnapshot.toolAllowlist as string[] | null) ?? []);
-
-    // Research-policy bypass: when researchPolicy.access === 'allowed',
-    // research tools are permitted even if not in the snapshot's tool
-    // allowlist. This mirrors the existing bypass in agent-router.ts and
-    // ephemeral-router.ts (VAL-M1-003, VAL-M1-004).
-    const researchPolicy = policySnapshot.researchPolicy as { access?: string } | null;
-    const researchAccessAllowed = researchPolicy?.access === 'allowed';
-
-    // Check every step's tools against the snapshot's tool allowlist.
-    // The snapshot is immutable, so this verifies the plan's tools are
-    // a subset of the snapshotted authority. A live agent/company policy
-    // change cannot broaden this (the snapshot is fixed), but a live
-    // revocation (e.g., tool removed from agent) should deny approval.
-    //
-    // For deny-only revalidation, we check the plan's tools against the
-    // snapshot (which is the authority). If the plan was valid at proposal
-    // time, its tools are already a subset. The deny-only check here
-    // verifies that the plan hasn't been tampered with and that the
-    // snapshot still covers it.
-    //
-    // An empty snapshot tool allowlist means no agent-specific tool
-    // restriction was snapshotted (e.g., no initiating agent was provided
-    // at start time). In that case, the tool check is skipped — the plan
-    // was accepted at publication time and there is no snapshotted
-    // authority to revoke. This is deny-only: we never broaden, we only
-    // skip when there is nothing to check against.
-    //
-    // Empty plan steps array does not crash (VAL-M1-113): the loop simply
-    // iterates zero times.
-    if (snapshotTools.size > 0) {
-      for (const step of plan.steps) {
-        for (const tool of step.toolAllowlist) {
-          // Normalize the tool alias to its canonical form before the
-          // exact-match check (VAL-M1-001, VAL-M1-005, VAL-M1-014).
-          const canonicalTool = normalizeToolAlias(tool);
-
-          // Research-policy bypass: if the tool is a research tool and
-          // researchPolicy.access === 'allowed', permit it even if not in
-          // the snapshot's tool allowlist (VAL-M1-003). When access is
-          // 'denied' or absent, research tools must be in the allowlist
-          // (VAL-M1-004).
-          if (isResearchTool(tool) && researchAccessAllowed) {
-            continue; // Bypass: research tool permitted by policy.
-          }
-
-          if (!snapshotTools.has(canonicalTool)) {
-            throw new PlanDecisionError(
-              new AppError(
-                409,
-                'POLICY_UNSATISFIABLE',
-                `Plan step "${step.stepKey}" requires tool "${tool}" (normalized: "${canonicalTool}") which is not permitted by the current policy. Replan with permitted tools or cancel.`,
-              ),
-            );
-          }
+    const [company] = await tx
+      .select()
+      .from(schema.companies)
+      .where(eq(schema.companies.id, run.companyId))
+      .limit(1);
+    if (!company) {
+      deny('The company is no longer available.');
+    }
+    const governance = (
+      company.settings as {
+        missionPolicy?: {
+          allowedTools?: string[];
+          deniedTools?: string[];
+          allowedProviders?: string[];
+        };
+      }
+    ).missionPolicy;
+    if (
+      governance?.allowedProviders !== undefined &&
+      !governance.allowedProviders.includes(snapshot.provider)
+    ) {
+      deny('The snapshotted provider is no longer permitted by company governance.');
+    }
+    const [agent] = run.initiatingAgentId
+      ? await tx
+          .select()
+          .from(schema.agents)
+          .where(
+            and(
+              eq(schema.agents.id, run.initiatingAgentId),
+              eq(schema.agents.companyId, run.companyId),
+            ),
+          )
+          .limit(1)
+      : [];
+    if (
+      run.initiatingAgentId &&
+      (!agent || ['terminated', 'paused', 'disabled'].includes(agent.status))
+    ) {
+      deny('The initiating agent is no longer active.');
+    }
+    const snapshotTools = new Set((snapshot.toolAllowlist ?? []).map(normalizeToolAlias));
+    const liveTools = new Set((agent?.toolsEnabled ?? []).map(normalizeToolAlias));
+    const companyAllowed = governance?.allowedTools?.map(normalizeToolAlias);
+    const companyDenied = new Set((governance?.deniedTools ?? []).map(normalizeToolAlias));
+    const researchAllowed = (snapshot.researchPolicy as { access?: string })?.access === 'allowed';
+    for (const step of plan.steps) {
+      for (const tool of step.toolAllowlist) {
+        const canonical = normalizeToolAlias(tool);
+        // A research policy is a distinct explicit grant, still narrowed by
+        // current company governance. It never overrides a company deny.
+        const researchGrant = isResearchTool(canonical) && researchAllowed;
+        if (
+          (!snapshotTools.has(canonical) && !researchGrant) ||
+          (agent && !liveTools.has(canonical)) ||
+          (companyAllowed !== undefined && !companyAllowed.includes(canonical)) ||
+          companyDenied.has(canonical)
+        ) {
+          deny(
+            `Plan step "${step.stepKey}" requires tool "${tool}" which is no longer permitted. Replan with permitted tools or cancel.`,
+          );
         }
       }
     }

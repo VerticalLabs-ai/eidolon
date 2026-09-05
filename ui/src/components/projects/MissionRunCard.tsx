@@ -217,7 +217,8 @@ export function MissionRunCard({
   const eventsQuery = useMissionRunEvents(companyId, projectId, run.id);
   // Request text from the start mutation cache (prop takes precedence).
   const cachedRequestText = useMissionRequestText(run.id);
-  const displayRequestText = requestText ?? cachedRequestText;
+  const displayRequestText =
+    requestText ?? cachedRequestText ?? snapshotQuery.data?.requestSafeSummary ?? undefined;
   // Authenticated principal for browser-local question draft scoping
   // (VAL-MODEQ-134).
   const session = useSession();

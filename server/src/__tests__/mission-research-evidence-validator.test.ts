@@ -37,7 +37,7 @@ describe('VAL-RES-111: validateClaimSupport', () => {
 
   it('confirms a claim directly supported by the quote (identity)', () => {
     const claim: EvidenceClaim = {
-      claimText: 'Q3 2025 revenue was $1,234,567',
+      claimText: 'revenue for Q3 2025 was $1,234,567',
       citationId: 'cit-1',
       transformation: 'identity',
       evidence: evidence('revenue for Q3 2025 was $1,234,567'),
@@ -48,7 +48,7 @@ describe('VAL-RES-111: validateClaimSupport', () => {
 
   it('rejects an unrelated quote with EVIDENCE_NOT_SUPPORTING_CLAIM', () => {
     const claim: EvidenceClaim = {
-      claimText: 'Q3 2025 revenue was $1,234,567',
+      claimText: 'revenue for Q3 2025 was $1,234,567',
       citationId: 'cit-1',
       transformation: 'identity',
       evidence: evidence('the weather was sunny all week'),
@@ -61,7 +61,7 @@ describe('VAL-RES-111: validateClaimSupport', () => {
   it('rejects a contradictory passage with EVIDENCE_NOT_SUPPORTING_CLAIM', () => {
     const contradictorySource = 'The revenue for Q3 2025 was $999, not $1,234,567 as some claim.';
     const claim: EvidenceClaim = {
-      claimText: 'Q3 2025 revenue was $1,234,567',
+      claimText: 'revenue for Q3 2025 was $1,234,567',
       citationId: 'cit-1',
       transformation: 'identity',
       evidence: {
@@ -77,7 +77,7 @@ describe('VAL-RES-111: validateClaimSupport', () => {
 
   it('rejects a quote absent from the source text', () => {
     const claim: EvidenceClaim = {
-      claimText: 'Q3 2025 revenue was $1,234,567',
+      claimText: 'revenue for Q3 2025 was $1,234,567',
       citationId: 'cit-1',
       transformation: 'identity',
       evidence: evidence('this quote does not appear in the source'),
@@ -222,7 +222,7 @@ describe('VAL-RES-023: validateEvidenceForArtifact (citation required)', () => {
 
   it('accepts when every external factual claim has a supporting citation', () => {
     const claim: EvidenceClaim = {
-      claimText: 'Q3 2025 revenue was $1,234,567',
+      claimText: 'revenue for Q3 2025 was $1,234,567',
       citationId: 'cit-1',
       transformation: 'identity',
       evidence: {
@@ -239,7 +239,7 @@ describe('VAL-RES-023: validateEvidenceForArtifact (citation required)', () => {
     const r = validateEvidenceForArtifact({
       claims: [
         {
-          claimText: 'Q3 2025 revenue was $1,234,567',
+          claimText: 'revenue for Q3 2025 was $1,234,567',
           citationId: '',
           transformation: 'identity',
           isExternalFactualClaim: true,
@@ -258,7 +258,7 @@ describe('VAL-RES-023: validateEvidenceForArtifact (citation required)', () => {
 
   it('rejects atomically when any claim is unsupported (no partial artifact/provenance)', () => {
     const good: EvidenceClaim = {
-      claimText: 'Q3 2025 revenue was $1,234,567',
+      claimText: 'revenue for Q3 2025 was $1,234,567',
       citationId: 'cit-1',
       transformation: 'identity',
       evidence: {
@@ -285,7 +285,7 @@ describe('VAL-RES-023: validateEvidenceForArtifact (citation required)', () => {
 
   it('rejects when a claim references a citation id not in the declared set', () => {
     const claim: EvidenceClaim = {
-      claimText: 'Q3 2025 revenue was $1,234,567',
+      claimText: 'revenue for Q3 2025 was $1,234,567',
       citationId: 'missing',
       transformation: 'identity',
       evidence: {
@@ -301,4 +301,28 @@ describe('VAL-RES-023: validateEvidenceForArtifact (citation required)', () => {
     expect(r.valid).toBe(false);
     expect(r.errors.join(' ')).toMatch(/dangling|declared|citation/i);
   });
+});
+
+it('rejects a negated source even when all positive claim words occur', () => {
+  const quote = 'The drug is not safe and is not approved.';
+  expect(
+    validateClaimSupport({
+      claimText: 'The drug is safe and approved.',
+      citationId: 'negated',
+      transformation: 'identity',
+      evidence: { sourceRevisionId: 'source', quote, normalizedSourceText: quote },
+    }).valid,
+  ).toBe(false);
+});
+
+it('rejects equal token sets whose negations apply to different predicates', () => {
+  const quote = 'Treatment A reduces mortality but does not reduce pain';
+  expect(
+    validateClaimSupport({
+      claimText: 'Treatment A does not reduce mortality but reduces pain',
+      citationId: 'scope',
+      transformation: 'identity',
+      evidence: { sourceRevisionId: 'source', quote, normalizedSourceText: quote },
+    }).valid,
+  ).toBe(false);
 });

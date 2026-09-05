@@ -198,73 +198,24 @@ export class ProductionResearchExecutor implements ResearchExecutor {
         break;
       }
 
-      // For search with both providers available, attempt each independently
-      // (in addition to, not just as fallback) to collect sources from both
-      // providers (fix-ut-m5-synthesis-date-serialization).
-      if (operation === 'search' && tavilyAdapter && firecrawlAdapter) {
-        // Tavily search
-        const tavilyResult = await this.tryExecuteOperation({
-          runId: claim.runId,
-          companyId: claim.companyId,
-          projectId: claim.projectId,
-          rootRunId: run.rootRunId,
-          billingAgentId,
-          operation,
-          requestText,
-          timeoutMs,
-          signal,
-          tavilyAdapter,
-          firecrawlAdapter: null,
-          collectedUrls,
-        });
-        if (tavilyResult.executed) {
-          totalSourceCount += tavilyResult.sourceCount;
-          succeededCount += 1;
-        }
+      const opResult = await this.tryExecuteOperation({
+        runId: claim.runId,
+        companyId: claim.companyId,
+        projectId: claim.projectId,
+        rootRunId: run.rootRunId,
+        billingAgentId,
+        operation,
+        requestText,
+        timeoutMs,
+        signal,
+        tavilyAdapter,
+        firecrawlAdapter,
+        collectedUrls,
+      });
 
-        if (signal.aborted) {
-          break;
-        }
-
-        // Firecrawl search (in addition to Tavily, not just as fallback)
-        const firecrawlResult = await this.tryExecuteOperation({
-          runId: claim.runId,
-          companyId: claim.companyId,
-          projectId: claim.projectId,
-          rootRunId: run.rootRunId,
-          billingAgentId,
-          operation,
-          requestText,
-          timeoutMs,
-          signal,
-          tavilyAdapter: null,
-          firecrawlAdapter,
-          collectedUrls,
-        });
-        if (firecrawlResult.executed) {
-          totalSourceCount += firecrawlResult.sourceCount;
-          succeededCount += 1;
-        }
-      } else {
-        const opResult = await this.tryExecuteOperation({
-          runId: claim.runId,
-          companyId: claim.companyId,
-          projectId: claim.projectId,
-          rootRunId: run.rootRunId,
-          billingAgentId,
-          operation,
-          requestText,
-          timeoutMs,
-          signal,
-          tavilyAdapter,
-          firecrawlAdapter,
-          collectedUrls,
-        });
-
-        if (opResult.executed) {
-          totalSourceCount += opResult.sourceCount;
-          succeededCount += 1;
-        }
+      if (opResult.executed) {
+        totalSourceCount += opResult.sourceCount;
+        succeededCount += 1;
       }
     }
 

@@ -240,7 +240,7 @@ function MissionForm({
       idempotencyKey: key,
       body: {
         projectThreadId: selectedThreadId,
-        mode: missionMode,
+        mode: modeProfileId ? 'custom' : missionMode,
         ...(modeProfileId ? { modeProfileId } : {}),
         request: { text: trimmed },
         ...(requestedCost === undefined ? {} : { limits: { costCents: requestedCost } }),

@@ -27,11 +27,16 @@ import {
   type UserReductions,
 } from './policy.js';
 import { type BuiltInMode, type ModeLimits } from './modes.js';
-import { classifyRequest, type ClassificationResult } from './mode-classifier.js';
+import { classifyRequest, isComplex, type ClassificationResult } from './mode-classifier.js';
 import { BudgetService } from './budget.js';
 import { MissionCancellationService } from './cancellation.js';
 import { encryptReason } from './reason-security.js';
-import { validateAndEncryptIngress, decryptEnvelope, generateSafeSummary } from './ingress.js';
+import {
+  validateAndEncryptIngress,
+  decryptEnvelope,
+  generateSafeSummary,
+  encryptStartPayload,
+} from './ingress.js';
 import {
   incrementMissionCommand,
   incrementMissionIdempotentReplay,
@@ -933,7 +938,7 @@ export class MissionCommandService {
       type: 'questions.answer',
       idempotencyKey,
       requestHash: commandRequestHash('questions.answer', body),
-      payload: { ...(body as Record<string, unknown>) },
+      payload: encryptStartPayload({ ...(body as Record<string, unknown>) }),
       actorType,
       actorId,
       expectedStateVersion: run.stateVersion,
@@ -1574,7 +1579,7 @@ export class MissionCommandService {
       type: 'run.retry',
       idempotencyKey,
       requestHash: commandRequestHash('run.retry', body),
-      payload: { ...(body as Record<string, unknown>) },
+      payload: encryptStartPayload({ ...(body as Record<string, unknown>) }),
       actorType,
       actorId,
       expectedStateVersion: run.stateVersion,
@@ -1629,18 +1634,48 @@ export class MissionCommandService {
         occurredAt: now,
       });
     }
+    const envelope = decryptEnvelope(encryptedEnvelope);
+    const classification = classifyRequest({
+      text: (envelope.text as string) ?? '',
+      context: envelope.context as Record<string, unknown> | undefined,
+    });
+    const strategies = [policy.planningPolicy.strategy, policy.approvalPolicy.strategy];
+    const needsPlanning =
+      strategies.includes('always') ||
+      (strategies.includes('when_complex') && isComplex(classification.reasons));
+    const status = needsPlanning ? 'planning' : 'queued';
+    seq += 1;
+    await tx.insert(schema.runEvents).values({
+      companyId: run.companyId,
+      projectId: run.projectId,
+      runId: successorId,
+      sequence: seq,
+      type: 'run.status_changed',
+      schemaVersion: 1,
+      payload: { from: 'draft', to: status },
+      commandId: commandRow.id,
+      actorType: 'system',
+      actorId: null,
+      traceId,
+      occurredAt: now,
+    });
     await tx
       .update(schema.missionRuns)
-      .set({ lastEventSequence: seq, updatedAt: now })
+      .set({ status, stateVersion: 2, availableAt: now, lastEventSequence: seq, updatedAt: now })
       .where(eq(schema.missionRuns.id, successorId));
-
-    return {
+    const finalSnapshot = await this.buildSnapshot(tx, successorId);
+    const finalStored: StoredResult = {
       statusCode: 202,
-      etag: snapshot.stateVersion,
-      run: snapshot,
-      commandRow,
+      etag: finalSnapshot.stateVersion,
+      run: finalSnapshot,
       successorRunId: successorId,
     };
+    await tx
+      .update(schema.runCommands)
+      .set({ resultBody: finalStored as unknown as Record<string, unknown> })
+      .where(eq(schema.runCommands.id, commandRow.id));
+
+    return { ...finalStored, commandRow };
   }
 
   // -- helpers --------------------------------------------------------------

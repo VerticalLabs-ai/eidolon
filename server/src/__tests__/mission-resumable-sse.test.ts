@@ -370,6 +370,34 @@ describe('Mission SSE frames are ordered and resumable (VAL-RUN-026)', () => {
     conn.close();
   });
 
+  it('pushes a committed event before the fallback timer and unregisters on disconnect', async () => {
+    vi.stubEnv(
+      'EIDOLON_FEATURE_FLAGS',
+      JSON.stringify({
+        missionAgentIntelligence: { enabled: true },
+        missionPolish: { enabled: true },
+      }),
+    );
+    vi.stubEnv('MISSION_SSE_POLL_MS', '60000');
+    const start = await startRun(db, companyId, projectId, threadId, 'sse-notify');
+    const listen = vi.spyOn(db.client!, 'listen');
+    const conn = await openSse(app, streamUrl(companyId, projectId, start.run.id));
+    try {
+      await waitFor(() => (conn.frames.length === 4 ? true : undefined));
+      await waitFor(() => (listen.mock.results.length > 0 ? true : undefined));
+      const meta = await listen.mock.results[0].value;
+      const unlisten = vi.spyOn(meta, 'unlisten');
+      await appendEvents(db, companyId, projectId, start.run.id, 1);
+      await waitFor(() => (conn.frames.length === 5 ? true : undefined));
+      expect(conn.frames.map((frame) => Number(frame.id))).toEqual([1, 2, 3, 4, 5]);
+      conn.close();
+      await waitFor(() => (unlisten.mock.calls.length > 0 ? true : undefined));
+    } finally {
+      conn.close();
+      vi.restoreAllMocks();
+    }
+  });
+
   it('rejects a cross-scope run id with 404 RUN_NOT_FOUND before SSE headers', async () => {
     const start = await startRun(db, companyId, projectId, threadId, 'sse-xscope-001');
 

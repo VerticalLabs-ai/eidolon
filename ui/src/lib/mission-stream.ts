@@ -69,6 +69,7 @@ export function useMissionRunStream(
   const gapDetectedRef = useRef(false);
   const esRef = useRef<EventSource | null>(null);
   const closedRef = useRef(false);
+  const identityRef = useRef<string | null>(null);
 
   const handleEvent = useCallback(
     (eventType: string, data: string, eventId: string) => {
@@ -181,7 +182,8 @@ export function useMissionRunStream(
         eventType === 'child.started' ||
         eventType === 'child.completed' ||
         eventType === 'child.failed' ||
-        eventType === 'child.cancel_requested'
+        eventType === 'child.cancel_requested' ||
+        eventType === 'descendant.progressed'
       ) {
         qc.invalidateQueries({
           queryKey: ['mission-run-children', companyId, projectId, runId],
@@ -219,6 +221,14 @@ export function useMissionRunStream(
   );
 
   useEffect(() => {
+    const identity = JSON.stringify([companyId, projectId, runId]);
+    if (identityRef.current !== identity) {
+      identityRef.current = identity;
+      lastSeqRef.current = 0;
+      gapDetectedRef.current = false;
+      setLastSequence(0);
+      setGapDetected(false);
+    }
     if (!enabled || !companyId || !projectId || !runId) {
       setStatus('idle');
       return;
@@ -239,9 +249,10 @@ export function useMissionRunStream(
     closedRef.current = false;
     setStatus('connecting');
 
-    // Build the stream URL. Use after=0 for a complete initial replay.
-    // On browser auto-reconnect, Last-Event-ID is sent automatically.
-    const url = `/api/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/stream?after=${lastSeqRef.current}`;
+    // Omit explicit `after`: its protocol precedence would mask the browser's
+    // updated Last-Event-ID on automatic reconnect. Initial requests default
+    // to zero; native reconnects resume from their latest received event ID.
+    const url = `/api/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/stream`;
 
     let eventSource: EventSource;
     try {
@@ -271,6 +282,18 @@ export function useMissionRunStream(
         setStatus('reconnecting');
       }
     };
+
+    // Overflow is control metadata, not a journal event. Refetch the
+    // authoritative replay immediately; EventSource reconnects with its
+    // last received id after the server closes this connection.
+    eventSource.addEventListener('buffer_overflow', () => {
+      if (closedRef.current) {
+        return;
+      }
+      setStatus('reconnecting');
+      qc.invalidateQueries({ queryKey: ['mission-run-events', companyId, projectId, runId] });
+      qc.invalidateQueries({ queryKey: ['mission-run-snapshot', companyId, projectId, runId] });
+    });
 
     // Listen for all event types. The SSE stream sends typed events
     // with `event: <type>` and `id: <sequence>`.
@@ -368,6 +391,7 @@ export function useMissionRunStream(
       'child.completed',
       'child.failed',
       'child.cancel_requested',
+      'descendant.progressed',
     ];
     for (const type of namedTypes) {
       eventSource.addEventListener(type, messageHandler);

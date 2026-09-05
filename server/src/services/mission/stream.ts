@@ -2,6 +2,7 @@ import { and, eq, gt, asc } from 'drizzle-orm';
 import type { Request, Response } from 'express';
 import { AppError } from '../../middleware/error-handler.js';
 import { sanitizeEventPayload } from './sanitize.js';
+import { isFeatureEnabled } from '../feature-flags.js';
 import type { DbInstance } from '../../types.js';
 
 /**
@@ -24,8 +25,11 @@ import type { DbInstance } from '../../types.js';
  *   completely processed ID.
  * - Validate scope/cursor before sending SSE headers. A cursor greater
  *   than the latest sequence returns `409 CURSOR_AHEAD`.
- * - Slow clients are disconnected when buffered output exceeds 1 MiB;
- *   reconnect/replay supplies lossless recovery.
+ * - Slow clients are disconnected when buffered output exceeds the
+ *   configured maxBufferBytes (4 MiB with missionPolish, 1 MiB without);
+ *   a `buffer_overflow` SSE event with recovery metadata is sent before
+ *   disconnecting when missionPolish is enabled. Reconnect/replay
+ *   supplies lossless recovery.
  * - A terminal event is followed by a final heartbeat/comment and
  *   graceful close.
  *
@@ -59,13 +63,9 @@ export interface StreamInput {
 
 export class MissionStreamService {
   private readonly heartbeatMs: number;
-  private readonly pollMs: number;
-  private readonly maxBufferBytes: number;
 
   constructor(private db: DbInstance) {
     this.heartbeatMs = Number(process.env.MISSION_SSE_HEARTBEAT_MS) || 15_000;
-    this.pollMs = Number(process.env.MISSION_SSE_POLL_MS) || 1_000;
-    this.maxBufferBytes = Number(process.env.MISSION_SSE_MAX_BUFFER_BYTES) || 1_048_576; // 1 MiB
   }
 
   /**
@@ -77,6 +77,13 @@ export class MissionStreamService {
   async stream(input: StreamInput, req: Request, res: Response): Promise<void> {
     const { companyId, projectId, runId } = input;
     const schema = this.db.schema;
+    // Evaluate company-scoped rollout flags per connection, not once on
+    // the router's shared service instance.
+    const polishEnabled = isFeatureEnabled('missionPolish', companyId);
+    const pollMs = Number(process.env.MISSION_SSE_POLL_MS) || (polishEnabled ? 200 : 1_000);
+    const maxBufferBytes =
+      Number(process.env.MISSION_SSE_MAX_BUFFER_BYTES) ||
+      (polishEnabled ? 4 * 1024 * 1024 : 1_048_576);
 
     // 1. Resolve cursor: explicit `after` wins, then Last-Event-ID, then 0.
     const cursor = input.after ?? input.lastEventId ?? 0;
@@ -126,6 +133,18 @@ export class MissionStreamService {
     let bytesWrittenSinceDrain = 0;
     let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    // VAL-M1-086: pollingInProgress prevents overlapping poll executions
+    // when a LISTEN/NOTIFY notification triggers an immediate poll while a
+    // scheduled poll is still running. Both paths call sendNewEvents which
+    // deduplicates by sequence (only fetches sequence > lastSentSequence).
+    let pollingInProgress = false;
+    // VAL-M1-079/093: set when sendNewEvents returns false due to
+    // backpressure (not client disconnect). The caller checks this to
+    // decide whether to emit a buffer_overflow event before closing.
+    let backpressure = false;
+    // VAL-M1-090: unlisten function from postgres.js listen(). Called in
+    // cleanup to UNLISTEN and release the dedicated connection.
+    let unlisten: (() => Promise<void>) | null = null;
 
     const cleanup = (): void => {
       closed = true;
@@ -136,6 +155,13 @@ export class MissionStreamService {
       if (pollTimer) {
         clearTimeout(pollTimer);
         pollTimer = null;
+      }
+      // VAL-M1-090: UNLISTEN on disconnect to prevent resource leaks.
+      // Fire-and-forget — the connection is closing anyway.
+      if (unlisten) {
+        const fn = unlisten;
+        unlisten = null;
+        fn().catch(() => {});
       }
     };
 
@@ -199,6 +225,24 @@ export class MissionStreamService {
       }
     };
 
+    // 7b. VAL-M1-079/093: Write a buffer_overflow SSE event before
+    //     disconnecting on backpressure. The event contains recovery
+    //     metadata (runId, lastSequence, recoverUrl) so the client can
+    //     replay missed events via the JSON events endpoint using
+    //     lastSequence as the `after` cursor (VAL-M1-080/120).
+    //     Only emitted when missionPolish is enabled (VAL-M1-100).
+    const writeBufferOverflow = (): void => {
+      if (closed || res.writableEnded || !polishEnabled) {
+        return;
+      }
+      const data = JSON.stringify({
+        runId,
+        lastSequence: lastSentSequence,
+        recoverUrl: `/api/companies/${companyId}/projects/${projectId}/mission-runs/${runId}/events?after=${lastSentSequence}`,
+      });
+      res.write(`event: buffer_overflow\ndata: ${data}\n\n`);
+    };
+
     // 8. Check if the client is too slow. Uses two signals:
     //    a) writableLength: the internal write buffer that hasn't been
     //       flushed to the OS. Grows when the OS send buffer is full.
@@ -209,10 +253,10 @@ export class MissionStreamService {
     //       this grows quickly when the client pauses reading.
     const isSlowClient = (): boolean => {
       const socket = res.socket;
-      if (socket && socket.writableLength > this.maxBufferBytes) {
+      if (socket && socket.writableLength > maxBufferBytes) {
         return true;
       }
-      if (bytesWrittenSinceDrain > this.maxBufferBytes) {
+      if (bytesWrittenSinceDrain > maxBufferBytes) {
         return true;
       }
       return false;
@@ -274,7 +318,10 @@ export class MissionStreamService {
             occurredAt: row.occurredAt.toISOString(),
           });
           if (isSlowClient()) {
-            // Slow client: buffered output exceeds threshold. Disconnect.
+            // Slow client: buffered output exceeds threshold. Mark
+            // backpressure so the caller emits a buffer_overflow event
+            // before disconnecting (VAL-M1-079).
+            backpressure = true;
             return false;
           }
         }
@@ -309,6 +356,9 @@ export class MissionStreamService {
     const ok = await sendNewEvents();
     if (!ok) {
       // Slow client during replay or client disconnected.
+      if (backpressure) {
+        writeBufferOverflow();
+      }
       cleanup();
       if (!res.writableEnded) {
         res.end();
@@ -324,55 +374,95 @@ export class MissionStreamService {
     }
 
     // 13. Live tail: poll the journal for new events at intervals.
+    //    VAL-M1-086: In hybrid mode (missionPolish enabled), the stream
+    //    both LISTENs on the NOTIFY channel and polls every 200ms. The
+    //    polling acts as a safety net in case a NOTIFY is missed. The
+    //    stream deduplicates events fetched via polling vs. push by
+    //    sequence number (sendNewEvents only fetches sequence >
+    //    lastSentSequence). The pollingInProgress flag prevents
+    //    overlapping poll executions when a NOTIFY triggers an immediate
+    //    poll while a scheduled poll is still running.
     const poll = async (): Promise<void> => {
       if (closed) {
         return;
       }
+      // Prevent overlapping polls. If a NOTIFY arrives while a poll is
+      // in progress, skip — the current poll queries sequence >
+      // lastSentSequence so it will pick up the new event. The next
+      // scheduled poll (or another NOTIFY) will catch anything missed.
+      if (pollingInProgress) {
+        return;
+      }
+      pollingInProgress = true;
 
-      // Live revocation re-check: if the access checker returns false,
-      // the user's membership or role has been revoked/downgraded since
-      // the connection opened. Gracefully close the SSE stream so the
-      // client reconnects and hits the fresh permission check
-      // (VAL-CROSS-088).
-      if (input.accessChecker) {
-        try {
-          const hasAccess = await input.accessChecker();
-          if (!hasAccess) {
+      try {
+        // Live revocation re-check: if the access checker returns false,
+        // the user's membership or role has been revoked/downgraded since
+        // the connection opened. Gracefully close the SSE stream so the
+        // client reconnects and hits the fresh permission check
+        // (VAL-CROSS-088).
+        if (input.accessChecker) {
+          try {
+            const hasAccess = await input.accessChecker();
+            if (!hasAccess) {
+              cleanup();
+              if (!res.writableEnded) {
+                res.end();
+              }
+              return;
+            }
+          } catch {
+            // On error, fail closed: close the connection.
             cleanup();
             if (!res.writableEnded) {
               res.end();
             }
             return;
           }
-        } catch {
-          // On error, fail closed: close the connection.
+        }
+
+        backpressure = false;
+        const ok = await sendNewEvents();
+        if (!ok) {
+          // Slow client (backpressure) or client disconnect.
+          if (backpressure) {
+            writeBufferOverflow();
+          }
           cleanup();
           if (!res.writableEnded) {
             res.end();
           }
           return;
         }
-      }
 
-      const ok = await sendNewEvents();
-      if (!ok) {
-        // Slow client or client disconnect.
+        const terminal = await checkTerminal();
+        if (terminal) {
+          gracefulClose();
+          return;
+        }
+      } catch {
+        // A failed journal read must close the projection so the client
+        // can reconnect and replay, rather than leave an inert stream.
         cleanup();
         if (!res.writableEnded) {
           res.end();
         }
+      } finally {
+        pollingInProgress = false;
+      }
+    };
+
+    // Keep timer ownership separate from NOTIFY. If a timer fires during
+    // a push-triggered read, it must still schedule the next safety poll.
+    const schedulePoll = (): void => {
+      if (closed) {
         return;
       }
-
-      const terminal = await checkTerminal();
-      if (terminal) {
-        gracefulClose();
-        return;
-      }
-
-      if (!closed) {
-        pollTimer = setTimeout(poll, this.pollMs);
-      }
+      pollTimer = setTimeout(async () => {
+        pollTimer = null;
+        await poll();
+        schedulePoll();
+      }, pollMs);
     };
 
     // 14. Heartbeat loop: send a comment at idle intervals.
@@ -386,8 +476,38 @@ export class MissionStreamService {
       }
     };
 
-    // Start the poll and heartbeat loops.
-    pollTimer = setTimeout(poll, this.pollMs);
+    // 15. VAL-M1-072/084/086: Start Postgres LISTEN/NOTIFY for push-based
+    //     event delivery. When missionPolish is enabled and a raw postgres
+    //     client is available, LISTEN on the per-run channel
+    //     `run_event_<runId>`. On notification, trigger an immediate poll
+    //     (push). The 200ms polling safety net continues in parallel
+    //     (hybrid mode). UNLISTEN is called in cleanup on disconnect
+    //     (VAL-M1-090). If LISTEN fails (trigger not installed, connection
+    //     issue), the stream gracefully falls back to polling-only mode
+    //     (VAL-M1-091).
+    // Start the fallback and heartbeat before waiting for LISTEN, whose
+    // dedicated connection may be unavailable or slow to establish.
+    schedulePoll();
     heartbeatTimer = setTimeout(heartbeat, this.heartbeatMs);
+
+    if (polishEnabled && this.db.client) {
+      const channel = `run_event_${runId}`;
+      try {
+        const meta = await this.db.client.listen(channel, () => {
+          // Trigger an immediate poll on NOTIFY. The poll function
+          // handles the pollingInProgress guard and dedup by sequence.
+          void poll();
+        });
+        if (closed) {
+          await meta.unlisten();
+        } else {
+          unlisten = () => meta.unlisten();
+        }
+      } catch {
+        // LISTEN failed — fall back to polling-only mode (VAL-M1-091).
+        // No error surfaced to the client; the stream continues via polling.
+        unlisten = null;
+      }
+    }
   }
 }

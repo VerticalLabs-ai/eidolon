@@ -472,7 +472,7 @@ describe('Cancelled root retry begins a fresh prepared run (VAL-CROSS-060)', () 
   beforeEach(() => enableMissionFlag());
   afterEach(() => vi.unstubAllEnvs());
 
-  it('creates a distinct initialized successor in draft with fresh policy, idempotency scope, and reservation', async () => {
+  it('creates a distinct initialized runnable successor with fresh policy, idempotency scope, and reservation', async () => {
     const ctx = await freshRun('__mtest__ retry-cancelled-fresh');
     await setTerminalStatus(ctx.db, ctx.runId, 'cancelled');
     const terminalVersion = await getRunVersion(ctx.db, ctx.runId);
@@ -487,9 +487,9 @@ describe('Cancelled root retry begins a fresh prepared run (VAL-CROSS-060)', () 
 
     const successorId = res.body.data.run.id as string;
 
-    // Successor is in draft (preparing) state.
+    // Simple Fast retries are ready for the coordinator to claim.
     const succSnapshot = await getRunSnapshot(ctx.app, ctx.base, successorId);
-    expect(succSnapshot.status).toBe('draft');
+    expect(succSnapshot.status).toBe('queued');
     expect(succSnapshot.retryOfRunId).toBe(ctx.runId);
 
     // Fresh policy snapshot (distinct from the original).
@@ -521,7 +521,7 @@ describe('Cancelled root retry begins a fresh prepared run (VAL-CROSS-060)', () 
     expect(await countSuccessors(ctx.db, ctx.runId)).toBe(1);
   });
 
-  it('successor starts in draft and its first legal worker transition is to awaiting_input or planning', async () => {
+  it('successor is queued with an ordered transition event before worker execution', async () => {
     const ctx = await freshRun('__mtest__ retry-legal-transition');
     await setTerminalStatus(ctx.db, ctx.runId, 'cancelled');
     const terminalVersion = await getRunVersion(ctx.db, ctx.runId);
@@ -536,10 +536,8 @@ describe('Cancelled root retry begins a fresh prepared run (VAL-CROSS-060)', () 
     const successorId = res.body.data.run.id as string;
     const succSnapshot = res.body.data.run;
 
-    // The successor is in draft — the state machine says draft can only
-    // transition to awaiting_input or planning (never directly to queued,
-    // running, or a terminal state).
-    expect(succSnapshot.status).toBe('draft');
+    // Preparation queues simple work without starting any external effect.
+    expect(succSnapshot.status).toBe('queued');
 
     // Verify the successor's events start with run.created (draft) and
     // mode.resolved, policy.snapshotted, budget.reserved — the preparation

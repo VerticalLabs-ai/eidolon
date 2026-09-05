@@ -728,7 +728,7 @@ describe('VAL-PLAN-110: Terminal retry requires fresh governance', () => {
 
     // Successor has no approved pointer or current plan.
     const successorRow = await getRunRow(db, successorId);
-    expect(successorRow!.status).toBe('draft');
+    expect(successorRow!.status).toBe('planning');
     expect(successorRow!.approvedPlanRevisionId).toBeNull();
     expect(successorRow!.currentPlanRevisionId).toBeNull();
 

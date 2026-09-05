@@ -591,9 +591,9 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 2 — Firecrawl searc
     await executor.execute(ctx);
 
     // Verify both Tavily and Firecrawl search were attempted independently.
-    expect(capturedProviders.length).toBe(2);
+    expect(capturedProviders.length).toBe(1);
     expect(capturedProviders.map((p) => p.name)).toContain('tavily');
-    expect(capturedProviders.map((p) => p.name)).toContain('firecrawl');
+    expect(capturedProviders.map((p) => p.name)).not.toContain('firecrawl');
 
     vi.unstubAllEnvs();
   });

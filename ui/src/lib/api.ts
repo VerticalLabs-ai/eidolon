@@ -3617,7 +3617,7 @@ export const BUILT_IN_MODE_DISPLAY: BuiltInModeDisplay[] = [
 
 export interface MissionStartBody {
   projectThreadId: string;
-  mode: MissionMode;
+  mode: MissionMode | 'custom';
   /** Custom profile ID when a company-defined profile is selected.
    * Additive: absent for built-in modes. */
   modeProfileId?: string;
@@ -3682,6 +3682,7 @@ export const startMissionRun = (
 
 /** Authoritative run snapshot from the server (RunSnapshot in snapshot.ts). */
 export interface MissionRunSnapshot {
+  requestSafeSummary?: string | null;
   id: string;
   companyId: string;
   projectId: string;

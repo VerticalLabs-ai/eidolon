@@ -112,9 +112,13 @@ function waitForCoEdit(
 }
 
 function closeWs(ws: WebSocket | null): Promise<void> {
-  if (!ws) {return Promise.resolve();}
+  if (!ws) {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
-    if (ws.readyState === WebSocket.CLOSED) {return resolve();}
+    if (ws.readyState === WebSocket.CLOSED) {
+      return resolve();
+    }
     ws.once('close', () => resolve());
     ws.close();
   });

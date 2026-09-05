@@ -35,12 +35,7 @@ import {
   createCredentialHandle,
 } from './credential-resolver.js';
 import type { ResearchCircuitBreaker as CircuitBreakerService } from './circuit-breaker.js';
-import {
-  type ResearchPricingService,
-  type PricingTableEntry,
-  type PricingSnapshotResult,
-  recomputeCents,
-} from './pricing.js';
+import { type ResearchPricingService, type PricingTableEntry } from './pricing.js';
 import type { SourceRevisionService } from './source-revision-service.js';
 import type { ResearchAttemptAccountingService } from './research-attempt-accounting.js';
 import {
@@ -225,9 +220,107 @@ export class ResearchExecutionService {
     //    resolution above serves as the credential guard (fail closed when
     //    no credential is available). The adapters themselves are
     //    constructed by the caller with the resolved API key.
+    let attemptOrdinal = 0;
+    let attemptId = '';
+    let costCents = 0;
+    // Wrap the physical adapter call, rather than audit hooks (whose failures
+    // are deliberately swallowed). Every retry/fallback must acquire its own
+    // durable hold and settle before another physical request can begin.
     const fallbackEntries: FallbackEntry[] = config.providers.map((pc) => ({
-      provider: pc.provider,
       name: pc.name,
+      provider: {
+        supports: (operation) => pc.provider.supports(operation),
+        execute: async (request, context) => {
+          await resolveResearchCredential(
+            this.credentialStore,
+            input.companyId,
+            pc.name,
+            pc.name === providerName ? defaultKey : undefined,
+          );
+          const entry = this.pricingTable?.[`${pc.name}:${input.operation}`];
+          const estimate = entry?.conservativeUnknownPriceCents ?? 100;
+          const ordinal = ++attemptOrdinal;
+          const externalCallId = `research:${logicalCallId}:${ordinal}`;
+          let currentAttemptId = '';
+          await this.db.drizzle.transaction(async (tx) => {
+            await this.accounting.preflight(tx, input.runId, estimate);
+            const hold = await this.accounting.reserveInFlight(tx, {
+              companyId: input.companyId,
+              projectId: input.projectId,
+              runId: input.runId,
+              rootRunId: input.rootRunId,
+              logicalCallId,
+              attemptOrdinal: ordinal,
+              provider: pc.name,
+              operation: input.operation,
+              reservedCents: estimate,
+            });
+            currentAttemptId = hold.attemptId;
+            await this.accounting.markStarted(tx, currentAttemptId);
+          });
+          let result: ResearchResult;
+          try {
+            result = await pc.provider.execute(request, context);
+          } catch (error) {
+            const code = error instanceof ResearchProviderError ? error.code : 'PROVIDER_TRANSIENT';
+            // An ambiguous response can already have incurred a charge.
+            const unknown = ['PROVIDER_TRANSIENT', 'MALFORMED_RESPONSE', 'CANCELLED'].includes(
+              code,
+            );
+            await this.db.drizzle.transaction(async (tx) => {
+              if (unknown) {
+                await this.accounting.markUnknown(tx, currentAttemptId, {
+                  externalCallId,
+                  conservativeMaxCents: estimate,
+                  billingAgentId: input.billingAgentId,
+                });
+              } else {
+                await this.accounting.markFailed(
+                  tx,
+                  currentAttemptId,
+                  code,
+                  'Research provider attempt failed',
+                );
+              }
+            });
+            if (unknown) {
+              costCents += estimate;
+            }
+            throw error;
+          }
+          // Freeze actual reported usage in a new immutable snapshot. Missing
+          // usage is charged conservatively and is never silently treated as zero.
+          const snapshot =
+            entry && result.credits !== undefined
+              ? await this.pricingService.snapshotPricing(entry, result.credits)
+              : undefined;
+          const charge = snapshot?.resultingCents ?? estimate;
+          const requestHash = result.providerRequestId
+            ? createHash('sha256').update(result.providerRequestId, 'utf8').digest('hex')
+            : undefined;
+          await this.db.drizzle.transaction(async (tx) => {
+            if (result.credits === undefined) {
+              await this.accounting.markUnknown(tx, currentAttemptId, {
+                externalCallId,
+                conservativeMaxCents: estimate,
+                billingAgentId: input.billingAgentId,
+              });
+            } else {
+              await this.accounting.settleAttempt(tx, currentAttemptId, {
+                externalCallId,
+                reportedCredits: result.credits,
+                providerRequestIdHash: requestHash,
+                pricingSnapshotId: snapshot?.id,
+                costCents: charge,
+                billingAgentId: input.billingAgentId,
+              });
+            }
+          });
+          attemptId = currentAttemptId;
+          costCents += charge;
+          return result;
+        },
+      },
     }));
 
     // 3. Build the research request.
@@ -250,43 +343,6 @@ export class ResearchExecutionService {
     if (!validation.ok) {
       throw validation.error!;
     }
-
-    // 5. Create or retrieve a pricing snapshot for settlement.
-    const pricingKey = `${providerName}:${input.operation}`;
-    const pricingEntry = this.pricingTable?.[pricingKey];
-    let pricingSnapshot: PricingSnapshotResult | undefined;
-    if (pricingEntry) {
-      // Create an immutable pricing snapshot for this attempt.
-      pricingSnapshot = await this.pricingService.snapshotPricing(
-        pricingEntry,
-        0, // credits reported after execution; snapshot created with 0, recomputed at settlement
-      );
-    }
-    const conservativeEstimateCents = pricingSnapshot?.conservativeUnknownPriceCents ?? 100;
-
-    // 6. Reserve budget in-flight inside a transaction.
-    let attemptId: string;
-    await this.db.drizzle.transaction(async (tx) => {
-      // Preflight: verify budget can cover the conservative estimate.
-      await this.accounting.preflight(tx, input.runId, conservativeEstimateCents);
-
-      // Reserve in-flight hold.
-      const reserveResult = await this.accounting.reserveInFlight(tx, {
-        companyId: input.companyId,
-        projectId: input.projectId,
-        runId: input.runId,
-        rootRunId: input.rootRunId,
-        logicalCallId,
-        attemptOrdinal: 1,
-        provider: providerName,
-        operation: input.operation,
-        reservedCents: conservativeEstimateCents,
-      });
-      attemptId = reserveResult.attemptId;
-
-      // Mark started.
-      await this.accounting.markStarted(tx, attemptId);
-    });
 
     // 7. Emit research.started event (VAL-CROSS-033).
     await this.emitResearchEvent(input, 'research.started', {
@@ -336,13 +392,7 @@ export class ResearchExecutionService {
     try {
       providerResult = await executeWithFallback(request, fallbackEntries, fallbackConfig, context);
     } catch (err) {
-      // Mark the attempt as failed and release the in-flight hold.
       const errorCode = err instanceof ResearchProviderError ? err.code : 'PROVIDER_PERMANENT';
-      const safeMessage =
-        err instanceof ResearchProviderError ? err.message : 'Research provider execution failed';
-      await this.db.drizzle.transaction(async (tx) => {
-        await this.accounting.markFailed(tx, attemptId!, errorCode, safeMessage);
-      });
       // Emit research.failed event (VAL-CROSS-033).
       await this.emitResearchEvent(input, 'research.failed', {
         logicalCallId,
@@ -371,7 +421,7 @@ export class ResearchExecutionService {
         runId: input.runId,
         rootRunId: input.rootRunId,
         logicalCallId,
-        provider: providerName,
+        provider: providerResult.provider,
         operation: input.operation,
         providerRequestIdHash,
         source,
@@ -394,34 +444,6 @@ export class ResearchExecutionService {
         createdNewRevision: persisted.createdNewRevision,
       });
     }
-
-    // 10. Settle the attempt with credits and cost.
-    let costCents = 0;
-    await this.db.drizzle.transaction(async (tx) => {
-      const externalCallId = `research:${logicalCallId}:1`;
-      const reportedCredits = providerResult.credits ?? 0;
-
-      // Compute cost from pricing snapshot.
-      if (pricingSnapshot) {
-        costCents = recomputeCents({
-          unitDefinition: pricingSnapshot.unitDefinition,
-          roundingRule: pricingSnapshot.roundingRule,
-          reportedCredits,
-        });
-      } else {
-        // No pricing snapshot — use conservative max.
-        costCents = conservativeEstimateCents;
-      }
-
-      await this.accounting.settleAttempt(tx, attemptId!, {
-        externalCallId,
-        reportedCredits,
-        providerRequestIdHash,
-        pricingSnapshotId: pricingSnapshot?.id,
-        costCents,
-        billingAgentId: input.billingAgentId,
-      });
-    });
 
     // 11. Emit research.completed event (VAL-CROSS-033).
     // Include the hashed provider request ID for trace correlation

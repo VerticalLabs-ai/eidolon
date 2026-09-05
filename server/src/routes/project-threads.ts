@@ -420,7 +420,9 @@ export function projectThreadsRouter(db: DbInstance): Router {
         const resolved = [];
         for (const m of body.mentions) {
           const valid = await mentionService.resolveMention(companyId, m.entityType, m.entityId);
-          if (valid) {resolved.push(m);}
+          if (valid) {
+            resolved.push(m);
+          }
         }
         // Reconcile: keep existing mentions that are still present (by entityId),
         // add new ones, drop removed ones. This preserves stable IDs for retained mentions.

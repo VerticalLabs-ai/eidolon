@@ -713,7 +713,7 @@ describe('ChatMissionComposer', () => {
     expect(mutate).toHaveBeenCalledTimes(1);
     const call = mutate.mock.calls[0][0];
     expect(call.body.modeProfileId).toBe('profile-a');
-    // Built-in mode defaults to 'auto' but is superseded by the custom profile
+    expect(call.body.mode).toBe('custom');
     expect(call.body.request.text).toBe('Gather sources on market trends');
   });
 

@@ -1,3 +1,4 @@
+import { ResearchAttemptAccountingService } from './research/research-attempt-accounting.js';
 import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../middleware/error-handler.js';
@@ -398,7 +399,7 @@ export class ToolDispatcher {
         // intersection of the snapshot's tools and the agent's current tools.
         // If the tool was revoked from the agent, deny.
         const currentTools = new Set((agent.toolsEnabled as string[] | null) ?? []);
-        if (currentTools.size > 0 && !currentTools.has(input.toolId)) {
+        if (!currentTools.has(input.toolId)) {
           await this.emitDenied(
             tx,
             run,
@@ -453,6 +454,28 @@ export class ToolDispatcher {
           authorized: false,
           denialCode: 'LIMIT_EXCEEDED',
           denialMessage: 'Provider call limit exceeded',
+        };
+      }
+
+      const budget = await new ResearchAttemptAccountingService(this.db).getAllocationState(
+        tx,
+        run.id,
+      );
+      if (budget.remainingCents <= 0 || run.actualCostCents >= limits.costCents) {
+        await this.emitDenied(
+          tx,
+          run,
+          input.toolId,
+          'BUDGET_UNAVAILABLE',
+          'The run has no remaining tool budget.',
+          traceId,
+          actorType,
+          actorId,
+        );
+        return {
+          authorized: false,
+          denialCode: 'BUDGET_UNAVAILABLE',
+          denialMessage: 'The run has no remaining tool budget.',
         };
       }
 

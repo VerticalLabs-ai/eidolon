@@ -73,11 +73,11 @@ describe('Mission run list (VAL-RUN-019)', () => {
 
   beforeAll(async () => {
     db = await createTestDb();
-    app = await createTestServer(db);
   });
 
   beforeEach(async () => {
     enableMissionFlag();
+    app = await createTestServer(db);
     const company = await request(app)
       .post('/api/companies')
       .send({ name: '__mtest__ list scope', settings: { testFixture: true } })
@@ -292,11 +292,11 @@ describe('Mission run snapshot recovery state (VAL-RUN-020)', () => {
 
   beforeAll(async () => {
     db = await createTestDb();
-    app = await createTestServer(db);
   });
 
   beforeEach(async () => {
     enableMissionFlag();
+    app = await createTestServer(db);
     const company = await request(app)
       .post('/api/companies')
       .send({ name: '__mtest__ snapshot', settings: { testFixture: true } })
@@ -343,6 +343,7 @@ describe('Mission run snapshot recovery state (VAL-RUN-020)', () => {
     expect(run.policySnapshotId).toBeTruthy();
     expect(run.policyContentHash).toMatch(/^[0-9a-f]{64}$/);
     expect(run.requestContentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(run.requestSafeSummary).toBe('Snapshot me');
     // Budget summary.
     expect(run.budget).toBeDefined();
     expect(run.budget.reservedCents).toBeGreaterThan(0);
@@ -415,11 +416,11 @@ describe('Mission run conditional refresh (VAL-RUN-021)', () => {
 
   beforeAll(async () => {
     db = await createTestDb();
-    app = await createTestServer(db);
   });
 
   beforeEach(async () => {
     enableMissionFlag();
+    app = await createTestServer(db);
     const company = await request(app)
       .post('/api/companies')
       .send({ name: '__mtest__ conditional', settings: { testFixture: true } })
@@ -511,11 +512,11 @@ describe('Mission run aggregate ETag (VAL-RUN-129)', () => {
 
   beforeAll(async () => {
     db = await createTestDb();
-    app = await createTestServer(db);
   });
 
   beforeEach(async () => {
     enableMissionFlag();
+    app = await createTestServer(db);
     const company = await request(app)
       .post('/api/companies')
       .send({ name: '__mtest__ aggregate etag', settings: { testFixture: true } })

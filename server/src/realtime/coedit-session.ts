@@ -131,7 +131,9 @@ export function getSessionContent(artifactId: string): {
   lastSavedContent: Record<string, unknown>;
 } | null {
   const session = sessions.get(artifactId);
-  if (!session || session.participants.size === 0) {return null;}
+  if (!session || session.participants.size === 0) {
+    return null;
+  }
   return {
     content: session.content,
     version: session.version,
@@ -159,7 +161,9 @@ export function mergeExternalUpdate(
   },
 ): { merged: Record<string, unknown>; ops: CoEditOp[] } | null {
   const session = sessions.get(artifactId);
-  if (!session || session.participants.size === 0) {return null;}
+  if (!session || session.participants.size === 0) {
+    return null;
+  }
 
   const base = session.lastSavedContent;
   const current = session.content;
@@ -220,9 +224,13 @@ export async function flushSession(
   },
   title?: string,
 ): Promise<{ version: number; content: Record<string, unknown> } | null> {
-  if (!_db) {throw new Error('CoEdit manager not initialized');}
+  if (!_db) {
+    throw new Error('CoEdit manager not initialized');
+  }
   const session = sessions.get(artifactId);
-  if (!session) {return null;}
+  if (!session) {
+    return null;
+  }
 
   if (!session.dirty && title === undefined) {
     return { version: session.version, content: session.content };
@@ -322,7 +330,9 @@ export function updateSessionAfterFlush(
   title?: string,
 ): void {
   const session = sessions.get(artifactId);
-  if (!session) {return;}
+  if (!session) {
+    return;
+  }
   session.version = newVersion;
   session.lastSavedContent = JSON.parse(JSON.stringify(content));
   session.dirty = false;
@@ -351,7 +361,9 @@ export async function joinSession(
   name: string,
   ws: WebSocket,
 ): Promise<void> {
-  if (!_db) {throw new Error('CoEdit manager not initialized');}
+  if (!_db) {
+    throw new Error('CoEdit manager not initialized');
+  }
 
   let session = sessions.get(artifactId);
   if (!session) {
@@ -407,7 +419,9 @@ export async function joinSession(
  */
 export async function leaveSession(artifactId: string, userId: string): Promise<void> {
   const session = sessions.get(artifactId);
-  if (!session) {return;}
+  if (!session) {
+    return;
+  }
 
   session.participants.delete(userId);
 
@@ -434,7 +448,9 @@ export async function leaveSession(artifactId: string, userId: string): Promise<
 /** Remove a participant by WS connection (on disconnect). */
 export async function leaveSessionByWs(artifactId: string, ws: WebSocket): Promise<void> {
   const session = sessions.get(artifactId);
-  if (!session) {return;}
+  if (!session) {
+    return;
+  }
   for (const [userId, participant] of session.participants) {
     if (participant.ws === ws) {
       await leaveSession(artifactId, userId);
@@ -510,7 +526,9 @@ export function broadcastCursor(
   position: number | { rowId: string; colKey: string } | { cardId: string } | null,
 ): void {
   const session = sessions.get(artifactId);
-  if (!session) {return;}
+  if (!session) {
+    return;
+  }
   if (!session.participants.has(userId)) {
     throw new Error('Not a participant in this co-edit session');
   }
@@ -542,7 +560,9 @@ export function broadcastSelection(
   range: { start: number; end: number } | null,
 ): void {
   const session = sessions.get(artifactId);
-  if (!session) {return;}
+  if (!session) {
+    return;
+  }
   if (!session.participants.has(userId)) {
     throw new Error('Not a participant in this co-edit session');
   }

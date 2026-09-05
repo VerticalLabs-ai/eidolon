@@ -251,7 +251,9 @@ export class RoutineTriggerService {
     work: RoutineTriggerWork,
     error: unknown,
   ) {
-    if (!work.execution) {return;}
+    if (!work.execution) {
+      return;
+    }
 
     const { tasks, agentExecutions, taskThreadItems, automationRuns } = this.db.schema;
     const now = new Date();

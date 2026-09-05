@@ -462,10 +462,10 @@ describe('fix-ut-m5-citation-quote-validation: synthesis creates citations from 
     expect(citeRows[0].source_revision_id).toBe(rev.sourceRevisionId);
     expect(citeRows[0].frozen_canonical_url).toBe('https://example.com/metadata-only');
     expect(citeRows[0].frozen_provider).toBe('tavily');
-    // No char offsets for metadata-only citations.
-    expect(citeRows[0].char_start).toBeNull();
-    expect(citeRows[0].char_end).toBeNull();
-    // Quote hash is still present (SHA-256 of empty string).
+    // Synthesis citations pin a real excerpt in the immutable revision.
+    expect(citeRows[0].char_start).toBe(0);
+    expect(citeRows[0].char_end).toBeGreaterThan(0);
+    // Quote hash identifies the actual source excerpt.
     expect(citeRows[0].quote_hash.length).toBe(64);
   });
 

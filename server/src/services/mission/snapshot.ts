@@ -68,6 +68,7 @@ export interface RunSnapshot {
     limits: Record<string, number>;
   } | null;
   requestContentHash: string;
+  requestSafeSummary?: string | null;
   currentQuestionSetId: string | null;
   currentPlanRevisionId: string | null;
   approvedPlanRevisionId: string | null;
@@ -184,6 +185,7 @@ export interface RunSummary {
   resolvedMode: string;
   policyContentHash: string | null;
   requestContentHash: string;
+  requestSafeSummary?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -641,6 +643,7 @@ export class MissionSnapshotService {
           }
         : null,
       requestContentHash: run.requestContentHash,
+      requestSafeSummary: run.requestSafeSummary,
       currentQuestionSetId: run.currentQuestionSetId,
       currentPlanRevisionId: run.currentPlanRevisionId,
       approvedPlanRevisionId: run.approvedPlanRevisionId,
@@ -740,7 +743,8 @@ export class MissionSnapshotService {
           rps.provider,
           rps.model,
           rsa.step_key,
-          0 AS tree_depth
+          0 AS tree_depth,
+          ARRAY[mr.id] AS visited_path
         FROM mission_runs mr
         LEFT JOIN run_policy_snapshots rps ON rps.id = mr.policy_snapshot_id
         LEFT JOIN run_step_assignments rsa ON rsa.run_id = mr.id
@@ -761,12 +765,14 @@ export class MissionSnapshotService {
           rps.provider,
           rps.model,
           rsa.step_key,
-          ct.tree_depth + 1
+          ct.tree_depth + 1,
+          ct.visited_path || mr.id
         FROM mission_runs mr
         INNER JOIN child_tree ct ON mr.parent_run_id = ct.id
         LEFT JOIN run_policy_snapshots rps ON rps.id = mr.policy_snapshot_id
         LEFT JOIN run_step_assignments rsa ON rsa.run_id = mr.id
         WHERE ct.tree_depth < ${maxDepth}
+          AND NOT (mr.id = ANY(ct.visited_path))
           AND mr.company_id = ${companyId}
           AND mr.project_id = ${projectId}
       )
@@ -811,7 +817,7 @@ export class MissionSnapshotService {
       };
       nodeMap.set(row.id, node);
 
-      const parentKey = row.parent_run_id;
+      const parentKey = row.id === runId ? null : row.parent_run_id;
       if (!childRowsByParent.has(parentKey)) {
         childRowsByParent.set(parentKey, []);
       }

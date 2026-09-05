@@ -298,6 +298,12 @@ describe('Mission retry ingress hardening (VAL-RUN-133/134, Normative Boundary 3
     // Authorized decryption should work.
     const envelope = decryptEnvelope(rows[0].request_envelope);
     expect(envelope.text).toBe(canary);
+    const commands = await execRows<{ payload: Record<string, unknown> }>(
+      db,
+      sql`SELECT payload FROM "run_commands" WHERE run_id = ${ctx.runId} AND type = 'run.retry'`,
+    );
+    expect(JSON.stringify(commands[0].payload)).not.toContain(canary);
+    expect(decryptEnvelope(commands[0].payload.request as string).text).toBe(canary);
   });
 
   // -------------------------------------------------------------------------

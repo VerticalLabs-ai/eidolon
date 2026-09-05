@@ -571,3 +571,17 @@ describe('Provider health privacy (VAL-RES-015)', () => {
     }
   });
 });
+
+it('persists real epoch-millisecond circuit and probe deadlines without overflow', async () => {
+  const deadline = Date.now() + 60_000;
+  await db.drizzle.insert(db.schema.researchProviderHealth).values({
+    provider: 'tavily',
+    operation: 'search',
+    state: 'open',
+    openUntilMs: deadline,
+    halfOpenProbeLeaseExpiresMs: deadline + 30_000,
+  });
+  const [row] = await db.drizzle.select().from(db.schema.researchProviderHealth);
+  expect(row.openUntilMs).toBe(deadline);
+  expect(row.halfOpenProbeLeaseExpiresMs).toBe(deadline + 30_000);
+});

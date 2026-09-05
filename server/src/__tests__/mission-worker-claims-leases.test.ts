@@ -670,6 +670,7 @@ describe('VAL-RUN-128: Lease and fencing capabilities are never exposed', () => 
     const sseText = typeof res.text === 'string' ? res.text : res.body.toString('utf8');
 
     // The lease token must NOT appear in the SSE stream.
+    expect(sseText).toContain('run.created');
     expect(sseText).not.toContain(claim!.leaseToken);
 
     await closeTestDb();

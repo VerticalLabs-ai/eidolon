@@ -183,9 +183,15 @@ async function startRun(
     mode: opts.mode ?? 'fast',
     request: { text: opts.text ?? 'Do work' },
   };
-  if (opts.modeProfileId) {body.modeProfileId = opts.modeProfileId;}
-  if (opts.agentId) {body.initiatingAgentId = opts.agentId;}
-  if (opts.limits) {body.limits = opts.limits;}
+  if (opts.modeProfileId) {
+    body.modeProfileId = opts.modeProfileId;
+  }
+  if (opts.agentId) {
+    body.initiatingAgentId = opts.agentId;
+  }
+  if (opts.limits) {
+    body.limits = opts.limits;
+  }
   let req = request(app).post(base).set('Idempotency-Key', `test-${randomUUID()}`);
   if (opts.sessionId) {
     req = req.set('X-Eidolon-Test-Session-Id', opts.sessionId);

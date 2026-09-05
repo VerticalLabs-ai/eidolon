@@ -30,6 +30,12 @@ const mocks = vi.hoisted(() => ({
   useProjectHome: vi.fn(),
 }));
 
+vi.mock('@/lib/auth', () => ({
+  useSession: () => ({ isPending: false, data: { user: { id: 'test-operator' } } }),
+  isLocalTrustedAuth: () => true,
+  CLERK_PUBLISHABLE_KEY: '',
+}));
+
 vi.mock('@/lib/hooks', async () => {
   const actual = await vi.importActual('@/lib/hooks');
   return {
@@ -272,12 +278,16 @@ const pdProject = {
 
 function renderDetail(initialPath: string) {
   return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route path="/company/:companyId/projects/:projectId" element={<ProjectDetail />} />
-        <Route path="/company/:companyId/projects" element={<div>Project list</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route path="/company/:companyId/projects/:projectId" element={<ProjectDetail />} />
+          <Route path="/company/:companyId/projects" element={<div>Project list</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

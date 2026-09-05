@@ -300,8 +300,16 @@ function hasNestedQuantifiers(pattern: string): boolean {
     if (ch === ')' && stack.length > 0) {
       const groupHasQuantifier = stack.pop()!;
       i++;
-      if (groupHasQuantifier && i < len && isQuantifierChar(pattern[i])) {
+      // Quantified groups can hide ambiguous alternatives as well as nested
+      // quantifiers. Accept repetition only on individual atoms/classes.
+      if (
+        i < len &&
+        (isQuantifierChar(pattern[i]) || tryConsumeBraceQuantifier(pattern, i).consumed)
+      ) {
         return true;
+      }
+      if (groupHasQuantifier) {
+        markGroupHasQuantifier(stack);
       }
       continue;
     }

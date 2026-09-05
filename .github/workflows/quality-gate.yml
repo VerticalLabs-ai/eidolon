@@ -67,6 +67,9 @@ jobs:
           set -o pipefail
           pnpm dead-code 2>&1 | tee dead-code-output.txt
 
+      - name: Report test-fixture duplication
+        run: pnpm duplication:fixtures
+
       # Publish quality metrics to the GitHub Actions run summary.
       # scripts/quality-metrics-summary.mjs writes a Markdown table to
       # $GITHUB_STEP_SUMMARY with coverage percentages, test counts,

@@ -623,6 +623,29 @@ describe('GET /api/companies/:cid/projects/:pid/mission-runs/:rid/children', () 
     expect(tree).toBeDefined();
   });
 
+  it('serializes a reachable parent cycle without duplicate nodes or back-edges', async () => {
+    const child = await insertChildRun(
+      db,
+      companyId,
+      projectId,
+      threadId,
+      rootRunId,
+      rootRunId,
+      1,
+      1,
+    );
+    await db.drizzle.execute(
+      sql`UPDATE mission_runs SET parent_run_id = ${child} WHERE id = ${rootRunId}`,
+    );
+    const res = await request(app)
+      .get(childrenUrl(rootRunId, { maxDepth: 3 }))
+      .expect(200);
+    expect(res.body.data.tree.runId).toBe(rootRunId);
+    expect(res.body.data.tree.children).toHaveLength(1);
+    expect(res.body.data.tree.children[0].runId).toBe(child);
+    expect(res.body.data.tree.children[0].children).toEqual([]);
+  });
+
   // VAL-M1-114: /children handles run in terminal state
   it('handles a run in terminal state (completed)', async () => {
     // Set root run to completed (must also set terminal_at due to chk_mission_runs_terminal_at)

@@ -1,4 +1,4 @@
-import { pgTable, text, integer, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, bigint, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -47,7 +47,7 @@ export const researchProviderHealth = pgTable(
      * `0` when the circuit is closed. Stored as bigint to avoid date-math
      * ambiguity across driver modes.
      */
-    openUntilMs: integer('open_until_ms').notNull().default(0),
+    openUntilMs: bigint('open_until_ms', { mode: 'number' }).notNull().default(0),
     /** Last success timestamp (nullable until first success). */
     lastSuccessAt: timestamp('last_success_at', {
       mode: 'date',
@@ -77,7 +77,9 @@ export const researchProviderHealth = pgTable(
      * Half-open probe lease expiry (epoch-millis). A stale lease (now >
      * expiry) may be reclaimed. 30-second default set by the service.
      */
-    halfOpenProbeLeaseExpiresMs: integer('half_open_probe_lease_expires_ms').notNull().default(0),
+    halfOpenProbeLeaseExpiresMs: bigint('half_open_probe_lease_expires_ms', { mode: 'number' })
+      .notNull()
+      .default(0),
     createdAt: timestamp('created_at', { mode: 'date', precision: 3, withTimezone: true })
       .notNull()
       .$defaultFn(() => new Date()),

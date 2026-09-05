@@ -715,6 +715,19 @@ describe('VAL-SUB-038: Mission budget bounds the tree', () => {
     const rootRes = await getReservation(db, rootRunId);
     expect(rootRes!.settled).toBe(500);
     expect(rootRes!.released).toBe(1500);
+    // Released funds have returned to the company and cannot fund new children.
+    const nextChild = await seedChildRun(db, scope, rootRunId);
+    await expect(
+      db.drizzle.transaction((tx) =>
+        budgetService.allocateChild(tx, {
+          companyId: scope.companyId,
+          rootReservationId: reservationId,
+          runId: nextChild,
+          billingAgentId: null,
+          allocatedCents: 3001,
+        }),
+      ),
+    ).rejects.toThrow(/exceeds unallocated root residual/);
 
     // settled + released <= reserved.
     expect(rootRes!.settled + rootRes!.released).toBeLessThanOrEqual(rootRes!.reserved);

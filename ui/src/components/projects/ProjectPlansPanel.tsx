@@ -101,7 +101,9 @@ function GateConfig({ config }: { config: Record<string, unknown> }) {
   const entries = Object.entries(config).filter(
     ([, v]) => v !== null && v !== undefined && v !== '',
   );
-  if (entries.length === 0) {return null;}
+  if (entries.length === 0) {
+    return null;
+  }
   return (
     <dl className="mt-1 rounded-md bg-white/[0.03] px-2 py-1 text-[11px] text-text-secondary">
       {entries.map(([key, value]) => (
@@ -222,7 +224,9 @@ function PlanItem({
       return;
     }
     const trimmed = stepTitle.trim();
-    if (!trimmed || createPlanStep.isPending) {return;}
+    if (!trimmed || createPlanStep.isPending) {
+      return;
+    }
     createPlanStep.mutate({ planId: plan.id, data: { title: trimmed } });
     setStepTitle('');
   }
@@ -357,7 +361,9 @@ export function ProjectPlansPanel({
   function submitPlan(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = newPlanTitle.trim();
-    if (!trimmed || createPlan.isPending) {return;}
+    if (!trimmed || createPlan.isPending) {
+      return;
+    }
     createPlan.mutate({ title: trimmed });
     setNewPlanTitle('');
   }
