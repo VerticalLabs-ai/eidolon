@@ -542,8 +542,16 @@ describe('GET /api/companies/:cid/projects/:pid/mission-runs/:rid/children', () 
   });
 
   // VAL-M1-035: /children tree preserves parent-child ordering
-  it('preserves parent-child ordering by creation sequence', async () => {
-    const child1 = await insertChildRun(
+  it.each([
+    { order: 'creation time', offsets: [2, 0, 1], expectedOrder: [2, 3, 1] },
+    {
+      order: 'child ordinal when creation timestamps tie',
+      offsets: [0, 0, 0],
+      expectedOrder: [1, 2, 3],
+    },
+  ])('preserves parent-child ordering by $order', async ({ offsets, expectedOrder }) => {
+    // Insert in reverse order so storage order cannot satisfy the assertion.
+    const child3 = await insertChildRun(
       db,
       companyId,
       projectId,
@@ -551,8 +559,8 @@ describe('GET /api/companies/:cid/projects/:pid/mission-runs/:rid/children', () 
       rootRunId,
       rootRunId,
       1,
-      1,
-      'running',
+      3,
+      'failed',
     );
     const child2 = await insertChildRun(
       db,
@@ -565,7 +573,7 @@ describe('GET /api/companies/:cid/projects/:pid/mission-runs/:rid/children', () 
       2,
       'completed',
     );
-    const child3 = await insertChildRun(
+    const child1 = await insertChildRun(
       db,
       companyId,
       projectId,
@@ -573,16 +581,23 @@ describe('GET /api/companies/:cid/projects/:pid/mission-runs/:rid/children', () 
       rootRunId,
       rootRunId,
       1,
-      3,
-      'failed',
+      1,
+      'running',
     );
+
+    const children = [child1, child2, child3];
+    for (const [index, childId] of children.entries()) {
+      const createdAt = new Date(Date.UTC(2026, 0, 1) + offsets[index]! * 1000);
+      await db.drizzle.execute(sql`
+        UPDATE mission_runs SET created_at = ${createdAt} WHERE id = ${childId}
+      `);
+    }
 
     const res = await request(app).get(childrenUrl(rootRunId)).expect(200);
     const tree = res.body.data.tree;
-    expect(tree.children).toHaveLength(3);
-    expect(tree.children[0].runId).toBe(child1);
-    expect(tree.children[1].runId).toBe(child2);
-    expect(tree.children[2].runId).toBe(child3);
+    expect(tree.children.map((child: { runId: string }) => child.runId)).toEqual(
+      expectedOrder.map((ordinal) => children[ordinal - 1]),
+    );
   });
 
   // VAL-M1-109: Circular parent references handled gracefully
