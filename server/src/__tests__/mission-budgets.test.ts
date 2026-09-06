@@ -362,53 +362,100 @@ describe('VAL-RUN-122: Concurrent root budget reservations are race safe', () =>
     vi.restoreAllMocks();
   });
 
-  it('two concurrent starts competing for one minimum reservation yield exactly one 202 and one 409', async () => {
-    // Company budget 500 cents, 0 spent. Fast mode ceiling is 500.
-    // Two concurrent starts: each needs 500. Only one can reserve.
-    const { companyId, projectId, threadId } = await seedScope(db, 'race-co', {
-      companyBudget: 500,
-      companySpent: 0,
-    });
-    const base = `/api/companies/${companyId}/projects/${projectId}/mission-runs`;
+  it.each(['company', 'agent'] as const)(
+    'concurrent starts competing for the %s budget yield exactly one 202 and one 409',
+    async (budgetOwner) => {
+      // The limiting company or agent budget and Fast mode ceiling are 500 cents.
+      // Two concurrent starts: each needs 500. Only one can reserve.
+      const { companyId, projectId, threadId } = await seedScope(db, 'race-co', {
+        companyBudget: budgetOwner === 'company' ? 500 : 100000,
+        companySpent: 0,
+      });
+      const initiatingAgentId =
+        budgetOwner === 'agent' ? await seedAgent(db, companyId, { budget: 500 }) : undefined;
+      const base = `/api/companies/${companyId}/projects/${projectId}/mission-runs`;
 
-    const key1 = `race-1-${randomUUID()}`;
-    const key2 = `race-2-${randomUUID()}`;
+      const key1 = `race-1-${randomUUID()}`;
+      const key2 = `race-2-${randomUUID()}`;
 
-    // Fire two starts concurrently.
-    const [res1, res2] = await Promise.all([
-      request(app)
-        .post(base)
-        .set('Idempotency-Key', key1)
-        .send({ projectThreadId: threadId, mode: 'fast', request: { text: 'Run A' } }),
-      request(app)
-        .post(base)
-        .set('Idempotency-Key', key2)
-        .send({ projectThreadId: threadId, mode: 'fast', request: { text: 'Run B' } }),
-    ]);
+      // Both transactions must hold their insert-time foreign-key locks before
+      // either reserves budget. Without this barrier the deadlock depends on timing.
+      const reserveRoot = BudgetService.prototype.reserveRoot;
+      let arrivals = 0;
+      let release!: () => void;
+      let barrierTimer: ReturnType<typeof setTimeout>;
+      const barrier = new Promise<void>((resolve, reject) => {
+        release = resolve;
+        barrierTimer = setTimeout(() => reject(new Error('Reservation barrier timed out')), 5000);
+      });
+      const databaseErrors: string[] = [];
+      vi.spyOn(BudgetService.prototype, 'reserveRoot').mockImplementation(async function (
+        this: BudgetService,
+        tx,
+        input,
+      ) {
+        if (++arrivals === 2) {
+          clearTimeout(barrierTimer);
+          release();
+        }
+        await barrier;
+        try {
+          return await reserveRoot.call(this, tx, input);
+        } catch (error) {
+          const cause = (error as { cause?: { code?: string } }).cause;
+          if (cause?.code) {
+            databaseErrors.push(cause.code);
+          }
+          throw error;
+        }
+      });
 
-    const statuses = [res1.status, res2.status].sort();
-    // Exactly one 202 and one 409.
-    expect(statuses).toEqual([202, 409]);
+      const [res1, res2] = await Promise.all([
+        request(app)
+          .post(base)
+          .set('Idempotency-Key', key1)
+          .send({
+            projectThreadId: threadId,
+            initiatingAgentId,
+            mode: 'fast',
+            request: { text: 'Run A' },
+          }),
+        request(app)
+          .post(base)
+          .set('Idempotency-Key', key2)
+          .send({
+            projectThreadId: threadId,
+            initiatingAgentId,
+            mode: 'fast',
+            request: { text: 'Run B' },
+          }),
+      ]).finally(() => clearTimeout(barrierTimer));
 
-    // The 409 must be BUDGET_UNAVAILABLE.
-    const failed = res1.status === 409 ? res1 : res2;
-    expect(failed.body.code).toBe('BUDGET_UNAVAILABLE');
+      const statuses = [res1.status, res2.status].sort();
+      expect(databaseErrors).toEqual([]);
+      // Exactly one 202 and one 409.
+      expect(statuses).toEqual([202, 409]);
 
-    // Only one run was created.
-    expect(await countRuns(db, companyId, projectId)).toBe(1);
+      // The 409 must be BUDGET_UNAVAILABLE.
+      const failed = res1.status === 409 ? res1 : res2;
+      expect(failed.body.code).toBe('BUDGET_UNAVAILABLE');
 
-    // Company spend never exceeded budget.
-    const spend = await getCompanySpend(db, companyId);
-    expect(spend).toBeLessThanOrEqual(500);
+      // Only one run was created.
+      expect(await countRuns(db, companyId, projectId)).toBe(1);
 
-    // Total reserved never exceeds budget.
-    const reservations = (await db.drizzle.execute(sql`
+      // Company spend never exceeded budget.
+      const spend = await getCompanySpend(db, companyId);
+      expect(spend).toBeLessThanOrEqual(500);
+
+      // Total reserved never exceeds budget.
+      const reservations = (await db.drizzle.execute(sql`
       SELECT COALESCE(SUM("reserved_cents" - "settled_cents" - "released_cents"), 0)::int AS total
       FROM "budget_reservations"
       WHERE "company_id" = ${companyId} AND "status" IN ('held', 'partially_settled')
     `)) as unknown as { total: number }[];
-    expect(reservations[0].total).toBeLessThanOrEqual(500);
-  });
+      expect(reservations[0].total).toBeLessThanOrEqual(500);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
