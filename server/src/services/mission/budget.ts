@@ -98,7 +98,9 @@ export class BudgetService {
     const schema = this.db.schema;
     const now = this.now();
 
-    // Lock company row in stable order.
+    // Serialize budget decisions without conflicting with KEY SHARE locks
+    // already held by concurrent run inserts for their company foreign keys.
+    // FOR UPDATE would deadlock when both inserts try to upgrade those locks.
     const [company] = await tx
       .select({
         budgetMonthlyCents: schema.companies.budgetMonthlyCents,
@@ -106,14 +108,15 @@ export class BudgetService {
       })
       .from(schema.companies)
       .where(eq(schema.companies.id, input.companyId))
-      .for('update')
+      .for('no key update')
       .limit(1);
 
     if (!company) {
       throw new AppError(404, 'COMPANY_NOT_FOUND', 'Company not found');
     }
 
-    // Lock billing agent row if present (stable order: after company).
+    // Use the same foreign-key-compatible lock for the billing agent, always
+    // after the company. Budget updates still conflict with these row locks.
     let agentBudgetMonthlyCents = 0;
     let agentSpentMonthlyCents = 0;
     if (input.billingAgentId) {
@@ -129,7 +132,7 @@ export class BudgetService {
             eq(schema.agents.companyId, input.companyId),
           ),
         )
-        .for('update')
+        .for('no key update')
         .limit(1);
       if (!agent) {
         throw new AppError(404, 'AGENT_NOT_FOUND', 'Billing agent not found');
