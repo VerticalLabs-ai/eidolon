@@ -42,6 +42,38 @@ This project is indexed by GitNexus as **eidolon** (2827 symbols, 6515 relations
 
 <!-- gitnexus:end -->
 
+## Skills
+
+The following skills from the Skills Org are **always** loaded for agents working in this codebase:
+
+- `autoreview`
+- `clean-code`
+- `clean-architecture`
+- `best-practices`
+- `domain-modeling`
+- `codebase-design`
+- `tdd`
+- `systematic-debugging`
+- `performance`
+- `accessibility`
+- `agent-browser`
+- `ast-grep`
+- `clerk-nextjs-patterns`
+- `clerk-testing`
+- `code-review`
+- `github-pr-workflow`
+- `gh-fix-ci`
+- `improve-code-quality`
+- `working-with-legacy-code`
+- `refactoring-patterns`
+- `prime-codebase`
+- `ask-docs`
+- `supabase`
+- `impeccable`
+- `piv-slice-epic`
+
+These skills provide guidance on code quality, testing, debugging, and workflow best practices. Agents should reference these skills when relevant to the task at hand.
+
 ## Promotion (staging→main)
 
 Promote staging to main with `pnpm promote` or the **Promote staging → main** GitHub Action (Actions tab → Run workflow).
