@@ -100,6 +100,20 @@ export interface SynthesisResult {
   terminalized: boolean;
 }
 
+type MissionRun = DbInstance['schema']['missionRuns']['$inferSelect'];
+type SynthesisManifest = DbInstance['schema']['runSynthesisManifests']['$inferSelect'];
+interface SynthesisInput {
+  companyId: string;
+  projectId: string;
+  runId: string;
+  actorType?: 'user' | 'agent' | 'system';
+  actorId?: string | null;
+  traceId?: string | null;
+  leaseToken?: string;
+  /** Keep the manifest nonterminal until the report call is durably accounted for. */
+  deferCompletion?: boolean;
+}
+
 export class MissionSynthesisService {
   constructor(
     private db: DbInstance,
@@ -122,18 +136,7 @@ export class MissionSynthesisService {
    * proceed (children not all terminal, cancellation pending, already
    * synthesized, etc.).
    */
-  async attemptSynthesis(
-    tx: Tx,
-    input: {
-      companyId: string;
-      projectId: string;
-      runId: string;
-      actorType?: 'user' | 'agent' | 'system';
-      actorId?: string | null;
-      traceId?: string | null;
-      leaseToken?: string;
-    },
-  ): Promise<SynthesisResult> {
+  async attemptSynthesis(tx: Tx, input: SynthesisInput): Promise<SynthesisResult> {
     const schema = this.db.schema;
     const now = this.now();
     const actorType = input.actorType ?? 'system';
@@ -212,6 +215,49 @@ export class MissionSynthesisService {
       .from(schema.runSynthesisManifests)
       .where(eq(schema.runSynthesisManifests.runId, run.id))
       .limit(1);
+
+    if (existingManifest?.status === 'started') {
+      // A retry is claimed as running; restore the saved synthesis phase before
+      // publishing its durable response. Do not create another manifest/call.
+      if (run.status !== 'synthesizing') {
+        const sequence = Number(run.lastEventSequence) + 1;
+        await tx
+          .update(schema.missionRuns)
+          .set({
+            status: 'synthesizing',
+            stateVersion: run.stateVersion + 1,
+            lastEventSequence: sequence,
+            updatedAt: now,
+          })
+          .where(eq(schema.missionRuns.id, run.id));
+        await tx.insert(schema.runEvents).values({
+          companyId: input.companyId,
+          projectId: input.projectId,
+          runId: run.id,
+          sequence,
+          type: 'execution.progress',
+          schemaVersion: 1,
+          payload: { phase: 'synthesizing', resumed: true },
+          actorType,
+          actorId,
+          traceId,
+          occurredAt: now,
+        });
+        run.status = 'synthesizing';
+        run.stateVersion += 1;
+        run.lastEventSequence = sequence;
+      }
+      return {
+        synthesized: true,
+        skipReason: null,
+        status: run.status,
+        stateVersion: run.stateVersion,
+        lastEventSequence: Number(run.lastEventSequence),
+        manifest: existingManifest.manifest as unknown as ManifestEntry[],
+        disclosedGaps: existingManifest.disclosedGaps as DisclosedGap[] | null,
+        terminalized: false,
+      };
+    }
 
     if (existingManifest) {
       // Already synthesized — no-op (exactly-once, VAL-SUB-065, 111).
@@ -393,7 +439,7 @@ export class MissionSynthesisService {
       manifest: manifest as unknown as Record<string, unknown>,
       manifestHash,
       disclosedGaps: (shouldFail ? [] : gaps) as unknown as Record<string, unknown>[],
-      status: shouldFail ? 'failed' : 'completed',
+      status: shouldFail ? 'failed' : input.deferCompletion ? 'started' : 'completed',
       failureCategory: shouldFail ? 'child_failed' : null,
       failureCode: shouldFail ? 'REQUIRED_CHILD_FAILED' : null,
       safeErrorMessage: shouldFail
@@ -518,6 +564,92 @@ export class MissionSynthesisService {
       };
     }
 
+    if (input.deferCompletion) {
+      return {
+        synthesized: true,
+        skipReason: null,
+        status: 'synthesizing',
+        stateVersion: run.stateVersion + 1,
+        lastEventSequence: startedSeq,
+        manifest,
+        disclosedGaps: gaps,
+        terminalized: false,
+      };
+    }
+    const [record] = await tx
+      .select()
+      .from(schema.runSynthesisManifests)
+      .where(eq(schema.runSynthesisManifests.id, manifestId));
+    return this.finishSuccessfulSynthesis(
+      tx,
+      input,
+      {
+        ...run,
+        stateVersion: run.stateVersion + 1,
+        lastEventSequence: startedSeq,
+      },
+      record,
+    );
+  }
+
+  /** Finish a prepared synthesis only after its report outcome has been committed. */
+  async completeSynthesis(tx: Tx, input: SynthesisInput): Promise<SynthesisResult> {
+    const schema = this.db.schema;
+    const [run] = await tx
+      .select()
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.id, input.runId),
+          eq(schema.missionRuns.companyId, input.companyId),
+          eq(schema.missionRuns.projectId, input.projectId),
+        ),
+      )
+      .for('update');
+    if (!run || run.status !== 'synthesizing' || run.cancelRequestedAt !== null) {
+      throw new AppError(409, 'INVALID_RUN_STATE', 'Synthesis is no longer active');
+    }
+    if (
+      !input.leaseToken ||
+      run.leaseToken !== input.leaseToken ||
+      !run.leaseExpiresAt ||
+      run.leaseExpiresAt <= this.now()
+    ) {
+      throw new AppError(409, 'LEASE_NOT_HELD', 'Synthesis lease is no longer held');
+    }
+    const [record] = await tx
+      .select()
+      .from(schema.runSynthesisManifests)
+      .where(eq(schema.runSynthesisManifests.runId, run.id));
+    const result = record?.synthesisResult as { reportState?: string } | null;
+    if (
+      !record ||
+      record.status !== 'started' ||
+      !['committed', 'skipped'].includes(result?.reportState ?? '')
+    ) {
+      throw new AppError(409, 'SYNTHESIS_REPORT_PENDING', 'Synthesis report is not committed');
+    }
+    return this.finishSuccessfulSynthesis(tx, input, run, record);
+  }
+
+  private async finishSuccessfulSynthesis(
+    tx: Tx,
+    input: SynthesisInput,
+    run: MissionRun,
+    record: SynthesisManifest,
+  ): Promise<SynthesisResult> {
+    const schema = this.db.schema;
+    const now = this.now();
+    const actorType = input.actorType ?? 'system';
+    const actorId = input.actorId ?? null;
+    const traceId = input.traceId ?? null;
+    const manifest = record.manifest as unknown as ManifestEntry[];
+    const manifestId = record.id;
+    const manifestHash = record.manifestHash;
+    const gaps = (record.disclosedGaps ?? []) as DisclosedGap[];
+    const hasFailures = gaps.length > 0;
+    const parentPolicy = run.partialResultPolicy ?? 'require_all';
+    const completedSeq = Number(run.lastEventSequence) + 1;
     // Success path (all children completed, or best_effort with gaps disclosed).
     // VAL-CROSS-091: resultCompleteness is 'full' when all children completed,
     // 'partial' when best_effort synthesis completed with disclosed gaps.
@@ -534,7 +666,7 @@ export class MissionSynthesisService {
         heartbeatAt: null,
         availableAt: null,
         resultCompleteness: completeness,
-        stateVersion: run.stateVersion + 2,
+        stateVersion: run.stateVersion + 1,
         lastEventSequence: completedSeq,
         updatedAt: now,
       })
@@ -598,7 +730,12 @@ export class MissionSynthesisService {
       .set({
         completedEventSequence: completedSeq,
         completedAt: now,
-        synthesisResult: { outcome, parentPolicy } as unknown as Record<string, unknown>,
+        status: 'completed',
+        synthesisResult: {
+          ...((record.synthesisResult as Record<string, unknown>) ?? {}),
+          outcome,
+          parentPolicy,
+        },
       })
       .where(eq(schema.runSynthesisManifests.id, manifestId));
 
@@ -630,7 +767,7 @@ export class MissionSynthesisService {
       synthesized: true,
       skipReason: null,
       status: 'completed',
-      stateVersion: run.stateVersion + 2,
+      stateVersion: run.stateVersion + 1,
       lastEventSequence: budgetSeq,
       manifest,
       disclosedGaps: hasFailures ? gaps : [],

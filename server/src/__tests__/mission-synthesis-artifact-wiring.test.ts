@@ -119,7 +119,7 @@ async function insertPlanRevision(
   const now = new Date();
   await db.drizzle.execute(sql`
     INSERT INTO "run_plan_revisions" ("id", "company_id", "project_id", "run_id", "revision", "status", "content", "content_hash", "generated_by", "estimates", "created_at", "updated_at")
-    VALUES (${revisionId}, ${companyId}, ${projectId}, ${runId}, 1, 'approved', '{}'::jsonb, ${contentHash}, '{}'::jsonb, '{}'::jsonb, ${now}, ${now})
+    VALUES (${revisionId}, ${companyId}, ${projectId}, ${runId}, 1, 'approved', '{"synthesis":{"budgetCents":100}}'::jsonb, ${contentHash}, '{}'::jsonb, '{}'::jsonb, ${now}, ${now})
   `);
   return { revisionId, contentHash };
 }
@@ -155,7 +155,7 @@ async function setupTree(
     rootRunId,
   );
   await db.drizzle.execute(sql`
-    UPDATE "mission_runs" SET "approved_plan_revision_id" = ${revisionId} WHERE "id" = ${rootRunId}
+    UPDATE "mission_runs" SET "approved_plan_revision_id" = ${revisionId}, "lease_token" = 'test-lease-token', "lease_expires_at" = ${new Date(Date.now() + 300_000)} WHERE "id" = ${rootRunId}
   `);
   await insertBudgetReservation(db, scope.companyId, rootRunId);
 
@@ -293,7 +293,7 @@ function mockProviderCall(): (
     model: 'claude-sonnet-4-6',
     inputTokens: 100,
     outputTokens: 50,
-    costCents: 10,
+    costCents: 1,
     finishReason: 'stop',
     latencyMs: 500,
   }));
@@ -333,17 +333,18 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
       'https://example.com/b',
     );
 
-    // Step 1: Run synthesis (transitions run to completed).
+    // Step 1: Prepare synthesis while retaining the budget.
     const synthesisService = new MissionSynthesisService(db);
     const synthResult = await db.drizzle.transaction(async (tx) => {
       return synthesisService.attemptSynthesis(tx, {
         companyId: tree.companyId,
         projectId: tree.projectId,
         runId: tree.rootRunId,
+        deferCompletion: true,
       });
     });
     expect(synthResult.synthesized).toBe(true);
-    expect(synthResult.status).toBe('completed');
+    expect(synthResult.status).toBe('synthesizing');
 
     // Step 2: Create synthesis artifact with citations and provenance.
     const creator = new SynthesisArtifactCreator(db, {
@@ -359,6 +360,7 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
       approvedPlanRevisionId: tree.revisionId,
       approvedContentHash: tree.contentHash,
       policySnapshotId: tree.policyId,
+      leaseToken: 'test-lease-token',
     });
 
     expect(artifactResult).not.toBeNull();
@@ -403,6 +405,7 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
         companyId: tree.companyId,
         projectId: tree.projectId,
         runId: tree.rootRunId,
+        deferCompletion: true,
       });
     });
 
@@ -420,6 +423,7 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
       approvedPlanRevisionId: tree.revisionId,
       approvedContentHash: tree.contentHash,
       policySnapshotId: tree.policyId,
+      leaseToken: 'test-lease-token',
     });
 
     expect(result).not.toBeNull();
@@ -463,6 +467,7 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
         companyId: tree.companyId,
         projectId: tree.projectId,
         runId: tree.rootRunId,
+        deferCompletion: true,
       });
     });
 
@@ -479,6 +484,7 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
       approvedPlanRevisionId: tree.revisionId,
       approvedContentHash: tree.contentHash,
       policySnapshotId: tree.policyId,
+      leaseToken: 'test-lease-token',
     });
 
     expect(result).not.toBeNull();
@@ -518,6 +524,7 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
         companyId: tree.companyId,
         projectId: tree.projectId,
         runId: tree.rootRunId,
+        deferCompletion: true,
       });
     });
 
@@ -534,12 +541,13 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
       approvedPlanRevisionId: tree.revisionId,
       approvedContentHash: tree.contentHash,
       policySnapshotId: tree.policyId,
+      leaseToken: 'test-lease-token',
     });
 
     expect(result).toBeNull();
   });
 
-  it('uses fallback content when LLM call fails', async () => {
+  it('surfaces an unknown outcome without publishing a fallback when the provider fails', async () => {
     const tree = await setupTree(db, '__mtest__ synth-llm-fail', 1);
     const scope = { companyId: tree.companyId, projectId: tree.projectId };
 
@@ -558,6 +566,7 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
         companyId: tree.companyId,
         projectId: tree.projectId,
         runId: tree.rootRunId,
+        deferCompletion: true,
       });
     });
 
@@ -571,20 +580,20 @@ describe('fix-ut-m5-synthesis-artifact-citation-wiring: synthesis creates artifa
       artifactCommitService: commit,
     });
 
-    const result = await creator.createSynthesisArtifact({
-      companyId: tree.companyId,
-      projectId: tree.projectId,
-      runId: tree.rootRunId,
-      rootRunId: tree.rootRunId,
-      approvedPlanRevisionId: tree.revisionId,
-      approvedContentHash: tree.contentHash,
-      policySnapshotId: tree.policyId,
-    });
-
-    // Artifact is still created with fallback content.
-    expect(result).not.toBeNull();
-    expect(result!.artifactRevisionId).toBeTruthy();
-    expect(result!.citationIds.length).toBe(1);
+    await expect(
+      creator.createSynthesisArtifact({
+        companyId: tree.companyId,
+        projectId: tree.projectId,
+        runId: tree.rootRunId,
+        rootRunId: tree.rootRunId,
+        approvedPlanRevisionId: tree.revisionId,
+        approvedContentHash: tree.contentHash,
+        policySnapshotId: tree.policyId,
+        leaseToken: 'test-lease-token',
+      }),
+    ).rejects.toMatchObject({ code: 'SYNTHESIS_UNKNOWN_OUTCOME' });
+    expect(failingProviderCall).toHaveBeenCalledTimes(1);
+    expect(await countRows('artifact_provenance', `run_id = '${tree.rootRunId}'`)).toBe(0);
   });
 });
 
@@ -613,6 +622,7 @@ describe('fix-ut-m5-synthesis-date-serialization: artifact INSERT succeeds with 
         companyId: tree.companyId,
         projectId: tree.projectId,
         runId: tree.rootRunId,
+        deferCompletion: true,
       });
     });
 
@@ -635,6 +645,7 @@ describe('fix-ut-m5-synthesis-date-serialization: artifact INSERT succeeds with 
       approvedPlanRevisionId: tree.revisionId,
       approvedContentHash: tree.contentHash,
       policySnapshotId: tree.policyId,
+      leaseToken: 'test-lease-token',
     });
 
     expect(result).not.toBeNull();

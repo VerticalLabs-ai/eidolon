@@ -127,10 +127,11 @@ export class ArtifactCommitService {
    */
   async commitArtifactWithProvenance(
     input: CommitArtifactWithProvenanceInput,
+    transaction?: Tx,
   ): Promise<CommitResult> {
     this.validateInput(input);
 
-    return this.deps.drizzle.transaction(async (tx) => {
+    const commit = async (tx: Tx): Promise<CommitResult> => {
       // Use ISO 8601 string for raw SQL templates so PostgreSQL always
       // receives a parseable timestamp. Drizzle's typed .set() expects a
       // Date for timestamp columns, so keep both (fix-ut-m5-date-serialization-sweep).
@@ -258,7 +259,8 @@ export class ArtifactCommitService {
         citationIds,
         provenanceId,
       };
-    });
+    };
+    return transaction ? commit(transaction) : this.deps.drizzle.transaction(commit);
   }
 
   // -----------------------------------------------------------------------
