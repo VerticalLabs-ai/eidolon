@@ -92,3 +92,6 @@ eidolon-data/
 .vercel
 .env*.local
 Plans/
+
+# Linked Git worktrees belong inside this repository.
+/.worktrees/

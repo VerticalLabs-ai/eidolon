@@ -5,6 +5,7 @@
 .conductor
 .cursor
 .tmp-tests
+.worktrees
 coverage
 dist
 build

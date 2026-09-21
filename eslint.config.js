@@ -8,6 +8,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/node_modules/**',
       '**/.tmp-tests/**',
+      '**/.worktrees/**',
       '**/coverage/**',
       '**/*.d.ts',
       'graphify-out/**',

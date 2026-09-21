@@ -9,6 +9,7 @@
     "**/.git/**",
     "**/.gitnexus/**",
     "**/.tmp-tests/**",
+    "**/.worktrees/**",
     "**/coverage/**",
     "**/dist/**",
     "**/graphify-out/**",
