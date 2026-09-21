@@ -10,10 +10,17 @@ Resolve the canonical checkout from Git metadata before creating a worktree:
 ```bash
 IFS= read -r -d '' primary_worktree < <(git worktree list --porcelain -z)
 repo_root="${primary_worktree#worktree }"
-test -d "$repo_root" || exit 1
+test -e "$repo_root/.git" || {
+  printf '%s\n' 'Cannot identify the source checkout; set its known path explicitly.' >&2
+  exit 1
+}
 mkdir -p "$repo_root/.worktrees"
 git worktree add "$repo_root/.worktrees/<branch-or-task>" <branch>
 ```
+
+For an unusual Git layout where the primary registry entry is only a metadata
+directory, stop and use the known source checkout path explicitly. Do not create
+worktrees beneath a metadata directory.
 
 Use `git worktree move` to relocate a registered worktree. Before removing a
 finished worktree, preserve uncommitted work and any local-only configuration.
