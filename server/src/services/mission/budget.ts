@@ -455,7 +455,8 @@ export class BudgetService {
         if (
           !reserved ||
           !Number.isSafeInteger(reserved.reservedCents) ||
-          reserved.reservedCents <= 0 ||
+          reserved.reservedCents < 0 ||
+          (reserved.reservedCents === 0 && !['local', 'ollama'].includes(reserved.provider)) ||
           !attempt.externalCallId
         ) {
           throw new AppError(

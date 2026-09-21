@@ -7,6 +7,7 @@ import type { DbInstance } from '../../types.js';
 import { AppError } from '../../middleware/error-handler.js';
 import type { Claim } from './coordinator.js';
 import { MissionRecoveryService } from './recovery.js';
+import { MissionCancellationService } from './cancellation.js';
 import { MissionCompletionService } from './completion.js';
 import { MissionRetryService, type ExecutionFailureKind } from './retry.js';
 import { BudgetService } from './budget.js';
@@ -275,7 +276,14 @@ export class RunProcessor {
     }
 
     const data = await this.readRunAndPolicy(claim);
-    if (!data || data.run.cancelRequestedAt !== null || signal.aborted) {
+    if (!data || signal.aborted) {
+      return;
+    }
+    if (data.run.cancelRequestedAt !== null) {
+      if (data.run.status === 'synthesizing') {
+        await this.handleSynthesisCancellation(claim);
+        await this.projectRunEvents(claim);
+      }
       return;
     }
 
@@ -467,6 +475,12 @@ export class RunProcessor {
       return completed.terminalized;
     } catch (error) {
       const code = error instanceof AppError ? error.code : 'SYNTHESIS_COMMIT_FAILED';
+      if (
+        ['RUN_CANCELLED', 'INVALID_RUN_STATE', 'SYNTHESIS_UNKNOWN_OUTCOME'].includes(code) &&
+        (await this.handleSynthesisCancellation(claim))
+      ) {
+        return true;
+      }
       if (code === 'SYNTHESIS_UNKNOWN_OUTCOME') {
         return this.handleRecovery(claim);
       }
@@ -501,6 +515,52 @@ export class RunProcessor {
         true,
       );
       return false;
+    }
+  }
+
+  /** Observe cancellation while this worker still owns the synthesis lease. */
+  private async handleSynthesisCancellation(claim: Claim): Promise<boolean> {
+    try {
+      return await this.db.drizzle.transaction(async (tx) => {
+        const schema = this.db.schema;
+        const [candidate] = await tx
+          .select({ rootRunId: schema.missionRuns.rootRunId })
+          .from(schema.missionRuns)
+          .where(
+            and(
+              eq(schema.missionRuns.id, claim.runId),
+              eq(schema.missionRuns.companyId, claim.companyId),
+              eq(schema.missionRuns.projectId, claim.projectId),
+            ),
+          );
+        if (!candidate) {
+          return false;
+        }
+        await tx
+          .select({ id: schema.missionRuns.id })
+          .from(schema.missionRuns)
+          .where(
+            and(
+              eq(schema.missionRuns.id, candidate.rootRunId),
+              eq(schema.missionRuns.companyId, claim.companyId),
+            ),
+          )
+          .for('update');
+        const outcome = await new MissionCancellationService(this.db, {
+          clock: () => this.now(),
+        }).terminalize(tx, claim.companyId, claim.projectId, claim.runId, {
+          leaseToken: claim.leaseToken,
+        });
+        return outcome.terminalized;
+      });
+    } catch (error) {
+      if (
+        error instanceof AppError &&
+        ['LEASE_NOT_HELD', 'INVALID_RUN_STATE'].includes(error.code)
+      ) {
+        return false;
+      }
+      throw error;
     }
   }
 

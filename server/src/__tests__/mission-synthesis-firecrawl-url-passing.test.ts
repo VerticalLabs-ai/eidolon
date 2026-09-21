@@ -1300,6 +1300,100 @@ describe('EID-181: final synthesis accounting and recovery', () => {
     });
   });
 
+  it.each(['before-dispatch', 'after-response', 'before-completion'] as const)(
+    'terminalizes worker cancellation %s without waiting for the sweep',
+    async (phase) => {
+      const { tree } = await fixture();
+      const cancel = () =>
+        db.drizzle.execute(
+          sql`UPDATE mission_runs SET cancel_requested_at = now(), cancellation_deadline_at = now() + interval '60 seconds' WHERE id = ${tree.rootRunId}`,
+        );
+      const normalProvider = mockProviderCall();
+      const provider = vi.fn(async (...args: Parameters<typeof normalProvider>) => {
+        if (phase === 'after-response') {
+          await cancel();
+        }
+        return normalProvider(...args);
+      });
+      const creator = new SynthesisArtifactCreator(db, { providerCall: provider });
+      if (phase === 'before-dispatch') {
+        await cancel();
+      }
+      if (phase === 'before-completion') {
+        const original = creator.createSynthesisArtifact.bind(creator);
+        vi.spyOn(creator, 'createSynthesisArtifact').mockImplementationOnce(async (...args) => {
+          const result = await original(...args);
+          await cancel();
+          return result;
+        });
+      }
+      await new RunProcessor(db, { synthesisArtifactCreator: creator }).advance(
+        makeClaim(tree.companyId, tree.projectId, tree.rootRunId),
+        new AbortController().signal,
+      );
+      const state = await accounting(tree.rootRunId);
+      expect(state.status).toBe('cancelled');
+      expect(Number(state.settled_cents) + Number(state.released_cents)).toBe(5000);
+      expect(state.artifacts).toBe(phase === 'before-completion' ? 1 : 0);
+      expect(provider).toHaveBeenCalledTimes(phase === 'before-dispatch' ? 0 : 1);
+    },
+  );
+
+  it.each(['local', 'ollama'] as const)(
+    'allows zero-budget synthesis and unknown recovery for free %s models',
+    async (providerName) => {
+      const { tree } = await fixture();
+      await db.drizzle.execute(
+        sql`UPDATE run_policy_snapshots SET provider = ${providerName}, model = 'custom-local-model', limits = jsonb_set(limits, '{costCents}', '0') WHERE id = ${tree.policyId}`,
+      );
+      await db.drizzle.execute(
+        sql`UPDATE run_plan_revisions SET content = jsonb_set(content, '{synthesis,budgetCents}', '0') WHERE id = ${tree.revisionId}`,
+      );
+      const normalProvider = mockProviderCall();
+      const provider = vi.fn(async (...args: Parameters<typeof normalProvider>) => ({
+        ...(await normalProvider(...args)),
+        provider: 'ollama',
+        model: 'custom-local-model',
+        costCents: 0,
+      }));
+      await new RunProcessor(db, {
+        synthesisArtifactCreator: new SynthesisArtifactCreator(db, { providerCall: provider }),
+      }).advance(
+        makeClaim(tree.companyId, tree.projectId, tree.rootRunId),
+        new AbortController().signal,
+      );
+      expect(await accounting(tree.rootRunId)).toMatchObject({
+        status: 'completed',
+        settled_cents: 0,
+        released_cents: 5000,
+        charges: 1,
+        artifacts: 1,
+      });
+      expect(provider).toHaveBeenCalledTimes(1);
+      // Independently verify that interrupted free calls also release the hold.
+      const interrupted = await fixture();
+      await db.drizzle.execute(
+        sql`UPDATE run_policy_snapshots SET provider = ${providerName}, model = 'custom-local-model' WHERE id = ${interrupted.tree.policyId}`,
+      );
+      await expect(
+        new SynthesisArtifactCreator(db, {
+          providerCall: async () => {
+            throw new Error('local runtime interrupted');
+          },
+        }).createSynthesisArtifact(interrupted.input),
+      ).rejects.toMatchObject({ code: 'SYNTHESIS_UNKNOWN_OUTCOME' });
+      const { MissionRecoveryService } = await import('../services/mission/recovery.js');
+      await new MissionRecoveryService(db).checkNonReplayableEffects(interrupted.input);
+      expect(await accounting(interrupted.tree.rootRunId)).toMatchObject({
+        status: 'failed',
+        settled_cents: 0,
+        released_cents: 5000,
+        charges: 1,
+        artifacts: 0,
+      });
+    },
+  );
+
   it.each(['budget', 'calls', 'deadline', 'output', 'publication'] as const)(
     'releases residual funds and preserves classification after worker %s failure',
     async (failure) => {

@@ -501,7 +501,7 @@ export class SynthesisArtifactCreator {
       'costCents',
       'durationSeconds',
     ] as const) {
-      if (!Number.isSafeInteger(limits?.[key]) || limits[key] <= 0) {
+      if (!Number.isSafeInteger(limits?.[key]) || limits[key] < (key === 'costCents' ? 0 : 1)) {
         throw new AppError(409, 'SYNTHESIS_POLICY_INVALID', 'Synthesis policy limits are invalid');
       }
     }
@@ -577,18 +577,20 @@ Write the report in a structured format with sections for Summary, Key Findings,
       model: policy.model,
       maxTokens: Math.min(4096, policy.limits.totalTokens),
     };
-    const rates = TOKEN_COSTS_PER_MILLION[`${policy.provider}/${policy.model}` as KnownModel];
+    // Local runtimes support arbitrary installed model names and do not charge
+    // provider fees. Unknown paid models still fail closed without a price cap.
+    const localProvider = policy.provider === 'local' || policy.provider === 'ollama';
+    const rates = localProvider
+      ? { input: 0, output: 0 }
+      : TOKEN_COSTS_PER_MILLION[`${policy.provider}/${policy.model}` as KnownModel];
     if (!rates) {
       throw new AppError(409, 'SYNTHESIS_PRICE_UNKNOWN', 'Synthesis model has no known price');
     }
     // UTF-8 bytes plus framing overhead conservatively bound input tokens.
     const estimatedInputTokens = Buffer.byteLength(JSON.stringify(messages), 'utf8') + 1024;
     const estimatedOutputTokens = config.maxTokens!;
-    const reservedCents = Math.max(
-      1,
-      Math.ceil(
-        (estimatedInputTokens * rates.input + estimatedOutputTokens * rates.output) / 1_000_000,
-      ),
+    const reservedCents = Math.ceil(
+      (estimatedInputTokens * rates.input + estimatedOutputTokens * rates.output) / 1_000_000,
     );
     const reservation: SynthesisCallReservation = {
       provider: policy.provider,
@@ -636,7 +638,7 @@ Write the report in a structured format with sections for Summary, Key Findings,
                 policy.synthesisBudgetCents,
               )
             : 0;
-        if (reservedCents > available) {
+        if (!allocation || !hold || reservedCents > available) {
           throw new AppError(
             409,
             'BUDGET_EXHAUSTED',
