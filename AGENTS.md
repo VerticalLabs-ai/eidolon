@@ -8,7 +8,9 @@ projects. This applies even when the current directory is a linked worktree.
 Resolve the canonical checkout from Git metadata before creating a worktree:
 
 ```bash
-repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+IFS= read -r -d '' primary_worktree < <(git worktree list --porcelain -z)
+repo_root="${primary_worktree#worktree }"
+test -d "$repo_root" || exit 1
 mkdir -p "$repo_root/.worktrees"
 git worktree add "$repo_root/.worktrees/<branch-or-task>" <branch>
 ```
