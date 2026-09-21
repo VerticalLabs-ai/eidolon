@@ -171,7 +171,7 @@ async function insertPlanRevision(
     schemaVersion: 1,
     objective: 'Research and synthesize',
     steps,
-    synthesis: { strategy: 'composite' },
+    synthesis: { strategy: 'composite', budgetCents: 100 },
     partialResultPolicy: 'require_all',
     limits: {},
   });
@@ -346,7 +346,7 @@ function mockProviderCall(): (
     model: 'claude-sonnet-4-6',
     inputTokens: 100,
     outputTokens: 50,
-    costCents: 10,
+    costCents: 1,
     finishReason: 'stop',
     latencyMs: 500,
   }));
@@ -521,7 +521,7 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 2 — Firecrawl searc
           logicalCallId: randomUUID(),
           provider: input.provider,
           attemptId: randomUUID(),
-          costCents: 10,
+          costCents: 1,
           sources: [
             {
               canonicalUrl: 'https://example.com/result',
@@ -716,7 +716,7 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 3 — URLs from searc
               logicalCallId: randomUUID(),
               provider: 'tavily',
               attemptId: randomUUID(),
-              costCents: 10,
+              costCents: 1,
               sources: searchUrls.map((url, i) => ({
                 canonicalUrl: url,
                 title: `Result ${i + 1}`,
@@ -742,7 +742,7 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Issue 3 — URLs from searc
             logicalCallId: randomUUID(),
             provider: 'tavily',
             attemptId: randomUUID(),
-            costCents: 10,
+            costCents: 1,
             sources: [
               {
                 canonicalUrl: input.urls?.[0] ?? 'https://example.com/extracted',
@@ -990,4 +990,579 @@ describe('fix-ut-m5-synthesis-firecrawl-url-passing: Full production path end-to
     expect(eventRows.some((e) => e.type === 'artifact.committed')).toBe(true);
     expect(eventRows.some((e) => e.type === 'citation.committed')).toBe(true);
   });
+});
+
+describe('EID-181: final synthesis accounting and recovery', () => {
+  async function fixture() {
+    const tree = await setupTree(db, '__mtest__ final-synthesis', 1, 'test-lease-token');
+    await seedResearchSource(
+      db,
+      tree,
+      tree.childRunIds[0]!,
+      tree.rootRunId,
+      'Evidence',
+      'https://example.com/evidence',
+    );
+    const input = {
+      companyId: tree.companyId,
+      projectId: tree.projectId,
+      runId: tree.rootRunId,
+      rootRunId: tree.rootRunId,
+      approvedPlanRevisionId: tree.revisionId,
+      approvedContentHash: tree.contentHash,
+      policySnapshotId: tree.policyId,
+      leaseToken: 'test-lease-token',
+    };
+    const { MissionSynthesisService } = await import('../services/mission/synthesis.js');
+    const service = new MissionSynthesisService(db);
+    await db.drizzle.transaction((tx) =>
+      service.attemptSynthesis(tx, { ...input, deferCompletion: true }),
+    );
+    return { tree, input, service };
+  }
+
+  async function accounting(runId: string) {
+    const rows = await db.drizzle.execute(sql`
+      SELECT r.status, r.input_tokens, r.output_tokens, r.provider_call_count,
+        b.settled_cents, b.released_cents,
+        (SELECT count(*)::int FROM artifact_provenance p WHERE p.run_id = r.id) AS artifacts,
+        (SELECT count(*)::int FROM budget_settlements c WHERE c.run_id = r.id) AS charges
+      FROM mission_runs r JOIN budget_reservations b ON b.run_id = r.id WHERE r.id = ${runId}
+    `);
+    return (rows as unknown as Array<Record<string, number | string>>)[0]!;
+  }
+
+  it('settles actual usage and commits evidence before completion releases the residual', async () => {
+    const { tree, input, service } = await fixture();
+    const provider = mockProviderCall();
+    const creator = new SynthesisArtifactCreator(db, {
+      providerCall: async (...args) => {
+        expect(await accounting(tree.rootRunId)).toMatchObject({
+          status: 'synthesizing',
+          released_cents: 0,
+          charges: 0,
+          artifacts: 0,
+          provider_call_count: 1,
+        });
+        return provider(...args);
+      },
+    });
+    const report = await creator.createSynthesisArtifact(input);
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'synthesizing',
+      settled_cents: 1,
+      released_cents: 0,
+      charges: 1,
+      artifacts: 1,
+      input_tokens: 100,
+      output_tokens: 50,
+    });
+    await db.drizzle.transaction((tx) => service.completeSynthesis(tx, input));
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'completed',
+      settled_cents: 1,
+      released_cents: 4999,
+      charges: 1,
+    });
+    const events = await db.drizzle.execute(
+      sql`SELECT type FROM run_events WHERE run_id = ${tree.rootRunId} ORDER BY sequence`,
+    );
+    const types = (events as unknown as Array<{ type: string }>).map((e) => e.type);
+    expect(types.indexOf('artifact.committed')).toBeLessThan(types.indexOf('run.completed'));
+    expect(report).not.toBeNull();
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['budget', 'calls', 'tokens', 'deadline'] as const)(
+    'denies an exhausted %s limit before provider dispatch',
+    async (limit) => {
+      const { tree, input } = await fixture();
+      if (limit === 'budget') {
+        await db.drizzle.execute(
+          sql`UPDATE run_plan_revisions SET content = jsonb_set(content, '{synthesis,budgetCents}', '0') WHERE id = ${tree.revisionId}`,
+        );
+      }
+      if (limit === 'calls') {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET provider_call_count = 64 WHERE id = ${tree.rootRunId}`,
+        );
+      }
+      if (limit === 'tokens') {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET input_tokens = 500000 WHERE id = ${tree.rootRunId}`,
+        );
+      }
+      if (limit === 'deadline') {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET created_at = now() - interval '2 hours' WHERE id = ${tree.rootRunId}`,
+        );
+      }
+      const provider = mockProviderCall();
+      await expect(
+        new SynthesisArtifactCreator(db, { providerCall: provider }).createSynthesisArtifact(input),
+      ).rejects.toThrow();
+      expect(provider).not.toHaveBeenCalled();
+      expect(await accounting(tree.rootRunId)).toMatchObject({
+        charges: 0,
+        artifacts: 0,
+        released_cents: 0,
+      });
+    },
+  );
+
+  it.each(['aggregate', 'per-report'] as const)(
+    'records known usage when the %s output cap rejects the report',
+    async (cap) => {
+      const { tree, input } = await fixture();
+      if (cap === 'aggregate') {
+        await db.drizzle.execute(
+          sql`UPDATE run_policy_snapshots SET limits = jsonb_set(limits, '{outputBytes}', '10') WHERE id = ${tree.policyId}`,
+        );
+      }
+      const normalProvider = mockProviderCall();
+      const provider = vi.fn(async (...args: Parameters<typeof normalProvider>) => ({
+        ...(await normalProvider(...args)),
+        content: cap === 'per-report' ? 'x'.repeat(1024 * 1024 + 1) : 'A report',
+      }));
+      const creator = new SynthesisArtifactCreator(db, { providerCall: provider });
+      await expect(creator.createSynthesisArtifact(input)).rejects.toMatchObject({
+        code: 'SYNTHESIS_OUTPUT_LIMIT',
+      });
+      await expect(creator.createSynthesisArtifact(input)).rejects.toMatchObject({
+        code: 'SYNTHESIS_OUTPUT_LIMIT',
+      });
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(await accounting(tree.rootRunId)).toMatchObject({
+        charges: 1,
+        settled_cents: 1,
+        artifacts: 0,
+      });
+    },
+  );
+
+  it('rolls back artifact publication and recovers the saved response without another charge', async () => {
+    const { tree, input, service } = await fixture();
+    const provider = mockProviderCall();
+    const failingCommit = new ArtifactCommitService({ drizzle: db.drizzle, schema: db.schema });
+    vi.spyOn(failingCommit, 'commitArtifactWithProvenance').mockRejectedValueOnce(
+      new Error('database unavailable'),
+    );
+    await expect(
+      new SynthesisArtifactCreator(db, {
+        providerCall: provider,
+        artifactCommitService: failingCommit,
+      }).createSynthesisArtifact(input),
+    ).rejects.toThrow('database unavailable');
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'synthesizing',
+      charges: 1,
+      artifacts: 0,
+      settled_cents: 1,
+      released_cents: 0,
+    });
+    const orphanRows = await db.drizzle.execute(
+      sql`SELECT count(*)::int AS c FROM artifacts WHERE company_id = ${tree.companyId}`,
+    );
+    expect((orphanRows as unknown as Array<{ c: number }>)[0]!.c).toBe(0);
+    const retry = new SynthesisArtifactCreator(db, { providerCall: provider });
+    const report = await retry.createSynthesisArtifact(input);
+    expect(await retry.createSynthesisArtifact(input)).toEqual(report);
+    await db.drizzle.transaction((tx) => service.completeSynthesis(tx, input));
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'completed',
+      charges: 1,
+      artifacts: 1,
+      settled_cents: 1,
+    });
+  });
+
+  it('reclaims a queued publication retry and completes using the saved report', async () => {
+    const { tree, input } = await fixture();
+    const provider = mockProviderCall();
+    const recoveringCommit = new ArtifactCommitService({ drizzle: db.drizzle, schema: db.schema });
+    vi.spyOn(recoveringCommit, 'commitArtifactWithProvenance').mockRejectedValueOnce(
+      new Error('temporary database error'),
+    );
+    const processor = new RunProcessor(db, {
+      synthesisArtifactCreator: new SynthesisArtifactCreator(db, {
+        providerCall: provider,
+        artifactCommitService: recoveringCommit,
+      }),
+    });
+    await processor.advance(
+      makeClaim(tree.companyId, tree.projectId, tree.rootRunId),
+      new AbortController().signal,
+    );
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'queued',
+      charges: 1,
+      released_cents: 0,
+      artifacts: 0,
+    });
+    await db.drizzle.execute(
+      sql`UPDATE mission_runs SET available_at = now() WHERE id = ${input.runId}`,
+    );
+    const { RunCoordinator } = await import('../services/mission/coordinator.js');
+    const reclaimed = await new RunCoordinator(db).claimNext('publication-recovery');
+    expect(reclaimed?.runId).toBe(tree.rootRunId);
+    await processor.advance(reclaimed!, new AbortController().signal);
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'completed',
+      charges: 1,
+      settled_cents: 1,
+      released_cents: 4999,
+      artifacts: 1,
+    });
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back undispatched preparation on shutdown and resumes without an unknown charge', async () => {
+    const { tree, input } = await fixture();
+    const provider = mockProviderCall();
+    const controller = new AbortController();
+    const { TreeLimitsService } = await import('../services/mission/tree-limits.js');
+    const original = TreeLimitsService.prototype.reserveProviderCall;
+    const reservation = vi
+      .spyOn(TreeLimitsService.prototype, 'reserveProviderCall')
+      .mockImplementationOnce(async function (
+        this: InstanceType<typeof TreeLimitsService>,
+        tx,
+        ctx,
+      ) {
+        const result = await original.call(this, tx, ctx);
+        controller.abort();
+        return result;
+      });
+    try {
+      await expect(
+        new SynthesisArtifactCreator(db, { providerCall: provider }).createSynthesisArtifact({
+          ...input,
+          signal: controller.signal,
+        }),
+      ).rejects.toThrow();
+    } finally {
+      reservation.mockRestore();
+    }
+    expect(provider).not.toHaveBeenCalled();
+    const attempts = await db.drizzle.execute(
+      sql`SELECT count(*)::int AS c FROM run_tool_invocations WHERE run_id = ${tree.rootRunId}`,
+    );
+    expect((attempts as unknown as Array<{ c: number }>)[0]!.c).toBe(0);
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'synthesizing',
+      charges: 0,
+      provider_call_count: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      released_cents: 0,
+    });
+    const { RunCoordinator } = await import('../services/mission/coordinator.js');
+    const coordinator = new RunCoordinator(db);
+    await coordinator.release(makeClaim(tree.companyId, tree.projectId, tree.rootRunId));
+    const reclaimed = await coordinator.claimNext('shutdown-recovery');
+    expect(reclaimed?.runId).toBe(tree.rootRunId);
+    await new RunProcessor(db, {
+      synthesisArtifactCreator: new SynthesisArtifactCreator(db, { providerCall: provider }),
+    }).advance(reclaimed!, new AbortController().signal);
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      status: 'completed',
+      charges: 1,
+      artifacts: 1,
+    });
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish a cached report after the mission deadline', async () => {
+    const { tree, input } = await fixture();
+    const provider = mockProviderCall();
+    const failingCommit = new ArtifactCommitService({ drizzle: db.drizzle, schema: db.schema });
+    vi.spyOn(failingCommit, 'commitArtifactWithProvenance').mockRejectedValueOnce(
+      new Error('publication interrupted'),
+    );
+    await expect(
+      new SynthesisArtifactCreator(db, {
+        providerCall: provider,
+        artifactCommitService: failingCommit,
+      }).createSynthesisArtifact(input),
+    ).rejects.toThrow('publication interrupted');
+    await db.drizzle.execute(
+      sql`UPDATE mission_runs SET created_at = now() - interval '2 hours' WHERE id = ${tree.rootRunId}`,
+    );
+    await expect(
+      new SynthesisArtifactCreator(db, { providerCall: provider }).createSynthesisArtifact(input),
+    ).rejects.toMatchObject({ code: 'SYNTHESIS_DEADLINE_EXCEEDED' });
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(await accounting(tree.rootRunId)).toMatchObject({
+      charges: 1,
+      settled_cents: 1,
+      artifacts: 0,
+    });
+  });
+
+  it.each(['before-dispatch', 'after-response', 'before-completion'] as const)(
+    'terminalizes worker cancellation %s without waiting for the sweep',
+    async (phase) => {
+      const { tree } = await fixture();
+      const cancel = () =>
+        db.drizzle.execute(
+          sql`UPDATE mission_runs SET cancel_requested_at = now(), cancellation_deadline_at = now() + interval '60 seconds' WHERE id = ${tree.rootRunId}`,
+        );
+      const normalProvider = mockProviderCall();
+      const provider = vi.fn(async (...args: Parameters<typeof normalProvider>) => {
+        if (phase === 'after-response') {
+          await cancel();
+        }
+        return normalProvider(...args);
+      });
+      const creator = new SynthesisArtifactCreator(db, { providerCall: provider });
+      if (phase === 'before-dispatch') {
+        await cancel();
+      }
+      if (phase === 'before-completion') {
+        const original = creator.createSynthesisArtifact.bind(creator);
+        vi.spyOn(creator, 'createSynthesisArtifact').mockImplementationOnce(async (...args) => {
+          const result = await original(...args);
+          await cancel();
+          return result;
+        });
+      }
+      await new RunProcessor(db, { synthesisArtifactCreator: creator }).advance(
+        makeClaim(tree.companyId, tree.projectId, tree.rootRunId),
+        new AbortController().signal,
+      );
+      const state = await accounting(tree.rootRunId);
+      expect(state.status).toBe('cancelled');
+      expect(Number(state.settled_cents) + Number(state.released_cents)).toBe(5000);
+      expect(state.artifacts).toBe(phase === 'before-completion' ? 1 : 0);
+      expect(provider).toHaveBeenCalledTimes(phase === 'before-dispatch' ? 0 : 1);
+    },
+  );
+
+  it.each(['local', 'ollama'] as const)(
+    'allows zero-budget synthesis and unknown recovery for free %s models',
+    async (providerName) => {
+      const { tree } = await fixture();
+      await db.drizzle.execute(
+        sql`UPDATE run_policy_snapshots SET provider = ${providerName}, model = 'custom-local-model', limits = jsonb_set(limits, '{costCents}', '0') WHERE id = ${tree.policyId}`,
+      );
+      await db.drizzle.execute(
+        sql`UPDATE run_plan_revisions SET content = jsonb_set(content, '{synthesis,budgetCents}', '0') WHERE id = ${tree.revisionId}`,
+      );
+      const normalProvider = mockProviderCall();
+      const provider = vi.fn(async (...args: Parameters<typeof normalProvider>) => ({
+        ...(await normalProvider(...args)),
+        provider: 'ollama',
+        model: 'custom-local-model',
+        costCents: 0,
+      }));
+      await new RunProcessor(db, {
+        synthesisArtifactCreator: new SynthesisArtifactCreator(db, { providerCall: provider }),
+      }).advance(
+        makeClaim(tree.companyId, tree.projectId, tree.rootRunId),
+        new AbortController().signal,
+      );
+      expect(await accounting(tree.rootRunId)).toMatchObject({
+        status: 'completed',
+        settled_cents: 0,
+        released_cents: 5000,
+        charges: 1,
+        artifacts: 1,
+      });
+      expect(provider).toHaveBeenCalledTimes(1);
+      // Independently verify that interrupted free calls also release the hold.
+      const interrupted = await fixture();
+      await db.drizzle.execute(
+        sql`UPDATE run_policy_snapshots SET provider = ${providerName}, model = 'custom-local-model' WHERE id = ${interrupted.tree.policyId}`,
+      );
+      await expect(
+        new SynthesisArtifactCreator(db, {
+          providerCall: async () => {
+            throw new Error('local runtime interrupted');
+          },
+        }).createSynthesisArtifact(interrupted.input),
+      ).rejects.toMatchObject({ code: 'SYNTHESIS_UNKNOWN_OUTCOME' });
+      const { MissionRecoveryService } = await import('../services/mission/recovery.js');
+      await new MissionRecoveryService(db).checkNonReplayableEffects(interrupted.input);
+      expect(await accounting(interrupted.tree.rootRunId)).toMatchObject({
+        status: 'failed',
+        settled_cents: 0,
+        released_cents: 5000,
+        charges: 1,
+        artifacts: 0,
+      });
+    },
+  );
+
+  it.each(['budget', 'calls', 'deadline', 'output', 'publication'] as const)(
+    'releases residual funds and preserves classification after worker %s failure',
+    async (failure) => {
+      const { tree } = await fixture();
+      if (failure === 'budget') {
+        await db.drizzle.execute(
+          sql`UPDATE run_plan_revisions SET content = jsonb_set(content, '{synthesis,budgetCents}', '0') WHERE id = ${tree.revisionId}`,
+        );
+      } else if (failure === 'calls') {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET provider_call_count = 64 WHERE id = ${tree.rootRunId}`,
+        );
+      } else if (failure === 'deadline') {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET created_at = now() - interval '2 hours' WHERE id = ${tree.rootRunId}`,
+        );
+      } else if (failure === 'output') {
+        await db.drizzle.execute(
+          sql`UPDATE run_policy_snapshots SET limits = jsonb_set(limits, '{outputBytes}', '10') WHERE id = ${tree.policyId}`,
+        );
+      } else {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET attempt_count = 2 WHERE id = ${tree.rootRunId}`,
+        );
+      }
+      const provider = mockProviderCall();
+      const commit = new ArtifactCommitService({ drizzle: db.drizzle, schema: db.schema });
+      if (failure === 'publication') {
+        vi.spyOn(commit, 'commitArtifactWithProvenance').mockRejectedValue(
+          new Error('database unavailable'),
+        );
+      }
+      await new RunProcessor(db, {
+        synthesisArtifactCreator: new SynthesisArtifactCreator(db, {
+          providerCall: provider,
+          artifactCommitService: commit,
+        }),
+      }).advance(
+        makeClaim(tree.companyId, tree.projectId, tree.rootRunId),
+        new AbortController().signal,
+      );
+      const state = await accounting(tree.rootRunId);
+      expect(state).toMatchObject({ status: 'failed', artifacts: 0 });
+      expect(Number(state.settled_cents) + Number(state.released_cents)).toBe(5000);
+      const rows = await db.drizzle.execute(
+        sql`SELECT failure_category FROM mission_runs WHERE id = ${tree.rootRunId}`,
+      );
+      expect((rows as unknown as Array<{ failure_category: string }>)[0]!.failure_category).toBe(
+        failure === 'budget' ? 'budget' : failure === 'publication' ? 'internal' : 'limit',
+      );
+      expect(provider).toHaveBeenCalledTimes(['output', 'publication'].includes(failure) ? 1 : 0);
+    },
+  );
+
+  it.each(['shutdown', 'requeued-unknown'] as const)(
+    'reconciles an unknown synthesis call after %s without dispatching again',
+    async (mode) => {
+      const { tree, input } = await fixture();
+      const controller = new AbortController();
+      const provider = vi.fn(async () => {
+        controller.abort();
+        throw new Error('interrupted after dispatch');
+      });
+      const creator = new SynthesisArtifactCreator(db, { providerCall: provider });
+      const processor = new RunProcessor(db, { synthesisArtifactCreator: creator });
+      const claim = makeClaim(tree.companyId, tree.projectId, tree.rootRunId);
+      const { RunCoordinator } = await import('../services/mission/coordinator.js');
+      const coordinator = new RunCoordinator(db);
+      if (mode === 'shutdown') {
+        await processor.advance(claim, controller.signal);
+        await coordinator.release(claim);
+      } else {
+        await expect(
+          creator.createSynthesisArtifact({ ...input, signal: controller.signal }),
+        ).rejects.toMatchObject({ code: 'SYNTHESIS_UNKNOWN_OUTCOME' });
+        await coordinator.release(claim);
+        const reclaimed = await coordinator.claimNext('unknown-recovery');
+        expect(reclaimed?.isRecovery).toBe(false);
+        await processor.advance(reclaimed!, new AbortController().signal);
+      }
+      const state = await accounting(tree.rootRunId);
+      expect(state).toMatchObject({ status: 'failed', charges: 1, artifacts: 0 });
+      expect(Number(state.settled_cents)).toBeGreaterThan(0);
+      expect(Number(state.settled_cents) + Number(state.released_cents)).toBe(5000);
+      expect(provider).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retains the bounded unknown charge once and never repeats an interrupted call', async () => {
+    const { tree, input } = await fixture();
+    const provider = vi.fn(async () => {
+      throw new Error('connection lost after dispatch');
+    });
+    await expect(
+      new SynthesisArtifactCreator(db, { providerCall: provider }).createSynthesisArtifact(input),
+    ).rejects.toMatchObject({ code: 'SYNTHESIS_UNKNOWN_OUTCOME' });
+    const { MissionRecoveryService } = await import('../services/mission/recovery.js');
+    const recovery = new MissionRecoveryService(db);
+    await recovery.checkNonReplayableEffects(input);
+    await expect(recovery.checkNonReplayableEffects(input)).rejects.toMatchObject({
+      code: 'LEASE_NOT_HELD',
+    });
+    const state = await accounting(tree.rootRunId);
+    expect(state).toMatchObject({ status: 'failed', charges: 1, artifacts: 0 });
+    expect(Number(state.settled_cents)).toBeGreaterThan(0);
+    expect(Number(state.settled_cents) + Number(state.released_cents)).toBe(5000);
+    await expect(
+      new SynthesisArtifactCreator(db, { providerCall: provider }).createSynthesisArtifact(input),
+    ).rejects.toThrow();
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['lease', 'cancellation'] as const)(
+    'fences late responses after %s and keeps the in-flight charge',
+    async (reason) => {
+      const { tree, input } = await fixture();
+      let dispatched!: () => void;
+      const started = new Promise<void>((resolve) => {
+        dispatched = resolve;
+      });
+      let respond!: (result: CompletionResult) => void;
+      const provider = vi.fn(() => {
+        dispatched();
+        return new Promise<CompletionResult>((resolve) => {
+          respond = resolve;
+        });
+      });
+      const pending = new SynthesisArtifactCreator(db, {
+        providerCall: provider,
+      }).createSynthesisArtifact(input);
+      const outcome = pending.catch((error) => error);
+      await started;
+      if (reason === 'lease') {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET lease_token = 'replacement-lease' WHERE id = ${tree.rootRunId}`,
+        );
+        const { MissionRecoveryService } = await import('../services/mission/recovery.js');
+        await new MissionRecoveryService(db).checkNonReplayableEffects({
+          ...input,
+          leaseToken: 'replacement-lease',
+        });
+      } else {
+        await db.drizzle.execute(
+          sql`UPDATE mission_runs SET cancel_requested_at = now(), cancellation_deadline_at = now() WHERE id = ${tree.rootRunId}`,
+        );
+        const { MissionCancellationService } = await import('../services/mission/cancellation.js');
+        await db.drizzle.transaction((tx) =>
+          new MissionCancellationService(db).terminalize(
+            tx,
+            tree.companyId,
+            tree.projectId,
+            tree.rootRunId,
+            { leaseToken: input.leaseToken },
+          ),
+        );
+      }
+      const settled = await accounting(tree.rootRunId);
+      respond(
+        await mockProviderCall()([], { model: 'claude-sonnet-4-6' }, new AbortController().signal),
+      );
+      expect(await outcome).toMatchObject({ code: 'SYNTHESIS_UNKNOWN_OUTCOME' });
+      expect(await accounting(tree.rootRunId)).toEqual(settled);
+      expect(settled).toMatchObject({
+        status: reason === 'lease' ? 'failed' : 'cancelled',
+        charges: 1,
+        artifacts: 0,
+      });
+      expect(Number(settled.settled_cents)).toBeGreaterThan(0);
+      expect(provider).toHaveBeenCalledTimes(1);
+    },
+  );
 });

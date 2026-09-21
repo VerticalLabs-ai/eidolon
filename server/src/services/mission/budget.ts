@@ -1,6 +1,7 @@
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
+import { SYNTHESIS_TOOL_ID, type SynthesisCallReservation } from './synthesis-call.js';
 
 /**
  * Mission Budget module: root holds, allocations, in-flight reservations,
@@ -431,6 +432,65 @@ export class BudgetService {
   async release(tx: Tx, input: ReleaseInput): Promise<void> {
     const schema = this.db.schema;
     const now = this.now();
+
+    // Every terminal path (cancellation, deadline, recovery, failure) accounts
+    // for an unresolved synthesis call before releasing its reserved funds.
+    // Prepared calls have not been dispatched; started/unknown calls may have
+    // incurred a charge and retain their snapshotted maximum exactly once.
+    const pendingSynthesis = await tx
+      .select()
+      .from(schema.runToolInvocations)
+      .where(
+        and(
+          eq(schema.runToolInvocations.companyId, input.companyId),
+          eq(schema.runToolInvocations.runId, input.runId),
+          eq(schema.runToolInvocations.toolId, SYNTHESIS_TOOL_ID),
+          sql`${schema.runToolInvocations.state} IN ('prepared', 'started', 'unknown')`,
+        ),
+      )
+      .for('update');
+    for (const attempt of pendingSynthesis) {
+      const reserved = attempt.argsSummary as unknown as SynthesisCallReservation;
+      if (attempt.startedAt) {
+        if (
+          !reserved ||
+          !Number.isSafeInteger(reserved.reservedCents) ||
+          reserved.reservedCents < 0 ||
+          (reserved.reservedCents === 0 && !['local', 'ollama'].includes(reserved.provider)) ||
+          !attempt.externalCallId
+        ) {
+          throw new AppError(
+            409,
+            'SYNTHESIS_ACCOUNTING_INVALID',
+            'Synthesis reservation is invalid',
+          );
+        }
+        const [run] = await tx
+          .select({ billingAgentId: schema.missionRuns.billingAgentId })
+          .from(schema.missionRuns)
+          .where(eq(schema.missionRuns.id, input.runId));
+        await this.settle(tx, {
+          companyId: input.companyId,
+          runId: input.runId,
+          billingAgentId: run?.billingAgentId ?? null,
+          externalCallId: attempt.externalCallId,
+          provider: reserved.provider,
+          model: reserved.model,
+          operation: SYNTHESIS_TOOL_ID,
+          costCents: reserved.reservedCents,
+        });
+      }
+      await tx
+        .update(schema.runToolInvocations)
+        .set({
+          state: attempt.startedAt ? 'unknown' : 'cancelled',
+          costCents: attempt.startedAt ? reserved.reservedCents : 0,
+          completedAt: now,
+          updatedAt: now,
+          resultSummary: { outcome: attempt.startedAt ? 'unknown' : 'not_dispatched' },
+        })
+        .where(eq(schema.runToolInvocations.id, attempt.id));
+    }
 
     // Lock the allocation for this run.
     const [allocation] = await tx

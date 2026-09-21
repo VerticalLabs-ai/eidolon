@@ -1,31 +1,10 @@
 /**
- * Synthesis artifact creator: gathers research sources from child runs,
- * makes an LLM call to synthesize a research report, and commits the
- * report as an artifact with citations and provenance.
- *
- * (fix-ut-m5-synthesis-artifact-citation-wiring)
- *
- * After MissionSynthesisService completes a composite run (all children
- * terminal, synthesis manifest committed, run transitioned to completed),
- * this creator:
- *
- *  (a) gathers all research source revisions from child runs by
- *      querying run_research_sources joined with research_source_revisions
- *      scoped to the root run.
- *  (b) makes a bounded LLM call to synthesize a research report using the
- *      child results and gathered sources.
- *  (c) creates a new artifact (insert into the artifacts table).
- *  (d) commits the report as an artifact revision with citations and
- *      provenance via ArtifactCommitService.commitArtifactWithProvenance.
- *
- * The LLM call uses the run's immutable policy snapshot for provider/model
- * and limits. The call respects the abort signal and policy duration limit.
- *
- * Secrets never appear in the synthesized content, events, or artifacts.
- * Provider request IDs are hashed before durable storage.
+ * Creates a research report while the mission remains synthesizing and its
+ * budget is held. Durable call accounting precedes atomic artifact publication;
+ * recovery can publish a saved result without repeating a paid provider call.
  */
 
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { ChatMessage, CompletionResult, ProviderConfig } from '../../providers/types.js';
 import { resolveProviderApiKey } from '../provider-key.js';
@@ -36,8 +15,27 @@ import {
   type CitationCommitInput,
   type ProvenanceCommitInput,
 } from './research/artifact-commit-service.js';
-import logger from '../../utils/logger.js';
-import { decrypt } from '../crypto.js';
+import { decrypt, encrypt } from '../crypto.js';
+import { AppError } from '../../middleware/error-handler.js';
+import { BudgetService } from './budget.js';
+import { TreeLimitsService, type TreePolicyLimits } from './tree-limits.js';
+import { PLATFORM_HARD_CAPS } from './modes.js';
+import { TOKEN_COSTS_PER_MILLION, type KnownModel } from '@eidolon/shared';
+import { SYNTHESIS_TOOL_ID, type SynthesisCallReservation } from './synthesis-call.js';
+
+type Tx = Parameters<Parameters<DbInstance['drizzle']['transaction']>[0]>[0];
+type Policy = {
+  provider: string;
+  model: string;
+  durationSeconds: number;
+  synthesisBudgetCents: number;
+  limits: TreePolicyLimits;
+};
+type ReportState = {
+  reportState?: 'generated' | 'committed' | 'skipped' | 'rejected';
+  payloadEnvelope?: string;
+  artifact?: CreateSynthesisArtifactResult;
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,6 +74,7 @@ export interface CreateSynthesisArtifactInput {
   approvedPlanRevisionId: string;
   approvedContentHash: string;
   policySnapshotId: string | null;
+  leaseToken: string;
   signal?: AbortSignal;
 }
 
@@ -93,7 +92,7 @@ export interface CreateSynthesisArtifactResult {
 /**
  * Production synthesis artifact creator.
  *
- * After synthesis completes, this creator gathers research sources from
+ * Before synthesis completes, this creator gathers research sources from
  * child runs, makes an LLM call to synthesize a research report, and
  * commits the report as an artifact with citations and provenance.
  *
@@ -102,6 +101,7 @@ export interface CreateSynthesisArtifactResult {
 export class SynthesisArtifactCreator {
   private readonly artifactCommitService: ArtifactCommitService;
   private readonly clock: () => Date;
+  private readonly providerCall?: SynthesisArtifactCreatorDeps['providerCall'];
 
   constructor(
     private db: DbInstance,
@@ -111,6 +111,7 @@ export class SynthesisArtifactCreator {
       deps.artifactCommitService ??
       new ArtifactCommitService({ drizzle: db.drizzle, schema: db.schema });
     this.clock = deps.clock ?? (() => new Date());
+    this.providerCall = deps.providerCall;
   }
 
   /**
@@ -130,72 +131,225 @@ export class SynthesisArtifactCreator {
     input: CreateSynthesisArtifactInput,
     deps?: { providerCall?: SynthesisArtifactCreatorDeps['providerCall'] },
   ): Promise<CreateSynthesisArtifactResult | null> {
-    const { companyId, projectId, runId, rootRunId, signal } = input;
-
-    // 1. Gather research source revisions from child runs.
-    const sources = await this.gatherResearchSources(companyId, rootRunId);
-
-    if (sources.length === 0) {
-      logger.info(
-        { runId, rootRunId },
-        'SynthesisArtifactCreator: no research sources found, skipping artifact creation',
-      );
+    const initial = await this.db.drizzle.transaction((tx) => this.lockSynthesis(tx, input));
+    const state = initial.manifest.synthesisResult as ReportState | null;
+    if (state?.reportState === 'committed') {
+      return state.artifact!;
+    }
+    if (state?.reportState === 'skipped') {
       return null;
     }
+    if (state?.reportState === 'rejected') {
+      throw new AppError(409, 'SYNTHESIS_OUTPUT_LIMIT', 'Synthesis output exceeded its limit');
+    }
+    if (state?.reportState !== 'generated') {
+      const sources = await this.gatherResearchSources(input.companyId, input.rootRunId);
+      if (sources.length === 0) {
+        await this.db.drizzle.transaction(async (tx) => {
+          const { manifest } = await this.lockSynthesis(tx, input);
+          await tx
+            .update(this.db.schema.runSynthesisManifests)
+            .set({ synthesisResult: { reportState: 'skipped' } })
+            .where(eq(this.db.schema.runSynthesisManifests.id, manifest.id));
+        });
+        return null;
+      }
+      const policy = await this.readPolicy(input);
+      await this.synthesizeReport(input, sources, policy, deps?.providerCall, input.signal);
+    }
+    return this.publishReport(input);
+  }
 
-    // 2. Read the run's policy snapshot for provider/model.
-    const policy = await this.readPolicy(input.policySnapshotId);
+  /** Lock root before child and fence every dispatch, settlement and publication. */
+  private async lockSynthesis(
+    tx: Tx,
+    input: CreateSynthesisArtifactInput,
+    allowCancellation = false,
+  ) {
+    const schema = this.db.schema;
+    const [root] = await tx
+      .select()
+      .from(schema.missionRuns)
+      .where(
+        and(
+          eq(schema.missionRuns.id, input.rootRunId),
+          eq(schema.missionRuns.companyId, input.companyId),
+          eq(schema.missionRuns.projectId, input.projectId),
+        ),
+      )
+      .for('update');
+    const [run] =
+      input.runId === input.rootRunId
+        ? [root]
+        : await tx
+            .select()
+            .from(schema.missionRuns)
+            .where(
+              and(
+                eq(schema.missionRuns.id, input.runId),
+                eq(schema.missionRuns.companyId, input.companyId),
+                eq(schema.missionRuns.projectId, input.projectId),
+              ),
+            )
+            .for('update');
+    if (
+      !root ||
+      !run ||
+      run.rootRunId !== root.id ||
+      run.status !== 'synthesizing' ||
+      root.terminalAt !== null ||
+      run.policySnapshotId !== input.policySnapshotId ||
+      run.approvedPlanRevisionId !== input.approvedPlanRevisionId
+    ) {
+      throw new AppError(409, 'INVALID_RUN_STATE', 'Synthesis is no longer active');
+    }
+    if (
+      !input.leaseToken ||
+      run.leaseToken !== input.leaseToken ||
+      !run.leaseExpiresAt ||
+      run.leaseExpiresAt <= this.clock()
+    ) {
+      throw new AppError(409, 'LEASE_NOT_HELD', 'Synthesis lease is no longer held');
+    }
+    if (!allowCancellation && (run.cancelRequestedAt || root.cancelRequestedAt)) {
+      throw new AppError(409, 'RUN_CANCELLED', 'Synthesis was cancelled');
+    }
+    const [rootPolicy] = await tx
+      .select({ limits: schema.runPolicySnapshots.limits })
+      .from(schema.runPolicySnapshots)
+      .where(
+        and(
+          eq(schema.runPolicySnapshots.id, root.policySnapshotId ?? ''),
+          eq(schema.runPolicySnapshots.companyId, input.companyId),
+        ),
+      );
+    const durationSeconds = (rootPolicy?.limits as { durationSeconds?: number } | undefined)
+      ?.durationSeconds;
+    if (!Number.isSafeInteger(durationSeconds) || durationSeconds! <= 0) {
+      throw new AppError(
+        409,
+        'SYNTHESIS_POLICY_INVALID',
+        'Synthesis requires a valid root deadline',
+      );
+    }
+    const deadlineAt = root.createdAt.getTime() + durationSeconds! * 1000;
+    if (!allowCancellation && this.clock().getTime() >= deadlineAt) {
+      throw new AppError(
+        409,
+        'SYNTHESIS_DEADLINE_EXCEEDED',
+        'Mission deadline elapsed before synthesis publication',
+      );
+    }
+    const [manifest] = await tx
+      .select()
+      .from(schema.runSynthesisManifests)
+      .where(
+        and(
+          eq(schema.runSynthesisManifests.runId, run.id),
+          eq(schema.runSynthesisManifests.companyId, input.companyId),
+          eq(schema.runSynthesisManifests.approvedPlanRevisionId, input.approvedPlanRevisionId),
+          eq(schema.runSynthesisManifests.approvedContentHash, input.approvedContentHash),
+        ),
+      );
+    if (!manifest || manifest.status !== 'started') {
+      throw new AppError(409, 'SYNTHESIS_NOT_PREPARED', 'Synthesis manifest is not active');
+    }
+    return { root, run, manifest, deadlineAt };
+  }
 
-    // 3. Make a bounded LLM call to synthesize a research report.
-    const synthesisContent = await this.synthesizeReport(
-      input,
-      sources,
-      policy,
-      deps?.providerCall,
-      signal,
-    );
-
-    // 4. Create a new artifact.
-    const artifactId = await this.createArtifact(companyId, projectId);
-
-    // 5. Build citation inputs from research sources.
-    const citations = this.buildCitations(sources);
-
-    // 6. Build provenance input.
-    const provenance = this.buildProvenance(input, sources);
-
-    // 7. Commit the artifact with citations and provenance.
-    const result = await this.artifactCommitService.commitArtifactWithProvenance({
-      companyId,
-      projectId,
-      runId,
-      rootRunId,
-      artifactId,
-      expectedVersion: 1,
-      content: synthesisContent,
-      editSource: 'agent',
-      editedByAgentId: null,
-      message: 'Research synthesis report',
-      citations,
-      provenance,
-    });
-
-    logger.info(
-      {
-        runId,
+  /** Publish from the durable encrypted response without repeating the provider call. */
+  private async publishReport(
+    input: CreateSynthesisArtifactInput,
+  ): Promise<CreateSynthesisArtifactResult> {
+    return this.db.drizzle.transaction(async (tx) => {
+      const { run, manifest } = await this.lockSynthesis(tx, input);
+      const state = manifest.synthesisResult as ReportState;
+      if (state.reportState === 'committed') {
+        return state.artifact!;
+      }
+      if (state.reportState !== 'generated' || !state.payloadEnvelope) {
+        throw new AppError(409, 'SYNTHESIS_REPORT_PENDING', 'Synthesis response is not available');
+      }
+      const { content, sources } = JSON.parse(decrypt(state.payloadEnvelope)) as {
+        content: Record<string, unknown>;
+        sources: ResearchSourceInfo[];
+      };
+      const artifactId = await this.createArtifact(input.companyId, input.projectId, tx);
+      const committed = await this.artifactCommitService.commitArtifactWithProvenance(
+        {
+          companyId: input.companyId,
+          projectId: input.projectId,
+          runId: input.runId,
+          rootRunId: input.rootRunId,
+          artifactId,
+          expectedVersion: 1,
+          content,
+          editSource: 'agent',
+          editedByAgentId: null,
+          message: 'Research synthesis report',
+          citations: this.buildCitations(sources),
+          provenance: this.buildProvenance(input, sources),
+        },
+        tx,
+      );
+      const result = {
         artifactId,
-        artifactRevisionId: result.artifactRevisionId,
-        citationCount: result.citationIds.length,
-      },
-      'SynthesisArtifactCreator: committed synthesis artifact with citations and provenance',
-    );
-
-    return {
-      artifactId,
-      artifactRevisionId: result.artifactRevisionId,
-      citationIds: result.citationIds,
-      provenanceId: result.provenanceId,
-    };
+        artifactRevisionId: committed.artifactRevisionId,
+        citationIds: committed.citationIds,
+        provenanceId: committed.provenanceId,
+      };
+      const schema = this.db.schema;
+      const sequence = Number(run.lastEventSequence);
+      const now = this.clock();
+      await tx.insert(schema.runEvents).values([
+        {
+          companyId: input.companyId,
+          projectId: input.projectId,
+          runId: input.runId,
+          sequence: sequence + 1,
+          type: 'artifact.committed',
+          schemaVersion: 1,
+          payload: {
+            artifactId,
+            artifactRevisionId: result.artifactRevisionId,
+            provenanceId: result.provenanceId,
+            source: 'synthesis',
+          },
+          actorType: 'system',
+          occurredAt: now,
+        },
+        {
+          companyId: input.companyId,
+          projectId: input.projectId,
+          runId: input.runId,
+          sequence: sequence + 2,
+          type: 'citation.committed',
+          schemaVersion: 1,
+          payload: {
+            artifactRevisionId: result.artifactRevisionId,
+            citationIds: result.citationIds,
+            source: 'synthesis',
+          },
+          actorType: 'system',
+          occurredAt: now,
+        },
+      ]);
+      await tx
+        .update(schema.missionRuns)
+        .set({
+          lastEventSequence: sequence + 2,
+          stateVersion: run.stateVersion + 2,
+          updatedAt: now,
+        })
+        .where(eq(schema.missionRuns.id, run.id));
+      await tx
+        .update(schema.runSynthesisManifests)
+        .set({
+          synthesisResult: { reportState: 'committed', artifact: result },
+        })
+        .where(eq(schema.runSynthesisManifests.id, manifest.id));
+      return result;
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -300,33 +454,63 @@ export class SynthesisArtifactCreator {
   /**
    * Read the run's policy snapshot for provider/model and limits.
    */
-  private async readPolicy(
-    policySnapshotId: string | null,
-  ): Promise<{ provider: string; model: string; durationSeconds: number }> {
-    if (!policySnapshotId) {
-      return { provider: 'anthropic', model: 'claude-sonnet-4-6', durationSeconds: 300 };
-    }
-
+  private async readPolicy(input: CreateSynthesisArtifactInput): Promise<Policy> {
     const schema = this.db.schema;
     const [snapshot] = await this.db.drizzle
-      .select({
-        provider: schema.runPolicySnapshots.provider,
-        model: schema.runPolicySnapshots.model,
-        limits: schema.runPolicySnapshots.limits,
-      })
+      .select()
       .from(schema.runPolicySnapshots)
-      .where(eq(schema.runPolicySnapshots.id, policySnapshotId))
+      .where(
+        and(
+          eq(schema.runPolicySnapshots.id, input.policySnapshotId ?? ''),
+          eq(schema.runPolicySnapshots.companyId, input.companyId),
+        ),
+      )
       .limit(1);
-
-    if (!snapshot) {
-      return { provider: 'anthropic', model: 'claude-sonnet-4-6', durationSeconds: 300 };
+    if (!snapshot?.provider || !snapshot.model) {
+      throw new AppError(
+        409,
+        'SYNTHESIS_POLICY_INVALID',
+        'Synthesis requires a provider policy snapshot',
+      );
     }
-
-    const limits = snapshot.limits as Record<string, number> | null;
+    const [revision] = await this.db.drizzle
+      .select()
+      .from(schema.runPlanRevisions)
+      .where(
+        and(
+          eq(schema.runPlanRevisions.id, input.approvedPlanRevisionId),
+          eq(schema.runPlanRevisions.companyId, input.companyId),
+          eq(schema.runPlanRevisions.contentHash, input.approvedContentHash),
+        ),
+      );
+    const synthesisBudgetCents = (
+      revision?.content as { synthesis?: { budgetCents?: number } } | undefined
+    )?.synthesis?.budgetCents;
+    if (
+      revision?.status !== 'approved' ||
+      !Number.isSafeInteger(synthesisBudgetCents) ||
+      synthesisBudgetCents! < 0
+    ) {
+      throw new AppError(409, 'SYNTHESIS_POLICY_INVALID', 'Synthesis requires an approved budget');
+    }
+    const limits = snapshot.limits as unknown as TreePolicyLimits & { durationSeconds: number };
+    for (const key of [
+      'providerCalls',
+      'totalTokens',
+      'outputBytes',
+      'costCents',
+      'durationSeconds',
+    ] as const) {
+      if (!Number.isSafeInteger(limits?.[key]) || limits[key] < (key === 'costCents' ? 0 : 1)) {
+        throw new AppError(409, 'SYNTHESIS_POLICY_INVALID', 'Synthesis policy limits are invalid');
+      }
+    }
     return {
-      provider: snapshot.provider ?? 'anthropic',
-      model: snapshot.model ?? 'claude-sonnet-4-6',
-      durationSeconds: limits?.durationSeconds ?? 300,
+      provider: snapshot.provider,
+      model: snapshot.model,
+      durationSeconds: limits.durationSeconds,
+      synthesisBudgetCents: synthesisBudgetCents!,
+      limits,
     };
   }
 
@@ -341,10 +525,10 @@ export class SynthesisArtifactCreator {
   private async synthesizeReport(
     input: CreateSynthesisArtifactInput,
     sources: ResearchSourceInfo[],
-    policy: { provider: string; model: string; durationSeconds: number },
+    policy: Policy,
     providerCallOverride?: SynthesisArtifactCreatorDeps['providerCall'],
     signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<void> {
     // Retrieved excerpts are bounded data, never instructions.
     const sourceList = sources
       .map((s, i) =>
@@ -381,83 +565,319 @@ Write the report in a structured format with sections for Summary, Key Findings,
       },
     ];
 
-    const apiKey = resolveProviderApiKey(policy.provider, undefined);
+    const callFn =
+      providerCallOverride ??
+      this.providerCall ??
+      this.defaultProviderCall.bind(this, policy.provider);
     const config: ProviderConfig = {
-      apiKey,
+      apiKey:
+        providerCallOverride || this.providerCall
+          ? undefined
+          : resolveProviderApiKey(policy.provider, undefined),
       model: policy.model,
-      maxTokens: 4096,
+      maxTokens: Math.min(4096, policy.limits.totalTokens),
     };
+    // Local runtimes support arbitrary installed model names and do not charge
+    // provider fees. Unknown paid models still fail closed without a price cap.
+    const localProvider = policy.provider === 'local' || policy.provider === 'ollama';
+    const rates = localProvider
+      ? { input: 0, output: 0 }
+      : TOKEN_COSTS_PER_MILLION[`${policy.provider}/${policy.model}` as KnownModel];
+    if (!rates) {
+      throw new AppError(409, 'SYNTHESIS_PRICE_UNKNOWN', 'Synthesis model has no known price');
+    }
+    // UTF-8 bytes plus framing overhead conservatively bound input tokens.
+    const estimatedInputTokens = Buffer.byteLength(JSON.stringify(messages), 'utf8') + 1024;
+    const estimatedOutputTokens = config.maxTokens!;
+    const reservedCents = Math.ceil(
+      (estimatedInputTokens * rates.input + estimatedOutputTokens * rates.output) / 1_000_000,
+    );
+    const reservation: SynthesisCallReservation = {
+      provider: policy.provider,
+      model: policy.model,
+      reservedCents,
+      estimatedInputTokens,
+      estimatedOutputTokens,
+    };
+    const schema = this.db.schema;
+    const attemptId = randomUUID();
+    const { externalCallId, remainingDurationMs, reservationId } =
+      await this.db.drizzle.transaction(async (tx) => {
+        signal?.throwIfAborted();
+        const { run, manifest, deadlineAt } = await this.lockSynthesis(tx, input);
+        const [existing] = await tx
+          .select()
+          .from(schema.runToolInvocations)
+          .where(
+            and(
+              eq(schema.runToolInvocations.runId, input.runId),
+              eq(schema.runToolInvocations.toolId, SYNTHESIS_TOOL_ID),
+            ),
+          );
+        if (existing) {
+          throw new AppError(409, 'SYNTHESIS_CALL_ACTIVE', 'Synthesis call is already recorded');
+        }
+        const [allocation] = await tx
+          .select()
+          .from(schema.budgetAllocations)
+          .where(eq(schema.budgetAllocations.runId, run.id))
+          .for('update');
+        const [hold] = allocation
+          ? await tx
+              .select()
+              .from(schema.budgetReservations)
+              .where(eq(schema.budgetReservations.id, allocation.rootReservationId))
+              .for('update')
+          : [];
+        const available =
+          allocation && hold
+            ? Math.min(
+                allocation.allocatedCents - allocation.settledCents - allocation.releasedCents,
+                hold.reservedCents - hold.settledCents - hold.releasedCents,
+                policy.limits.costCents,
+                policy.synthesisBudgetCents,
+              )
+            : 0;
+        if (!allocation || !hold || reservedCents > available) {
+          throw new AppError(
+            409,
+            'BUDGET_EXHAUSTED',
+            'Synthesis budget cannot cover the provider call',
+          );
+        }
+        const callId = `synthesis:${manifest.id}`;
+        await tx.insert(schema.runToolInvocations).values({
+          id: attemptId,
+          companyId: input.companyId,
+          projectId: input.projectId,
+          runId: run.id,
+          stepKey: 'synthesis',
+          attempt: 1,
+          ordinal: 0,
+          toolId: SYNTHESIS_TOOL_ID,
+          replayClass: 'non_replayable',
+          state: 'prepared',
+          argsSummary: { ...reservation },
+          logicalCallId: callId,
+          externalCallId: callId,
+        });
 
-    const timeoutMs = Math.min(policy.durationSeconds * 1000, 120_000);
+        const remaining = Math.min(
+          deadlineAt - this.clock().getTime(),
+          policy.durationSeconds * 1000,
+        );
+        if (remaining <= 0) {
+          throw new AppError(
+            409,
+            'SYNTHESIS_DEADLINE_EXCEEDED',
+            'Mission deadline elapsed before synthesis',
+          );
+        }
+        const limitsReservation = await new TreeLimitsService(this.db, {
+          clock: this.clock,
+        }).reserveProviderCall(tx, {
+          ...input,
+          estimatedInputTokens,
+          estimatedOutputTokens,
+          policyLimits: policy.limits,
+        });
+        signal?.throwIfAborted();
+        await tx
+          .update(schema.runToolInvocations)
+          .set({ state: 'started', startedAt: this.clock(), updatedAt: this.clock() })
+          .where(
+            and(
+              eq(schema.runToolInvocations.id, attemptId),
+              eq(schema.runToolInvocations.state, 'prepared'),
+            ),
+          );
+        signal?.throwIfAborted();
+        return {
+          externalCallId: callId,
+          remainingDurationMs: remaining,
+          reservationId: limitsReservation,
+        };
+      });
+
     const timeoutController = new AbortController();
-    const timeoutTimer = setTimeout(() => timeoutController.abort(), timeoutMs);
+    const timeoutTimer = setTimeout(
+      () => timeoutController.abort(),
+      Math.min(remainingDurationMs, 120_000),
+    );
     const combinedSignal = signal
       ? AbortSignal.any([signal, timeoutController.signal])
       : timeoutController.signal;
-
+    let rejectAbort: () => void = () => {};
+    let dispatched = false;
     try {
-      const callFn = providerCallOverride ?? this.defaultProviderCall.bind(this, policy.provider);
-      const result = await callFn(messages, config, combinedSignal);
-      clearTimeout(timeoutTimer);
-
-      // Build the artifact content from the LLM response.
-      return {
+      combinedSignal.throwIfAborted();
+      const aborted = new Promise<never>((_, reject) => {
+        rejectAbort = () =>
+          reject(new AppError(409, 'SYNTHESIS_INTERRUPTED', 'Synthesis call was interrupted'));
+        combinedSignal.addEventListener('abort', rejectAbort, { once: true });
+        if (combinedSignal.aborted) {
+          rejectAbort();
+        }
+      });
+      dispatched = true;
+      const result = await Promise.race([callFn(messages, config, combinedSignal), aborted]);
+      if (
+        ![result.inputTokens, result.outputTokens, result.costCents].every(
+          (n) => Number.isSafeInteger(n) && n >= 0,
+        ) ||
+        result.inputTokens > estimatedInputTokens ||
+        result.outputTokens > estimatedOutputTokens ||
+        result.costCents > reservedCents
+      ) {
+        throw new AppError(
+          409,
+          'SYNTHESIS_USAGE_INVALID',
+          'Synthesis usage exceeded its reservation',
+        );
+      }
+      const content = {
         type: 'research_report',
         title: 'Research Synthesis Report',
         body: result.content,
         provider: result.provider,
         model: result.model,
         sourceCount: sources.length,
-        citationMarks: sources.map((s, i) => ({
+        citationMarks: sources.map((source, i) => ({
           ordinal: i + 1,
-          sourceRevisionId: s.sourceRevisionId,
-          canonicalUrl: s.canonicalUrl,
-          title: s.title,
+          sourceRevisionId: source.sourceRevisionId,
+          canonicalUrl: source.canonicalUrl,
+          title: source.title,
         })),
         generatedAt: this.clock().toISOString(),
       };
-    } catch (err) {
-      clearTimeout(timeoutTimer);
-      logger.warn(
-        { runId: input.runId, err: err instanceof Error ? err.message : String(err) },
-        'SynthesisArtifactCreator: LLM synthesis call failed, using fallback content',
+      const outputBytes = Buffer.byteLength(JSON.stringify(content), 'utf8');
+      const rejected = await this.db.drizzle.transaction(async (tx) => {
+        const { root, run, manifest } = await this.lockSynthesis(tx, input, true);
+        const budget = new BudgetService(this.db, { clock: this.clock });
+        await budget.settle(tx, {
+          companyId: input.companyId,
+          runId: run.id,
+          billingAgentId: run.billingAgentId,
+          externalCallId,
+          provider: policy.provider,
+          model: policy.model,
+          operation: SYNTHESIS_TOOL_ID,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          costCents: result.costCents,
+        });
+        const rejected =
+          outputBytes > PLATFORM_HARD_CAPS.perSourceBytes ||
+          outputBytes + root.outputBytes >
+            Math.min(policy.limits.outputBytes, PLATFORM_HARD_CAPS.outputBytes);
+        for (const id of new Set([input.rootRunId, input.runId])) {
+          await tx
+            .update(schema.missionRuns)
+            .set({
+              inputTokens: sql`${schema.missionRuns.inputTokens} + ${result.inputTokens - estimatedInputTokens}`,
+              outputTokens: sql`${schema.missionRuns.outputTokens} + ${result.outputTokens - estimatedOutputTokens}`,
+              outputBytes: sql`${schema.missionRuns.outputBytes} + ${rejected ? 0 : outputBytes}`,
+              updatedAt: this.clock(),
+            })
+            .where(eq(schema.missionRuns.id, id));
+        }
+        await tx
+          .update(schema.runToolInvocations)
+          .set({
+            state: 'succeeded',
+            costCents: result.costCents,
+            completedAt: this.clock(),
+            updatedAt: this.clock(),
+            resultSummary: {
+              inputTokens: result.inputTokens,
+              outputTokens: result.outputTokens,
+              costCents: result.costCents,
+            },
+          })
+          .where(eq(schema.runToolInvocations.id, attemptId));
+        await tx
+          .update(schema.runSynthesisManifests)
+          .set({
+            synthesisResult: rejected
+              ? { reportState: 'rejected' }
+              : {
+                  reportState: 'generated',
+                  payloadEnvelope: encrypt(JSON.stringify({ content, sources })),
+                },
+          })
+          .where(eq(schema.runSynthesisManifests.id, manifest.id));
+        return rejected;
+      });
+      if (rejected) {
+        throw new AppError(409, 'SYNTHESIS_OUTPUT_LIMIT', 'Synthesis output exceeded its limit');
+      }
+    } catch (error) {
+      // Preserve succeeded usage if only publication/output validation failed.
+      // A stale worker cannot update the replacement worker's state.
+      await this.db.drizzle
+        .transaction(async (tx) => {
+          await this.lockSynthesis(tx, input, true);
+          if (!dispatched) {
+            const removed = await tx
+              .delete(schema.runToolInvocations)
+              .where(
+                and(
+                  eq(schema.runToolInvocations.id, attemptId),
+                  eq(schema.runToolInvocations.state, 'started'),
+                ),
+              )
+              .returning({ id: schema.runToolInvocations.id });
+            if (removed.length) {
+              await new TreeLimitsService(this.db, { clock: this.clock }).releaseProviderCall(tx, {
+                ...input,
+                reservationId,
+                estimatedInputTokens,
+                estimatedOutputTokens,
+                policyLimits: policy.limits,
+              });
+            }
+            return;
+          }
+          await tx
+            .update(schema.runToolInvocations)
+            .set({ state: 'unknown', updatedAt: this.clock() })
+            .where(
+              and(
+                eq(schema.runToolInvocations.id, attemptId),
+                eq(schema.runToolInvocations.state, 'started'),
+              ),
+            );
+        })
+        .catch(() => {});
+      if (!dispatched || (error instanceof AppError && error.code === 'SYNTHESIS_OUTPUT_LIMIT')) {
+        throw error;
+      }
+      throw new AppError(
+        409,
+        'SYNTHESIS_UNKNOWN_OUTCOME',
+        'Synthesis was interrupted; the call will not be repeated',
       );
-
-      // Fallback: create a minimal artifact with source references even
-      // if the LLM call fails, so the run still has an artifact with
-      // provenance (fix-ut-m5-synthesis-artifact-citation-wiring).
-      return {
-        type: 'research_report',
-        title: 'Research Synthesis Report',
-        body: 'Synthesis could not be completed. The attached source excerpts are available for review.',
-        sourceCount: sources.length,
-        citationMarks: sources.map((s, i) => ({
-          ordinal: i + 1,
-          sourceRevisionId: s.sourceRevisionId,
-          canonicalUrl: s.canonicalUrl,
-          title: s.title,
-        })),
-        generatedAt: this.clock().toISOString(),
-        fallback: true,
-      };
+    } finally {
+      clearTimeout(timeoutTimer);
+      combinedSignal.removeEventListener('abort', rejectAbort);
     }
   }
 
   /**
    * Create a new artifact row for the synthesis report.
    */
-  private async createArtifact(companyId: string, projectId: string): Promise<string> {
+  private async createArtifact(companyId: string, projectId: string, tx: Tx): Promise<string> {
     const artifactId = randomUUID();
     const now = this.clock().toISOString();
 
-    await this.db.drizzle.execute(sql`
+    await tx.execute(sql`
       INSERT INTO "artifacts" ("id", "company_id", "project_id", "type", "title", "content", "version", "created_at", "updated_at")
       VALUES (${artifactId}, ${companyId}, ${projectId}, 'document', 'Research Synthesis Report', '{}'::jsonb, 1, ${now}, ${now})
     `);
 
     // Insert the initial revision (version 1) so the artifact has a baseline.
     const revisionId = randomUUID();
-    await this.db.drizzle.execute(sql`
+    await tx.execute(sql`
       INSERT INTO "artifact_revisions" ("id", "artifact_id", "version", "content", "edit_source", "created_at")
       VALUES (${revisionId}, ${artifactId}, 1, '{}'::jsonb, 'system', ${now})
     `);

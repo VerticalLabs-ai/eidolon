@@ -7,14 +7,12 @@ import type { DbInstance } from '../../types.js';
 import { AppError } from '../../middleware/error-handler.js';
 import type { Claim } from './coordinator.js';
 import { MissionRecoveryService } from './recovery.js';
+import { MissionCancellationService } from './cancellation.js';
 import { MissionCompletionService } from './completion.js';
-import { MissionRetryService } from './retry.js';
+import { MissionRetryService, type ExecutionFailureKind } from './retry.js';
 import { BudgetService } from './budget.js';
-import { MissionSynthesisService, type ManifestEntry } from './synthesis.js';
-import type {
-  SynthesisArtifactCreator,
-  CreateSynthesisArtifactResult,
-} from './synthesis-artifact-creator.js';
+import { MissionSynthesisService } from './synthesis.js';
+import type { SynthesisArtifactCreator } from './synthesis-artifact-creator.js';
 import { projectEvent } from './projection.js';
 import { decryptEnvelope } from './ingress.js';
 import { TopologyMaterializer } from './topology-materializer.js';
@@ -278,7 +276,20 @@ export class RunProcessor {
     }
 
     const data = await this.readRunAndPolicy(claim);
-    if (!data || data.run.cancelRequestedAt !== null || signal.aborted) {
+    if (!data || signal.aborted) {
+      return;
+    }
+    if (data.run.cancelRequestedAt !== null) {
+      if (data.run.status === 'synthesizing') {
+        await this.handleSynthesisCancellation(claim);
+        await this.projectRunEvents(claim);
+      }
+      return;
+    }
+
+    if (data.run.status === 'synthesizing') {
+      await this.attemptCompositeSynthesis(claim, signal);
+      await this.projectRunEvents(claim);
       return;
     }
 
@@ -315,7 +326,7 @@ export class RunProcessor {
         // are not all terminal, the run remains nonterminal. The lease is left
         // to expire naturally (the worker stops renewing it when advance
         // returns), so the run stays in 'running' and is re-claimed later.
-        await this.attemptCompositeSynthesis(claim);
+        await this.attemptCompositeSynthesis(claim, signal);
         await this.projectRunEvents(claim);
         return;
       }
@@ -348,7 +359,7 @@ export class RunProcessor {
     ) {
       const hasChildren = await this.runHasChildren(claim, data.run.id);
       if (hasChildren) {
-        await this.attemptCompositeSynthesis(claim);
+        await this.attemptCompositeSynthesis(claim, signal);
         await this.projectRunEvents(claim);
         return;
       }
@@ -404,227 +415,153 @@ export class RunProcessor {
     return rows.length > 0 && Number(rows[0]!.cnt) > 0;
   }
 
-  /**
-   * Attempt composite synthesis for a parent run with children. Returns
-   * true if synthesis was performed (the run is now terminal), false if
-   * children are not all terminal or synthesis was skipped.
-   *
-   * After synthesis completes successfully (run is 'completed'), if a
-   * synthesis artifact creator is available, the processor delegates to
-   * it to gather research sources from child runs, make an LLM call to
-   * synthesize a research report, and commit the report as an artifact
-   * with citations and provenance
-   * (fix-ut-m5-synthesis-artifact-citation-wiring).
-   *
-   * (VAL-SUB-064, 065, 066, 111)
-   */
-  private async attemptCompositeSynthesis(claim: Claim): Promise<boolean> {
-    const synthesisService = new MissionSynthesisService(this.db, {
-      clock: () => this.now(),
-    });
-    let synthesized = false;
-    let completedStatus: string | null = null;
-    let manifest: ManifestEntry[] | null = null;
-    let approvedPlanRevisionId: string | null = null;
-    let approvedContentHash: string | null = null;
-    let policySnapshotId: string | null = null;
-    let rootRunId: string | null = null;
+  /** Keep synthesis nonterminal until report usage and publication are durable. */
+  private async attemptCompositeSynthesis(claim: Claim, signal: AbortSignal): Promise<boolean> {
+    const service = new MissionSynthesisService(this.db, { clock: () => this.now() });
+    const input = {
+      companyId: claim.companyId,
+      projectId: claim.projectId,
+      runId: claim.runId,
+      leaseToken: claim.leaseToken,
+    };
     try {
-      const result = await this.db.drizzle.transaction(async (tx) => {
-        return synthesisService.attemptSynthesis(tx, {
-          companyId: claim.companyId,
-          projectId: claim.projectId,
-          runId: claim.runId,
-          leaseToken: claim.leaseToken,
-        });
-      });
-      synthesized = result.synthesized;
-      completedStatus = result.status;
-      manifest = result.manifest;
-      // Read the run's approved plan revision ID and policy snapshot ID
-      // for the artifact creator. These are needed to build provenance.
-      if (synthesized && result.status === 'completed') {
-        const schema = this.db.schema;
-        const [run] = await this.db.drizzle
-          .select({
-            approvedPlanRevisionId: schema.missionRuns.approvedPlanRevisionId,
-            policySnapshotId: schema.missionRuns.policySnapshotId,
-            rootRunId: schema.missionRuns.rootRunId,
-          })
-          .from(schema.missionRuns)
-          .where(eq(schema.missionRuns.id, claim.runId))
-          .limit(1);
-        approvedPlanRevisionId = run?.approvedPlanRevisionId ?? null;
-        policySnapshotId = run?.policySnapshotId ?? null;
-        rootRunId = run?.rootRunId ?? null;
-
-        if (approvedPlanRevisionId) {
-          const [revision] = await this.db.drizzle
-            .select({ contentHash: schema.runPlanRevisions.contentHash })
-            .from(schema.runPlanRevisions)
-            .where(eq(schema.runPlanRevisions.id, approvedPlanRevisionId))
-            .limit(1);
-          approvedContentHash = revision?.contentHash ?? null;
-        }
+      const result = await this.db.drizzle.transaction((tx) =>
+        service.attemptSynthesis(tx, {
+          ...input,
+          deferCompletion: Boolean(this.deps.synthesisArtifactCreator),
+        }),
+      );
+      if (!result.synthesized || result.terminalized) {
+        return result.synthesized;
       }
-    } catch {
-      // Synthesis may fail due to concurrent transaction (exactly-once
-      // unique constraint) or lease fencing. In either case, the run
-      // remains nonterminal and will be retried on re-claim.
+      if (!this.deps.synthesisArtifactCreator || signal.aborted) {
+        return false;
+      }
+      // A graceful release can requeue an unknown call as a first claim.
+      if (await this.handleRecovery(claim)) {
+        return true;
+      }
+      const schema = this.db.schema;
+      const [run] = await this.db.drizzle
+        .select()
+        .from(schema.missionRuns)
+        .where(
+          and(
+            eq(schema.missionRuns.id, claim.runId),
+            eq(schema.missionRuns.companyId, claim.companyId),
+          ),
+        );
+      const [manifest] = await this.db.drizzle
+        .select()
+        .from(schema.runSynthesisManifests)
+        .where(eq(schema.runSynthesisManifests.runId, claim.runId));
+      if (!run?.approvedPlanRevisionId || !manifest) {
+        return false;
+      }
+      await this.deps.synthesisArtifactCreator.createSynthesisArtifact({
+        ...input,
+        rootRunId: run.rootRunId,
+        approvedPlanRevisionId: run.approvedPlanRevisionId,
+        approvedContentHash: manifest.approvedContentHash,
+        policySnapshotId: run.policySnapshotId,
+        signal,
+      });
+      if (signal.aborted) {
+        return false;
+      }
+      const completed = await this.db.drizzle.transaction((tx) =>
+        service.completeSynthesis(tx, input),
+      );
+      return completed.terminalized;
+    } catch (error) {
+      const code = error instanceof AppError ? error.code : 'SYNTHESIS_COMMIT_FAILED';
+      if (
+        ['RUN_CANCELLED', 'INVALID_RUN_STATE', 'SYNTHESIS_UNKNOWN_OUTCOME'].includes(code) &&
+        (await this.handleSynthesisCancellation(claim))
+      ) {
+        return true;
+      }
+      if (code === 'SYNTHESIS_UNKNOWN_OUTCOME') {
+        return this.handleRecovery(claim);
+      }
+      if (signal.aborted) {
+        return false;
+      }
+      if (
+        ['LEASE_NOT_HELD', 'INVALID_RUN_STATE', 'RUN_CANCELLED', 'SYNTHESIS_CALL_ACTIVE'].includes(
+          code,
+        )
+      ) {
+        return false;
+      }
+      await this.handleFailure(
+        claim,
+        {
+          kind:
+            code === 'BUDGET_EXHAUSTED'
+              ? 'budget'
+              : [
+                    'LIMIT_EXCEEDED',
+                    'SYNTHESIS_OUTPUT_LIMIT',
+                    'SYNTHESIS_DEADLINE_EXCEEDED',
+                  ].includes(code)
+                ? 'limit'
+                : error instanceof AppError
+                  ? 'policy'
+                  : 'internal',
+          code,
+          safeMessage: error instanceof AppError ? error.message : 'Synthesis publication failed.',
+        },
+        true,
+      );
       return false;
     }
-
-    // After synthesis completes successfully, create the research artifact
-    // with citations and provenance (fix-ut-m5-synthesis-artifact-citation-wiring).
-    if (
-      synthesized &&
-      completedStatus === 'completed' &&
-      this.deps.synthesisArtifactCreator &&
-      approvedPlanRevisionId &&
-      approvedContentHash
-    ) {
-      await this.createSynthesisArtifact(claim, {
-        approvedPlanRevisionId,
-        approvedContentHash,
-        policySnapshotId,
-        manifest,
-        rootRunId: rootRunId ?? claim.runId,
-      });
-    }
-
-    return synthesized;
   }
 
-  /**
-   * Create a research synthesis artifact with citations and provenance
-   * after synthesis completes (fix-ut-m5-synthesis-artifact-citation-wiring).
-   *
-   * Delegates to the SynthesisArtifactCreator to gather research sources
-   * from child runs, make an LLM call, and commit the artifact. Emits
-   * artifact.committed and citation.committed events to the run journal.
-   */
-  private async createSynthesisArtifact(
-    claim: Claim,
-    info: {
-      approvedPlanRevisionId: string;
-      approvedContentHash: string;
-      policySnapshotId: string | null;
-      manifest: ManifestEntry[] | null;
-      rootRunId: string;
-    },
-  ): Promise<void> {
+  /** Observe cancellation while this worker still owns the synthesis lease. */
+  private async handleSynthesisCancellation(claim: Claim): Promise<boolean> {
     try {
-      const result = await this.deps.synthesisArtifactCreator!.createSynthesisArtifact({
-        companyId: claim.companyId,
-        projectId: claim.projectId,
-        runId: claim.runId,
-        rootRunId: info.rootRunId,
-        approvedPlanRevisionId: info.approvedPlanRevisionId,
-        approvedContentHash: info.approvedContentHash,
-        policySnapshotId: info.policySnapshotId,
+      return await this.db.drizzle.transaction(async (tx) => {
+        const schema = this.db.schema;
+        const [candidate] = await tx
+          .select({ rootRunId: schema.missionRuns.rootRunId })
+          .from(schema.missionRuns)
+          .where(
+            and(
+              eq(schema.missionRuns.id, claim.runId),
+              eq(schema.missionRuns.companyId, claim.companyId),
+              eq(schema.missionRuns.projectId, claim.projectId),
+            ),
+          );
+        if (!candidate) {
+          return false;
+        }
+        await tx
+          .select({ id: schema.missionRuns.id })
+          .from(schema.missionRuns)
+          .where(
+            and(
+              eq(schema.missionRuns.id, candidate.rootRunId),
+              eq(schema.missionRuns.companyId, claim.companyId),
+            ),
+          )
+          .for('update');
+        const outcome = await new MissionCancellationService(this.db, {
+          clock: () => this.now(),
+        }).terminalize(tx, claim.companyId, claim.projectId, claim.runId, {
+          leaseToken: claim.leaseToken,
+        });
+        return outcome.terminalized;
       });
-
-      if (!result) {
-        return; // No research sources found — no artifact to create.
+    } catch (error) {
+      if (
+        error instanceof AppError &&
+        ['LEASE_NOT_HELD', 'INVALID_RUN_STATE'].includes(error.code)
+      ) {
+        return false;
       }
-
-      // Emit artifact.committed and citation.committed events to the run
-      // journal so consumers know an artifact was created during synthesis.
-      await this.emitArtifactEvents(claim, result);
-    } catch (err) {
-      // Artifact creation failure is non-fatal — the run is already completed.
-      // Log the error but do not change the run's terminal state.
-      logger.warn(
-        {
-          runId: claim.runId,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        'RunProcessor: synthesis artifact creation failed (non-fatal, run already completed)',
-      );
+      throw error;
     }
-  }
-
-  /**
-   * Emit artifact.committed and citation.committed events to the run journal
-   * after a synthesis artifact is created.
-   */
-  private async emitArtifactEvents(
-    claim: Claim,
-    result: CreateSynthesisArtifactResult,
-  ): Promise<void> {
-    const schema = this.db.schema;
-    const now = this.now();
-
-    await this.db.drizzle.transaction(async (tx) => {
-      // Lock and read the run row to get the current sequence.
-      const rows = (await tx.execute(sql`
-        SELECT "state_version", "last_event_sequence"
-        FROM "mission_runs"
-        WHERE "id" = ${claim.runId} AND "company_id" = ${claim.companyId}
-        FOR UPDATE
-      `)) as unknown as Array<{
-        state_version: string;
-        last_event_sequence: string;
-      }>;
-      if (!rows[0]) {
-        return;
-      }
-
-      const currentSeq = Number(rows[0]!.last_event_sequence);
-      const artifactSeq = currentSeq + 1;
-      const citationSeq = currentSeq + 2;
-      const newVersion = Number(rows[0]!.state_version) + 2;
-
-      // Emit artifact.committed event.
-      await tx.insert(schema.runEvents).values({
-        companyId: claim.companyId,
-        projectId: claim.projectId,
-        runId: claim.runId,
-        sequence: artifactSeq,
-        type: 'artifact.committed',
-        schemaVersion: 1,
-        payload: {
-          artifactId: result.artifactId,
-          artifactRevisionId: result.artifactRevisionId,
-          provenanceId: result.provenanceId,
-          source: 'synthesis',
-        },
-        actorType: 'system',
-        actorId: null,
-        traceId: null,
-        occurredAt: now,
-      });
-
-      // Emit citation.committed event.
-      await tx.insert(schema.runEvents).values({
-        companyId: claim.companyId,
-        projectId: claim.projectId,
-        runId: claim.runId,
-        sequence: citationSeq,
-        type: 'citation.committed',
-        schemaVersion: 1,
-        payload: {
-          artifactId: result.artifactId,
-          artifactRevisionId: result.artifactRevisionId,
-          citationIds: result.citationIds,
-          citationCount: result.citationIds.length,
-        },
-        actorType: 'system',
-        actorId: null,
-        traceId: null,
-        occurredAt: now,
-      });
-
-      // Update the run's last_event_sequence and state_version.
-      await tx
-        .update(schema.missionRuns)
-        .set({
-          lastEventSequence: citationSeq,
-          stateVersion: newVersion,
-          updatedAt: now,
-        })
-        .where(eq(schema.missionRuns.id, claim.runId));
-    });
   }
 
   // -- internal: recovery check --------------------------------------------
@@ -1388,11 +1325,12 @@ export class RunProcessor {
   private async handleFailure(
     claim: Claim,
     failure: {
-      kind: 'provider' | 'network' | 'internal' | 'authorization' | 'policy';
+      kind: ExecutionFailureKind | 'internal';
       httpStatus?: number;
       code: string;
       safeMessage: string;
     },
+    releaseBudgetOnFailure = false,
   ): Promise<void> {
     const retryService = new MissionRetryService(this.db, { clock: () => this.now() });
 
@@ -1402,13 +1340,14 @@ export class RunProcessor {
         projectId: claim.projectId,
         runId: claim.runId,
         failure: {
-          kind: failure.kind as 'provider' | 'network' | 'database',
+          kind: failure.kind === 'internal' ? 'database' : failure.kind,
           httpStatus: failure.httpStatus,
           code: failure.code,
           safeMessage: failure.safeMessage,
         },
         leaseToken: claim.leaseToken,
         maxAttempts: 3,
+        releaseBudgetOnFailure,
       });
     } catch {
       logger.warn(

@@ -3,6 +3,7 @@ import request from 'supertest';
 import { sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { createTestDb, createTestServer, closeTestDb, closeTestServers } from '../test-utils.js';
+import { MissionSynthesisService } from '../services/mission/synthesis.js';
 import { SynthesisArtifactCreator } from '../services/mission/synthesis-artifact-creator.js';
 import { ArtifactCommitService } from '../services/mission/research/artifact-commit-service.js';
 import { SourceRevisionService } from '../services/mission/research/source-revision-service.js';
@@ -120,7 +121,7 @@ async function insertPlanRevision(
   const now = new Date();
   await db.drizzle.execute(sql`
     INSERT INTO "run_plan_revisions" ("id", "company_id", "project_id", "run_id", "revision", "status", "content", "content_hash", "generated_by", "estimates", "created_at", "updated_at")
-    VALUES (${revisionId}, ${companyId}, ${projectId}, ${runId}, 1, 'approved', '{}'::jsonb, ${contentHash}, '{}'::jsonb, '{}'::jsonb, ${now}, ${now})
+    VALUES (${revisionId}, ${companyId}, ${projectId}, ${runId}, 1, 'approved', '{"synthesis":{"budgetCents":100}}'::jsonb, ${contentHash}, '{}'::jsonb, '{}'::jsonb, ${now}, ${now})
   `);
   return { revisionId, contentHash };
 }
@@ -182,7 +183,7 @@ async function setupTree(
     rootRunId,
   );
   await db.drizzle.execute(sql`
-    UPDATE "mission_runs" SET "approved_plan_revision_id" = ${revisionId} WHERE "id" = ${rootRunId}
+    UPDATE "mission_runs" SET "approved_plan_revision_id" = ${revisionId}, "lease_token" = 'test-lease-token', "lease_expires_at" = ${new Date(Date.now() + 300_000)} WHERE "id" = ${rootRunId}
   `);
   await insertBudgetReservation(scope.companyId, rootRunId);
 
@@ -210,6 +211,15 @@ async function setupTree(
       contentHash,
     );
   }
+
+  await db.drizzle.transaction((tx) =>
+    new MissionSynthesisService(db).attemptSynthesis(tx, {
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      runId: rootRunId,
+      deferCompletion: true,
+    }),
+  );
 
   return {
     companyId: scope.companyId,
@@ -264,7 +274,7 @@ function mockProviderCall() {
     model: 'claude-sonnet-4-6',
     inputTokens: 100,
     outputTokens: 50,
-    costCents: 10,
+    costCents: 1,
     finishReason: 'stop',
     latencyMs: 500,
   }));
@@ -309,6 +319,7 @@ describe('fix-ut-m5-artifact-id-source-aggregation: artifact API response includ
       approvedPlanRevisionId: tree.revisionId,
       approvedContentHash: tree.contentHash,
       policySnapshotId: tree.policyId,
+      leaseToken: 'test-lease-token',
     });
 
     expect(result).not.toBeNull();

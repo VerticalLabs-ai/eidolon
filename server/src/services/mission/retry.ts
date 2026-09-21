@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { AppError } from '../../middleware/error-handler.js';
 import type { DbInstance } from '../../types.js';
+import { BudgetService } from './budget.js';
 
 /**
  * Bounded same-run retries for transient execution failures.
@@ -259,6 +260,8 @@ export interface HandleFailureInput {
   failure: ExecutionFailureInput;
   /** Maximum attempts allowed. Defaults to 3 (architecture). */
   maxAttempts?: number;
+  /** Atomically release residual funds when a synthesis attempt terminalizes. */
+  releaseBudgetOnFailure?: boolean;
   /** Optional run deadline in epoch ms. */
   deadlineMs?: number;
   /** Stable logical operation id carried in retry events for effect dedup. */
@@ -324,6 +327,22 @@ export class MissionRetryService {
     const actorId = input.actorId ?? null;
 
     return this.db.drizzle.transaction(async (tx) => {
+      // Synthesis settlement/release uses the root-before-child lock order.
+      if (input.releaseBudgetOnFailure) {
+        const [candidate] = await tx
+          .select({ rootRunId: this.db.schema.missionRuns.rootRunId })
+          .from(this.db.schema.missionRuns)
+          .where(
+            and(
+              eq(this.db.schema.missionRuns.id, runId),
+              eq(this.db.schema.missionRuns.companyId, companyId),
+              eq(this.db.schema.missionRuns.projectId, projectId),
+            ),
+          );
+        if (candidate && candidate.rootRunId !== runId) {
+          await this.lockRun(tx, companyId, projectId, candidate.rootRunId);
+        }
+      }
       const run = await this.lockRun(tx, companyId, projectId, runId);
 
       // Fenced mutation: verify lease token when provided (worker path).
@@ -370,7 +389,7 @@ export class MissionRetryService {
           actorId,
         });
       }
-      return this.applyFail(tx, run, {
+      const outcome = await this.applyFail(tx, run, {
         attemptsCompleted,
         classification,
         logicalCallId,
@@ -379,6 +398,32 @@ export class MissionRetryService {
         actorId,
         reason: decision.reason,
       });
+      if (input.releaseBudgetOnFailure) {
+        await new BudgetService(this.db, { clock: () => this.now() }).release(tx, {
+          companyId,
+          runId,
+        });
+        const sequence = outcome.lastEventSequence + 1;
+        await tx.insert(this.db.schema.runEvents).values({
+          companyId,
+          projectId,
+          runId,
+          sequence,
+          type: 'budget.released',
+          schemaVersion: 1,
+          payload: {},
+          actorType,
+          actorId,
+          traceId,
+          occurredAt: this.now(),
+        });
+        await tx
+          .update(this.db.schema.missionRuns)
+          .set({ lastEventSequence: sequence })
+          .where(eq(this.db.schema.missionRuns.id, runId));
+        outcome.lastEventSequence = sequence;
+      }
+      return outcome;
     });
   }
 
