@@ -1,4 +1,23 @@
+## Worktree location
+
+Create Eidolon worktrees inside the canonical source checkout at
+`<repo>/.worktrees/<branch-or-task>`. Never create them in the shared parent
+projects directory (for example, `06_Projects/.worktrees`) or alongside other
+projects. This applies even when the current directory is a linked worktree.
+
+Resolve the canonical checkout from Git metadata before creating a worktree:
+
+```bash
+repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+mkdir -p "$repo_root/.worktrees"
+git worktree add "$repo_root/.worktrees/<branch-or-task>" <branch>
+```
+
+Use `git worktree move` to relocate a registered worktree. Before removing a
+finished worktree, preserve uncommitted work and any local-only configuration.
+
 <!-- gitnexus:start -->
+
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **eidolon** (2827 symbols, 6515 relationships, 154 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
@@ -22,23 +41,23 @@ This project is indexed by GitNexus as **eidolon** (2827 symbols, 6515 relations
 
 ## Resources
 
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/eidolon/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/eidolon/clusters` | All functional areas |
-| `gitnexus://repo/eidolon/processes` | All execution flows |
-| `gitnexus://repo/eidolon/process/{name}` | Step-by-step execution trace |
+| Resource                                 | Use for                                  |
+| ---------------------------------------- | ---------------------------------------- |
+| `gitnexus://repo/eidolon/context`        | Codebase overview, check index freshness |
+| `gitnexus://repo/eidolon/clusters`       | All functional areas                     |
+| `gitnexus://repo/eidolon/processes`      | All execution flows                      |
+| `gitnexus://repo/eidolon/process/{name}` | Step-by-step execution trace             |
 
 ## CLI
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Task                                         | Read this skill file                                        |
+| -------------------------------------------- | ----------------------------------------------------------- |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md`       |
+| Blast radius / "What breaks if I change X?"  | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?"             | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md`       |
+| Rename / extract / split / refactor          | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md`     |
+| Tools, resources, schema reference           | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md`           |
+| Index, status, clean, wiki CLI commands      | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md`             |
 
 <!-- gitnexus:end -->
 
