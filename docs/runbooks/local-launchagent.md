@@ -37,10 +37,13 @@ only when application sources changed or build outputs are absent.
 4. Compare parsed `EnvironmentVariables`, log paths, and other unrelated settings
    to the backup without printing their values. Only `ProgramArguments`,
    `RunAtLoad`, `KeepAlive`, and `ThrottleInterval` may change.
-5. During an authorized local restart, `launchctl bootout` the exact service,
-   atomically replace its plist with the mode-0600 candidate, then `launchctl
-bootstrap gui/$(id -u)` the exact plist. If bootstrap fails, restore the backup
-   and bootstrap it; do not leave the service unloaded.
+5. During an authorized local restart, record the exact service PID and use
+   `launchctl bootout` on that service. Wait (bounded, e.g. 10 seconds) for that
+   PID to exit before reloading: bootout may return before graceful shutdown
+   completes, and immediate bootstrap can fail with error 5. Atomically replace
+   its plist with the mode-0600 candidate, then bootstrap the exact plist with
+   `launchctl bootstrap gui/$(id -u) /absolute/path/to/service.plist`. If bootstrap
+   fails, restore the backup and bootstrap it; do not leave the service unloaded.
 6. Read back the plist and launchd PID/entry point without dumping environment
    secrets. Verify `/api/ready` and a read-only DB-backed API such as
    `/api/companies`; HTTP 200 from the SPA alone is not functional verification.
