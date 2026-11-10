@@ -2015,11 +2015,16 @@ describe('Co-editing WebSocket — real WS clients', () => {
     wsA = null;
     releaseSave();
 
-    await vi.waitFor(async () => {
-      await backgroundWork.drain();
-      const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
-      expect(getRes.body.data.content.body).toBe('# Hello A B');
-      expect(getRes.body.data.version).toBe(3);
-    });
+    // The server sees the close a moment after the client does, so poll for
+    // the outcome instead of assuming the leave has been registered.
+    await vi.waitFor(
+      async () => {
+        await backgroundWork.drain();
+        const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+        expect(getRes.body.data.content.body).toBe('# Hello A B');
+        expect(getRes.body.data.version).toBe(3);
+      },
+      { timeout: 10_000, interval: 50 },
+    );
   });
 });
