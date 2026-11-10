@@ -44,7 +44,10 @@ const clients = new Map<WebSocket, TrackedClient>();
 
 let wss: WebSocketServer;
 
-export function setupWebSocketServer(server: HttpServer, options?: { db?: DbInstance }): WebSocketServer {
+export function setupWebSocketServer(
+  server: HttpServer,
+  options?: { db?: DbInstance },
+): WebSocketServer {
   // Initialize the co-edit session manager with the DB instance so WS
   // co-edit messages can load/save artifact content.
   if (options?.db) {
@@ -98,7 +101,10 @@ export function setupWebSocketServer(server: HttpServer, options?: { db?: DbInst
     ws.on('close', () => {
       // Leave all co-edit sessions this client was part of
       for (const artifactId of tracked.coeditArtifacts) {
-        void leaveSessionByWs(artifactId, ws);
+        backgroundWork.fire(
+          leaveSessionByWs(artifactId, ws),
+          `coedit.leave on close (${artifactId})`,
+        );
       }
       clients.delete(ws);
       logger.debug({ total: clients.size }, 'WebSocket client disconnected');
@@ -149,9 +155,7 @@ function handleClientMessage(client: TrackedClient, msg: InboundMessage): void {
     case 'subscribe':
       if (msg.companyId) {
         client.subscribedCompanies.add(msg.companyId);
-        client.ws.send(
-          JSON.stringify({ type: 'subscribed', companyId: msg.companyId }),
-        );
+        client.ws.send(JSON.stringify({ type: 'subscribed', companyId: msg.companyId }));
         logger.debug({ companyId: msg.companyId }, 'Client subscribed to company');
       }
       break;
@@ -159,9 +163,7 @@ function handleClientMessage(client: TrackedClient, msg: InboundMessage): void {
     case 'unsubscribe':
       if (msg.companyId) {
         client.subscribedCompanies.delete(msg.companyId);
-        client.ws.send(
-          JSON.stringify({ type: 'unsubscribed', companyId: msg.companyId }),
-        );
+        client.ws.send(JSON.stringify({ type: 'unsubscribed', companyId: msg.companyId }));
       }
       break;
 
@@ -182,61 +184,58 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
   switch (msg.type) {
     case 'coedit.join': {
       client.coeditArtifacts.add(msg.artifactId);
-      void joinSession(msg.artifactId, msg.companyId, msg.userId, msg.name, client.ws)
-        .catch((err) => {
-          client.ws.send(JSON.stringify({
-            type: 'coedit.error',
-            artifactId: msg.artifactId,
-            message: err instanceof Error ? err.message : 'Join failed',
-          }));
-        });
+      void joinSession(msg.artifactId, msg.companyId, msg.userId, msg.name, client.ws).catch(
+        (err) => {
+          client.ws.send(
+            JSON.stringify({
+              type: 'coedit.error',
+              artifactId: msg.artifactId,
+              message: err instanceof Error ? err.message : 'Join failed',
+            }),
+          );
+        },
+      );
       break;
     }
     case 'coedit.op': {
       try {
         applyOperation(msg.artifactId, msg.op, msg.userId);
       } catch (err) {
-        client.ws.send(JSON.stringify({
-          type: 'coedit.error',
-          artifactId: msg.artifactId,
-          message: err instanceof Error ? err.message : 'Op failed',
-        }));
+        client.ws.send(
+          JSON.stringify({
+            type: 'coedit.error',
+            artifactId: msg.artifactId,
+            message: err instanceof Error ? err.message : 'Op failed',
+          }),
+        );
       }
       break;
     }
     case 'coedit.cursor': {
       try {
-        broadcastCursor(
-          msg.artifactId,
-          msg.userId,
-          msg.name,
-          msg.color ?? '',
-          msg.position,
-        );
+        broadcastCursor(msg.artifactId, msg.userId, msg.name, msg.color ?? '', msg.position);
       } catch (err) {
-        client.ws.send(JSON.stringify({
-          type: 'coedit.error',
-          artifactId: msg.artifactId,
-          message: err instanceof Error ? err.message : 'Cursor broadcast failed',
-        }));
+        client.ws.send(
+          JSON.stringify({
+            type: 'coedit.error',
+            artifactId: msg.artifactId,
+            message: err instanceof Error ? err.message : 'Cursor broadcast failed',
+          }),
+        );
       }
       break;
     }
     case 'coedit.selection': {
       try {
-        broadcastSelection(
-          msg.artifactId,
-          msg.userId,
-          msg.name,
-          msg.color ?? '',
-          msg.range,
-        );
+        broadcastSelection(msg.artifactId, msg.userId, msg.name, msg.color ?? '', msg.range);
       } catch (err) {
-        client.ws.send(JSON.stringify({
-          type: 'coedit.error',
-          artifactId: msg.artifactId,
-          message: err instanceof Error ? err.message : 'Selection broadcast failed',
-        }));
+        client.ws.send(
+          JSON.stringify({
+            type: 'coedit.error',
+            artifactId: msg.artifactId,
+            message: err instanceof Error ? err.message : 'Selection broadcast failed',
+          }),
+        );
       }
       break;
     }
@@ -244,21 +243,32 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
       // Serialize saves per session (prevents spurious 409 from two rapid
       // saves racing on session.version) and track the flush so tests can
       // drain deterministically.
-      backgroundWork.track(
-        flushSessionSerialized(msg.artifactId, { userId: msg.userId, editSource: 'user' }, msg.title),
-        `coedit.save (${msg.artifactId})`,
-      ).catch((err) => {
-        client.ws.send(JSON.stringify({
-          type: 'coedit.error',
-          artifactId: msg.artifactId,
-          message: err instanceof Error ? err.message : 'Save failed',
-        }));
-      });
+      backgroundWork
+        .track(
+          flushSessionSerialized(
+            msg.artifactId,
+            { userId: msg.userId, editSource: 'user' },
+            msg.title,
+          ),
+          `coedit.save (${msg.artifactId})`,
+        )
+        .catch((err) => {
+          client.ws.send(
+            JSON.stringify({
+              type: 'coedit.error',
+              artifactId: msg.artifactId,
+              message: err instanceof Error ? err.message : 'Save failed',
+            }),
+          );
+        });
       break;
     }
     case 'coedit.leave': {
       client.coeditArtifacts.delete(msg.artifactId);
-      void leaveSession(msg.artifactId, msg.userId);
+      backgroundWork.fire(
+        leaveSession(msg.artifactId, msg.userId),
+        `coedit.leave (${msg.artifactId})`,
+      );
       break;
     }
     default:
@@ -278,10 +288,7 @@ export function broadcast(companyId: string, event: EidolonEvent): void {
   let sent = 0;
 
   for (const [, tracked] of clients) {
-    if (
-      tracked.subscribedCompanies.has(companyId) &&
-      tracked.ws.readyState === WebSocket.OPEN
-    ) {
+    if (tracked.subscribedCompanies.has(companyId) && tracked.ws.readyState === WebSocket.OPEN) {
       tracked.ws.send(payload);
       sent++;
     }
