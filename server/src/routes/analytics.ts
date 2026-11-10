@@ -1,8 +1,24 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { eq, sql, and, gte, desc } from 'drizzle-orm';
 import type { DbInstance } from '../types.js';
 import { routeParams } from '../utils/route-params.js';
+import { z } from 'zod';
+import { validate } from '../middleware/validate.js';
 import { isFeatureEnabled } from '../services/feature-flags.js';
+import { COST_BREAKDOWN_DAYS, getCostBreakdown } from '../services/cost-breakdown.js';
+
+const CostBreakdownQuery = z.object({
+  days: z.coerce
+    .number()
+    .refine((value): value is (typeof COST_BREAKDOWN_DAYS)[number] =>
+      (COST_BREAKDOWN_DAYS as readonly number[]).includes(value),
+    )
+    .default(30),
+});
+
+type ValidatedCostBreakdownRequest = Request & {
+  validated: { query: z.infer<typeof CostBreakdownQuery> };
+};
 
 type TaskSummary = { total: number; byStatus: Record<string, number> };
 
@@ -245,6 +261,21 @@ export function analyticsRouter(db: DbInstance): Router {
         })),
       },
     });
+  });
+
+  // GET /api/companies/:companyId/analytics/costs/breakdown?days=7|30|90
+  router.get('/costs/breakdown', validate(CostBreakdownQuery, 'query'), async (req, res) => {
+    const companyId = routeParams(req).companyId;
+    const { days } = (req as ValidatedCostBreakdownRequest).validated.query;
+
+    const data = await getCostBreakdown(db, {
+      companyId,
+      days,
+      // Mission surfaces stay hidden until cost monitoring is rolled out to
+      // the company, so the per-run breakdown is withheld with them.
+      includeRuns: isFeatureEnabled('missionPolish', companyId),
+    });
+    res.json({ data });
   });
 
   // GET /api/companies/:companyId/analytics/tasks

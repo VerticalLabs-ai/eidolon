@@ -1293,6 +1293,55 @@ export const getAnalyticsOverview = (companyId: string) =>
 export const getAnalyticsCosts = (companyId: string) =>
   request<Record<string, unknown>>(`/companies/${companyId}/analytics/costs`);
 
+export type CostBreakdownDays = 7 | 30 | 90;
+
+export interface CostBreakdownTotals {
+  costCents: number;
+  inputTokens: number;
+  outputTokens: number;
+  callCount: number;
+}
+
+export interface CostBreakdownAgentRow extends CostBreakdownTotals {
+  /** Null groups Mission spend that was not billed to a company agent. */
+  agentId: string | null;
+  name: string | null;
+  role: string | null;
+  status: string | null;
+  budgetMonthlyCents: number;
+}
+
+export interface CostBreakdownRunRow extends CostBreakdownTotals {
+  runId: string;
+  projectId: string;
+  projectThreadId: string;
+  projectName: string | null;
+  summary: string | null;
+  status: string;
+  mode: string;
+  chargedRunCount: number;
+  lastChargeAt: string;
+}
+
+export interface CostBreakdownModelRow extends CostBreakdownTotals {
+  provider: string;
+  model: string;
+}
+
+export interface CostBreakdown {
+  range: { days: CostBreakdownDays; from: string; to: string };
+  totals: CostBreakdownTotals;
+  previous: { costCents: number; callCount: number };
+  daily: { date: string; costCents: number; callCount: number }[];
+  byAgent: CostBreakdownAgentRow[];
+  byModel: CostBreakdownModelRow[];
+  /** Null when Mission cost monitoring is off for the company. */
+  runs: { items: CostBreakdownRunRow[]; totalCount: number; costCents: number } | null;
+}
+
+export const getCostBreakdown = (companyId: string, days: CostBreakdownDays) =>
+  request<CostBreakdown>(`/companies/${companyId}/analytics/costs/breakdown?days=${days}`);
+
 // ── Activity ─────────────────────────────────────────────────────────────
 
 export const getActivity = (companyId: string) =>
