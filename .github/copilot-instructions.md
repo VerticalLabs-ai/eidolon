@@ -2,7 +2,7 @@
 
 This repository's authoritative agent guidance lives in **[`AGENTS.md`](../AGENTS.md)** and [`CLAUDE.md`](../CLAUDE.md).
 Read it before generating code. It defines the project boundary, stack, Linear
-routing, branch/PR process, verification gates, and design standards for this repo.
+routing, branch/PR process, and verification gates for this repo.
 
 Copilot does not auto-read `AGENTS.md`, so the key rules are restated here:
 
