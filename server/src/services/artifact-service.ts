@@ -1,8 +1,17 @@
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
-import { ArtifactTypeSchema, validateArtifactContent, formatArtifactValidationIssues, summarizeArtifactValidationIssues } from '@eidolon/shared';
+import type { ArtifactTypeSchema } from '@eidolon/shared';
+import {
+  validateArtifactContent,
+  formatArtifactValidationIssues,
+  summarizeArtifactValidationIssues,
+} from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
-import { hasSession, mergeExternalUpdate, updateSessionAfterFlush } from '../realtime/coedit-session.js';
+import {
+  hasSession,
+  mergeExternalUpdate,
+  updateSessionAfterFlush,
+} from '../realtime/coedit-session.js';
 import { validateFolderOwnership } from './folder-service.js';
 import { encryptContent, decryptContent } from './content-encryption.js';
 import { extractSearchText, buildSearchText, buildSearchTsvSql } from './search-text.js';
@@ -11,7 +20,11 @@ import { validateProjectOwnership } from '../utils/project-validation.js';
 import type { z } from 'zod';
 
 type ArtifactType = z.infer<typeof ArtifactTypeSchema>;
-type Editor = { userId?: string | null; agentId?: string | null; editSource?: 'user' | 'agent' | 'system' };
+type Editor = {
+  userId?: string | null;
+  agentId?: string | null;
+  editSource?: 'user' | 'agent' | 'system';
+};
 
 type ArtifactRow = {
   id: string;
@@ -71,21 +84,39 @@ function decryptRevision(row: RevisionRow): RevisionRow {
 
 /** Build an actor descriptor for audit-attributed event payloads. */
 function actorFromEditor(editor: Editor): { type: 'user' | 'agent' | 'system'; id: string } {
-  if (editor.editSource === 'agent' && editor.agentId) return { type: 'agent', id: editor.agentId };
-  if (editor.userId) return { type: 'user', id: editor.userId };
+  if (editor.editSource === 'agent' && editor.agentId) {
+    return { type: 'agent', id: editor.agentId };
+  }
+  if (editor.userId) {
+    return { type: 'user', id: editor.userId };
+  }
   return { type: 'system', id: 'system' };
 }
 
-function emit(type: 'artifact.created' | 'artifact.updated' | 'artifact.revision.created' | 'artifact.deleted' | 'artifact.archived', companyId: string, artifact: unknown, editor?: Editor) {
+function emit(
+  type:
+    | 'artifact.created'
+    | 'artifact.updated'
+    | 'artifact.revision.created'
+    | 'artifact.deleted'
+    | 'artifact.archived',
+  companyId: string,
+  artifact: unknown,
+  editor?: Editor,
+) {
   // Broadcast decrypted content over the WS bus so realtime clients receive
   // readable content (the stored row carries the encryption envelope).
   const a = artifact as Record<string, unknown> | undefined;
-  const safeArtifact = a && typeof a === 'object' && 'content' in a && a.content !== undefined
-    ? { ...a, content: decryptContent(a.content as Record<string, unknown>) }
-    : a;
+  const safeArtifact =
+    a && typeof a === 'object' && 'content' in a && a.content !== undefined
+      ? { ...a, content: decryptContent(a.content as Record<string, unknown>) }
+      : a;
   eventBus.emitEvent({
-    type, companyId,
-    payload: editor ? { artifact: safeArtifact, actor: actorFromEditor(editor) } : { artifact: safeArtifact },
+    type,
+    companyId,
+    payload: editor
+      ? { artifact: safeArtifact, actor: actorFromEditor(editor) }
+      : { artifact: safeArtifact },
     timestamp: new Date().toISOString(),
   });
 }
@@ -116,45 +147,80 @@ export async function saveArtifactContent(
   const contentText = extractSearchText(current.type, content);
   const searchText = buildSearchText(effectiveTitle, contentText);
   const updated = await db.drizzle.transaction(async (tx) => {
-    const [row] = await tx.update(db.schema.artifacts).set({
-      content: encryptedContent,
-      searchText,
-      searchTsv: buildSearchTsvSql(effectiveTitle, contentText),
-      ...(title !== undefined ? { title } : {}),
-      ...(folderId !== undefined ? { folderId } : {}),
-      version: current.version + 1,
-      updatedAt: new Date(),
-      lastEditedByUserId: editor.userId ?? null,
-      lastEditedByAgentId: editor.agentId ?? null,
-    }).where(and(
-      eq(db.schema.artifacts.id, id),
-      eq(db.schema.artifacts.companyId, companyId),
-      eq(db.schema.artifacts.version, expectedVersion),
-    )).returning();
+    const [row] = await tx
+      .update(db.schema.artifacts)
+      .set({
+        content: encryptedContent,
+        searchText,
+        searchTsv: buildSearchTsvSql(effectiveTitle, contentText),
+        ...(title !== undefined ? { title } : {}),
+        ...(folderId !== undefined ? { folderId } : {}),
+        version: current.version + 1,
+        updatedAt: new Date(),
+        lastEditedByUserId: editor.userId ?? null,
+        lastEditedByAgentId: editor.agentId ?? null,
+      })
+      .where(
+        and(
+          eq(db.schema.artifacts.id, id),
+          eq(db.schema.artifacts.companyId, companyId),
+          eq(db.schema.artifacts.version, expectedVersion),
+        ),
+      )
+      .returning();
     if (!row) {
-      throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', { current: await getArtifact(db, companyId, id) });
+      throw new AppError(
+        409,
+        'ARTIFACT_VERSION_CONFLICT',
+        'Artifact was updated by another client',
+        { current: await getArtifact(db, companyId, id) },
+      );
     }
     await tx.insert(db.schema.artifactRevisions).values({
-      artifactId: id, version: row.version, content: encryptedContent,
-      editedByUserId: editor.userId ?? null, editedByAgentId: editor.agentId ?? null,
-      editSource: editor.editSource ?? 'user', message: message ?? null,
+      artifactId: id,
+      version: row.version,
+      content: encryptedContent,
+      editedByUserId: editor.userId ?? null,
+      editedByAgentId: editor.agentId ?? null,
+      editSource: editor.editSource ?? 'user',
+      message: message ?? null,
     });
     return row;
   });
   emit('artifact.updated', companyId, updated, editor);
-  emit('artifact.revision.created', companyId, { artifactId: id, version: updated.version, editSource: editor.editSource ?? 'user', actor: actorFromEditor(editor) });
+  emit('artifact.revision.created', companyId, {
+    artifactId: id,
+    version: updated.version,
+    editSource: editor.editSource ?? 'user',
+    actor: actorFromEditor(editor),
+  });
   return decryptArtifact(updated);
 }
 
-export async function createArtifact(db: DbInstance, companyId: string, input: {
-  type: ArtifactType; title: string; content: unknown; projectId?: string | null; folderId?: string | null;
-}, editor: Editor) {
+export async function createArtifact(
+  db: DbInstance,
+  companyId: string,
+  input: {
+    type: ArtifactType;
+    title: string;
+    content: unknown;
+    projectId?: string | null;
+    folderId?: string | null;
+  },
+  editor: Editor,
+) {
   assertContent(input.type, input.content);
   const project = await validateProjectOwnership(db, companyId, input.projectId);
   if (project) {
-    const [projectRow] = await db.drizzle.select({ status: db.schema.projects.status }).from(db.schema.projects)
-      .where(and(eq(db.schema.projects.id, project.id), eq(db.schema.projects.companyId, companyId)));
-    if (projectRow?.status === 'archived') throw new AppError(409, 'PROJECT_ARCHIVED', 'Archived projects cannot receive new artifacts');
+    const [projectRow] = await db.drizzle
+      .select({ status: db.schema.projects.status })
+      .from(db.schema.projects)
+      .where(
+        and(eq(db.schema.projects.id, project.id), eq(db.schema.projects.companyId, companyId)),
+      );
+    if (projectRow?.status === 'archived') {
+      throw new AppError(409, 'PROJECT_ARCHIVED', 'Archived projects cannot receive new artifacts');
+    }
   }
   // Validate folder ownership (folder must belong to companyId) and scope match.
   if (input.folderId) {
@@ -163,7 +229,11 @@ export async function createArtifact(db: DbInstance, companyId: string, input: {
       const folderProject = folder.projectId ?? null;
       const artifactProject = input.projectId ?? null;
       if (folderProject !== artifactProject) {
-        throw new AppError(400, 'FOLDER_SCOPE_MISMATCH', 'Artifact and folder must share the same project scope');
+        throw new AppError(
+          400,
+          'FOLDER_SCOPE_MISMATCH',
+          'Artifact and folder must share the same project scope',
+        );
       }
     }
   }
@@ -174,40 +244,73 @@ export async function createArtifact(db: DbInstance, companyId: string, input: {
   const contentText = extractSearchText(input.type, input.content as Record<string, unknown>);
   const searchText = buildSearchText(input.title, contentText);
   const created = await db.drizzle.transaction(async (tx) => {
-    const [artifact] = await tx.insert(artifacts).values({
-      companyId, projectId: input.projectId ?? null, folderId: input.folderId ?? null,
-      type: input.type, title: input.title, content: encryptedContent,
-      searchText,
-      searchTsv: buildSearchTsvSql(input.title, contentText),
-      createdByUserId: editor.userId ?? null, createdByAgentId: editor.agentId ?? null,
-      lastEditedByUserId: editor.userId ?? null, lastEditedByAgentId: editor.agentId ?? null,
-    }).returning();
+    const [artifact] = await tx
+      .insert(artifacts)
+      .values({
+        companyId,
+        projectId: input.projectId ?? null,
+        folderId: input.folderId ?? null,
+        type: input.type,
+        title: input.title,
+        content: encryptedContent,
+        searchText,
+        searchTsv: buildSearchTsvSql(input.title, contentText),
+        createdByUserId: editor.userId ?? null,
+        createdByAgentId: editor.agentId ?? null,
+        lastEditedByUserId: editor.userId ?? null,
+        lastEditedByAgentId: editor.agentId ?? null,
+      })
+      .returning();
     await tx.insert(artifactRevisions).values({
-      artifactId: artifact.id, version: 1, content: encryptedContent,
-      editedByUserId: editor.userId ?? null, editedByAgentId: editor.agentId ?? null,
+      artifactId: artifact.id,
+      version: 1,
+      content: encryptedContent,
+      editedByUserId: editor.userId ?? null,
+      editedByAgentId: editor.agentId ?? null,
       editSource: editor.editSource ?? 'user',
     });
     return artifact;
   });
   emit('artifact.created', companyId, created, editor);
-  emit('artifact.revision.created', companyId, { artifactId: created.id, version: 1, editSource: editor.editSource ?? 'user', actor: actorFromEditor(editor) });
+  emit('artifact.revision.created', companyId, {
+    artifactId: created.id,
+    version: 1,
+    editSource: editor.editSource ?? 'user',
+    actor: actorFromEditor(editor),
+  });
   return decryptArtifact(created);
 }
 
 export async function getArtifact(db: DbInstance, companyId: string, id: string) {
-  const [artifact] = await db.drizzle.select().from(db.schema.artifacts)
+  const [artifact] = await db.drizzle
+    .select()
+    .from(db.schema.artifacts)
     .where(and(eq(db.schema.artifacts.id, id), eq(db.schema.artifacts.companyId, companyId)));
-  if (!artifact) throw new AppError(404, 'ARTIFACT_NOT_FOUND', 'Artifact not found');
+  if (!artifact) {
+    throw new AppError(404, 'ARTIFACT_NOT_FOUND', 'Artifact not found');
+  }
   return decryptArtifact(artifact as ArtifactRow);
 }
 
-export async function listArtifacts(db: DbInstance, companyId: string, filters: {
-  projectId?: string | null; filterNullProject?: boolean; type?: ArtifactType; status?: 'active' | 'archived' | 'deleted'; folderId?: string; filterNullFolder?: boolean;
-  limit: number; offset: number;
-  sort?: 'updatedAt' | 'title' | 'type' | 'createdAt';
-  order?: 'asc' | 'desc';
-}) {
-  if (filters.projectId && !filters.filterNullProject) await validateProjectOwnership(db, companyId, filters.projectId);
+export async function listArtifacts(
+  db: DbInstance,
+  companyId: string,
+  filters: {
+    projectId?: string | null;
+    filterNullProject?: boolean;
+    type?: ArtifactType;
+    status?: 'active' | 'archived' | 'deleted';
+    folderId?: string;
+    filterNullFolder?: boolean;
+    limit: number;
+    offset: number;
+    sort?: 'updatedAt' | 'title' | 'type' | 'createdAt';
+    order?: 'asc' | 'desc';
+  },
+) {
+  if (filters.projectId && !filters.filterNullProject) {
+    await validateProjectOwnership(db, companyId, filters.projectId);
+  }
   const a = db.schema.artifacts;
   const conditions = [eq(a.companyId, companyId)];
   if (filters.filterNullProject) {
@@ -215,8 +318,12 @@ export async function listArtifacts(db: DbInstance, companyId: string, filters: 
   } else if (filters.projectId) {
     conditions.push(eq(a.projectId, filters.projectId));
   }
-  if (filters.type) conditions.push(eq(a.type, filters.type));
-  if (filters.status) conditions.push(eq(a.status, filters.status));
+  if (filters.type) {
+    conditions.push(eq(a.type, filters.type));
+  }
+  if (filters.status) {
+    conditions.push(eq(a.status, filters.status));
+  }
   if (filters.filterNullFolder) {
     conditions.push(isNull(a.folderId));
   } else if (filters.folderId) {
@@ -226,29 +333,60 @@ export async function listArtifacts(db: DbInstance, companyId: string, filters: 
 
   // Build order clause from sort/order params.
   // Default: updatedAt desc. Tie-breaker: id desc (stable, deterministic).
-  const sortCol = filters.sort === 'title' ? a.title
-    : filters.sort === 'type' ? a.type
-    : filters.sort === 'createdAt' ? a.createdAt
-    : a.updatedAt;
+  const sortCol =
+    filters.sort === 'title'
+      ? a.title
+      : filters.sort === 'type'
+        ? a.type
+        : filters.sort === 'createdAt'
+          ? a.createdAt
+          : a.updatedAt;
   const orderDir = filters.order === 'asc' ? asc : desc;
   const [rows, count] = await Promise.all([
-    db.drizzle.select().from(a).where(where).orderBy(orderDir(sortCol), desc(a.id)).limit(filters.limit).offset(filters.offset),
-    db.drizzle.select({ total: sql<number>`count(*)` }).from(a).where(where),
+    db.drizzle
+      .select()
+      .from(a)
+      .where(where)
+      .orderBy(orderDir(sortCol), desc(a.id))
+      .limit(filters.limit)
+      .offset(filters.offset),
+    db.drizzle
+      .select({ total: sql<number>`count(*)` })
+      .from(a)
+      .where(where),
   ]);
-  return { rows: (rows as ArtifactRow[]).map(decryptArtifact), total: Number(count[0]?.total ?? 0) };
+  return {
+    rows: (rows as ArtifactRow[]).map(decryptArtifact),
+    total: Number(count[0]?.total ?? 0),
+  };
 }
 
-export async function updateArtifact(db: DbInstance, companyId: string, id: string, input: {
-  version?: number; title?: string; content?: unknown; projectId?: string | null; message?: string;
-  status?: 'deleted' | 'archived' | 'active'; folderId?: string | null;
-}, editor: Editor) {
+export async function updateArtifact(
+  db: DbInstance,
+  companyId: string,
+  id: string,
+  input: {
+    version?: number;
+    title?: string;
+    content?: unknown;
+    projectId?: string | null;
+    message?: string;
+    status?: 'deleted' | 'archived' | 'active';
+    folderId?: string | null;
+  },
+  editor: Editor,
+) {
   const current = await getArtifact(db, companyId, id);
 
   // Validate folder moves before the co-edit fast path as well.
   if (input.folderId !== undefined && input.folderId !== null) {
     const folder = await validateFolderOwnership(db, companyId, input.folderId);
     if (folder && (folder.projectId ?? null) !== (current.projectId ?? null)) {
-      throw new AppError(400, 'FOLDER_SCOPE_MISMATCH', 'Artifact and folder must share the same project scope');
+      throw new AppError(
+        400,
+        'FOLDER_SCOPE_MISMATCH',
+        'Artifact and folder must share the same project scope',
+      );
     }
   }
 
@@ -268,7 +406,17 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
       // matches the DocEditor coeditSave path, which is already atomic via
       // flushSession → saveArtifactContent.
       const sessionContent = result.merged;
-      const updated = await saveArtifactContent(db, companyId, id, sessionContent, current.version, editor, input.message, input.title, input.folderId);
+      const updated = await saveArtifactContent(
+        db,
+        companyId,
+        id,
+        sessionContent,
+        current.version,
+        editor,
+        input.message,
+        input.title,
+        input.folderId,
+      );
       // Update the session's version + lastSavedContent to reflect the flush.
       // `updated.title` reflects the persisted title (new or unchanged).
       updateSessionAfterFlush(id, updated.version, sessionContent, updated.title);
@@ -278,10 +426,20 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
 
   // ── Standard optimistic version check (M1 path) ──────────────────────
   const version = input.version;
-  if (version === undefined) throw new AppError(400, 'VERSION_REQUIRED', 'version is required for artifact updates');
-  if (version !== current.version) throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', { current: current });
-  if (input.content !== undefined) assertContent(current.type, input.content);
-  if (input.projectId !== undefined) await validateProjectOwnership(db, companyId, input.projectId);
+  if (version === undefined) {
+    throw new AppError(400, 'VERSION_REQUIRED', 'version is required for artifact updates');
+  }
+  if (version !== current.version) {
+    throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', {
+      current: current,
+    });
+  }
+  if (input.content !== undefined) {
+    assertContent(current.type, input.content);
+  }
+  if (input.projectId !== undefined) {
+    await validateProjectOwnership(db, companyId, input.projectId);
+  }
   // When folderId is supplied alongside content/title, validate the folder
   // belongs to the company and shares the artifact's project scope. The
   // folderId is applied atomically with the content update (no silent drop).
@@ -289,16 +447,22 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
     const folder = await validateFolderOwnership(db, companyId, input.folderId);
     if (folder) {
       const folderProject = folder.projectId ?? null;
-      const artifactProject = (input.projectId !== undefined ? input.projectId : current.projectId) ?? null;
+      const artifactProject =
+        (input.projectId !== undefined ? input.projectId : current.projectId) ?? null;
       if (folderProject !== artifactProject) {
-        throw new AppError(400, 'FOLDER_SCOPE_MISMATCH', 'Artifact and folder must share the same project scope');
+        throw new AppError(
+          400,
+          'FOLDER_SCOPE_MISMATCH',
+          'Artifact and folder must share the same project scope',
+        );
       }
     }
   }
   // `current.content` is already decrypted (from getArtifact). When content
   // is supplied, encrypt it for storage; when only title/status changes,
   // re-encrypt the (decrypted) current content to keep at-rest ciphertext.
-  const plaintextContent = input.content !== undefined ? (input.content as Record<string, unknown>) : current.content;
+  const plaintextContent =
+    input.content !== undefined ? (input.content as Record<string, unknown>) : current.content;
   const storedContent = encryptContent(plaintextContent);
   // M1 search: refresh the app-maintained search index from the new
   // (decrypted) content + effective title so edits are reflected in search.
@@ -306,50 +470,117 @@ export async function updateArtifact(db: DbInstance, companyId: string, id: stri
   const contentText = extractSearchText(current.type, plaintextContent);
   const searchText = buildSearchText(effectiveTitle, contentText);
   const updated = await db.drizzle.transaction(async (tx) => {
-    const [row] = await tx.update(db.schema.artifacts).set({
-      title: input.title ?? current.title, content: storedContent,
-      searchText,
-      searchTsv: buildSearchTsvSql(effectiveTitle, contentText),
-      projectId: input.projectId === undefined ? current.projectId : input.projectId,
-      ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
-      version: current.version + 1, updatedAt: new Date(),
-      ...(input.status !== undefined ? { status: input.status, deletedAt: input.status === 'deleted' ? new Date() : null } : {}),
-      lastEditedByUserId: editor.userId ?? null, lastEditedByAgentId: editor.agentId ?? null,
-    }).where(and(eq(db.schema.artifacts.id, id), eq(db.schema.artifacts.companyId, companyId), eq(db.schema.artifacts.version, version))).returning();
-    if (!row) throw new AppError(409, 'ARTIFACT_VERSION_CONFLICT', 'Artifact was updated by another client', { current: await getArtifact(db, companyId, id) });
+    const [row] = await tx
+      .update(db.schema.artifacts)
+      .set({
+        title: input.title ?? current.title,
+        content: storedContent,
+        searchText,
+        searchTsv: buildSearchTsvSql(effectiveTitle, contentText),
+        projectId: input.projectId === undefined ? current.projectId : input.projectId,
+        ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
+        version: current.version + 1,
+        updatedAt: new Date(),
+        ...(input.status !== undefined
+          ? { status: input.status, deletedAt: input.status === 'deleted' ? new Date() : null }
+          : {}),
+        lastEditedByUserId: editor.userId ?? null,
+        lastEditedByAgentId: editor.agentId ?? null,
+      })
+      .where(
+        and(
+          eq(db.schema.artifacts.id, id),
+          eq(db.schema.artifacts.companyId, companyId),
+          eq(db.schema.artifacts.version, version),
+        ),
+      )
+      .returning();
+    if (!row) {
+      throw new AppError(
+        409,
+        'ARTIFACT_VERSION_CONFLICT',
+        'Artifact was updated by another client',
+        { current: await getArtifact(db, companyId, id) },
+      );
+    }
     await tx.insert(db.schema.artifactRevisions).values({
-      artifactId: id, version: row.version, content: storedContent,
-      editedByUserId: editor.userId ?? null, editedByAgentId: editor.agentId ?? null,
-      editSource: editor.editSource ?? 'user', message: input.message ?? null,
+      artifactId: id,
+      version: row.version,
+      content: storedContent,
+      editedByUserId: editor.userId ?? null,
+      editedByAgentId: editor.agentId ?? null,
+      editSource: editor.editSource ?? 'user',
+      message: input.message ?? null,
     });
     return row;
   });
   emit('artifact.updated', companyId, updated, editor);
-  emit('artifact.revision.created', companyId, { artifactId: id, version: updated.version, editSource: editor.editSource ?? 'user', actor: actorFromEditor(editor) });
+  emit('artifact.revision.created', companyId, {
+    artifactId: id,
+    version: updated.version,
+    editSource: editor.editSource ?? 'user',
+    actor: actorFromEditor(editor),
+  });
   return decryptArtifact(updated as ArtifactRow);
 }
 
-export async function setArtifactStatus(db: DbInstance, companyId: string, id: string, status: 'deleted' | 'archived' | 'active', editor: Editor) {
+export async function setArtifactStatus(
+  db: DbInstance,
+  companyId: string,
+  id: string,
+  status: 'deleted' | 'archived' | 'active',
+  editor: Editor,
+) {
   const current = await getArtifact(db, companyId, id);
-  const updated = await updateArtifact(db, companyId, id, {
-    version: current.version, content: current.content, message: `status:${status}`, status,
-  }, editor);
-  emit(status === 'deleted' ? 'artifact.deleted' : status === 'archived' ? 'artifact.archived' : 'artifact.updated', companyId, { ...updated, status }, editor);
+  const updated = await updateArtifact(
+    db,
+    companyId,
+    id,
+    {
+      version: current.version,
+      content: current.content,
+      message: `status:${status}`,
+      status,
+    },
+    editor,
+  );
+  emit(
+    status === 'deleted'
+      ? 'artifact.deleted'
+      : status === 'archived'
+        ? 'artifact.archived'
+        : 'artifact.updated',
+    companyId,
+    { ...updated, status },
+    editor,
+  );
   return updated;
 }
 
 export async function listRevisions(db: DbInstance, companyId: string, id: string) {
   await getArtifact(db, companyId, id);
-  const rows = await db.drizzle.select().from(db.schema.artifactRevisions).where(eq(db.schema.artifactRevisions.artifactId, id))
+  const rows = await db.drizzle
+    .select()
+    .from(db.schema.artifactRevisions)
+    .where(eq(db.schema.artifactRevisions.artifactId, id))
     .orderBy(asc(db.schema.artifactRevisions.version));
   return (rows as RevisionRow[]).map(decryptRevision);
 }
 
 export async function getRevision(db: DbInstance, companyId: string, id: string, version: number) {
   await getArtifact(db, companyId, id);
-  const [revision] = await db.drizzle.select().from(db.schema.artifactRevisions)
-    .where(and(eq(db.schema.artifactRevisions.artifactId, id), eq(db.schema.artifactRevisions.version, version)));
-  if (!revision) throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found');
+  const [revision] = await db.drizzle
+    .select()
+    .from(db.schema.artifactRevisions)
+    .where(
+      and(
+        eq(db.schema.artifactRevisions.artifactId, id),
+        eq(db.schema.artifactRevisions.version, version),
+      ),
+    );
+  if (!revision) {
+    throw new AppError(404, 'REVISION_NOT_FOUND', 'Revision not found');
+  }
   return decryptRevision(revision as RevisionRow);
 }
 
@@ -369,12 +600,7 @@ export async function permanentlyDeleteArtifact(
   // Revisions cascade-delete via the FK ON DELETE cascade.
   await db.drizzle
     .delete(db.schema.artifacts)
-    .where(
-      and(
-        eq(db.schema.artifacts.id, id),
-        eq(db.schema.artifacts.companyId, companyId),
-      ),
-    );
+    .where(and(eq(db.schema.artifacts.id, id), eq(db.schema.artifacts.companyId, companyId)));
   emit('artifact.deleted', companyId, { ...current, permanent: true });
   return { id, permanent: true };
 }
