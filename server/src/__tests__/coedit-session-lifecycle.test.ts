@@ -15,14 +15,14 @@ import {
 import type { DbInstance } from '../types.js';
 
 /**
- * Session teardown and persistence ordering [EID-171].
+ * Session teardown and persistence ordering [EID-171, EID-189].
  *
  * These tests drive the session module directly with in-memory sockets, so
  * every interleaving is set up by the test itself: a write is held open at
  * the start of its transaction, the racing calls are made while it is held,
  * and only then is it released. No timers or network ordering are involved.
  */
-describe('Co-edit session lifecycle — leaving while a write is in flight', () => {
+describe('Co-edit session persistence', () => {
   let app: Awaited<ReturnType<typeof createTestServer>>;
   let db: DbInstance;
   let companyId: string;
@@ -357,5 +357,102 @@ describe('Co-edit session lifecycle — leaving while a write is in flight', () 
     await expect(save).resolves.toMatchObject({ version: 3 });
     expect(await stored()).toEqual({ body: 'Agent: # Hello A', version: 3 });
     expect(a.received.some((message) => message.type === 'coedit.error')).toBe(false);
+  });
+
+  // ── Status and project changes while the artifact is open [EID-189] ──
+
+  async function storedArtifact(): Promise<Record<string, unknown>> {
+    const res = await request(app).get(artifactUrl()).expect(200);
+    return res.body.data;
+  }
+
+  async function createProject(inCompanyId: string): Promise<string> {
+    const res = await request(app)
+      .post(`/api/companies/${inCompanyId}/projects`)
+      .send({ name: '__mtest__ Lifecycle Project', status: 'active' })
+      .expect(201);
+    return res.body.data.id;
+  }
+
+  it('deletes an artifact that is open for co-editing and keeps its unsaved edits', async () => {
+    const a = await join('user-a', 'Alice');
+    appendAcknowledged(a, 'user-a', ' A');
+
+    const res = await request(app).delete(artifactUrl()).expect(200);
+
+    expect(res.body.data.status).toBe('deleted');
+    const artifact = await storedArtifact();
+    expect(artifact).toMatchObject({
+      status: 'deleted',
+      version: 2,
+      content: { body: '# Hello A' },
+    });
+    expect(artifact.deletedAt).toBeTruthy();
+
+    // The session saw that write: leaving has nothing left to store.
+    await leaveSession(artifactId, 'user-a');
+    expect(await revisionCount()).toBe(2);
+  });
+
+  it('archives and restores an artifact that is open for co-editing', async () => {
+    await join('user-a', 'Alice');
+
+    const archived = await request(app).post(`${artifactUrl()}/archive`).expect(200);
+    expect(archived.body.data.status).toBe('archived');
+    expect(await storedArtifact()).toMatchObject({ status: 'archived', version: 2 });
+
+    const restored = await request(app).post(`${artifactUrl()}/restore`).expect(200);
+    expect(restored.body.data.status).toBe('active');
+    expect(await storedArtifact()).toMatchObject({
+      status: 'active',
+      deletedAt: null,
+      version: 3,
+      content: { body: '# Hello' },
+    });
+  });
+
+  it('moves an open artifact to another project in the same write as its content', async () => {
+    const projectId = await createProject(companyId);
+    const a = await join('user-a', 'Alice');
+    appendAcknowledged(a, 'user-a', ' A');
+
+    await request(app)
+      .patch(artifactUrl())
+      .send({ content: { format: 'markdown', body: 'Agent: # Hello' }, projectId, version: 1 })
+      .expect(200);
+
+    expect(await storedArtifact()).toMatchObject({
+      projectId,
+      version: 2,
+      content: { body: 'Agent: # Hello A' },
+    });
+  });
+
+  it('refuses to move an open artifact into another company and changes nothing', async () => {
+    const other = await request(app)
+      .post('/api/companies')
+      .send({ name: '__mtest__ CoEdit Other', settings: { testFixture: true } })
+      .expect(201);
+    const foreignProjectId = await createProject(other.body.data.id);
+    const a = await join('user-a', 'Alice');
+
+    const res = await request(app)
+      .patch(artifactUrl())
+      .send({
+        content: { format: 'markdown', body: 'Agent: # Hello' },
+        projectId: foreignProjectId,
+        version: 1,
+      });
+
+    expect(res.status).toBe(404);
+    expect(await storedArtifact()).toMatchObject({
+      projectId: null,
+      version: 1,
+      content: { body: '# Hello' },
+    });
+    // The rejected content never reached the session either.
+    expect(a.received.some((message) => message.type === 'coedit.op.broadcast')).toBe(false);
+    await leaveSession(artifactId, 'user-a');
+    expect(await storedArtifact()).toMatchObject({ version: 1, content: { body: '# Hello' } });
   });
 });
