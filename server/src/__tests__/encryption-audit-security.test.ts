@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { eq, and } from 'drizzle-orm';
 import { createTestServer, createTestDb } from '../test-utils.js';
@@ -325,6 +325,38 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       expect(entries[0].actorType).toBe('user');
       expect(entries[0].actorId).toBeTruthy();
       expect(entries[0].entityType).toBe('artifact');
+    });
+
+    it('artifact soft-delete does not report success when its audit entry cannot be written', async () => {
+      const art = await request(app)
+        .post(`/api/companies/${companyId}/artifacts`)
+        .send({ type: 'document', title: '__mtest__ audit doc', content: DOC_CONTENT, projectId })
+        .expect(201);
+      const artifactId = art.body.data.id;
+
+      // Fail only the soft-delete audit insert; every other write goes through.
+      const insert = db.drizzle.insert.bind(db.drizzle);
+      const spy = vi.spyOn(db.drizzle, 'insert').mockImplementation(((table: unknown) => {
+        const builder = insert(table as never) as { values: (row: unknown) => unknown };
+        if (table !== db.schema.activityLog) {
+          return builder;
+        }
+        return {
+          values: (row: { action?: string }) =>
+            row.action === 'artifact.deleted'
+              ? Promise.reject(new Error('audit log unavailable'))
+              : builder.values(row),
+        };
+      }) as never);
+
+      try {
+        const res = await request(app).delete(
+          `/api/companies/${companyId}/artifacts/${artifactId}`,
+        );
+        expect(res.status).toBe(500);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('MFA enrollment is recorded in the audit log', async () => {
