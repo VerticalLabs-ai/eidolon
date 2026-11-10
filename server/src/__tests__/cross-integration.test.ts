@@ -153,9 +153,7 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
       expect(workBefore.body.data.artifacts).toHaveLength(1);
 
       // Archive it
-      await request(app)
-        .post(`/api/companies/${companyId}/artifacts/${docId}/archive`)
-        .expect(200);
+      await request(app).post(`/api/companies/${companyId}/artifacts/${docId}/archive`).expect(200);
 
       // Now excluded from both
       const homeAfter = await request(app)
@@ -173,9 +171,7 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
       const docId = await createDoc({ title: 'Delete Me' });
 
       // Delete it
-      await request(app)
-        .delete(`/api/companies/${companyId}/artifacts/${docId}`)
-        .expect(200);
+      await request(app).delete(`/api/companies/${companyId}/artifacts/${docId}`).expect(200);
 
       const home = await request(app)
         .get(`/api/companies/${companyId}/projects/${projectId}/home`)
@@ -259,8 +255,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
         .set('X-Eidolon-Agent-Id', agentId)
         .send({ content: DOC_CONTENT_V2, version: 2 });
 
-      const userRestorePromise = request(app)
-        .post(`/api/companies/${companyId}/artifacts/${docId}/revisions/1/restore`);
+      const userRestorePromise = request(app).post(
+        `/api/companies/${companyId}/artifacts/${docId}/revisions/1/restore`,
+      );
 
       const [agentResult, restoreResult] = await Promise.all([
         agentUpdatePromise,
@@ -331,7 +328,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
 
       // Post an item mentioning agent A
       const item = await request(app)
-        .post(`/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items`)
+        .post(
+          `/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items`,
+        )
         .send({
           kind: 'comment',
           content: 'Hello @Cross Agent',
@@ -348,7 +347,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
 
       // Edit: replace mention A with mention B
       const edited = await request(app)
-        .patch(`/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items/${item.body.data.id}/content`)
+        .patch(
+          `/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items/${item.body.data.id}/content`,
+        )
         .send({
           content: 'Hello @Second Agent',
           mentions: [{ entityType: 'agent', entityId: agent2.body.data.id, label: 'Second Agent' }],
@@ -380,7 +381,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
       // Post with both mentions (use user mention for one to avoid
       // background agent dispatch interference in tests)
       const item = await request(app)
-        .post(`/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items`)
+        .post(
+          `/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items`,
+        )
         .send({
           kind: 'comment',
           content: 'Hello both',
@@ -396,7 +399,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
 
       // Edit: keep only agent A, drop the user mention
       const edited = await request(app)
-        .patch(`/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items/${item.body.data.id}/content`)
+        .patch(
+          `/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items/${item.body.data.id}/content`,
+        )
         .send({
           content: 'Hello @Cross Agent only',
           mentions: [{ entityType: 'agent', entityId: agentId, label: 'Cross Agent' }],
@@ -414,7 +419,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
         .expect(201);
 
       const item = await request(app)
-        .post(`/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items`)
+        .post(
+          `/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items`,
+        )
         .send({
           kind: 'comment',
           content: 'Hello @Cross Agent',
@@ -427,7 +434,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
 
       // Edit only content, no mentions field
       const edited = await request(app)
-        .patch(`/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items/${item.body.data.id}/content`)
+        .patch(
+          `/api/companies/${companyId}/projects/${projectId}/threads/${thread.body.data.id}/items/${item.body.data.id}/content`,
+        )
         .send({ content: 'Updated text' })
         .expect(200);
 
@@ -492,7 +501,9 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
         .post(`/api/companies/${companyId}/chat/send`)
         .send({
           content: 'Hey @Other Agent',
-          mentions: [{ entityType: 'agent', entityId: otherAgent.body.data.id, label: 'Other Agent' }],
+          mentions: [
+            { entityType: 'agent', entityId: otherAgent.body.data.id, label: 'Other Agent' },
+          ],
         })
         .expect(201);
 
