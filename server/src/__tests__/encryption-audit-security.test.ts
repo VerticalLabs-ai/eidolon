@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { eq, and } from 'drizzle-orm';
 import { createTestServer, createTestDb } from '../test-utils.js';
@@ -136,9 +136,7 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       expect(decrypt(row.valueEncrypted)).toBe(secretValue);
 
       // List also never exposes cleartext.
-      const list = await request(app)
-        .get(`/api/companies/${companyId}/secrets`)
-        .expect(200);
+      const list = await request(app).get(`/api/companies/${companyId}/secrets`).expect(200);
       expect(JSON.stringify(list.body.data)).not.toContain(secretValue);
     });
   });
@@ -240,10 +238,12 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       const entries = await db.drizzle
         .select()
         .from(db.schema.activityLog)
-        .where(and(
-          eq(db.schema.activityLog.companyId, companyId),
-          eq(db.schema.activityLog.action, 'permission.granted'),
-        ));
+        .where(
+          and(
+            eq(db.schema.activityLog.companyId, companyId),
+            eq(db.schema.activityLog.action, 'permission.granted'),
+          ),
+        );
       expect(entries.length).toBeGreaterThanOrEqual(1);
       const entry = entries[0];
       expect(entry.actorType).toBe('user');
@@ -269,26 +269,34 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       await request(app)
         .post(`/api/companies/${companyId}/permissions`)
         .send({
-          resourceType: 'artifact', resourceId: artifactId,
-          granteeType: 'team', granteeId: team.body.data.id, accessLevel: 'view',
+          resourceType: 'artifact',
+          resourceId: artifactId,
+          granteeType: 'team',
+          granteeId: team.body.data.id,
+          accessLevel: 'view',
         })
         .expect(201);
 
       await request(app)
         .delete(`/api/companies/${companyId}/permissions`)
         .send({
-          resourceType: 'artifact', resourceId: artifactId,
-          granteeType: 'team', granteeId: team.body.data.id, accessLevel: 'view',
+          resourceType: 'artifact',
+          resourceId: artifactId,
+          granteeType: 'team',
+          granteeId: team.body.data.id,
+          accessLevel: 'view',
         })
         .expect(204);
 
       const entries = await db.drizzle
         .select()
         .from(db.schema.activityLog)
-        .where(and(
-          eq(db.schema.activityLog.companyId, companyId),
-          eq(db.schema.activityLog.action, 'permission.revoked'),
-        ));
+        .where(
+          and(
+            eq(db.schema.activityLog.companyId, companyId),
+            eq(db.schema.activityLog.action, 'permission.revoked'),
+          ),
+        );
       expect(entries.length).toBeGreaterThanOrEqual(1);
       expect(entries[0].actorType).toBe('user');
       expect(entries[0].actorId).toBeTruthy();
@@ -301,22 +309,54 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
         .expect(201);
       const artifactId = art.body.data.id;
 
-      await request(app)
-        .delete(`/api/companies/${companyId}/artifacts/${artifactId}`)
-        .expect(200);
+      await request(app).delete(`/api/companies/${companyId}/artifacts/${artifactId}`).expect(200);
 
       const entries = await db.drizzle
         .select()
         .from(db.schema.activityLog)
-        .where(and(
-          eq(db.schema.activityLog.companyId, companyId),
-          eq(db.schema.activityLog.action, 'artifact.deleted'),
-          eq(db.schema.activityLog.entityId, artifactId),
-        ));
+        .where(
+          and(
+            eq(db.schema.activityLog.companyId, companyId),
+            eq(db.schema.activityLog.action, 'artifact.deleted'),
+            eq(db.schema.activityLog.entityId, artifactId),
+          ),
+        );
       expect(entries.length).toBeGreaterThanOrEqual(1);
       expect(entries[0].actorType).toBe('user');
       expect(entries[0].actorId).toBeTruthy();
       expect(entries[0].entityType).toBe('artifact');
+    });
+
+    it('artifact soft-delete does not report success when its audit entry cannot be written', async () => {
+      const art = await request(app)
+        .post(`/api/companies/${companyId}/artifacts`)
+        .send({ type: 'document', title: '__mtest__ audit doc', content: DOC_CONTENT, projectId })
+        .expect(201);
+      const artifactId = art.body.data.id;
+
+      // Fail only the soft-delete audit insert; every other write goes through.
+      const insert = db.drizzle.insert.bind(db.drizzle);
+      const spy = vi.spyOn(db.drizzle, 'insert').mockImplementation(((table: unknown) => {
+        const builder = insert(table as never) as { values: (row: unknown) => unknown };
+        if (table !== db.schema.activityLog) {
+          return builder;
+        }
+        return {
+          values: (row: { action?: string }) =>
+            row.action === 'artifact.deleted'
+              ? Promise.reject(new Error('audit log unavailable'))
+              : builder.values(row),
+        };
+      }) as never);
+
+      try {
+        const res = await request(app).delete(
+          `/api/companies/${companyId}/artifacts/${artifactId}`,
+        );
+        expect(res.status).toBe(500);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('MFA enrollment is recorded in the audit log', async () => {
@@ -328,10 +368,12 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       const entries = await db.drizzle
         .select()
         .from(db.schema.activityLog)
-        .where(and(
-          eq(db.schema.activityLog.companyId, companyId),
-          eq(db.schema.activityLog.action, 'mfa.enroll'),
-        ));
+        .where(
+          and(
+            eq(db.schema.activityLog.companyId, companyId),
+            eq(db.schema.activityLog.action, 'mfa.enroll'),
+          ),
+        );
       expect(entries.length).toBe(1);
       expect(entries[0].actorType).toBe('user');
       expect(entries[0].entityType).toBe('user_mfa_factor');
@@ -339,7 +381,10 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
 
     it('company permanent deletion is recorded with the acting user', async () => {
       // Enroll MFA + step-up so we can perform the hard delete.
-      await request(app).post('/api/auth/mfa/enroll').send({ label: 'Co Del', companyId }).expect(201);
+      await request(app)
+        .post('/api/auth/mfa/enroll')
+        .send({ label: 'Co Del', companyId })
+        .expect(201);
       const codeRes = await request(app).post('/api/auth/mfa/generate-valid-code').expect(200);
       const stepUp = await request(app)
         .post('/api/auth/step-up')
@@ -356,10 +401,12 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       const entries = await db.drizzle
         .select()
         .from(db.schema.activityLog)
-        .where(and(
-          eq(db.schema.activityLog.action, 'company.delete_permanent'),
-          eq(db.schema.activityLog.entityId, companyId),
-        ));
+        .where(
+          and(
+            eq(db.schema.activityLog.action, 'company.delete_permanent'),
+            eq(db.schema.activityLog.entityId, companyId),
+          ),
+        );
       expect(entries.length).toBe(1);
       expect(entries[0].actorType).toBe('user');
       expect(entries[0].actorId).toBeTruthy();
@@ -448,9 +495,7 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       const secretCipherBefore = secretBefore.valueEncrypted;
 
       // Rotate + re-encrypt.
-      const rotate = await request(app)
-        .post('/api/admin/encryption/rotate')
-        .expect(200);
+      const rotate = await request(app).post('/api/admin/encryption/rotate').expect(200);
       expect(rotate.body.data.newKeyId).not.toBe(keyIdBefore);
       expect(rotate.body.data.artifactsRotated).toBeGreaterThanOrEqual(1);
       expect(rotate.body.data.secretsRotated).toBeGreaterThanOrEqual(1);
@@ -493,9 +538,7 @@ describe('Encryption-at-rest + audit + rate-limit + RBAC 403 (M8 security)', () 
       expect(decrypt(legacy3)).toBe('legacy-value');
 
       // Rotate and confirm the legacy value still decrypts (old key retained).
-      const rotate = await request(app)
-        .post('/api/admin/encryption/rotate')
-        .expect(200);
+      const rotate = await request(app).post('/api/admin/encryption/rotate').expect(200);
       void rotate;
       expect(decrypt(legacy3)).toBe('legacy-value');
     });
