@@ -22,6 +22,35 @@ type Editor = {
   editSource?: 'user' | 'agent' | 'system';
 };
 
+type ArtifactStatus = 'deleted' | 'archived' | 'active';
+
+/** Columns a status change writes; `deletedAt` is set only while deleted. */
+function statusColumns(status: ArtifactStatus | undefined) {
+  return status === undefined
+    ? {}
+    : { status, deletedAt: status === 'deleted' ? new Date() : null };
+}
+
+/** A folder may only hold artifacts from its own project scope. */
+async function assertFolderMatchesProject(
+  db: DbInstance,
+  companyId: string,
+  folderId: string | null | undefined,
+  projectId: string | null,
+): Promise<void> {
+  if (folderId === undefined || folderId === null) {
+    return;
+  }
+  const folder = await validateFolderOwnership(db, companyId, folderId);
+  if (folder && (folder.projectId ?? null) !== (projectId ?? null)) {
+    throw new AppError(
+      400,
+      'FOLDER_SCOPE_MISMATCH',
+      'Artifact and folder must share the same project scope',
+    );
+  }
+}
+
 type ArtifactRow = {
   id: string;
   companyId: string;
@@ -121,7 +150,8 @@ function emit(
  * Direct DB save: writes content + revision row without the co-edit session
  * check or optimistic version check. Used by `flushSession` to persist the
  * co-edit session's merged content. The caller is responsible for ensuring
- * the content is valid and the version is correct.
+ * the content is valid and the version is correct. `fields` carries a status
+ * or project change that must land in the same write as the content.
  */
 export async function saveArtifactContent(
   db: DbInstance,
@@ -133,6 +163,7 @@ export async function saveArtifactContent(
   message?: string,
   title?: string,
   folderId?: string | null,
+  fields: { status?: ArtifactStatus; projectId?: string | null } = {},
 ) {
   const current = await getArtifact(db, companyId, id);
   assertContent(current.type, content);
@@ -151,6 +182,8 @@ export async function saveArtifactContent(
         searchTsv: buildSearchTsvSql(effectiveTitle, contentText),
         ...(title !== undefined ? { title } : {}),
         ...(folderId !== undefined ? { folderId } : {}),
+        ...(fields.projectId !== undefined ? { projectId: fields.projectId } : {}),
+        ...statusColumns(fields.status),
         version: current.version + 1,
         updatedAt: new Date(),
         lastEditedByUserId: editor.userId ?? null,
@@ -367,7 +400,7 @@ export async function updateArtifact(
     content?: unknown;
     projectId?: string | null;
     message?: string;
-    status?: 'deleted' | 'archived' | 'active';
+    status?: ArtifactStatus;
     folderId?: string | null;
   },
   editor: Editor,
@@ -392,6 +425,13 @@ export async function updateArtifact(
   // 409 for live co-editors. The 409 path below remains for stale
   // single-client writes (no active session).
   if (input.content !== undefined && hasSession(id)) {
+    // A status or project change rides along with the merged content, so
+    // deleting, archiving or moving an artifact that is open for co-editing
+    // takes effect and keeps the session's unsaved changes.
+    if (input.projectId !== undefined) {
+      await validateProjectOwnership(db, companyId, input.projectId);
+      await assertFolderMatchesProject(db, companyId, input.folderId, input.projectId);
+    }
     // The merge and its write run as one step in the session's write queue,
     // so they cannot overlap a save or final flush for the same artifact.
     // saveArtifactContent bypasses the co-edit check (no recursion) and
@@ -416,6 +456,7 @@ export async function updateArtifact(
           input.message,
           input.title,
           input.folderId,
+          { status: input.status, projectId: input.projectId },
         );
       },
     );
@@ -446,21 +487,12 @@ export async function updateArtifact(
   // When folderId is supplied alongside content/title, validate the folder
   // belongs to the company and shares the artifact's project scope. The
   // folderId is applied atomically with the content update (no silent drop).
-  if (input.folderId !== undefined && input.folderId !== null) {
-    const folder = await validateFolderOwnership(db, companyId, input.folderId);
-    if (folder) {
-      const folderProject = folder.projectId ?? null;
-      const artifactProject =
-        (input.projectId !== undefined ? input.projectId : current.projectId) ?? null;
-      if (folderProject !== artifactProject) {
-        throw new AppError(
-          400,
-          'FOLDER_SCOPE_MISMATCH',
-          'Artifact and folder must share the same project scope',
-        );
-      }
-    }
-  }
+  await assertFolderMatchesProject(
+    db,
+    companyId,
+    input.folderId,
+    input.projectId !== undefined ? input.projectId : current.projectId,
+  );
   // `current.content` is already decrypted (from getArtifact). When content
   // is supplied, encrypt it for storage; when only title/status changes,
   // re-encrypt the (decrypted) current content to keep at-rest ciphertext.
@@ -484,9 +516,7 @@ export async function updateArtifact(
         ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
         version: current.version + 1,
         updatedAt: new Date(),
-        ...(input.status !== undefined
-          ? { status: input.status, deletedAt: input.status === 'deleted' ? new Date() : null }
-          : {}),
+        ...statusColumns(input.status),
         lastEditedByUserId: editor.userId ?? null,
         lastEditedByAgentId: editor.agentId ?? null,
       })
