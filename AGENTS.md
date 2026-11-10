@@ -59,14 +59,10 @@ This project is indexed by GitNexus as **eidolon** (2827 symbols, 6515 relations
 
 ## CLI
 
-| Task                                         | Read this skill file                                        |
-| -------------------------------------------- | ----------------------------------------------------------- |
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md`       |
-| Blast radius / "What breaks if I change X?"  | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?"             | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md`       |
-| Rename / extract / split / refactor          | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md`     |
-| Tools, resources, schema reference           | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md`           |
-| Index, status, clean, wiki CLI commands      | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md`             |
+| Task                                         | Read this skill file                           |
+| -------------------------------------------- | ---------------------------------------------- |
+| Understand architecture / "How does X work?" | `~/.agents/skills/gitnexus-exploring/SKILL.md` |
+| Index, status, clean, wiki CLI commands      | `~/.agents/skills/gitnexus-cli/SKILL.md`       |
 
 <!-- gitnexus:end -->
 
@@ -102,3 +98,10 @@ pnpm cleanup:fixtures -- --execute
 
 The cleanup command is a dry run unless `--execute` is supplied. Use
 `--stale-hours N` with `--execute` to remove only fixtures older than `N` hours.
+
+## Linear, delivery and verification
+
+- Linear team `EID`. Historical `VER-*` references are not valid routing for new work.
+- Branch, PR and merge flow: `~/.agents/instructions/delivery.md`. Work targets `staging`; never push directly to `main`. Promotion is described above.
+- Checks before closeout: `pnpm typecheck`, `pnpm lint`, `pnpm test`.
+- Product scope: `PRODUCT.md`.

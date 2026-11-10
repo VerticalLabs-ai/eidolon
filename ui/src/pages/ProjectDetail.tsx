@@ -263,6 +263,8 @@ export function ProjectDetail() {
             )}
           </div>
           {project.status !== 'archived' && (
+            // Each visible label shortens below `sm` so the three actions fit one
+            // row; the full label stays the accessible name at every width.
             <div className="flex w-full gap-2 sm:w-auto">
               <Button
                 variant="secondary"
@@ -270,7 +272,10 @@ export function ProjectDetail() {
                 icon={<Pencil className="h-3.5 w-3.5" />}
                 onClick={() => setEditOpen(true)}
               >
-                Edit Project
+                <span aria-hidden className="sm:hidden">
+                  Edit
+                </span>
+                <span className="sr-only sm:not-sr-only">Edit Project</span>
               </Button>
               <Button
                 variant="secondary"
@@ -282,7 +287,10 @@ export function ProjectDetail() {
                   setSaveTemplateOpen(true);
                 }}
               >
-                Save as Template
+                <span aria-hidden className="sm:hidden">
+                  Template
+                </span>
+                <span className="sr-only sm:not-sr-only">Save as Template</span>
               </Button>
               <Button
                 variant="danger"
@@ -293,7 +301,10 @@ export function ProjectDetail() {
                   setArchiveOpen(true);
                 }}
               >
-                Archive Project
+                <span aria-hidden className="sm:hidden">
+                  Archive
+                </span>
+                <span className="sr-only sm:not-sr-only">Archive Project</span>
               </Button>
             </div>
           )}

@@ -1008,6 +1008,18 @@ export function useAnalyticsCosts(companyId: string | undefined) {
   });
 }
 
+export function useCostBreakdown(companyId: string | undefined, days: api.CostBreakdownDays) {
+  return useQuery({
+    queryKey: ['analytics', companyId, 'costs', 'breakdown', days],
+    queryFn: async () => unwrap<api.CostBreakdown>(await api.getCostBreakdown(companyId!, days)),
+    enabled: !!companyId,
+    staleTime: 60_000,
+    // Keep the previous window on screen while the next one loads, so
+    // switching range does not flash the whole dashboard to a skeleton.
+    placeholderData: (prev) => prev,
+  });
+}
+
 // ── Activity ─────────────────────────────────────────────────────────────
 
 export function useActivity(companyId: string | undefined) {

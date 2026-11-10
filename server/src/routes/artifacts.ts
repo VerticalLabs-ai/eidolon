@@ -733,11 +733,17 @@ export function artifactsRouter(db: DbInstance): Router {
       res.json({ data: await permanentlyDeleteArtifact(db, companyId, id) });
       return;
     }
-    res.json({
-      data: await setArtifactStatus(db, companyId, id, 'deleted', await editor(db, companyId, req)),
-    });
+    const data = await setArtifactStatus(
+      db,
+      companyId,
+      id,
+      'deleted',
+      await editor(db, companyId, req),
+    );
     // VAL-SEC-007: direct audit insert for artifact soft-delete with the
-    // acting user (the event-based logger skips artifact.deleted).
+    // acting user (the event-based logger skips artifact.deleted). Written
+    // before the response so a caller that sees 200 can read the entry, and
+    // a failed insert is reported instead of lost after the headers are sent.
     await db.drizzle.insert(db.schema.activityLog).values({
       companyId,
       actorType: 'user',
@@ -749,6 +755,7 @@ export function artifactsRouter(db: DbInstance): Router {
       metadata: { permanent: false },
       createdAt: new Date(),
     });
+    res.json({ data });
   });
   // POST /artifacts/:id/transfer — transfer artifact ownership to another
   // project (or company-level via projectId=null). VAL-SEC-008: requires
