@@ -5,6 +5,7 @@ Use these procedures for local development and production incidents:
 - [Alerting](alerting.md)
 - [Deployment and rollback](deployment.md)
 - [Incident response](incident.md)
+- [Local macOS LaunchAgent](local-launchagent.md)
 - [Feature flag rollout and rollback](feature-flags.md)
 - [Observability](observability.md)
 - [Reliability controls](reliability.md)
