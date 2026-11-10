@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { createTestServer, createTestDb } from '../test-utils.js';
@@ -236,76 +236,124 @@ describe('Cross-Integration — VAL-ART-056/057/074/096, VAL-MENTION-011/018, un
   // VAL-ART-096: Agent update races with user restore safely
   // =========================================================================
   describe('VAL-ART-096: agent update races with user restore', () => {
-    it('concurrent agent update and user restore serialize with correct attribution', async () => {
-      // Create an artifact at version 1
-      const docId = await createDoc({ content: DOC_CONTENT });
+    // The restore endpoint takes no version from the client: it reads the
+    // artifact's current version itself. So the outcome depends on which
+    // request reads and writes first, and each test below fixes that order by
+    // holding one request's write open at the start of its transaction.
 
-      // Edit to version 2 (user)
+    /** Hold the next artifact write until `release` is called. */
+    function holdNextWrite() {
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const original = db.drizzle.transaction.bind(db.drizzle);
+      vi.spyOn(db.drizzle, 'transaction').mockImplementationOnce(async (...args) => {
+        markStarted();
+        await gate;
+        return original(...args);
+      });
+      return { started, release };
+    }
+
+    /** A document at version 2, with the original content kept as revision 1. */
+    async function docAtVersionTwo(): Promise<string> {
+      const docId = await createDoc({ content: DOC_CONTENT });
       const v2 = await request(app)
         .patch(`/api/companies/${companyId}/artifacts/${docId}`)
         .send({ content: { format: 'markdown', body: '# User v2' }, version: 1 })
         .expect(200);
       expect(v2.body.data.version).toBe(2);
+      return docId;
+    }
 
-      // Now race: agent update (version=2) vs user restore (version=2, restore to v1)
-      // Both send version=2 as the expected base. Only one should succeed.
-
-      const agentUpdatePromise = request(app)
+    const agentUpdate = (docId: string) =>
+      request(app)
         .patch(`/api/companies/${companyId}/artifacts/${docId}`)
         .set('X-Eidolon-Agent-Id', agentId)
-        .send({ content: DOC_CONTENT_V2, version: 2 });
+        .send({ content: DOC_CONTENT_V2, version: 2 })
+        .then((res) => res);
 
-      const userRestorePromise = request(app).post(
-        `/api/companies/${companyId}/artifacts/${docId}/revisions/1/restore`,
-      );
+    const userRestore = (docId: string) =>
+      request(app)
+        .post(`/api/companies/${companyId}/artifacts/${docId}/revisions/1/restore`)
+        .then((res) => res);
 
-      const [agentResult, restoreResult] = await Promise.all([
-        agentUpdatePromise,
-        userRestorePromise,
-      ]);
-
-      // Exactly one should succeed (200), the other should get 409
-      const agentStatus = agentResult.status;
-      const restoreStatus = restoreResult.status;
-
-      // One of them must be 200 and the other 409 (or both 409 if they truly
-      // race to the same version, but at least one must succeed or both must
-      // conflict cleanly — never both succeed)
-      const successCount = [agentStatus, restoreStatus].filter((s) => s === 200).length;
-      expect(successCount).toBeLessThanOrEqual(1);
-
-      // Verify final state: version is monotonic, revisions are append-only
-      const finalArtifact = await request(app)
+    /** Final version, body and revisions; revisions must be append-only. */
+    async function finalState(docId: string) {
+      const artifact = await request(app)
         .get(`/api/companies/${companyId}/artifacts/${docId}`)
         .expect(200);
-
       const revisions = await request(app)
         .get(`/api/companies/${companyId}/artifacts/${docId}/revisions`)
         .expect(200);
+      const byVersion = new Map<number, any>(revisions.body.data.map((r: any) => [r.version, r]));
+      expect([...byVersion.keys()].sort()).toEqual(
+        Array.from({ length: artifact.body.data.version }, (_, index) => index + 1),
+      );
+      expect(revisions.body.data).toHaveLength(artifact.body.data.version);
+      return {
+        version: artifact.body.data.version as number,
+        body: artifact.body.data.content.body as string,
+        revision: (version: number) => byVersion.get(version),
+      };
+    }
 
-      // Version must be 3 (one operation applied on top of v2)
-      expect(finalArtifact.body.data.version).toBe(3);
+    it('rejects the agent update when a restore lands while its write is in flight', async () => {
+      const docId = await docAtVersionTwo();
 
-      // Revisions must be append-only: versions 1, 2, 3 all present
-      const versions = revisions.body.data.map((r: any) => r.version);
-      expect(versions).toContain(1);
-      expect(versions).toContain(2);
-      expect(versions).toContain(3);
-      expect(versions.length).toBe(3);
+      const agentWrite = holdNextWrite();
+      const agent = agentUpdate(docId);
+      await agentWrite.started;
+      const restore = await userRestore(docId);
+      agentWrite.release();
 
-      // The winning revision at v3 must have correct attribution
-      const v3Revision = revisions.body.data.find((r: any) => r.version === 3);
-      expect(v3Revision).toBeDefined();
+      expect(restore.status).toBe(200);
+      expect((await agent).status).toBe(409);
 
-      // If the agent won, editSource should be 'agent' with editedByAgentId set
-      // If the restore won, editSource should be 'user' with editedByUserId set
-      if (agentStatus === 200) {
-        expect(v3Revision.editSource).toBe('agent');
-        expect(v3Revision.editedByAgentId).toBe(agentId);
-      } else {
-        expect(v3Revision.editSource).toBe('user');
-        expect(v3Revision.editedByUserId).toBeTruthy();
-      }
+      const final = await finalState(docId);
+      expect(final.version).toBe(3);
+      expect(final.body).toBe(DOC_CONTENT_RESTORED.body);
+      expect(final.revision(3).editSource).toBe('user');
+      expect(final.revision(3).editedByUserId).toBeTruthy();
+    });
+
+    it('rejects the restore when an agent update lands while its write is in flight', async () => {
+      const docId = await docAtVersionTwo();
+
+      const restoreWrite = holdNextWrite();
+      const restore = userRestore(docId);
+      await restoreWrite.started;
+      const agent = await agentUpdate(docId);
+      restoreWrite.release();
+
+      expect(agent.status).toBe(200);
+      expect((await restore).status).toBe(409);
+
+      const final = await finalState(docId);
+      expect(final.version).toBe(3);
+      expect(final.body).toBe(DOC_CONTENT_V2.body);
+      expect(final.revision(3).editSource).toBe('agent');
+      expect(final.revision(3).editedByAgentId).toBe(agentId);
+    });
+
+    it('applies a restore on top of an agent update that finished first', async () => {
+      const docId = await docAtVersionTwo();
+
+      expect((await agentUpdate(docId)).status).toBe(200);
+      expect((await userRestore(docId)).status).toBe(200);
+
+      const final = await finalState(docId);
+      expect(final.version).toBe(4);
+      expect(final.body).toBe(DOC_CONTENT_RESTORED.body);
+      expect(final.revision(3).editSource).toBe('agent');
+      expect(final.revision(3).editedByAgentId).toBe(agentId);
+      expect(final.revision(4).editSource).toBe('user');
+      expect(final.revision(4).editedByUserId).toBeTruthy();
     });
   });
 
