@@ -59,10 +59,10 @@ This project is indexed by GitNexus as **eidolon** (2827 symbols, 6515 relations
 
 ## CLI
 
-| Task                                         | Read this skill file                                        |
-| -------------------------------------------- | ----------------------------------------------------------- |
-| Understand architecture / "How does X work?" | `~/.agents/skills/gitnexus-exploring/SKILL.md`       |
-| Index, status, clean, wiki CLI commands      | `~/.agents/skills/gitnexus-cli/SKILL.md`             |
+| Task                                         | Read this skill file                           |
+| -------------------------------------------- | ---------------------------------------------- |
+| Understand architecture / "How does X work?" | `~/.agents/skills/gitnexus-exploring/SKILL.md` |
+| Index, status, clean, wiki CLI commands      | `~/.agents/skills/gitnexus-cli/SKILL.md`       |
 
 <!-- gitnexus:end -->
 
