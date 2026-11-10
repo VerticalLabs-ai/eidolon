@@ -101,7 +101,10 @@ export function setupWebSocketServer(
     ws.on('close', () => {
       // Leave all co-edit sessions this client was part of
       for (const artifactId of tracked.coeditArtifacts) {
-        void leaveSessionByWs(artifactId, ws);
+        backgroundWork.fire(
+          leaveSessionByWs(artifactId, ws),
+          `coedit.leave on close (${artifactId})`,
+        );
       }
       clients.delete(ws);
       logger.debug({ total: clients.size }, 'WebSocket client disconnected');
@@ -262,7 +265,10 @@ function handleCoEditMessage(client: TrackedClient, msg: CoEditClientMsg): void 
     }
     case 'coedit.leave': {
       client.coeditArtifacts.delete(msg.artifactId);
-      void leaveSession(msg.artifactId, msg.userId);
+      backgroundWork.fire(
+        leaveSession(msg.artifactId, msg.userId),
+        `coedit.leave (${msg.artifactId})`,
+      );
       break;
     }
     default:

@@ -11,6 +11,14 @@
  * This supersedes the M1 LWW 409 for live co-editors — operations merge
  * instead of rejecting. The 409 path in `artifact-service.ts` remains for
  * stale single-client writes (no active session).
+ *
+ * Persistence invariants:
+ *   - A session is live while it has participants or unsaved changes. It is
+ *     removed only once it has neither, so an edit the server acknowledged is
+ *     never dropped with the session that holds it.
+ *   - Every write a live session makes (explicit save, final flush on leave,
+ *     agent update) runs through one per-artifact queue, so each write reads
+ *     the version the previous one produced.
  */
 
 import type { WebSocket } from 'ws';
@@ -26,7 +34,7 @@ import type { CoEditOp, DocOp, SheetOp, BoardOp, CoEditServerMsg } from '@eidolo
 import { colorForUser } from '@eidolon/shared';
 import type { DbInstance } from '../types.js';
 import { AppError } from '../middleware/error-handler.js';
-import { backgroundWork } from '../services/background-work.js';
+import logger from '../utils/logger.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,9 +123,26 @@ export function __injectSessionForTest(
   });
 }
 
-/** Check if an active co-edit session exists for an artifact. */
+/**
+ * A session is live while someone is connected to it or it holds changes that
+ * have not reached the database. The second case covers the final flush after
+ * the last participant leaves, and a session kept because that flush failed.
+ */
+function isLive(session: CoEditSession): boolean {
+  return session.participants.size > 0 || session.dirty;
+}
+
+/** Remove a session that has no participants and nothing left to save. */
+function disposeIfIdle(session: CoEditSession): void {
+  if (!isLive(session) && sessions.get(session.artifactId) === session) {
+    sessions.delete(session.artifactId);
+  }
+}
+
+/** Check if a live co-edit session exists for an artifact. */
 export function hasSession(artifactId: string): boolean {
-  return sessions.has(artifactId) && sessions.get(artifactId)!.participants.size > 0;
+  const session = sessions.get(artifactId);
+  return session !== undefined && isLive(session);
 }
 
 /**
@@ -131,7 +156,7 @@ export function getSessionContent(artifactId: string): {
   lastSavedContent: Record<string, unknown>;
 } | null {
   const session = sessions.get(artifactId);
-  if (!session || session.participants.size === 0) {
+  if (!session || !isLive(session)) {
     return null;
   }
   return {
@@ -148,10 +173,10 @@ export function getSessionContent(artifactId: string): {
  * agent content, remote = current session content. The merged result
  * preserves both the agent's changes and any in-progress user edits.
  *
- * Returns the merged content, or null if no active session (caller should
+ * Returns the merged content, or null if no live session (caller should
  * use the normal PATCH path).
  */
-export function mergeExternalUpdate(
+function mergeExternalUpdate(
   artifactId: string,
   incomingContent: Record<string, unknown>,
   editor: {
@@ -161,7 +186,7 @@ export function mergeExternalUpdate(
   },
 ): { merged: Record<string, unknown>; ops: CoEditOp[] } | null {
   const session = sessions.get(artifactId);
-  if (!session || session.participants.size === 0) {
+  if (!session || !isLive(session)) {
     return null;
   }
 
@@ -215,7 +240,7 @@ export function mergeExternalUpdate(
  * Flush the session content to the DB as a new versioned revision.
  * Called on explicit save or on last-participant-leave.
  */
-export async function flushSession(
+async function flushSession(
   artifactId: string,
   editor: {
     userId?: string | null;
@@ -270,25 +295,42 @@ export async function flushSession(
 }
 
 // ---------------------------------------------------------------------------
-// Per-session save serialization
+// Per-session write serialization
 //
-// Two rapid coedit.save messages could race on session.version: both read
-// the same version, the first save bumps it, and the second save's
-// optimistic version check fails with a spurious 409. Serialize saves per
-// session so each flush waits for the previous one to complete (and update
-// session.version) before reading the session state and calling
-// saveArtifactContent. The queue is per-artifact so independent artifacts
-// save in parallel.
+// Every write a session makes reads `session.version` and then waits on the
+// database. Two writes that overlap both read the same version, so the second
+// fails its optimistic version check with a spurious 409 — and when that
+// second write is the final flush on leave, the edits it carried are gone
+// with the session. Writes are therefore queued per artifact: each waits for
+// the previous one to finish (and update `session.version`) before it reads
+// the session. Independent artifacts still write in parallel.
 // ---------------------------------------------------------------------------
 
-const flushQueues = new Map<string, Promise<unknown>>();
+const writeQueues = new Map<string, Promise<void>>();
 
 /**
- * Serialize a flush behind any in-flight flush for the same artifact.
- * Returns a promise that resolves once this flush completes. Errors do not
- * break the chain — a failed flush still allows the next save to proceed
- * (it will re-read session.version and retry).
+ * Run `write` after every write already queued for the artifact. The returned
+ * promise settles with the outcome of `write`; a failure does not break the
+ * queue, so the next write still runs and re-reads the session.
  */
+function serializeSessionWrite<T>(artifactId: string, write: () => Promise<T>): Promise<T> {
+  const previous = writeQueues.get(artifactId) ?? Promise.resolve();
+  const next = previous.then(write);
+  const settled = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  writeQueues.set(artifactId, settled);
+  // Drop the queue entry once it is idle to avoid unbounded growth.
+  void settled.then(() => {
+    if (writeQueues.get(artifactId) === settled) {
+      writeQueues.delete(artifactId);
+    }
+  });
+  return next;
+}
+
+/** Flush the session behind any write already in flight for the artifact. */
 export function flushSessionSerialized(
   artifactId: string,
   editor: {
@@ -298,32 +340,45 @@ export function flushSessionSerialized(
   },
   title?: string,
 ): Promise<{ version: number; content: Record<string, unknown> } | null> {
-  const prev = flushQueues.get(artifactId) ?? Promise.resolve();
-  const next = prev.then(
-    () => flushSession(artifactId, editor, title),
-    // If the previous flush failed, proceed anyway — the next flush will
-    // re-read session.version and retry with the current state.
-    () => flushSession(artifactId, editor, title),
-  );
-  // Keep the queue chain clean: don't let errors break subsequent saves.
-  const settled = next.then(undefined, () => null);
-  flushQueues.set(artifactId, settled);
-  // Clean up the queue entry once settled to avoid unbounded growth.
-  void settled.finally(() => {
-    if (flushQueues.get(artifactId) === settled) {
-      flushQueues.delete(artifactId);
-    }
-  });
-  return next;
+  return serializeSessionWrite(artifactId, () => flushSession(artifactId, editor, title));
 }
 
 /**
- * Update session metadata after a flush that was performed externally
- * (e.g. by updateArtifact routing through the session). Keeps the session's
- * version + lastSavedContent in sync so subsequent flushes use the correct
- * expected version.
+ * Persist an external content change (agent PATCH) through a live session.
+ *
+ * The change is merged into the session and written by `save` as one queued
+ * step, so it cannot overlap a save or final flush for the same artifact.
+ * `save` receives the merged content and returns the stored artifact.
+ *
+ * Resolves to null when no live session exists by the time the step runs; the
+ * caller then uses the normal PATCH path.
  */
-export function updateSessionAfterFlush(
+export function persistExternalUpdate<T extends { version: number; title?: string }>(
+  artifactId: string,
+  incomingContent: Record<string, unknown>,
+  editor: {
+    userId?: string | null;
+    agentId?: string | null;
+    editSource?: 'user' | 'agent' | 'system';
+  },
+  save: (merged: Record<string, unknown>) => Promise<T>,
+): Promise<T | null> {
+  return serializeSessionWrite(artifactId, async () => {
+    const result = mergeExternalUpdate(artifactId, incomingContent, editor);
+    if (!result) {
+      return null;
+    }
+    const updated = await save(result.merged);
+    updateSessionAfterFlush(artifactId, updated.version, result.merged, updated.title);
+    return updated;
+  });
+}
+
+/**
+ * Record a write made on the session's behalf by `persistExternalUpdate`, so
+ * the next write uses the right expected version, and tell participants.
+ */
+function updateSessionAfterFlush(
   artifactId: string,
   newVersion: number,
   content: Record<string, unknown>,
@@ -335,7 +390,9 @@ export function updateSessionAfterFlush(
   }
   session.version = newVersion;
   session.lastSavedContent = JSON.parse(JSON.stringify(content));
-  session.dirty = false;
+  // An operation applied while the write was in flight replaced
+  // `session.content`; it is not in what was written and still needs a flush.
+  session.dirty = session.content !== content;
   // Broadcast saved to all participants
   broadcast(session, {
     type: 'coedit.saved',
@@ -344,6 +401,8 @@ export function updateSessionAfterFlush(
     content,
     title,
   });
+  // A session kept only for its unsaved changes has now handed them off.
+  disposeIfIdle(session);
 }
 
 // ---------------------------------------------------------------------------
@@ -414,8 +473,16 @@ export async function joinSession(
 
 /**
  * Leave a co-edit session. Removes the participant and broadcasts
- * `coedit.user.left` to remaining clients. If the last participant leaves,
- * flushes any dirty state and destroys the session.
+ * `coedit.user.left` to remaining clients.
+ *
+ * When the last participant leaves, unsaved changes are flushed behind any
+ * write already in flight, and the session is removed only if it is then
+ * still empty and fully saved. It is kept when someone joined during the
+ * flush, and when the flush failed: the unsaved content stays in memory, where
+ * the next join, save or agent update picks it up. The one failure that does
+ * not keep it is a permanently deleted artifact.
+ *
+ * Never rejects — a failed final flush is logged, not thrown.
  */
 export async function leaveSession(artifactId: string, userId: string): Promise<void> {
   const session = sessions.get(artifactId);
@@ -432,17 +499,26 @@ export async function leaveSession(artifactId: string, userId: string): Promise<
     userId,
   });
 
-  // If no participants remain, flush and destroy
-  if (session.participants.size === 0) {
-    if (session.dirty) {
-      try {
-        await flushSession(artifactId, { editSource: 'system' });
-      } catch {
-        // Best-effort flush on leave; don't crash
-      }
-    }
-    sessions.delete(artifactId);
+  if (session.participants.size > 0) {
+    return;
   }
+
+  try {
+    // Queued even when the session looks clean: a save still in flight may
+    // leave it dirty, and it must finish before the session can be removed.
+    await flushSessionSerialized(artifactId, { editSource: 'system' });
+  } catch (err) {
+    if (err instanceof AppError && err.code === 'ARTIFACT_NOT_FOUND') {
+      // Permanently deleted while it was open: there is nothing to save into.
+      session.dirty = false;
+    } else {
+      logger.error(
+        { err, artifactId, companyId: session.companyId },
+        'Co-edit final flush failed; unsaved changes are kept in memory',
+      );
+    }
+  }
+  disposeIfIdle(session);
 }
 
 /** Remove a participant by WS connection (on disconnect). */

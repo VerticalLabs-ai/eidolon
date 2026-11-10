@@ -7,11 +7,7 @@ import {
 } from '@eidolon/shared';
 import { AppError } from '../middleware/error-handler.js';
 import eventBus from '../realtime/events.js';
-import {
-  hasSession,
-  mergeExternalUpdate,
-  updateSessionAfterFlush,
-} from '../realtime/coedit-session.js';
+import { hasSession, persistExternalUpdate } from '../realtime/coedit-session.js';
 import { validateFolderOwnership } from './folder-service.js';
 import { encryptContent, decryptContent } from './content-encryption.js';
 import { extractSearchText, buildSearchText, buildSearchTsvSql } from './search-text.js';
@@ -376,7 +372,7 @@ export async function updateArtifact(
   },
   editor: Editor,
 ) {
-  const current = await getArtifact(db, companyId, id);
+  let current = await getArtifact(db, companyId, id);
 
   // Validate folder moves before the co-edit fast path as well.
   if (input.folderId !== undefined && input.folderId !== null) {
@@ -396,32 +392,39 @@ export async function updateArtifact(
   // 409 for live co-editors. The 409 path below remains for stale
   // single-client writes (no active session).
   if (input.content !== undefined && hasSession(id)) {
-    const result = mergeExternalUpdate(id, input.content as Record<string, unknown>, editor);
-    if (result) {
-      // The session merged the content. Flush to DB directly via
-      // saveArtifactContent (bypasses the co-edit check to avoid recursion).
-      // Pass input.title so content AND title are written in a single
-      // transaction (atomic). A process crash between separate content and
-      // title writes could lose the title while content persists. This
-      // matches the DocEditor coeditSave path, which is already atomic via
-      // flushSession → saveArtifactContent.
-      const sessionContent = result.merged;
-      const updated = await saveArtifactContent(
-        db,
-        companyId,
-        id,
-        sessionContent,
-        current.version,
-        editor,
-        input.message,
-        input.title,
-        input.folderId,
-      );
-      // Update the session's version + lastSavedContent to reflect the flush.
-      // `updated.title` reflects the persisted title (new or unchanged).
-      updateSessionAfterFlush(id, updated.version, sessionContent, updated.title);
-      return updated;
+    // The merge and its write run as one step in the session's write queue,
+    // so they cannot overlap a save or final flush for the same artifact.
+    // saveArtifactContent bypasses the co-edit check (no recursion) and
+    // writes content AND title in a single transaction, matching the
+    // DocEditor coeditSave path: a crash between separate writes could lose
+    // the title while content persists.
+    const viaSession = await persistExternalUpdate(
+      id,
+      input.content as Record<string, unknown>,
+      editor,
+      async (merged) => {
+        // Read the version inside the queue: an earlier queued write may have
+        // advanced it since `current` was loaded.
+        const latest = await getArtifact(db, companyId, id);
+        return saveArtifactContent(
+          db,
+          companyId,
+          id,
+          merged,
+          latest.version,
+          editor,
+          input.message,
+          input.title,
+          input.folderId,
+        );
+      },
+    );
+    if (viaSession) {
+      return viaSession;
     }
+    // The session closed while this update waited its turn. Continue on the
+    // standard path against the artifact as it is now.
+    current = await getArtifact(db, companyId, id);
   }
 
   // ── Standard optimistic version check (M1 path) ──────────────────────

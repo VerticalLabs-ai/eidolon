@@ -1966,4 +1966,60 @@ describe('Co-editing WebSocket — real WS clients', () => {
     ).toEqual([2, 3]);
     expect(messages.some((message) => message.type === 'coedit.error')).toBe(false);
   });
+
+  it('persists an acknowledged op when the socket closes during a save [EID-171]', async () => {
+    const doc = await createDoc('# Hello');
+    wsA = await openWs(port);
+    await subscribe(wsA, companyId);
+    await joinSession(wsA, doc.id, 'user-a', 'Alice');
+
+    let markSaveStarted!: () => void;
+    const saveStarted = new Promise<void>((resolve) => {
+      markSaveStarted = resolve;
+    });
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    const originalTransaction = db.drizzle.transaction.bind(db.drizzle);
+    vi.spyOn(db.drizzle, 'transaction').mockImplementationOnce(async (...args) => {
+      markSaveStarted();
+      await saveGate;
+      return originalTransaction(...args);
+    });
+
+    const appendOp = (text: string): CoEditOp =>
+      ({ kind: 'doc.insert', position: 1000, text, opId: genOpId() }) as CoEditOp;
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: appendOp(' A'),
+    });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+    sendWs(wsA, { type: 'coedit.save', artifactId: doc.id, companyId, userId: 'user-a' });
+    await saveStarted;
+
+    // The tab closes right after one more edit, while the save is still
+    // waiting on the database.
+    sendWs(wsA, {
+      type: 'coedit.op',
+      artifactId: doc.id,
+      companyId,
+      userId: 'user-a',
+      op: appendOp(' B'),
+    });
+    await waitForCoEdit(wsA, 'coedit.op.ack');
+    await closeWs(wsA);
+    wsA = null;
+    releaseSave();
+
+    await vi.waitFor(async () => {
+      await backgroundWork.drain();
+      const getRes = await request(app).get(`/api/companies/${companyId}/artifacts/${doc.id}`);
+      expect(getRes.body.data.content.body).toBe('# Hello A B');
+      expect(getRes.body.data.version).toBe(3);
+    });
+  });
 });
